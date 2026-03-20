@@ -27,9 +27,10 @@ export async function handleAdminSsoPage(
   const token = getTokenFromCookie(request);
   console.log(JSON.stringify({ event: "admin_access", hasToken: !!token }));
   if (!token) {
-    const callbackUri = `${env.AUTH_WORKER_ORIGIN}/admin/sso/callback`;
+    const origin = new URL(request.url).origin;
+    const callbackUri = `${origin}/admin/sso/callback`;
     return Response.redirect(
-      `${env.AUTH_WORKER_ORIGIN}/login?redirect_uri=${encodeURIComponent(callbackUri)}`,
+      `${origin}/login?redirect_uri=${encodeURIComponent(callbackUri)}`,
       302,
     );
   }

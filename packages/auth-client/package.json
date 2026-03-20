@@ -1,6 +1,6 @@
 {
   "name": "@yhonda-ohishi-pub-dev/auth-client",
-  "version": "0.1.26",
+  "version": "0.1.28",
   "description": "Shared auth composable for Nuxt frontends (LINE WORKS auto-login support)",
   "type": "module",
   "main": "./src/index.ts",
