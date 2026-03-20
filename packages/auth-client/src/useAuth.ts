@@ -270,7 +270,8 @@ export const useAuth = () => {
     clearStorage()
     clearLwDomain()
     authState.value = null
-    window.location.href = window.location.origin + '/'
+    // logout=1 でSSRミドルウェアのリダイレクトをスキップ
+    window.location.href = window.location.origin + '/?logout=1'
   }
 
   /** LINE WORKS 自動ログイン URL を生成 */
