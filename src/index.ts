@@ -33,6 +33,7 @@ export interface Env {
   OAUTH_STATE_SECRET: string;
   AUTH_WORKER_ORIGIN: string;
   ALLOWED_REDIRECT_ORIGINS: string;
+  ALC_API_ORIGIN: string;
 }
 
 function errorResponse(status: number, message: string): Response {

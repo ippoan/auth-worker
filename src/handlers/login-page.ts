@@ -23,8 +23,9 @@ export async function handleLoginPage(
   }
 
   const googleEnabled = Boolean(env.GOOGLE_CLIENT_ID);
+  const alcApiOrigin = env.ALC_API_ORIGIN || '';
   const googleRedirectUrl = googleEnabled
-    ? `/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+    ? `${alcApiOrigin}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
     : "";
 
   console.log(JSON.stringify({ event: "login_page", redirectUri, orgId, error }));
@@ -35,7 +36,7 @@ export async function handleLoginPage(
     error,
     googleEnabled,
     googleRedirectUrl,
-    lineworksRedirectUrl: "/oauth/lineworks/redirect",
+    lineworksRedirectUrl: `${alcApiOrigin}/api/auth/lineworks/redirect`,
   });
 
   return new Response(html, {

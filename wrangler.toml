@@ -9,6 +9,7 @@ service = "cf-grpc-proxy"
 [vars]
 AUTH_WORKER_ORIGIN = "https://auth.mtamaramu.com"
 ALLOWED_REDIRECT_ORIGINS = "https://nuxt-pwa-carins.mtamaramu.com,https://ohishi2.mtamaramu.com,https://items.mtamaramu.com,https://auth.mtamaramu.com"
+ALC_API_ORIGIN = "https://alc-api.ippoan.org"
 
 [observability]
 enabled = true
