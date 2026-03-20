@@ -1,12 +1,9 @@
 /**
  * SSO Settings API endpoints
- * Client JS → auth-worker API → gRPC SsoSettingsService (via cf-grpc-proxy)
+ * Client JS → auth-worker API → rust-alc-api REST API
  */
 
-import { createClient, ConnectError } from "@connectrpc/connect";
-import { SsoSettingsService } from "@yhonda-ohishi-pub-dev/logi-proto";
 import type { Env } from "../index";
-import { createTransportWithAuth } from "../lib/transport";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -34,29 +31,37 @@ export async function handleSsoList(
 
   console.log(JSON.stringify({ event: "sso_list" }));
 
-  const transport = createTransportWithAuth(env.GRPC_PROXY, token);
-  const client = createClient(SsoSettingsService, transport);
+  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/sso/configs`, {
+    headers: { "Authorization": `Bearer ${token}` },
+  });
 
-  try {
-    const response = await client.listConfigs({});
-    return jsonResponse({
-      configs: (response.configs || []).map((c) => ({
-        provider: c.provider,
-        clientId: c.clientId,
-        hasClientSecret: c.hasClientSecret,
-        externalOrgId: c.externalOrgId,
-        enabled: c.enabled,
-        woffId: c.woffId,
-        createdAt: c.createdAt,
-        updatedAt: c.updatedAt,
-      })),
-    });
-  } catch (err) {
-    if (err instanceof ConnectError) {
-      return jsonResponse({ error: err.message }, 400);
-    }
-    throw err;
+  if (!resp.ok) {
+    const text = await resp.text();
+    return jsonResponse({ error: text || "Failed to list configs" }, resp.status);
   }
+
+  const data = await resp.json() as { configs: Array<{
+    provider: string;
+    client_id: string;
+    external_org_id: string;
+    enabled: boolean;
+    woff_id: string | null;
+    created_at: string;
+    updated_at: string;
+  }> };
+
+  return jsonResponse({
+    configs: (data.configs || []).map((c) => ({
+      provider: c.provider,
+      clientId: c.client_id,
+      hasClientSecret: true,
+      externalOrgId: c.external_org_id,
+      enabled: c.enabled,
+      woffId: c.woff_id || "",
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+    })),
+  });
 }
 
 export async function handleSsoUpsert(
@@ -83,32 +88,43 @@ export async function handleSsoUpsert(
 
   console.log(JSON.stringify({ event: "sso_upsert", provider: body.provider, externalOrgId: body.externalOrgId }));
 
-  const transport = createTransportWithAuth(env.GRPC_PROXY, token);
-  const client = createClient(SsoSettingsService, transport);
-
-  try {
-    const response = await client.upsertConfig({
+  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/sso/configs`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
       provider: body.provider,
-      clientId: body.clientId,
-      clientSecret: body.clientSecret || "",
-      externalOrgId: body.externalOrgId,
-      woffId: body.woffId || "",
+      client_id: body.clientId,
+      client_secret: body.clientSecret || null,
+      external_org_id: body.externalOrgId,
+      woff_id: body.woffId || null,
       enabled: body.enabled ?? true,
-    });
-    return jsonResponse({
-      provider: response.provider,
-      clientId: response.clientId,
-      hasClientSecret: response.hasClientSecret,
-      externalOrgId: response.externalOrgId,
-      woffId: response.woffId,
-      enabled: response.enabled,
-    });
-  } catch (err) {
-    if (err instanceof ConnectError) {
-      return jsonResponse({ error: err.message }, 400);
-    }
-    throw err;
+    }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    return jsonResponse({ error: text || "Failed to upsert config" }, resp.status);
   }
+
+  const c = await resp.json() as {
+    provider: string;
+    client_id: string;
+    external_org_id: string;
+    enabled: boolean;
+    woff_id: string | null;
+  };
+
+  return jsonResponse({
+    provider: c.provider,
+    clientId: c.client_id,
+    hasClientSecret: true,
+    externalOrgId: c.external_org_id,
+    woffId: c.woff_id || "",
+    enabled: c.enabled,
+  });
 }
 
 export async function handleSsoDelete(
@@ -127,16 +143,19 @@ export async function handleSsoDelete(
 
   console.log(JSON.stringify({ event: "sso_delete", provider: body.provider }));
 
-  const transport = createTransportWithAuth(env.GRPC_PROXY, token);
-  const client = createClient(SsoSettingsService, transport);
+  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/sso/configs`, {
+    method: "DELETE",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ provider: body.provider }),
+  });
 
-  try {
-    await client.deleteConfig({ provider: body.provider });
-    return jsonResponse({ success: true });
-  } catch (err) {
-    if (err instanceof ConnectError) {
-      return jsonResponse({ error: err.message }, 400);
-    }
-    throw err;
+  if (!resp.ok) {
+    const text = await resp.text();
+    return jsonResponse({ error: text || "Failed to delete config" }, resp.status);
   }
+
+  return jsonResponse({ success: true });
 }

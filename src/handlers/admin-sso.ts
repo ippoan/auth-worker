@@ -5,11 +5,8 @@
  * /admin/sso/callback — ログイン後の着地点。fragment → cookie → /admin/sso へリダイレクト
  */
 
-import { createClient, ConnectError, Code } from "@connectrpc/connect";
-import { SsoSettingsService } from "@yhonda-ohishi-pub-dev/logi-proto";
 import type { Env } from "../index";
 import { renderAdminSsoPage } from "../lib/admin-html";
-import { createTransportWithAuth } from "../lib/transport";
 
 const COOKIE_NAME = "sso_admin_token";
 
@@ -37,14 +34,14 @@ export async function handleAdminSsoPage(
 
   // サーバー側で権限チェック（チラ見え防止）
   try {
-    const transport = createTransportWithAuth(env.GRPC_PROXY, token);
-    const client = createClient(SsoSettingsService, transport);
-    await client.listConfigs({});
-  } catch (err) {
-    if (err instanceof ConnectError && err.code === Code.PermissionDenied) {
+    const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/sso/configs`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (resp.status === 403) {
       return Response.redirect(`${env.AUTH_WORKER_ORIGIN}/top?error=no_permission`, 302);
     }
-    // その他のエラーはページを表示してクライアント側で処理
+  } catch {
+    // エラーはページを表示してクライアント側で処理
   }
 
   // ALLOWED_REDIRECT_ORIGINS からフロントエンド URL を抽出（auth-worker 自身を除外）
