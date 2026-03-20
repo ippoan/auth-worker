@@ -78,8 +78,14 @@ function clearStorage(): void {
   localStorage.removeItem(AUTH_STORAGE_KEY)
   const domain = getParentDomain()
   document.cookie = `${AUTH_COOKIE_NAME}=; Domain=${domain}; path=/; max-age=0; secure; samesite=lax`
-  // host-only cookie も削除（サーバーミドルウェアが Domain なしで設定した stale cookie 対策）
+  // host-only cookie も削除
   document.cookie = `${AUTH_COOKIE_NAME}=; path=/; max-age=0; secure; samesite=lax`
+  // 異なるドメインの cookie も削除（auth 統合移行期の互換性）
+  for (const d of ['.ippoan.org', '.mtamaramu.com']) {
+    if (d !== domain) {
+      document.cookie = `${AUTH_COOKIE_NAME}=; Domain=${d}; path=/; max-age=0; secure; samesite=lax`
+    }
+  }
 }
 
 /** LINE WORKS ドメインを保存（localStorage + cookie 二重保存、cross-subdomain 共有） */
