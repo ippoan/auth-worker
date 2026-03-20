@@ -261,8 +261,8 @@ export const useAuth = () => {
       return
     }
 
-    // デフォルト: Google OAuth
-    window.location.href = `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+    // デフォルト: auth-worker ログインページ
+    window.location.href = `https://auth.mtamaramu.com/login?redirect_uri=${encodeURIComponent(redirectUri)}`
   }
 
   /** ログアウト: ストレージ/cookie クリア → トップページに遷移 */
@@ -270,8 +270,13 @@ export const useAuth = () => {
     clearStorage()
     clearLwDomain()
     authState.value = null
-    // logout=1 でSSRミドルウェアのリダイレクトをスキップ
-    window.location.href = window.location.origin + '/?logout=1'
+    // auth-worker のログインページにリダイレクト
+    if (authWorkerUrl) {
+      const redirectUri = window.location.origin + '/?lw_callback=1'
+      window.location.href = `https://auth.mtamaramu.com/login?redirect_uri=${encodeURIComponent(redirectUri)}`
+    } else {
+      window.location.href = window.location.origin + '/?logout=1'
+    }
   }
 
   /** LINE WORKS 自動ログイン URL を生成 */
@@ -292,7 +297,7 @@ export const useAuth = () => {
     if (authState.value?.provider === 'google') {
       return `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
     }
-    return `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+    return `https://auth.mtamaramu.com/login?redirect_uri=${encodeURIComponent(redirectUri)}`
   }
 
   /** LINE WORKS 自動ログイン URL をクリップボードにコピー */
