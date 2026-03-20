@@ -93,6 +93,15 @@
     </div>
 
     <component
+      v-if="showApps"
+      :is="uButton"
+      v-bind="buttonProps"
+      @click="handleOpenApps"
+    >
+      Apps
+    </component>
+
+    <component
       v-if="showSettings"
       :is="uButton"
       v-bind="buttonProps"
@@ -120,6 +129,7 @@ import { useAuth } from './useAuth'
 const props = withDefaults(defineProps<{
   showCopyUrl?: boolean
   showQr?: boolean
+  showApps?: boolean
   showSettings?: boolean
   showLogout?: boolean
   showUserInfo?: boolean
@@ -127,6 +137,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   showCopyUrl: true,
   showQr: true,
+  showApps: true,
   showSettings: true,
   showLogout: true,
   showUserInfo: true,
@@ -221,6 +232,10 @@ async function handleCopyUrl() {
 function handleLogout() {
   emit('logout')
   logout()
+}
+
+function handleOpenApps() {
+  window.open('https://auth.ippoan.org/top', '_blank')
 }
 
 function handleOpenSettings() {
