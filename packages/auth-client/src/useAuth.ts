@@ -146,14 +146,24 @@ export const useAuth = () => {
 
     const params = new URLSearchParams(hash.slice(1))
     const token = params.get('token')
-    const orgId = params.get('org_id')
+
+    if (!token) return false
+
+    // JWT から claims を取得
+    let payload: Record<string, unknown> = {}
+    try { payload = JSON.parse(atob(token.split('.')[1])) } catch { /* ignore */ }
+
+    // org_id: fragment パラメータ or JWT の tenant_id/org
+    const orgId = params.get('org_id') || (payload.tenant_id as string) || (payload.org as string) || ''
+    if (!orgId) return false
+
+    // expires: expires_in (秒数) or expires_at (timestamp/RFC3339) or JWT exp
+    const expiresInStr = params.get('expires_in')
     const expiresAtStr = params.get('expires_at')
-
-    if (!token || !orgId) return false
-
-    // expires_at: RFC3339 string or unix timestamp
     let expiresAt: number
-    if (expiresAtStr) {
+    if (expiresInStr) {
+      expiresAt = Math.floor(Date.now() / 1000) + Number(expiresInStr)
+    } else if (expiresAtStr) {
       const asNum = Number(expiresAtStr)
       if (!isNaN(asNum) && expiresAtStr.length >= 10) {
         expiresAt = asNum
@@ -161,6 +171,8 @@ export const useAuth = () => {
         const parsed = new Date(expiresAtStr).getTime()
         expiresAt = isNaN(parsed) ? Math.floor(Date.now() / 1000) + 86400 : Math.floor(parsed / 1000)
       }
+    } else if (payload.exp) {
+      expiresAt = payload.exp as number
     } else {
       expiresAt = Math.floor(Date.now() / 1000) + 86400
     }
@@ -225,26 +237,26 @@ export const useAuth = () => {
     // URL パラメータによる自動ログイン（QRコード等の明示的指定を優先）
     const urlParams = new URLSearchParams(window.location.search)
     if (urlParams.get('provider') === 'google') {
-      window.location.href = `${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+      window.location.href = `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
       return
     }
     const lwParam = urlParams.get('lw')
     if (lwParam) {
-      const params = new URLSearchParams({ address: lwParam, redirect_uri: redirectUri })
-      window.location.href = `${authWorkerUrl}/oauth/lineworks/redirect?${params.toString()}`
+      const params = new URLSearchParams({ domain: lwParam, redirect_uri: redirectUri })
+      window.location.href = `${authWorkerUrl}/api/auth/lineworks/redirect?${params.toString()}`
       return
     }
 
     // localStorage 保存済みドメインによる LINE WORKS 自動ログイン
     const lwDomain = getLwDomain()
     if (lwDomain) {
-      const params = new URLSearchParams({ address: lwDomain, redirect_uri: redirectUri })
-      window.location.href = `${authWorkerUrl}/oauth/lineworks/redirect?${params.toString()}`
+      const params = new URLSearchParams({ domain: lwDomain, redirect_uri: redirectUri })
+      window.location.href = `${authWorkerUrl}/api/auth/lineworks/redirect?${params.toString()}`
       return
     }
 
-    // デフォルト: 汎用ログイン画面
-    window.location.href = `${authWorkerUrl}/login?redirect_uri=${encodeURIComponent(redirectUri)}`
+    // デフォルト: Google OAuth
+    window.location.href = `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
   }
 
   /** ログアウト: ストレージ/cookie クリア → ログイン画面 */
@@ -252,9 +264,7 @@ export const useAuth = () => {
     clearStorage()
     clearLwDomain()
     authState.value = null
-    if (!authWorkerUrl) return
-    const redirectUri = window.location.origin + '/?lw_callback=1'
-    window.location.href = `${authWorkerUrl}/login?redirect_uri=${encodeURIComponent(redirectUri)}`
+    // ログアウト後はページリロード（ログインページは不要、redirectToLogin が処理）
   }
 
   /** LINE WORKS 自動ログイン URL を生成 */
@@ -270,12 +280,12 @@ export const useAuth = () => {
     const redirectUri = `${window.location.origin}/?lw_callback=1`
     const lwDomain = getLwDomain()
     if (lwDomain) {
-      return `${authWorkerUrl}/oauth/lineworks/redirect?address=${encodeURIComponent(lwDomain)}&redirect_uri=${encodeURIComponent(redirectUri)}`
+      return `${authWorkerUrl}/api/auth/lineworks/redirect?domain=${encodeURIComponent(lwDomain)}&redirect_uri=${encodeURIComponent(redirectUri)}`
     }
     if (authState.value?.provider === 'google') {
-      return `${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+      return `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
     }
-    return `${authWorkerUrl}/login?redirect_uri=${encodeURIComponent(redirectUri)}`
+    return `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
   }
 
   /** LINE WORKS 自動ログイン URL をクリップボードにコピー */
@@ -292,7 +302,7 @@ export const useAuth = () => {
 
   /** auth-worker の設定ページ URL を取得 */
   function getSettingsUrl(): string {
-    return `${authWorkerUrl}/admin/sso`
+    return `${authWorkerUrl}/admin/sso` // TODO: auth-worker 廃止後に削除
   }
 
   // 組織一覧 + 切り替え
