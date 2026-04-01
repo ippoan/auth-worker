@@ -43,3 +43,19 @@ branches = true
 [[files]]
 path = "src/handlers/api-access-requests.ts"
 branches = true
+
+[[files]]
+path = "src/handlers/google-redirect.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/google-callback.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/lineworks-redirect.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/lineworks-callback.ts"
+branches = true
