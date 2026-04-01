@@ -2,3 +2,4 @@ node_modules/
 .dev.vars
 .wrangler/
 client_secret_*.json
+coverage/

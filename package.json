@@ -2,10 +2,14 @@
   "name": "auth-worker",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:check100": "node scripts/check_coverage_100.mjs"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.10.2",
@@ -14,8 +18,11 @@
     "@yhonda-ohishi-pub-dev/logi-proto": "^0.1.35"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.14.0",
     "@cloudflare/workers-types": "^4.20241218.0",
+    "@vitest/coverage-v8": "^4.1.2",
     "typescript": "^5.7.2",
+    "vitest": "^4.1.2",
     "wrangler": "^4.67.0"
   }
 }
