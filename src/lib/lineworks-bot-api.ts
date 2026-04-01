@@ -122,7 +122,7 @@ async function botFetch(
   init: RequestInit = {},
 ): Promise<Response> {
   const token = await getAccessToken(creds);
-  const url = path.startsWith("http") ? path : `${botBaseUrl(creds)}${path}`;
+  const url = `${botBaseUrl(creds)}${path}`;
   const res = await fetch(url, {
     ...init,
     headers: {

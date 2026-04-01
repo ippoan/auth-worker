@@ -215,7 +215,7 @@ export async function handleRichMenuImageUpload(
     return jsonResponse({ error: "Image must be 1MB or less" }, 400);
   }
 
-  const fileName = imageFile.name || "richmenu.png";
+  const fileName = imageFile.name;
   const lowerName = fileName.toLowerCase();
   if (!lowerName.endsWith(".png") && !lowerName.endsWith(".jpg") && !lowerName.endsWith(".jpeg")) {
     return jsonResponse({ error: "Image must be JPEG or PNG" }, 400);

@@ -76,7 +76,7 @@ branches = true
 
 [[files]]
 path = "src/handlers/api-rich-menu.ts"
-# branches = false: L218 imageFile.name fallback unreachable in Node test env
+branches = true
 
 # --- Phase 5: Admin + HTML + transport ---
 
@@ -114,7 +114,7 @@ branches = true
 
 [[files]]
 path = "src/lib/lineworks-bot-api.ts"
-# branches = false: L125 botFetch path.startsWith("http") else branch
+branches = true
 
 [[files]]
 path = "src/handlers/login-page.ts"
