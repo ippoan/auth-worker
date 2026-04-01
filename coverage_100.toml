@@ -143,3 +143,9 @@ branches = true
 [[files]]
 path = "src/handlers/admin-users.ts"
 branches = true
+
+# --- Phase 6: Router ---
+
+[[files]]
+path = "src/index.ts"
+branches = true
