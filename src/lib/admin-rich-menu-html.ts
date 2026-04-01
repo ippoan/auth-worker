@@ -232,8 +232,9 @@ export function renderAdminRichMenuPage(): string {
     let imageStatus = {}; // richmenuId → boolean (has image)
 
     function initAuth() {
-      const match = document.cookie.match(/sso_admin_token=([^;]+)/);
-      token = match ? match[1] : null;
+      const adminMatch = document.cookie.match(/sso_admin_token=([^;]+)/);
+      const sharedMatch = document.cookie.match(/logi_auth_token=([^;]+)/);
+      token = (adminMatch && adminMatch[1]) || (sharedMatch && sharedMatch[1]) || null;
       if (!token) {
         const callbackUri = window.location.origin + '/admin/rich-menu/callback';
         window.location.replace('/login?redirect_uri=' + encodeURIComponent(callbackUri));

@@ -59,8 +59,10 @@ export function renderAdminRequestsPage(): string {
     let currentFilter = 'pending';
 
     function getToken() {
-      const match = document.cookie.match(new RegExp(COOKIE_NAME + '=([^;]+)'));
-      return match ? match[1] : null;
+      const adminMatch = document.cookie.match(new RegExp(COOKIE_NAME + '=([^;]+)'));
+      if (adminMatch && adminMatch[1]) return adminMatch[1];
+      const sharedMatch = document.cookie.match(/logi_auth_token=([^;]+)/);
+      return sharedMatch ? sharedMatch[1] : null;
     }
 
     async function apiCall(endpoint, body) {

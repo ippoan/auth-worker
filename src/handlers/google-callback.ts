@@ -89,11 +89,24 @@ export async function handleGoogleCallback(
       }
     }
 
+    // Helper: extract parent domain for shared cookie
+    function getParentDomain(hostname: string): string {
+      const parts = hostname.split('.');
+      return parts.length > 2 ? parts.slice(-2).join('.') : hostname;
+    }
+
     // Join flow: redirect to /join/:slug/done with JWT fragment
     if (joinOrg) {
       const joinDoneUrl = new URL(`${origin}/join/${joinOrg}/done`);
+      const joinCookie = `logi_auth_token=${response.token}; Domain=.${getParentDomain(joinDoneUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
       console.log(JSON.stringify({ event: "google_login_join", joinOrg }));
-      return Response.redirect(`${joinDoneUrl.toString()}#${fragment.toString()}`, 302);
+      return new Response(null, {
+        status: 302,
+        headers: {
+          'Location': `${joinDoneUrl.toString()}#${fragment.toString()}`,
+          'Set-Cookie': joinCookie,
+        },
+      });
     }
 
     // Normal flow: redirect back to original redirect_uri
@@ -101,8 +114,17 @@ export async function handleGoogleCallback(
     if (!finalUrl.searchParams.has('lw_callback')) {
       finalUrl.searchParams.set('lw_callback', '1');
     }
+
+    // JWT を cookie でもセット（親ドメイン共有で auth-worker admin 等が読める）
+    const cookieValue = `logi_auth_token=${response.token}; Domain=.${getParentDomain(finalUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
     console.log(JSON.stringify({ event: "google_login_success", redirectUri }));
-    return Response.redirect(`${finalUrl.toString()}#${fragment.toString()}`, 302);
+    return new Response(null, {
+      status: 302,
+      headers: {
+        'Location': `${finalUrl.toString()}#${fragment.toString()}`,
+        'Set-Cookie': cookieValue,
+      },
+    });
   } catch (err) {
     if (err instanceof ConnectError) {
       console.log(JSON.stringify({ event: "google_login_failure", error: err.message }));

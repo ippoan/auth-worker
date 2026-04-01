@@ -301,8 +301,9 @@ export function renderAdminSsoPage(frontendOrigins: string[] = []): string {
 
     // Auth: read JWT from cookie (set by /admin/sso/callback)
     function initAuth() {
-      const match = document.cookie.match(/sso_admin_token=([^;]+)/);
-      token = match ? match[1] : null;
+      const adminMatch = document.cookie.match(/sso_admin_token=([^;]+)/);
+      const sharedMatch = document.cookie.match(/logi_auth_token=([^;]+)/);
+      token = (adminMatch && adminMatch[1]) || (sharedMatch && sharedMatch[1]) || null;
       if (!token) {
         window.location.replace('/admin/sso');
         return;

@@ -12,8 +12,10 @@ const COOKIE_NAME = "sso_admin_token";
 
 function getTokenFromCookie(request: Request): string | null {
   const cookie = request.headers.get("Cookie") || "";
-  const match = cookie.match(new RegExp(`${COOKIE_NAME}=([^;]+)`));
-  return match ? match[1] ?? null : null;
+  const adminMatch = cookie.match(new RegExp(`${COOKIE_NAME}=([^;]+)`));
+  if (adminMatch?.[1]) return adminMatch[1];
+  const sharedMatch = cookie.match(/logi_auth_token=([^;]+)/);
+  return sharedMatch?.[1] ?? null;
 }
 
 /** GET /admin/rich-menu — cookie check → serve page or redirect to login */

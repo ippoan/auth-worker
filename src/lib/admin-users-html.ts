@@ -127,8 +127,10 @@ export function renderAdminUsersPage(): string {
   const TOKEN_KEY = 'sso_admin_token';
 
   function getToken() {
-    const c = document.cookie.match(/sso_admin_token=([^;]+)/);
-    return c ? c[1] : null;
+    const admin = document.cookie.match(/sso_admin_token=([^;]+)/);
+    if (admin) return admin[1];
+    const shared = document.cookie.match(/logi_auth_token=([^;]+)/);
+    return shared ? shared[1] : null;
   }
 
   function logout() {
