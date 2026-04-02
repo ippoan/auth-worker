@@ -23,6 +23,15 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate wrangler types
+        run: npx wrangler types
+
+      - name: Sync ts-rs types from rust-alc-api
+        run: bash scripts/export-ts-bindings.sh src/types
+
+      - name: Type check (src + test)
+        run: npx tsc --noEmit && npx tsc -p test/tsconfig.json --noEmit
+
       - run: npm run test:coverage
 
       - run: node scripts/check_coverage_100.mjs
@@ -51,6 +60,9 @@ jobs:
       - run: npm install
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate wrangler types
+        run: npx wrangler types
 
       - name: Start API + DB containers
         run: docker compose -f docker-compose.test.yml up -d --wait
