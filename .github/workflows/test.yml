@@ -56,10 +56,12 @@ jobs:
         run: docker compose -f docker-compose.test.yml up -d --wait
         timeout-minutes: 5
 
-      - name: Run live integration tests
-        run: npx vitest run test/live/
+      - name: Run all tests in live mode with coverage
+        run: npx vitest run --coverage
         env:
           ALC_API_URL: http://localhost:18081
+
+      - run: node scripts/check_coverage_100.mjs
 
       - name: Show API logs on failure
         if: failure()
