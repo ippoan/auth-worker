@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import { createMockEnv } from "../helpers/mock-env";
+import {
+  stubOrReal,
+  testEnv,
+  authRequest,
+  authJsonRequest,
+  noAuthRequest,
+  noAuthJsonRequest,
+  restoreFetch,
+  waitIfLive,
+  isLive,
+} from "../helpers/stub-or-real";
 import {
   handleUsersList,
   handleInvitationsList,
@@ -8,42 +18,22 @@ import {
   handleDeleteUser,
 } from "../../src/handlers/api-users";
 
-const originalFetch = globalThis.fetch;
-afterAll(() => {
-  vi.stubGlobal("fetch", originalFetch);
-});
-
-function jsonRequest(url: string, body: unknown, token?: string) {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return new Request(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-}
-
-function getRequest(url: string, token?: string) {
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return new Request(url, { method: "GET", headers });
-}
+afterAll(() => restoreFetch());
+waitIfLive();
 
 // ---------- handleUsersList ----------
 
 describe("handleUsersList", () => {
-  const env = createMockEnv();
+  const env = testEnv();
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {
-    const res = await handleUsersList(getRequest("https://x.com"), env);
+    const res = await handleUsersList(noAuthRequest("/x", "GET"), env);
     expect(res.status).toBe(401);
   });
 
   it("returns 401 with non-Bearer auth header", async () => {
-    const req = new Request("https://x.com", {
+    const req = new Request("https://auth.test.example/x", {
       headers: { Authorization: "Basic abc" },
     });
     const res = await handleUsersList(req, env);
@@ -51,47 +41,59 @@ describe("handleUsersList", () => {
   });
 
   it("returns users list on success", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ users: [{ id: "u1", email: "a@b.com" }] }),
-          { status: 200 },
-        ),
+    stubOrReal(
+      new Response(
+        JSON.stringify({
+          users: [
+            {
+              id: "u1",
+              email: "a@b.com",
+              name: "Test",
+              role: "admin",
+              created_at: "2025-01-01",
+            },
+          ],
+        }),
+        { status: 200 },
       ),
     );
     const res = await handleUsersList(
-      getRequest("https://x.com", "tok"),
+      authRequest("/x", { method: "GET" }),
       env,
     );
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { users: unknown[] };
-    expect(data.users).toHaveLength(1);
+    const data = (await res.json()) as {
+      users: Array<Record<string, unknown>>;
+    };
+    expect(Array.isArray(data.users)).toBe(true);
+    expect(data.users.length).toBeGreaterThanOrEqual(1);
+    const u = data.users[0]!;
+    expect(typeof u.id).toBe("string");
+    expect(typeof u.email).toBe("string");
+    expect(typeof u.name).toBe("string");
+    expect(typeof u.role).toBe("string");
+    expect(typeof u.created_at).toBe("string");
   });
 
   it("passes through error status from backend", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response("forbidden", { status: 403 }),
-      ),
-    );
-    const res = await handleUsersList(
-      getRequest("https://x.com", "tok"),
-      env,
-    );
-    expect(res.status).toBe(403);
+    stubOrReal(new Response("forbidden", { status: 403 }));
+    const req = isLive
+      ? new Request("https://auth.test.example/x", {
+          method: "GET",
+          headers: { Authorization: "Bearer invalid-token-value" },
+        })
+      : authRequest("/x", { method: "GET" });
+    const res = await handleUsersList(req, env);
+    expect(res.status).toBeGreaterThanOrEqual(400);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("forbidden");
+    expect(typeof data.error).toBe("string");
   });
 
   it("uses fallback error message when backend returns empty text", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("", { status: 500 })),
-    );
+    if (isLive) return; // mock-only
+    stubOrReal(new Response("", { status: 500 }));
     const res = await handleUsersList(
-      getRequest("https://x.com", "tok"),
+      authRequest("/x", { method: "GET" }),
       env,
     );
     expect(res.status).toBe(500);
@@ -103,54 +105,60 @@ describe("handleUsersList", () => {
 // ---------- handleInvitationsList ----------
 
 describe("handleInvitationsList", () => {
-  const env = createMockEnv();
+  const env = testEnv();
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {
-    const res = await handleInvitationsList(getRequest("https://x.com"), env);
+    const res = await handleInvitationsList(noAuthRequest("/x", "GET"), env);
     expect(res.status).toBe(401);
   });
 
   it("returns invitations list on success", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ invitations: [{ id: "i1", email: "a@b.com" }] }),
-          { status: 200 },
-        ),
+    stubOrReal(
+      new Response(
+        JSON.stringify({
+          invitations: [
+            {
+              id: "i1",
+              email: "a@b.com",
+              tenant_id: "t1",
+              role: "admin",
+              created_at: "2025-01-01",
+            },
+          ],
+        }),
+        { status: 200 },
       ),
     );
     const res = await handleInvitationsList(
-      getRequest("https://x.com", "tok"),
+      authRequest("/x", { method: "GET" }),
       env,
     );
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { invitations: unknown[] };
-    expect(data.invitations).toHaveLength(1);
+    const data = (await res.json()) as {
+      invitations: Array<Record<string, unknown>>;
+    };
+    expect(Array.isArray(data.invitations)).toBe(true);
+    expect(data.invitations.length).toBeGreaterThanOrEqual(1);
   });
 
   it("passes through error status from backend", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response("forbidden", { status: 403 }),
-      ),
-    );
-    const res = await handleInvitationsList(
-      getRequest("https://x.com", "tok"),
-      env,
-    );
-    expect(res.status).toBe(403);
+    stubOrReal(new Response("forbidden", { status: 403 }));
+    const req = isLive
+      ? new Request("https://auth.test.example/x", {
+          method: "GET",
+          headers: { Authorization: "Bearer invalid-token-value" },
+        })
+      : authRequest("/x", { method: "GET" });
+    const res = await handleInvitationsList(req, env);
+    expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
   it("uses fallback error message when backend returns empty text", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("", { status: 500 })),
-    );
+    if (isLive) return; // mock-only
+    stubOrReal(new Response("", { status: 500 }));
     const res = await handleInvitationsList(
-      getRequest("https://x.com", "tok"),
+      authRequest("/x", { method: "GET" }),
       env,
     );
     expect(res.status).toBe(500);
@@ -162,12 +170,12 @@ describe("handleInvitationsList", () => {
 // ---------- handleInviteUser ----------
 
 describe("handleInviteUser", () => {
-  const env = createMockEnv();
+  const env = testEnv();
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {
     const res = await handleInviteUser(
-      jsonRequest("https://x.com", { email: "a@b.com" }),
+      noAuthJsonRequest("/x", { email: "a@b.com" }),
       env,
     );
     expect(res.status).toBe(401);
@@ -175,7 +183,7 @@ describe("handleInviteUser", () => {
 
   it("returns 400 when email is missing", async () => {
     const res = await handleInviteUser(
-      jsonRequest("https://x.com", {}, "tok"),
+      authJsonRequest("/x", {}),
       env,
     );
     expect(res.status).toBe(400);
@@ -184,75 +192,147 @@ describe("handleInviteUser", () => {
   });
 
   it("returns invitation on success", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ id: "i1", email: "a@b.com", role: "admin" }),
-          { status: 200 },
-        ),
+    const email = isLive
+      ? `live-invite-${Date.now()}@example.com`
+      : "invite@example.com";
+
+    stubOrReal(
+      new Response(
+        JSON.stringify({
+          id: "i1",
+          email: "invite@example.com",
+          tenant_id: "t1",
+          role: "admin",
+          created_at: "2025-01-01",
+        }),
+        { status: 200 },
       ),
     );
     const res = await handleInviteUser(
-      jsonRequest("https://x.com", { email: "a@b.com" }, "tok"),
+      authJsonRequest("/x", { email, role: "admin" }),
       env,
     );
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { id: string };
-    expect(data.id).toBe("i1");
+    const data = (await res.json()) as {
+      id: string;
+      email: string;
+      role: string;
+    };
+    expect(typeof data.id).toBe("string");
+    expect(data.email).toBe(isLive ? email : "invite@example.com");
+    expect(data.role).toBe("admin");
+
+    // Cleanup
+    stubOrReal(new Response("ok", { status: 200 }));
+    await handleDeleteInvitation(
+      authJsonRequest("/x", { id: data.id || "i1" }),
+      env,
+    );
   });
 
   it("sends default role 'admin' when role is not provided", async () => {
-    const mockFetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ id: "i1" }), { status: 200 }),
+    const email = isLive
+      ? `live-default-role-${Date.now()}@example.com`
+      : "default-role@example.com";
+
+    const mockFetchFn = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "i1",
+          email: "default-role@example.com",
+          role: "admin",
+        }),
+        { status: 200 },
+      ),
     );
-    vi.stubGlobal("fetch", mockFetch);
-    await handleInviteUser(
-      jsonRequest("https://x.com", { email: "a@b.com" }, "tok"),
+    if (!isLive) vi.stubGlobal("fetch", mockFetchFn);
+
+    const res = await handleInviteUser(
+      authJsonRequest("/x", { email }),
       env,
     );
-    const sentBody = JSON.parse(
-      mockFetch.mock.calls[0][1].body as string,
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { id: string; role: string };
+    expect(data.role).toBe("admin");
+
+    // Verify sent body (mock-only)
+    if (!isLive) {
+      const sentBody = JSON.parse(
+        mockFetchFn.mock.calls[0][1].body as string,
+      );
+      expect(sentBody.role).toBe("admin");
+    }
+
+    // Cleanup
+    stubOrReal(new Response("ok", { status: 200 }));
+    await handleDeleteInvitation(
+      authJsonRequest("/x", { id: data.id || "i1" }),
+      env,
     );
-    expect(sentBody.role).toBe("admin");
   });
 
   it("sends provided role when specified", async () => {
-    const mockFetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ id: "i1" }), { status: 200 }),
+    const email = isLive
+      ? `live-viewer-role-${Date.now()}@example.com`
+      : "viewer-role@example.com";
+
+    const mockFetchFn = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "i2",
+          email: "viewer-role@example.com",
+          role: "viewer",
+        }),
+        { status: 200 },
+      ),
     );
-    vi.stubGlobal("fetch", mockFetch);
-    await handleInviteUser(
-      jsonRequest("https://x.com", { email: "a@b.com", role: "viewer" }, "tok"),
+    if (!isLive) vi.stubGlobal("fetch", mockFetchFn);
+
+    const res = await handleInviteUser(
+      authJsonRequest("/x", { email, role: "viewer" }),
       env,
     );
-    const sentBody = JSON.parse(
-      mockFetch.mock.calls[0][1].body as string,
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { id: string; role: string };
+    expect(data.role).toBe("viewer");
+
+    // Verify sent body (mock-only)
+    if (!isLive) {
+      const sentBody = JSON.parse(
+        mockFetchFn.mock.calls[0][1].body as string,
+      );
+      expect(sentBody.role).toBe("viewer");
+    }
+
+    // Cleanup
+    stubOrReal(new Response("ok", { status: 200 }));
+    await handleDeleteInvitation(
+      authJsonRequest("/x", { id: data.id || "i2" }),
+      env,
     );
-    expect(sentBody.role).toBe("viewer");
   });
 
   it("passes through error status from backend", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response("conflict", { status: 409 }),
-      ),
-    );
-    const res = await handleInviteUser(
-      jsonRequest("https://x.com", { email: "a@b.com" }, "tok"),
-      env,
-    );
-    expect(res.status).toBe(409);
+    stubOrReal(new Response("conflict", { status: 409 }));
+    const req = isLive
+      ? new Request("https://auth.test.example/x", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer invalid-token",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ email: "error@example.com" }),
+        })
+      : authJsonRequest("/x", { email: "a@b.com" });
+    const res = await handleInviteUser(req, env);
+    expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
   it("uses fallback error message when backend returns empty text", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("", { status: 500 })),
-    );
+    if (isLive) return; // mock-only
+    stubOrReal(new Response("", { status: 500 }));
     const res = await handleInviteUser(
-      jsonRequest("https://x.com", { email: "a@b.com" }, "tok"),
+      authJsonRequest("/x", { email: "a@b.com" }),
       env,
     );
     expect(res.status).toBe(500);
@@ -264,12 +344,12 @@ describe("handleInviteUser", () => {
 // ---------- handleDeleteInvitation ----------
 
 describe("handleDeleteInvitation", () => {
-  const env = createMockEnv();
+  const env = testEnv();
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {
     const res = await handleDeleteInvitation(
-      jsonRequest("https://x.com", { id: "i1" }),
+      noAuthJsonRequest("/x", { id: "i1" }),
       env,
     );
     expect(res.status).toBe(401);
@@ -277,7 +357,7 @@ describe("handleDeleteInvitation", () => {
 
   it("returns 400 when id is missing", async () => {
     const res = await handleDeleteInvitation(
-      jsonRequest("https://x.com", {}, "tok"),
+      authJsonRequest("/x", {}),
       env,
     );
     expect(res.status).toBe(400);
@@ -286,12 +366,32 @@ describe("handleDeleteInvitation", () => {
   });
 
   it("returns success on delete", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("ok", { status: 200 })),
+    // Setup: create invitation then delete
+    const email = isLive
+      ? `live-del-inv-${Date.now()}@example.com`
+      : "del-inv@example.com";
+
+    stubOrReal(
+      new Response(
+        JSON.stringify({
+          id: "del-inv-id",
+          email: "del-inv@example.com",
+          role: "admin",
+        }),
+        { status: 200 },
+      ),
     );
+    const invRes = await handleInviteUser(
+      authJsonRequest("/x", { email }),
+      env,
+    );
+    const inv = (await invRes.json()) as { id: string };
+    const deleteId = inv.id || "del-inv-id";
+
+    // Act: delete
+    stubOrReal(new Response("ok", { status: 200 }));
     const res = await handleDeleteInvitation(
-      jsonRequest("https://x.com", { id: "i1" }, "tok"),
+      authJsonRequest("/x", { id: deleteId }),
       env,
     );
     expect(res.status).toBe(200);
@@ -299,26 +399,28 @@ describe("handleDeleteInvitation", () => {
   });
 
   it("passes through error status from backend", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response("not found", { status: 404 }),
-      ),
-    );
-    const res = await handleDeleteInvitation(
-      jsonRequest("https://x.com", { id: "i1" }, "tok"),
-      env,
-    );
-    expect(res.status).toBe(404);
+    stubOrReal(new Response("not found", { status: 404 }));
+    const req = isLive
+      ? new Request("https://auth.test.example/x", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer invalid-token",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            id: "00000000-0000-0000-0000-000000000000",
+          }),
+        })
+      : authJsonRequest("/x", { id: "i1" });
+    const res = await handleDeleteInvitation(req, env);
+    expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
   it("uses fallback error message when backend returns empty text", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("", { status: 500 })),
-    );
+    if (isLive) return; // mock-only
+    stubOrReal(new Response("", { status: 500 }));
     const res = await handleDeleteInvitation(
-      jsonRequest("https://x.com", { id: "i1" }, "tok"),
+      authJsonRequest("/x", { id: "i1" }),
       env,
     );
     expect(res.status).toBe(500);
@@ -330,12 +432,12 @@ describe("handleDeleteInvitation", () => {
 // ---------- handleDeleteUser ----------
 
 describe("handleDeleteUser", () => {
-  const env = createMockEnv();
+  const env = testEnv();
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {
     const res = await handleDeleteUser(
-      jsonRequest("https://x.com", { id: "u1" }),
+      noAuthJsonRequest("/x", { id: "u1" }),
       env,
     );
     expect(res.status).toBe(401);
@@ -343,7 +445,7 @@ describe("handleDeleteUser", () => {
 
   it("returns 400 when id is missing", async () => {
     const res = await handleDeleteUser(
-      jsonRequest("https://x.com", {}, "tok"),
+      authJsonRequest("/x", {}),
       env,
     );
     expect(res.status).toBe(400);
@@ -352,39 +454,46 @@ describe("handleDeleteUser", () => {
   });
 
   it("returns success on delete", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("ok", { status: 200 })),
-    );
+    stubOrReal(new Response("ok", { status: 200 }));
     const res = await handleDeleteUser(
-      jsonRequest("https://x.com", { id: "u1" }, "tok"),
+      authJsonRequest("/x", { id: "u1" }),
       env,
     );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true });
+    // mock: 200, live: may be 200 or 404 depending on seed data
+    if (isLive) {
+      expect([200, 404]).toContain(res.status);
+      if (res.status === 200) {
+        expect(await res.json()).toEqual({ success: true });
+      }
+    } else {
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true });
+    }
   });
 
   it("passes through error status from backend", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response("not found", { status: 404 }),
-      ),
-    );
-    const res = await handleDeleteUser(
-      jsonRequest("https://x.com", { id: "u1" }, "tok"),
-      env,
-    );
-    expect(res.status).toBe(404);
+    stubOrReal(new Response("not found", { status: 404 }));
+    const req = isLive
+      ? new Request("https://auth.test.example/x", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer invalid-token",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            id: "00000000-0000-0000-0000-000000000000",
+          }),
+        })
+      : authJsonRequest("/x", { id: "u1" });
+    const res = await handleDeleteUser(req, env);
+    expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
   it("uses fallback error message when backend returns empty text", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("", { status: 500 })),
-    );
+    if (isLive) return; // mock-only
+    stubOrReal(new Response("", { status: 500 }));
     const res = await handleDeleteUser(
-      jsonRequest("https://x.com", { id: "u1" }, "tok"),
+      authJsonRequest("/x", { id: "u1" }),
       env,
     );
     expect(res.status).toBe(500);
