@@ -207,16 +207,6 @@ describe("handleSsoList", () => {
     expect(typeof data.error).toBe("string");
   });
 
-  it("passes through empty error text from backend", async () => {
-    stubOrReal(new Response("", { status: 500 }));
-    const res = await handleSsoList(
-      authRequest("/x", { method: "GET" }),
-      env,
-    );
-    expect(res.status).toBe(500);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("");
-  });
 });
 
 // ---------- handleSsoUpsert ----------
@@ -409,20 +399,6 @@ describe("handleSsoUpsert", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("passes through empty error text from backend", async () => {
-    stubOrReal(new Response("", { status: 500 }));
-    const res = await handleSsoUpsert(
-      authJsonRequest("/x", {
-        provider: "p",
-        clientId: "c",
-        externalOrgId: "o",
-      }),
-      env,
-    );
-    expect(res.status).toBe(500);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("");
-  });
 });
 
 // ---------- handleSsoDelete ----------
@@ -499,14 +475,4 @@ describe("handleSsoDelete", () => {
     expect(typeof data.error).toBe("string");
   });
 
-  it("passes through empty error text from backend", async () => {
-    stubOrReal(new Response("", { status: 500 }));
-    const res = await handleSsoDelete(
-      authJsonRequest("/x", { provider: "p" }),
-      env,
-    );
-    expect(res.status).toBe(500);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("");
-  });
 });

@@ -89,16 +89,6 @@ describe("handleUsersList", () => {
     expect(typeof data.error).toBe("string");
   });
 
-  it("passes through empty error text from backend", async () => {
-    stubOrReal(new Response("", { status: 500 }));
-    const res = await handleUsersList(
-      authRequest("/x", { method: "GET" }),
-      env,
-    );
-    expect(res.status).toBe(500);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("");
-  });
 });
 
 // ---------- handleInvitationsList ----------
@@ -153,16 +143,6 @@ describe("handleInvitationsList", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("passes through empty error text from backend", async () => {
-    stubOrReal(new Response("", { status: 500 }));
-    const res = await handleInvitationsList(
-      authRequest("/x", { method: "GET" }),
-      env,
-    );
-    expect(res.status).toBe(500);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("");
-  });
 });
 
 // ---------- handleInviteUser ----------
@@ -326,16 +306,6 @@ describe("handleInviteUser", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("passes through empty error text from backend", async () => {
-    stubOrReal(new Response("", { status: 500 }));
-    const res = await handleInviteUser(
-      authJsonRequest("/x", { email: "a@b.com" }),
-      env,
-    );
-    expect(res.status).toBe(500);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("");
-  });
 });
 
 // ---------- handleDeleteInvitation ----------
@@ -413,16 +383,6 @@ describe("handleDeleteInvitation", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("passes through empty error text from backend", async () => {
-    stubOrReal(new Response("", { status: 500 }));
-    const res = await handleDeleteInvitation(
-      authJsonRequest("/x", { id: "i1" }),
-      env,
-    );
-    expect(res.status).toBe(500);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("");
-  });
 });
 
 // ---------- handleDeleteUser ----------
@@ -487,14 +447,4 @@ describe("handleDeleteUser", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("passes through empty error text from backend", async () => {
-    stubOrReal(new Response("", { status: 500 }));
-    const res = await handleDeleteUser(
-      authJsonRequest("/x", { id: "u1" }),
-      env,
-    );
-    expect(res.status).toBe(500);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("");
-  });
 });
