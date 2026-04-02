@@ -27,3 +27,11 @@ custom_domain = true
 # GOOGLE_CLIENT_ID
 # GOOGLE_CLIENT_SECRET
 # OAUTH_STATE_SECRET
+
+[env.staging]
+name = "auth-worker-staging"
+
+[env.staging.vars]
+AUTH_WORKER_ORIGIN = "https://auth-worker-staging.m-tama-ramu.workers.dev"
+ALLOWED_REDIRECT_ORIGINS = "https://alc-app-staging.m-tama-ramu.workers.dev,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev,https://dtako-admin-staging.m-tama-ramu.workers.dev,https://nuxt-ichibanboshi-staging.m-tama-ramu.workers.dev"
+ALC_API_ORIGIN = "STAGING_API_URL"
