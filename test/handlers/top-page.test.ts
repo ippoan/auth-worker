@@ -105,7 +105,7 @@ describe("handleTopPage", () => {
 
     await handleTopPage(request, env);
 
-    const apps = (renderTopPage as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const apps = (renderTopPage as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(apps).toHaveLength(1);
     expect(apps[0].url).toBe("https://app1.test.example");
   });
@@ -119,7 +119,7 @@ describe("handleTopPage", () => {
 
     await handleTopPage(request, env);
 
-    const apps = (renderTopPage as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const apps = (renderTopPage as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(apps).toHaveLength(1);
     expect(apps[0].url).toBe("https://app1.test.example");
   });
@@ -133,7 +133,7 @@ describe("handleTopPage", () => {
 
     await handleTopPage(request, env);
 
-    const apps = (renderTopPage as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const apps = (renderTopPage as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(apps).toHaveLength(0);
   });
 });

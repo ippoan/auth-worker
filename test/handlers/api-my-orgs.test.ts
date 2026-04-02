@@ -48,9 +48,9 @@ describe("handleMyOrgs", () => {
     });
     const res = await handleMyOrgs(req, env);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as { organizations: Array<{ slug: string }> };
     expect(data.organizations).toHaveLength(2);
-    expect(data.organizations[0].slug).toBe("org1");
+    expect(data.organizations[0]!.slug).toBe("org1");
   });
 
   it("returns empty array when organizations is undefined", async () => {
@@ -61,7 +61,7 @@ describe("handleMyOrgs", () => {
       headers: { Authorization: "Bearer token123" },
     });
     const res = await handleMyOrgs(req, env);
-    const data = await res.json();
+    const data = (await res.json()) as { organizations: unknown[] };
     expect(data.organizations).toEqual([]);
   });
 

@@ -72,7 +72,7 @@ describe("handleAccessRequestCreate", () => {
       env,
     );
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as { id: string; org_name: string };
     expect(data.id).toBe("r1");
     expect(data.org_name).toBe("Test Org");
   });
@@ -125,9 +125,9 @@ describe("handleAccessRequestList", () => {
       env,
     );
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as { requests: Array<{ email: string }> };
     expect(data.requests).toHaveLength(1);
-    expect(data.requests[0].email).toBe("a@b.com");
+    expect(data.requests[0]!.email).toBe("a@b.com");
   });
 
   it("returns empty array when requests is undefined", async () => {
@@ -136,7 +136,7 @@ describe("handleAccessRequestList", () => {
       jsonRequest("https://x.com", {}, "tok"),
       env,
     );
-    const data = await res.json();
+    const data = (await res.json()) as { requests: unknown[] };
     expect(data.requests).toEqual([]);
   });
 

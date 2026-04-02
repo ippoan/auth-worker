@@ -292,7 +292,7 @@ describe("handleBotConfigUpsert", () => {
     // Verify sent body (mock-only)
     if (!isLive) {
       const sentBody = JSON.parse(
-        mockFetchFn.mock.calls[0][1].body as string,
+        mockFetchFn.mock.calls[0]![1].body as string,
       );
       expect(sentBody.id).toBeNull();
       expect(sentBody.provider).toBe("lineworks");

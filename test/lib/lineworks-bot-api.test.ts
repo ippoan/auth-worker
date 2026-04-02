@@ -29,8 +29,8 @@ beforeAll(async () => {
     true,
     ["sign", "verify"],
   );
-  const exported = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
-  const b64 = btoa(String.fromCharCode(...new Uint8Array(exported)));
+  const exported = await crypto.subtle.exportKey("pkcs8", (keyPair as CryptoKeyPair).privateKey);
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(exported as ArrayBuffer)));
   testPrivateKeyPem = `-----BEGIN PRIVATE KEY-----\n${b64.match(/.{1,64}/g)!.join("\n")}\n-----END PRIVATE KEY-----`;
 });
 

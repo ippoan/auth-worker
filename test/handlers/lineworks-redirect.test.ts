@@ -52,9 +52,9 @@ describe("handleLineworksRedirect", () => {
     expect(res.status).toBe(307);
     expect(res.headers.get("Location")).toBe("https://lineworks.example.com/auth");
 
-    const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(fetchCall[0]).toContain("domain=ohishi");
-    expect(fetchCall[0]).toContain("redirect_uri=");
+    expect(fetchCall![0]).toContain("redirect_uri=");
 
     vi.stubGlobal("fetch", originalFetch);
   });
@@ -69,7 +69,7 @@ describe("handleLineworksRedirect", () => {
     const res = await handleLineworksRedirect(req, env);
     expect(res.status).toBe(307);
 
-    const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(fetchCall[0]).toContain("domain=ohishi");
 
     vi.stubGlobal("fetch", originalFetch);

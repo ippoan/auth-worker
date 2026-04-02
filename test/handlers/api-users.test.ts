@@ -236,7 +236,7 @@ describe("handleInviteUser", () => {
     // Verify sent body (mock-only)
     if (!isLive) {
       const sentBody = JSON.parse(
-        mockFetchFn.mock.calls[0][1].body as string,
+        mockFetchFn.mock.calls[0]![1].body as string,
       );
       expect(sentBody.role).toBe("admin");
     }
@@ -277,7 +277,7 @@ describe("handleInviteUser", () => {
     // Verify sent body (mock-only)
     if (!isLive) {
       const sentBody = JSON.parse(
-        mockFetchFn.mock.calls[0][1].body as string,
+        mockFetchFn.mock.calls[0]![1].body as string,
       );
       expect(sentBody.role).toBe("viewer");
     }

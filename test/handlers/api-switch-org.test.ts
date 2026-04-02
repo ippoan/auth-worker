@@ -68,7 +68,7 @@ describe("handleSwitchOrg", () => {
     });
     const res = await handleSwitchOrg(req, env);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = await res.json<{ token: string; orgSlug: string }>();
     expect(data.token).toBe(jwt);
     expect(data.orgSlug).toBe("my-org");
   });
@@ -77,7 +77,7 @@ describe("handleSwitchOrg", () => {
     const jwt = createTestJwt({ org: "org-2" });
     // Remove org_slug from payload
     const parts = jwt.split(".");
-    const payload = JSON.parse(atob(parts[1]));
+    const payload = JSON.parse(atob(parts[1]!));
     delete payload.org_slug;
     parts[1] = btoa(JSON.stringify(payload));
     const noSlugJwt = parts.join(".");
@@ -97,7 +97,7 @@ describe("handleSwitchOrg", () => {
       body: JSON.stringify({ organizationId: "org-2" }),
     });
     const res = await handleSwitchOrg(req, env);
-    const data = await res.json();
+    const data = await res.json<{ orgSlug: string }>();
     expect(data.orgSlug).toBe("");
   });
 
@@ -117,7 +117,7 @@ describe("handleSwitchOrg", () => {
       body: JSON.stringify({ organizationId: "org-2" }),
     });
     const res = await handleSwitchOrg(req, env);
-    const data = await res.json();
+    const data = await res.json<{ orgSlug: string }>();
     expect(data.orgSlug).toBe("");
   });
 
@@ -137,7 +137,7 @@ describe("handleSwitchOrg", () => {
       body: JSON.stringify({ organizationId: "org-2" }),
     });
     const res = await handleSwitchOrg(req, env);
-    const data = await res.json();
+    const data = await res.json<{ orgSlug: string }>();
     expect(data.orgSlug).toBe("");
   });
 
