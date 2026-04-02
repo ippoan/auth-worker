@@ -66,6 +66,14 @@ jobs:
       - name: Generate wrangler types
         run: npx wrangler types
 
+      - name: Sync ts-rs types from rust-alc-api
+        run: bash scripts/export-ts-bindings.sh src/types
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Type check (src + test)
+        run: npx tsc --noEmit && npx tsc -p test/tsconfig.json --noEmit
+
       - name: Start API + DB containers
         run: docker compose -f docker-compose.test.yml up -d --wait
         timeout-minutes: 5
