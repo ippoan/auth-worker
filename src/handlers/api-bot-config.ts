@@ -4,6 +4,7 @@
  */
 
 import type { Env } from "../index";
+import type { BotConfigListResponse, BotConfigResponse } from "../types/alc-api";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -38,17 +39,7 @@ export async function handleBotConfigList(
     return jsonResponse({ error: text || "Failed to list configs" }, resp.status);
   }
 
-  const data = await resp.json() as { configs: Array<{
-    id: string;
-    provider: string;
-    name: string;
-    client_id: string;
-    service_account: string;
-    bot_id: string;
-    enabled: boolean;
-    created_at: string;
-    updated_at: string;
-  }> };
+  const data = await resp.json() as BotConfigListResponse;
 
   return jsonResponse({
     configs: (data.configs || []).map((c) => ({
@@ -119,15 +110,7 @@ export async function handleBotConfigUpsert(
     return jsonResponse({ error: text || "Failed to upsert config" }, resp.status);
   }
 
-  const c = await resp.json() as {
-    id: string;
-    provider: string;
-    name: string;
-    client_id: string;
-    service_account: string;
-    bot_id: string;
-    enabled: boolean;
-  };
+  const c = await resp.json() as BotConfigResponse;
 
   return jsonResponse({
     id: c.id,

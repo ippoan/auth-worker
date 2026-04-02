@@ -4,6 +4,7 @@
  */
 
 import type { Env } from "../index";
+import type { SsoConfigListResponse, SsoConfigRow as SsoConfig } from "../types/alc-api";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -40,15 +41,7 @@ export async function handleSsoList(
     return jsonResponse({ error: text || "Failed to list configs" }, resp.status);
   }
 
-  const data = await resp.json() as { configs: Array<{
-    provider: string;
-    client_id: string;
-    external_org_id: string;
-    enabled: boolean;
-    woff_id: string | null;
-    created_at: string;
-    updated_at: string;
-  }> };
+  const data = await resp.json() as SsoConfigListResponse;
 
   return jsonResponse({
     configs: (data.configs || []).map((c) => ({
@@ -109,13 +102,7 @@ export async function handleSsoUpsert(
     return jsonResponse({ error: text || "Failed to upsert config" }, resp.status);
   }
 
-  const c = await resp.json() as {
-    provider: string;
-    client_id: string;
-    external_org_id: string;
-    enabled: boolean;
-    woff_id: string | null;
-  };
+  const c = await resp.json() as SsoConfig;
 
   return jsonResponse({
     provider: c.provider,
