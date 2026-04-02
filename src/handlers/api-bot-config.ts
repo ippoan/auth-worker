@@ -36,13 +36,13 @@ export async function handleBotConfigList(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to list configs" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   const data = await resp.json() as BotConfigListResponse;
 
   return jsonResponse({
-    configs: (data.configs || []).map((c) => ({
+    configs: data.configs.map((c) => ({
       id: c.id,
       provider: c.provider,
       name: c.name,
@@ -107,7 +107,7 @@ export async function handleBotConfigUpsert(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to upsert config" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   const c = await resp.json() as BotConfigResponse;
@@ -150,7 +150,7 @@ export async function handleBotConfigDelete(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to delete config" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   return jsonResponse({ success: true });
