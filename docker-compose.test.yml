@@ -1,0 +1,58 @@
+services:
+  test-db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: test
+    ports:
+      - "54323:5432"
+    volumes:
+      - ./test/fixtures/init_local_db.sql:/docker-entrypoint-initdb.d/01-init.sql
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  api-migrate:
+    image: ${API_IMAGE:-ghcr.io/yhonda-ohishi-alc/rust-alc-api:latest}
+    depends_on:
+      test-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:test@test-db:5432/postgres?options=-c search_path=alc_api
+    entrypoint: ["migrate"]
+    restart: "no"
+
+  db-seed:
+    image: postgres:16
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./test/fixtures/seed.sql:/seed.sql
+    entrypoint: ["sh", "-c"]
+    command:
+      - PGPASSWORD=test psql -h test-db -U postgres -f /seed.sql
+    restart: "no"
+
+  api:
+    image: ${API_IMAGE:-ghcr.io/yhonda-ohishi-alc/rust-alc-api:latest}
+    depends_on:
+      db-seed:
+        condition: service_completed_successfully
+    ports:
+      - "18081:8080"
+    environment:
+      DATABASE_URL: postgresql://postgres:test@test-db:5432/postgres?options=-c search_path=alc_api
+      JWT_SECRET: test-jwt-secret-for-integration
+      GOOGLE_CLIENT_ID: dummy
+      GOOGLE_CLIENT_SECRET: dummy
+      OAUTH_STATE_SECRET: dummy
+      STORAGE_BACKEND: r2
+      R2_BUCKET: dummy
+      R2_ACCOUNT_ID: dummy
+      R2_ACCESS_KEY: dummy
+      R2_SECRET_KEY: dummy
+      RUST_LOG: debug
