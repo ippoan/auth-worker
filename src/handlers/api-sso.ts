@@ -38,13 +38,13 @@ export async function handleSsoList(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to list configs" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   const data = await resp.json() as SsoConfigListResponse;
 
   return jsonResponse({
-    configs: (data.configs || []).map((c) => ({
+    configs: data.configs.map((c) => ({
       provider: c.provider,
       clientId: c.client_id,
       hasClientSecret: true,
@@ -99,7 +99,7 @@ export async function handleSsoUpsert(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to upsert config" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   const c = await resp.json() as SsoConfig;
@@ -141,7 +141,7 @@ export async function handleSsoDelete(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to delete config" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   return jsonResponse({ success: true });

@@ -33,7 +33,7 @@ export async function handleUsersList(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to list users" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   return jsonResponse(await resp.json());
@@ -52,7 +52,7 @@ export async function handleInvitationsList(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to list invitations" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   return jsonResponse(await resp.json());
@@ -81,7 +81,7 @@ export async function handleInviteUser(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to invite user" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   return jsonResponse(await resp.json());
@@ -106,7 +106,7 @@ export async function handleDeleteInvitation(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to delete invitation" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   return jsonResponse({ success: true });
@@ -131,7 +131,7 @@ export async function handleDeleteUser(
 
   if (!resp.ok) {
     const text = await resp.text();
-    return jsonResponse({ error: text || "Failed to delete user" }, resp.status);
+    return jsonResponse({ error: text }, resp.status);
   }
 
   return jsonResponse({ success: true });

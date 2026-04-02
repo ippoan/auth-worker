@@ -128,18 +128,6 @@ describe("handleSsoList", () => {
     expect(Array.isArray(data.configs)).toBe(true);
   });
 
-  it("handles undefined configs (fallback to empty)", async () => {
-    if (isLive) return; // mock-only: real backend always returns { configs: [...] }
-    stubOrReal(
-      new Response(JSON.stringify({}), { status: 200 }),
-    );
-    const res = await handleSsoList(
-      authRequest("/x", { method: "GET" }),
-      env,
-    );
-    const data = (await res.json()) as { configs: unknown[] };
-    expect(data.configs).toEqual([]);
-  });
 
   it("handles null woff_id as empty string", async () => {
     // Setup: upsert without woffId
@@ -219,8 +207,7 @@ describe("handleSsoList", () => {
     expect(typeof data.error).toBe("string");
   });
 
-  it("uses fallback error message when backend returns empty text", async () => {
-    if (isLive) return; // mock-only: cannot force empty text from backend
+  it("passes through empty error text from backend", async () => {
     stubOrReal(new Response("", { status: 500 }));
     const res = await handleSsoList(
       authRequest("/x", { method: "GET" }),
@@ -228,7 +215,7 @@ describe("handleSsoList", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("Failed to list configs");
+    expect(data.error).toBe("");
   });
 });
 
@@ -422,8 +409,7 @@ describe("handleSsoUpsert", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("uses fallback error message when backend returns empty text", async () => {
-    if (isLive) return; // mock-only
+  it("passes through empty error text from backend", async () => {
     stubOrReal(new Response("", { status: 500 }));
     const res = await handleSsoUpsert(
       authJsonRequest("/x", {
@@ -435,7 +421,7 @@ describe("handleSsoUpsert", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("Failed to upsert config");
+    expect(data.error).toBe("");
   });
 });
 
@@ -513,8 +499,7 @@ describe("handleSsoDelete", () => {
     expect(typeof data.error).toBe("string");
   });
 
-  it("uses fallback error message when backend returns empty text", async () => {
-    if (isLive) return; // mock-only
+  it("passes through empty error text from backend", async () => {
     stubOrReal(new Response("", { status: 500 }));
     const res = await handleSsoDelete(
       authJsonRequest("/x", { provider: "p" }),
@@ -522,6 +507,6 @@ describe("handleSsoDelete", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("Failed to delete config");
+    expect(data.error).toBe("");
   });
 });

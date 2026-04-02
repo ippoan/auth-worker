@@ -89,8 +89,7 @@ describe("handleUsersList", () => {
     expect(typeof data.error).toBe("string");
   });
 
-  it("uses fallback error message when backend returns empty text", async () => {
-    if (isLive) return; // mock-only
+  it("passes through empty error text from backend", async () => {
     stubOrReal(new Response("", { status: 500 }));
     const res = await handleUsersList(
       authRequest("/x", { method: "GET" }),
@@ -98,7 +97,7 @@ describe("handleUsersList", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("Failed to list users");
+    expect(data.error).toBe("");
   });
 });
 
@@ -154,8 +153,7 @@ describe("handleInvitationsList", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("uses fallback error message when backend returns empty text", async () => {
-    if (isLive) return; // mock-only
+  it("passes through empty error text from backend", async () => {
     stubOrReal(new Response("", { status: 500 }));
     const res = await handleInvitationsList(
       authRequest("/x", { method: "GET" }),
@@ -163,7 +161,7 @@ describe("handleInvitationsList", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("Failed to list invitations");
+    expect(data.error).toBe("");
   });
 });
 
@@ -328,8 +326,7 @@ describe("handleInviteUser", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("uses fallback error message when backend returns empty text", async () => {
-    if (isLive) return; // mock-only
+  it("passes through empty error text from backend", async () => {
     stubOrReal(new Response("", { status: 500 }));
     const res = await handleInviteUser(
       authJsonRequest("/x", { email: "a@b.com" }),
@@ -337,7 +334,7 @@ describe("handleInviteUser", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("Failed to invite user");
+    expect(data.error).toBe("");
   });
 });
 
@@ -416,8 +413,7 @@ describe("handleDeleteInvitation", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("uses fallback error message when backend returns empty text", async () => {
-    if (isLive) return; // mock-only
+  it("passes through empty error text from backend", async () => {
     stubOrReal(new Response("", { status: 500 }));
     const res = await handleDeleteInvitation(
       authJsonRequest("/x", { id: "i1" }),
@@ -425,7 +421,7 @@ describe("handleDeleteInvitation", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("Failed to delete invitation");
+    expect(data.error).toBe("");
   });
 });
 
@@ -491,8 +487,7 @@ describe("handleDeleteUser", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("uses fallback error message when backend returns empty text", async () => {
-    if (isLive) return; // mock-only
+  it("passes through empty error text from backend", async () => {
     stubOrReal(new Response("", { status: 500 }));
     const res = await handleDeleteUser(
       authJsonRequest("/x", { id: "u1" }),
@@ -500,6 +495,6 @@ describe("handleDeleteUser", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("Failed to delete user");
+    expect(data.error).toBe("");
   });
 });
