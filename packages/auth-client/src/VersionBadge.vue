@@ -12,19 +12,24 @@
 import { ref, computed, onMounted } from 'vue'
 
 const props = defineProps<{
-  apiBase: string
+  apiBase?: string
+  healthUrl?: string
   frontendVersion?: string
 }>()
 
-const isStaging = computed(() => props.apiBase.includes('staging'))
+const isStaging = computed(() =>
+  (props.apiBase || '').includes('staging') || (props.healthUrl || '').includes('staging')
+)
 
 const backendVersion = ref('')
 const backendSha = ref('')
 const backendRef = ref('')
 
 onMounted(async () => {
+  const url = props.healthUrl || (props.apiBase ? `${props.apiBase}/api/health` : '')
+  if (!url) return
   try {
-    const res = await fetch(`${props.apiBase}/api/health`)
+    const res = await fetch(url)
     const h = await res.json()
     backendVersion.value = h.version || ''
     backendSha.value = h.git_sha || ''

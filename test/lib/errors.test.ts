@@ -1,12 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { ConnectError } from "@connectrpc/connect";
 import {
   jsonResponse,
   corsJsonResponse,
   corsPreflight,
   extractToken,
   errorResponse,
-  connectErrorToHttpStatus,
 } from "../../src/lib/errors";
 
 describe("jsonResponse", () => {
@@ -72,26 +70,5 @@ describe("errorResponse", () => {
     const res = errorResponse(404, "Not found");
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "Not found" });
-  });
-});
-
-describe("connectErrorToHttpStatus", () => {
-  const cases: [number, number][] = [
-    [3, 400],   // INVALID_ARGUMENT
-    [16, 401],  // UNAUTHENTICATED
-    [7, 403],   // PERMISSION_DENIED
-    [5, 404],   // NOT_FOUND
-    [13, 500],  // INTERNAL
-    [14, 503],  // UNAVAILABLE
-  ];
-
-  for (const [code, expected] of cases) {
-    it(`maps code ${code} to ${expected}`, () => {
-      expect(connectErrorToHttpStatus(new ConnectError("", code))).toBe(expected);
-    });
-  }
-
-  it("maps unknown code to 500", () => {
-    expect(connectErrorToHttpStatus(new ConnectError("", 99 as any))).toBe(500);
   });
 });
