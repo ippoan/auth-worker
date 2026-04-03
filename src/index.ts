@@ -5,6 +5,7 @@ import {
   handleDeleteInvitation, handleDeleteUser,
 } from "./handlers/api-users";
 import { handleHealthProxy } from "./handlers/health";
+import { handleLoginPage } from "./handlers/login-page";
 
 export interface Env {
   GOOGLE_CLIENT_ID: string;
@@ -39,6 +40,8 @@ export default {
         switch (url.pathname) {
           case "/api/health":
             return await handleHealthProxy(env);
+          case "/login":
+            return await handleLoginPage(request, env);
           default:
             return errorResponse(404, "Not found");
         }
