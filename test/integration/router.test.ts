@@ -23,6 +23,9 @@ vi.mock("../../src/handlers/health", () => ({
     headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
   })),
 }));
+vi.mock("../../src/handlers/login-page", () => ({
+  handleLoginPage: vi.fn(() => new Response("login-page")),
+}));
 
 import worker from "../../src/index";
 
@@ -48,6 +51,12 @@ describe("Router (index.ts)", () => {
     const body = await res.json() as { status: string };
     expect(body.status).toBe("ok");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+
+  it("GET /login → login page", async () => {
+    const req = new Request("https://auth.test.example/login?redirect_uri=https%3A%2F%2Fapp.test.example");
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("login-page");
   });
 
   // --- POST routes ---
