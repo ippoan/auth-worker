@@ -7,7 +7,17 @@ on:
     branches: [main]
 
 jobs:
+  pr-limit:
+    name: PR Limit Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ippoan/alc-app/.github/actions/pr-limit@main
+
   test:
+    needs: [pr-limit]
+    if: always() && (needs.pr-limit.result == 'success' || needs.pr-limit.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
