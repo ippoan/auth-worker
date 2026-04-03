@@ -94,7 +94,7 @@ describe("handleWoffAuth", () => {
       env,
     );
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = await res.json<{ token: string; orgId: string }>();
     expect(data.token).toBe(jwt);
     expect(data.orgId).toBe("org-1");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
@@ -114,7 +114,7 @@ describe("handleWoffAuth", () => {
       }),
       env,
     );
-    const data = await res.json();
+    const data = await res.json<{ orgId: string }>();
     expect(data.orgId).toBe("");
   });
 
@@ -129,7 +129,7 @@ describe("handleWoffAuth", () => {
       }),
       env,
     );
-    const data = await res.json();
+    const data = await res.json<{ orgId: string }>();
     expect(data.orgId).toBe("");
   });
 
@@ -144,7 +144,7 @@ describe("handleWoffAuth", () => {
       }),
       env,
     );
-    const data = await res.json();
+    const data = await res.json<{ orgId: string }>();
     expect(data.orgId).toBe("");
   });
 
@@ -198,7 +198,7 @@ describe("handleWoffConfig", () => {
     const req = new Request("https://auth.test.example/auth/woff-config?domain=ohishi");
     const res = await handleWoffConfig(req, env);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = await res.json<{ woffId: string }>();
     expect(data.woffId).toBe("woff-123");
   });
 

@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+interface TransportOpts {
+  baseUrl: string;
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  interceptors: Array<(next: (req: unknown) => Promise<unknown>) => (req: unknown) => Promise<unknown>>;
+}
+
 const { mockCreateGrpcWebTransport } = vi.hoisted(() => ({
   mockCreateGrpcWebTransport: vi.fn(
-    (opts: { baseUrl: string; fetch: typeof globalThis.fetch; interceptors: unknown[] }) => {
+    (opts: TransportOpts) => {
       return { _opts: opts } as unknown;
     },
   ),
@@ -28,7 +34,7 @@ describe("transport", () => {
     it("calls createTransportWithAuth without token", () => {
       createTransport(mockGrpcProxy);
       expect(mockCreateGrpcWebTransport).toHaveBeenCalledOnce();
-      const opts = mockCreateGrpcWebTransport.mock.calls[0][0];
+      const opts = mockCreateGrpcWebTransport.mock.calls[0]![0]!;
       expect(opts.baseUrl).toBe("https://cf-grpc-proxy");
       expect(opts.interceptors).toHaveLength(0);
     });
@@ -39,17 +45,17 @@ describe("transport", () => {
       mockProxyFetch.mockResolvedValue(new Response("ok"));
 
       createTransportWithAuth(mockGrpcProxy);
-      const opts = mockCreateGrpcWebTransport.mock.calls[0][0];
+      const opts = mockCreateGrpcWebTransport.mock.calls[0]![0]!;
       const wrappedFetch = opts.fetch;
 
-      await wrappedFetch("https://example.com", { redirect: "error" as RequestRedirect });
+      await wrappedFetch("https://example.com", { redirect: "error" as string });
 
       expect(mockProxyFetch).toHaveBeenCalledWith(
         "https://example.com",
         expect.objectContaining({ redirect: "manual" }),
       );
       // Ensure "error" key is removed
-      const calledInit = mockProxyFetch.mock.calls[0][1];
+      const calledInit = mockProxyFetch.mock.calls[0]![1]!;
       expect(calledInit.redirect).toBe("manual");
     });
 
@@ -57,7 +63,7 @@ describe("transport", () => {
       mockProxyFetch.mockResolvedValue(new Response("ok"));
 
       createTransportWithAuth(mockGrpcProxy);
-      const opts = mockCreateGrpcWebTransport.mock.calls[0][0];
+      const opts = mockCreateGrpcWebTransport.mock.calls[0]![0]!;
       const wrappedFetch = opts.fetch;
 
       await wrappedFetch("https://example.com", { method: "POST" });
@@ -69,7 +75,7 @@ describe("transport", () => {
       mockProxyFetch.mockResolvedValue(new Response("ok"));
 
       createTransportWithAuth(mockGrpcProxy);
-      const opts = mockCreateGrpcWebTransport.mock.calls[0][0];
+      const opts = mockCreateGrpcWebTransport.mock.calls[0]![0]!;
       const wrappedFetch = opts.fetch;
 
       await wrappedFetch("https://example.com", undefined);
@@ -79,11 +85,11 @@ describe("transport", () => {
 
     it("adds token interceptor when token is provided", async () => {
       createTransportWithAuth(mockGrpcProxy, "my-jwt-token");
-      const opts = mockCreateGrpcWebTransport.mock.calls[0][0];
+      const opts = mockCreateGrpcWebTransport.mock.calls[0]![0]!;
       expect(opts.interceptors).toHaveLength(1);
 
       // Execute the interceptor to verify it sets the header
-      const interceptor = opts.interceptors[0];
+      const interceptor = opts.interceptors[0]!;
       const mockHeader = new Headers();
       const mockReq = { header: mockHeader };
       const mockNext = vi.fn().mockResolvedValue("response");
@@ -97,13 +103,13 @@ describe("transport", () => {
 
     it("does not add interceptor when token is undefined", () => {
       createTransportWithAuth(mockGrpcProxy, undefined);
-      const opts = mockCreateGrpcWebTransport.mock.calls[0][0];
+      const opts = mockCreateGrpcWebTransport.mock.calls[0]![0]!;
       expect(opts.interceptors).toHaveLength(0);
     });
 
     it("does not add interceptor when token is empty string", () => {
       createTransportWithAuth(mockGrpcProxy, "");
-      const opts = mockCreateGrpcWebTransport.mock.calls[0][0];
+      const opts = mockCreateGrpcWebTransport.mock.calls[0]![0]!;
       expect(opts.interceptors).toHaveLength(0);
     });
   });

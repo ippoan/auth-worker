@@ -42,7 +42,7 @@ export interface OrgInfo {
 /** JWT payload から username と provider を安全に取り出す */
 function decodeJwtClaims(token: string): { username?: string; provider?: string; orgSlug?: string } {
   try {
-    const payload = JSON.parse(atob(token.split('.')[1]))
+    const payload = JSON.parse(atob(token.split('.')[1] ?? ''))
     return {
       username: payload.username || payload.email || undefined,
       provider: payload.provider || undefined,
@@ -157,7 +157,7 @@ export const useAuth = () => {
 
     // JWT から claims を取得
     let payload: Record<string, unknown> = {}
-    try { payload = JSON.parse(atob(token.split('.')[1])) } catch { /* ignore */ }
+    try { payload = JSON.parse(atob(token.split('.')[1] ?? '')) } catch { /* ignore */ }
 
     // org_id: fragment パラメータ or JWT の tenant_id/org
     const orgId = params.get('org_id') || (payload.tenant_id as string) || (payload.org as string) || ''
@@ -204,7 +204,7 @@ export const useAuth = () => {
     if (!tokenCookie) return false
     const token = tokenCookie.split('=').slice(1).join('=')
     try {
-      const payload = JSON.parse(atob(token.split('.')[1]))
+      const payload = JSON.parse(atob(token.split('.')[1] ?? ''))
       const now = Math.floor(Date.now() / 1000)
       if (payload.exp <= now) return false
       const state: AuthState = {

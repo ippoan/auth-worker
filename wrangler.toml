@@ -1,6 +1,7 @@
 name = "auth-worker"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
+account_id = "24b45709d060d957340180e995f0d373"
 
 [[services]]
 binding = "GRPC_PROXY"
@@ -27,3 +28,12 @@ custom_domain = true
 # GOOGLE_CLIENT_ID
 # GOOGLE_CLIENT_SECRET
 # OAUTH_STATE_SECRET
+
+[env.staging]
+name = "auth-worker-staging"
+routes = []
+
+[env.staging.vars]
+AUTH_WORKER_ORIGIN = "https://auth-worker-staging.m-tama-ramu.workers.dev"
+ALLOWED_REDIRECT_ORIGINS = "https://alc-app-staging.m-tama-ramu.workers.dev,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev,https://dtako-admin-staging.m-tama-ramu.workers.dev,https://nuxt-ichibanboshi-staging.m-tama-ramu.workers.dev"
+ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"

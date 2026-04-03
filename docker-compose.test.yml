@@ -16,7 +16,7 @@ services:
       retries: 10
 
   api-migrate:
-    image: ${API_IMAGE:-ghcr.io/yhonda-ohishi-alc/rust-alc-api:latest}
+    image: ${API_IMAGE:-ghcr.io/ippoan/rust-alc-api:latest}
     depends_on:
       test-db:
         condition: service_healthy
@@ -38,7 +38,7 @@ services:
     restart: "no"
 
   api:
-    image: ${API_IMAGE:-ghcr.io/yhonda-ohishi-alc/rust-alc-api:latest}
+    image: ${API_IMAGE:-ghcr.io/ippoan/rust-alc-api:latest}
     depends_on:
       db-seed:
         condition: service_completed_successfully

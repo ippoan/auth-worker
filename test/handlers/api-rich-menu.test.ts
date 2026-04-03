@@ -134,7 +134,7 @@ describe("handleRichMenuList", () => {
       env,
     );
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as { richmenus: unknown[]; defaultRichmenuId: string; imageStatus: Record<string, boolean> };
     expect(data.richmenus).toHaveLength(2);
     expect(data.defaultRichmenuId).toBe("rm1");
     expect(data.imageStatus).toEqual({ rm1: true, rm2: false });
@@ -149,7 +149,7 @@ describe("handleRichMenuList", () => {
       jsonRequest("https://x.com", { botConfigId: "bc1" }, "tok"),
       env,
     );
-    const data = await res.json();
+    const data = await res.json<{ defaultRichmenuId: string | null; imageStatus: Record<string, boolean> }>();
     expect(data.defaultRichmenuId).toBeNull();
     expect(data.imageStatus).toEqual({});
   });
@@ -164,7 +164,7 @@ describe("handleRichMenuList", () => {
       jsonRequest("https://x.com", { botConfigId: "bc1" }, "tok"),
       env,
     );
-    const data = await res.json();
+    const data = await res.json<{ imageStatus: Record<string, boolean> }>();
     expect(data.imageStatus).toEqual({ rm1: false });
   });
 
@@ -308,7 +308,7 @@ describe("handleRichMenuCreate", () => {
       env,
     );
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = await res.json<{ richmenuId: string }>();
     expect(data.richmenuId).toBe("rm1");
   });
 

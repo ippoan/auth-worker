@@ -325,7 +325,7 @@ describe("handleSsoUpsert", () => {
     // Verify sent body (mock-only)
     if (!isLive) {
       const sentBody = JSON.parse(
-        mockFetchFn.mock.calls[0][1].body as string,
+        mockFetchFn.mock.calls[0]![1].body as string,
       );
       expect(sentBody.woff_id).toBeNull();
       expect(sentBody.enabled).toBe(true);
