@@ -2,7 +2,6 @@ import { describe, it, expect, afterAll } from "vitest";
 import {
   stubOrReal,
   testEnv,
-  noAuthRequest,
   restoreFetch,
   waitIfLive,
 } from "../helpers/stub-or-real";
@@ -21,7 +20,7 @@ describe("handleHealthProxy", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
-    const body = await res.json();
+    const body = await res.json() as { status: string };
     expect(body.status).toBe("ok");
   });
 
