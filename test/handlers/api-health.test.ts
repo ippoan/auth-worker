@@ -25,6 +25,29 @@ describe("handleHealthProxy", () => {
     expect(body.auth_worker_version).toBeTruthy();
   });
 
+  it("returns auth_worker_version even when backend returns non-JSON", async () => {
+    stubOrReal(new Response("not json", { status: 500 }));
+
+    const env = testEnv();
+    const res = await handleHealthProxy(env);
+
+    expect(res.status).toBe(500);
+    const body = await res.json() as { auth_worker_version: string };
+    expect(body.auth_worker_version).toBeTruthy();
+  });
+
+  it("falls back to 'dev' when VERSION is empty", async () => {
+    const mockHealth = { status: "ok" };
+    stubOrReal(new Response(JSON.stringify(mockHealth), { status: 200 }));
+
+    const env = testEnv();
+    env.VERSION = "";
+    const res = await handleHealthProxy(env);
+
+    const body = await res.json() as { auth_worker_version: string };
+    expect(body.auth_worker_version).toBe("dev");
+  });
+
   it("passes through backend error status", async () => {
     stubOrReal(new Response("error", { status: 500 }));
 
