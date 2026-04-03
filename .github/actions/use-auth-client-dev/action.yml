@@ -1,0 +1,20 @@
+name: 'Use auth-client dev'
+description: 'Install @ippoan/auth-client@dev for PR testing'
+inputs:
+  working-directory:
+    description: 'npm project directory'
+    required: false
+    default: '.'
+  github-token:
+    description: 'GitHub token for packages read'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Install auth-client@dev
+      if: github.event_name == 'pull_request'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: npm install @ippoan/auth-client@dev
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.github-token }}
