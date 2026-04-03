@@ -28,10 +28,11 @@ describe("handleHealthProxy", () => {
   it("returns auth_worker_version even when backend returns non-JSON", async () => {
     stubOrReal(new Response("not json", { status: 500 }));
 
+    // live: 存在しないパスで非 JSON レスポンスを取得
     const env = testEnv();
+    env.ALC_API_ORIGIN = `${env.ALC_API_ORIGIN}/nonexistent-html`;
     const res = await handleHealthProxy(env);
 
-    expect(res.status).toBe(500);
     const body = await res.json() as { auth_worker_version: string };
     expect(body.auth_worker_version).toBeTruthy();
   });
@@ -40,6 +41,7 @@ describe("handleHealthProxy", () => {
     const mockHealth = { status: "ok" };
     stubOrReal(new Response(JSON.stringify(mockHealth), { status: 200 }));
 
+    // live: 実 API に対して VERSION="" で呼ぶ
     const env = testEnv();
     env.VERSION = "";
     const res = await handleHealthProxy(env);
