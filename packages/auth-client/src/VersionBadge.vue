@@ -41,9 +41,7 @@ onMounted(async () => {
 
 const label = computed(() => {
   const fe = props.frontendVersion || 'dev'
-  const be = backendSha.value && backendSha.value !== 'dev'
-    ? backendSha.value
-    : backendVersion.value || '...'
+  const be = backendVersion.value || backendSha.value || '...'
   const aw = authWorkerVersion.value
   return aw ? `FE:${fe} / BE:${be} / AW:${aw}` : `FE:${fe} / BE:${be}`
 })
