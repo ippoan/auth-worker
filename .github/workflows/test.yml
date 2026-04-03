@@ -126,7 +126,7 @@ jobs:
       - name: Deploy to Cloudflare Workers (staging)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler deploy --env staging
+        run: npx wrangler deploy --env staging --var VERSION:${{ github.sha }}
 
   deploy-release:
     name: Deploy Release
@@ -150,4 +150,4 @@ jobs:
       - name: Deploy to Cloudflare Workers (release)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler deploy
+        run: npx wrangler deploy --var VERSION:${{ github.ref_name }}
