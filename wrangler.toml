@@ -7,6 +7,7 @@ account_id = "24b45709d060d957340180e995f0d373"
 AUTH_WORKER_ORIGIN = "https://auth.mtamaramu.com"
 ALLOWED_REDIRECT_ORIGINS = "https://nuxt-pwa-carins.mtamaramu.com,https://ohishi2.mtamaramu.com,https://items.mtamaramu.com,https://auth.mtamaramu.com,https://auth.ippoan.org,https://dtako-admin.m-tama-ramu.workers.dev,https://alc-app.m-tama-ramu.workers.dev"
 ALC_API_ORIGIN = "https://alc-api.ippoan.org"
+VERSION = "0.2.0"
 
 [observability]
 enabled = true
@@ -34,3 +35,4 @@ routes = []
 AUTH_WORKER_ORIGIN = "https://auth-worker-staging.m-tama-ramu.workers.dev"
 ALLOWED_REDIRECT_ORIGINS = "https://alc-app-staging.m-tama-ramu.workers.dev,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev,https://dtako-admin-staging.m-tama-ramu.workers.dev,https://nuxt-ichibanboshi-staging.m-tama-ramu.workers.dev"
 ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
+VERSION = "staging"

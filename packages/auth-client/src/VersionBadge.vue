@@ -24,6 +24,7 @@ const isStaging = computed(() =>
 const backendVersion = ref('')
 const backendSha = ref('')
 const backendRef = ref('')
+const authWorkerVersion = ref('')
 
 onMounted(async () => {
   const url = props.healthUrl || (props.apiBase ? `${props.apiBase}/api/health` : '')
@@ -34,6 +35,7 @@ onMounted(async () => {
     backendVersion.value = h.version || ''
     backendSha.value = h.git_sha || ''
     backendRef.value = h.git_ref || ''
+    authWorkerVersion.value = h.auth_worker_version || ''
   } catch { /* ignore */ }
 })
 
@@ -42,7 +44,8 @@ const label = computed(() => {
   const be = backendSha.value && backendSha.value !== 'dev'
     ? backendSha.value
     : backendVersion.value || '...'
-  return `FE:${fe} / BE:${be}`
+  const aw = authWorkerVersion.value
+  return aw ? `FE:${fe} / BE:${be} / AW:${aw}` : `FE:${fe} / BE:${be}`
 })
 
 const tooltip = computed(() => {
@@ -50,6 +53,7 @@ const tooltip = computed(() => {
   if (backendVersion.value) parts.push(`Backend: ${backendVersion.value}`)
   if (backendSha.value) parts.push(`SHA: ${backendSha.value}`)
   if (backendRef.value) parts.push(`Ref: ${backendRef.value}`)
+  if (authWorkerVersion.value) parts.push(`Auth Worker: ${authWorkerVersion.value}`)
   return parts.join('\n')
 })
 </script>

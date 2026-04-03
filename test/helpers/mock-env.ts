@@ -9,6 +9,7 @@ export function createMockEnv(overrides: Partial<Env> = {}): Env {
     ALLOWED_REDIRECT_ORIGINS:
       "https://app1.test.example,https://app2.test.example,https://auth.test.example",
     ALC_API_ORIGIN: "https://alc-api.test.example",
+    VERSION: "test",
     ...overrides,
   };
 }

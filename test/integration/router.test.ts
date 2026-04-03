@@ -33,6 +33,7 @@ const env = {
   AUTH_WORKER_ORIGIN: "https://auth.test.example",
   ALLOWED_REDIRECT_ORIGINS: "https://app.test.example",
   ALC_API_ORIGIN: "https://alc-api.test.example",
+  VERSION: "test",
 };
 
 describe("Router (index.ts)", () => {

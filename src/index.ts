@@ -13,6 +13,7 @@ export interface Env {
   AUTH_WORKER_ORIGIN: string;
   ALLOWED_REDIRECT_ORIGINS: string;
   ALC_API_ORIGIN: string;
+  VERSION: string;
 }
 
 function errorResponse(status: number, message: string): Response {
