@@ -105,8 +105,8 @@ jobs:
 
   deploy-staging:
     name: Deploy Staging
-    if: always() && github.event_name == 'pull_request' && needs.test.result == 'success'
-    needs: [test]
+    if: always() && github.event_name == 'pull_request' && needs.test.result == 'success' && needs.integration-test.result == 'success'
+    needs: [test, integration-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -129,8 +129,8 @@ jobs:
 
   deploy-release:
     name: Deploy Release
-    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.test.result == 'success'
-    needs: [test]
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.test.result == 'success' && needs.integration-test.result == 'success'
+    needs: [test, integration-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

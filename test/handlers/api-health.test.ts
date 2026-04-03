@@ -27,9 +27,11 @@ describe("handleHealthProxy", () => {
   it("passes through backend error status", async () => {
     stubOrReal(new Response("error", { status: 500 }));
 
+    // live: API の存在しないパスに向けて 404 を取得
     const env = testEnv();
+    env.ALC_API_ORIGIN = `${env.ALC_API_ORIGIN}/nonexistent`;
     const res = await handleHealthProxy(env);
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBeGreaterThanOrEqual(400);
   });
 });
