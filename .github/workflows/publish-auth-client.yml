@@ -26,7 +26,7 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://npm.pkg.github.com'
-          scope: '@yhonda-ohishi-pub-dev'
+          scope: '@ippoan'
 
       - name: Set dev version
         working-directory: packages/auth-client
@@ -40,7 +40,7 @@ jobs:
       - name: Configure npm auth
         working-directory: packages/auth-client
         run: |
-          echo "@yhonda-ohishi-pub-dev:registry=https://npm.pkg.github.com" > .npmrc
+          echo "@ippoan:registry=https://npm.pkg.github.com" > .npmrc
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
 
       - name: Publish dev
@@ -55,7 +55,7 @@ jobs:
               `📦 auth-client \`${process.env.VERSION}\` published!`,
               '',
               '```bash',
-              'npm install @yhonda-ohishi-pub-dev/auth-client@dev',
+              'npm install @ippoan/auth-client@dev',
               '```',
               '',
               `Release version (after merge): \`0.1.${{ github.event.number }}\``
@@ -82,7 +82,7 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://npm.pkg.github.com'
-          scope: '@yhonda-ohishi-pub-dev'
+          scope: '@ippoan'
 
       - name: Get PR number from merge commit
         run: |
@@ -104,7 +104,7 @@ jobs:
       - name: Configure npm auth
         working-directory: packages/auth-client
         run: |
-          echo "@yhonda-ohishi-pub-dev:registry=https://npm.pkg.github.com" > .npmrc
+          echo "@ippoan:registry=https://npm.pkg.github.com" > .npmrc
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
 
       - name: Publish release

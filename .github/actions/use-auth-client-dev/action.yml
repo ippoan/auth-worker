@@ -1,5 +1,5 @@
 name: 'Use auth-client dev'
-description: 'Install @yhonda-ohishi-pub-dev/auth-client@dev for PR testing'
+description: 'Install @ippoan/auth-client@dev for PR testing'
 inputs:
   working-directory:
     description: 'npm project directory'
@@ -15,6 +15,6 @@ runs:
       if: github.event_name == 'pull_request'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: npm install @yhonda-ohishi-pub-dev/auth-client@dev
+      run: npm install @ippoan/auth-client@dev
       env:
         NODE_AUTH_TOKEN: ${{ inputs.github-token }}
