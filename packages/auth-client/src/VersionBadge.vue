@@ -1,0 +1,50 @@
+<template>
+  <div
+    class="fixed bottom-0 right-0 text-xs px-2 py-0.5 rounded-tl opacity-60 hover:opacity-100 transition-opacity z-40"
+    :class="isStaging ? 'bg-yellow-500 text-yellow-900' : 'bg-gray-700 text-gray-300'"
+    :title="tooltip"
+  >
+    <span>{{ label }}</span>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+
+const props = defineProps<{
+  apiBase: string
+  frontendVersion?: string
+}>()
+
+const isStaging = computed(() => props.apiBase.includes('staging'))
+
+const backendVersion = ref('')
+const backendSha = ref('')
+const backendRef = ref('')
+
+onMounted(async () => {
+  try {
+    const res = await fetch(`${props.apiBase}/api/health`)
+    const h = await res.json()
+    backendVersion.value = h.version || ''
+    backendSha.value = h.git_sha || ''
+    backendRef.value = h.git_ref || ''
+  } catch { /* ignore */ }
+})
+
+const label = computed(() => {
+  const fe = props.frontendVersion || 'dev'
+  const be = backendSha.value && backendSha.value !== 'dev'
+    ? backendSha.value
+    : backendVersion.value || '...'
+  return `FE:${fe} / BE:${be}`
+})
+
+const tooltip = computed(() => {
+  const parts = [`Frontend: ${props.frontendVersion || 'dev'}`]
+  if (backendVersion.value) parts.push(`Backend: ${backendVersion.value}`)
+  if (backendSha.value) parts.push(`SHA: ${backendSha.value}`)
+  if (backendRef.value) parts.push(`Ref: ${backendRef.value}`)
+  return parts.join('\n')
+})
+</script>
