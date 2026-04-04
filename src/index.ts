@@ -6,6 +6,7 @@ import {
 } from "./handlers/api-users";
 import { handleHealthProxy } from "./handlers/health";
 import { handleLoginPage } from "./handlers/login-page";
+import { handleTopPage } from "./handlers/top-page";
 
 export interface Env {
   GOOGLE_CLIENT_ID: string;
@@ -42,6 +43,8 @@ export default {
             return await handleHealthProxy(env);
           case "/login":
             return await handleLoginPage(request, env);
+          case "/top":
+            return await handleTopPage(request, env);
           default:
             return errorResponse(404, "Not found");
         }

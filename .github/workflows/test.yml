@@ -8,7 +8,8 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
   packages: read
 
 jobs:

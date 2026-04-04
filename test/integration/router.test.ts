@@ -26,6 +26,9 @@ vi.mock("../../src/handlers/health", () => ({
 vi.mock("../../src/handlers/login-page", () => ({
   handleLoginPage: vi.fn(() => new Response("login-page")),
 }));
+vi.mock("../../src/handlers/top-page", () => ({
+  handleTopPage: vi.fn(() => new Response("top-page")),
+}));
 
 import worker from "../../src/index";
 
@@ -51,6 +54,12 @@ describe("Router (index.ts)", () => {
     const body = await res.json() as { status: string };
     expect(body.status).toBe("ok");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+
+  it("GET /top → top page", async () => {
+    const req = new Request("https://auth.test.example/top");
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("top-page");
   });
 
   it("GET /login → login page", async () => {
