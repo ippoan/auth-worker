@@ -1,0 +1,17 @@
+{
+  "name": "@ippoan/test-utils",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "bin": {
+    "check-coverage-100": "./bin/check-coverage-100.mjs"
+  },
+  "files": [
+    "src",
+    "bin"
+  ],
+  "peerDependencies": {
+    "vitest": ">=2.0.0"
+  }
+}
