@@ -181,15 +181,7 @@ export default {
 
       // CORS preflight
       if (request.method === "OPTIONS") {
-        switch (url.pathname) {
-          case "/auth/woff":
-          case "/auth/woff-config":
-          case "/api/switch-org":
-          case "/api/my-orgs":
-            return corsPreflight();
-          default:
-            return corsPreflight();
-        }
+        return corsPreflight();
       }
 
       return errorResponse(405, "Method not allowed");
