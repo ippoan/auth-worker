@@ -26,8 +26,72 @@ vi.mock("../../src/handlers/health", () => ({
 vi.mock("../../src/handlers/login-page", () => ({
   handleLoginPage: vi.fn(() => new Response("login-page")),
 }));
+vi.mock("../../src/handlers/login-api", () => ({
+  handleAuthLogin: vi.fn(() => new Response("auth-login")),
+}));
 vi.mock("../../src/handlers/top-page", () => ({
   handleTopPage: vi.fn(() => new Response("top-page")),
+}));
+vi.mock("../../src/handlers/google-redirect", () => ({
+  handleGoogleRedirect: vi.fn(() => new Response("google-redirect")),
+}));
+vi.mock("../../src/handlers/google-callback", () => ({
+  handleGoogleCallback: vi.fn(() => new Response("google-callback")),
+}));
+vi.mock("../../src/handlers/lineworks-redirect", () => ({
+  handleLineworksRedirect: vi.fn(() => new Response("lw-redirect")),
+}));
+vi.mock("../../src/handlers/lineworks-callback", () => ({
+  handleLineworksCallback: vi.fn(() => new Response("lw-callback")),
+}));
+vi.mock("../../src/handlers/woff-auth", () => ({
+  handleWoffAuth: vi.fn(() => new Response("woff-auth")),
+  handleWoffConfig: vi.fn(() => new Response("woff-config")),
+}));
+vi.mock("../../src/handlers/admin-sso", () => ({
+  handleAdminSsoPage: vi.fn(() => new Response("admin-sso")),
+  handleAdminSsoCallback: vi.fn(() => new Response("admin-sso-cb")),
+}));
+vi.mock("../../src/handlers/admin-users", () => ({
+  handleAdminUsersPage: vi.fn(() => new Response("admin-users")),
+  handleAdminUsersCallback: vi.fn(() => new Response("admin-users-cb")),
+}));
+vi.mock("../../src/handlers/admin-rich-menu", () => ({
+  handleAdminRichMenuPage: vi.fn(() => new Response("admin-rich-menu")),
+  handleAdminRichMenuCallback: vi.fn(() => new Response("admin-rich-menu-cb")),
+}));
+vi.mock("../../src/handlers/admin-requests", () => ({
+  handleAdminRequestsPage: vi.fn(() => new Response("admin-requests")),
+  handleAdminRequestsCallback: vi.fn(() => new Response("admin-requests-cb")),
+}));
+vi.mock("../../src/handlers/logout", () => ({
+  handleLogout: vi.fn(() => new Response("logout")),
+}));
+vi.mock("../../src/handlers/api-my-orgs", () => ({
+  handleMyOrgs: vi.fn(() => new Response("my-orgs")),
+}));
+vi.mock("../../src/handlers/api-switch-org", () => ({
+  handleSwitchOrg: vi.fn(() => new Response("switch-org")),
+}));
+vi.mock("../../src/handlers/api-rich-menu", () => ({
+  handleRichMenuList: vi.fn(() => new Response("rm-list")),
+  handleRichMenuCreate: vi.fn(() => new Response("rm-create")),
+  handleRichMenuDelete: vi.fn(() => new Response("rm-delete")),
+  handleRichMenuImageUpload: vi.fn(() => new Response("rm-image")),
+  handleRichMenuDefaultSet: vi.fn(() => new Response("rm-default-set")),
+  handleRichMenuDefaultDelete: vi.fn(() => new Response("rm-default-delete")),
+}));
+vi.mock("../../src/handlers/api-access-requests", () => ({
+  handleAccessRequestCreate: vi.fn(() => new Response("ar-create")),
+  handleAccessRequestList: vi.fn(() => new Response("ar-list")),
+  handleAccessRequestApprove: vi.fn(() => new Response("ar-approve")),
+  handleAccessRequestDecline: vi.fn(() => new Response("ar-decline")),
+}));
+vi.mock("../../src/handlers/join-page", () => ({
+  handleJoinPage: vi.fn(() => new Response("join-page")),
+}));
+vi.mock("../../src/handlers/join-callback", () => ({
+  handleJoinDone: vi.fn(() => new Response("join-done")),
 }));
 
 import worker from "../../src/index";
@@ -48,6 +112,25 @@ describe("Router (index.ts)", () => {
   });
 
   // --- GET routes ---
+  const getRoutes: [string, string][] = [
+    ["/top", "top-page"],
+    ["/login?redirect_uri=https%3A%2F%2Fapp.test.example", "login-page"],
+    ["/oauth/google/redirect", "google-redirect"],
+    ["/oauth/google/callback", "google-callback"],
+    ["/oauth/lineworks/redirect", "lw-redirect"],
+    ["/oauth/lineworks/callback", "lw-callback"],
+    ["/auth/woff-config", "woff-config"],
+    ["/admin/sso", "admin-sso"],
+    ["/admin/sso/callback", "admin-sso-cb"],
+    ["/admin/users", "admin-users"],
+    ["/admin/users/callback", "admin-users-cb"],
+    ["/admin/rich-menu", "admin-rich-menu"],
+    ["/admin/rich-menu/callback", "admin-rich-menu-cb"],
+    ["/admin/requests", "admin-requests"],
+    ["/admin/requests/callback", "admin-requests-cb"],
+    ["/logout", "logout"],
+  ];
+
   it("GET /api/health → health proxy", async () => {
     const req = new Request("https://auth.test.example/api/health");
     const res = await worker.fetch(req, env);
@@ -56,16 +139,31 @@ describe("Router (index.ts)", () => {
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
   });
 
-  it("GET /top → top page", async () => {
-    const req = new Request("https://auth.test.example/top");
+  for (const [path, expected] of getRoutes) {
+    it(`GET ${path.split("?")[0]} → ${expected}`, async () => {
+      const req = new Request(`https://auth.test.example${path}`);
+      const res = await worker.fetch(req, env);
+      expect(await res.text()).toBe(expected);
+    });
+  }
+
+  // --- Dynamic GET routes ---
+  it("GET /join/:slug → join-page", async () => {
+    const req = new Request("https://auth.test.example/join/test-org");
     const res = await worker.fetch(req, env);
-    expect(await res.text()).toBe("top-page");
+    expect(await res.text()).toBe("join-page");
   });
 
-  it("GET /login → login page", async () => {
-    const req = new Request("https://auth.test.example/login?redirect_uri=https%3A%2F%2Fapp.test.example");
+  it("GET /join/:slug/done → join-done", async () => {
+    const req = new Request("https://auth.test.example/join/test-org/done");
     const res = await worker.fetch(req, env);
-    expect(await res.text()).toBe("login-page");
+    expect(await res.text()).toBe("join-done");
+  });
+
+  it("GET /join/ with invalid path returns 404", async () => {
+    const req = new Request("https://auth.test.example/join/test-org/invalid/extra");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
   });
 
   // --- POST routes ---
@@ -81,6 +179,20 @@ describe("Router (index.ts)", () => {
     ["/api/users/invite", "invite"],
     ["/api/users/invite/delete", "del-inv"],
     ["/api/users/delete", "del-user"],
+    ["/auth/login", "auth-login"],
+    ["/auth/woff", "woff-auth"],
+    ["/api/richmenu/list", "rm-list"],
+    ["/api/richmenu/create", "rm-create"],
+    ["/api/richmenu/delete", "rm-delete"],
+    ["/api/richmenu/image", "rm-image"],
+    ["/api/richmenu/default/set", "rm-default-set"],
+    ["/api/richmenu/default/delete", "rm-default-delete"],
+    ["/api/access-requests/create", "ar-create"],
+    ["/api/access-requests/list", "ar-list"],
+    ["/api/access-requests/approve", "ar-approve"],
+    ["/api/access-requests/decline", "ar-decline"],
+    ["/api/switch-org", "switch-org"],
+    ["/api/my-orgs", "my-orgs"],
   ];
 
   for (const [path, expected] of postRoutes) {
@@ -102,6 +214,13 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://auth.test.example/unknown", { method: "POST" });
     const res = await worker.fetch(req, env);
     expect(res.status).toBe(404);
+  });
+
+  it("OPTIONS returns CORS preflight", async () => {
+    const req = new Request("https://auth.test.example/auth/woff", { method: "OPTIONS" });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
   });
 
   it("PUT returns 405", async () => {
