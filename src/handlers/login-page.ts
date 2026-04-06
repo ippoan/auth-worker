@@ -23,9 +23,10 @@ export async function handleLoginPage(
   }
 
   const googleEnabled = Boolean(env.GOOGLE_CLIENT_ID);
+  const authOrigin = env.AUTH_WORKER_ORIGIN || '';
   const alcApiOrigin = env.ALC_API_ORIGIN || '';
   const googleRedirectUrl = googleEnabled
-    ? `${alcApiOrigin}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+    ? `${authOrigin}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
     : "";
   const lineLoginRedirectUrl = `${alcApiOrigin}/api/auth/line/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`;
 
@@ -37,7 +38,7 @@ export async function handleLoginPage(
     error,
     googleEnabled,
     googleRedirectUrl,
-    lineworksRedirectUrl: `${alcApiOrigin}/api/auth/lineworks/redirect`,
+    lineworksRedirectUrl: `${authOrigin}/oauth/lineworks/redirect`,
     lineLoginRedirectUrl,
   });
 

@@ -106,8 +106,8 @@ describe("handleLoginPage", () => {
     await handleLoginPage(request, env);
     expect(renderLoginPage).toHaveBeenCalledWith(
       expect.objectContaining({
-        googleRedirectUrl: expect.stringContaining("/api/auth/google/redirect"),
-        lineworksRedirectUrl: "/api/auth/lineworks/redirect",
+        googleRedirectUrl: expect.stringContaining("/oauth/google/redirect"),
+        lineworksRedirectUrl: expect.stringContaining("/oauth/lineworks/redirect"),
       }),
     );
   });
