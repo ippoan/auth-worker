@@ -78,19 +78,22 @@ export async function handleGoogleCallback(
   }
 
   const authData = (await authResp.json()) as {
-    token: string;
-    expires_at: string;
+    access_token: string;
+    expires_in: number;
     refresh_token?: string;
   };
 
+  const token = authData.access_token;
+  const expiresAt = String(Math.floor(Date.now() / 1000) + authData.expires_in);
+
   // Build JWT fragment
   const fragment = new URLSearchParams({
-    token: authData.token,
-    expires_at: authData.expires_at,
+    token,
+    expires_at: expiresAt,
   });
 
   // Extract org_id from JWT payload
-  const payloadB64 = authData.token.split(".")[1];
+  const payloadB64 = token.split(".")[1];
   if (payloadB64) {
     try {
       const payload = JSON.parse(atob(payloadB64));
@@ -109,7 +112,7 @@ export async function handleGoogleCallback(
   // Join flow: redirect to /join/:slug/done with JWT fragment
   if (joinOrg) {
     const joinDoneUrl = new URL(`${origin}/join/${joinOrg}/done`);
-    const joinCookie = `logi_auth_token=${authData.token}; Domain=.${getParentDomain(joinDoneUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
+    const joinCookie = `logi_auth_token=${token}; Domain=.${getParentDomain(joinDoneUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
     console.log(JSON.stringify({ event: "google_login_join", joinOrg }));
     return new Response(null, {
       status: 302,
@@ -127,7 +130,7 @@ export async function handleGoogleCallback(
   }
 
   // JWT を cookie でもセット（親ドメイン共有で auth-worker admin 等が読める）
-  const cookieValue = `logi_auth_token=${authData.token}; Domain=.${getParentDomain(finalUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
+  const cookieValue = `logi_auth_token=${token}; Domain=.${getParentDomain(finalUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
   console.log(JSON.stringify({ event: "google_login_success", redirectUri }));
   return new Response(null, {
     status: 302,
