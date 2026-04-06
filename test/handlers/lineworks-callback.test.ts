@@ -263,7 +263,8 @@ describe("handleLineworksCallback", () => {
     const req = new Request("https://auth.test.example/oauth/lineworks/callback?code=test-code&state=test-state");
     await handleLineworksCallback(req, env);
 
-    const [callUrl, callOpts] = mockFetch.mock.calls[0];
+    const call0 = mockFetch.mock.calls[0]!;
+    const [callUrl, callOpts] = call0;
     const parsedUrl = new URL(callUrl);
     expect(parsedUrl.origin).toBe("https://alc-api.test.example");
     expect(parsedUrl.pathname).toBe("/api/auth/lineworks/callback");

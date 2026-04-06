@@ -38,13 +38,15 @@ const mockSign = vi.fn().mockResolvedValue(new ArrayBuffer(256));
 const mockImportKey = vi.fn().mockResolvedValue({ type: "private" });
 
 const originalFetch = globalThis.fetch;
-const originalSubtle = globalThis.crypto?.subtle;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const g = globalThis as any;
+const originalSubtle = g.crypto?.subtle;
 
 beforeEach(() => {
   vi.restoreAllMocks();
   mockSign.mockResolvedValue(new ArrayBuffer(256));
   mockImportKey.mockResolvedValue({ type: "private" });
-  Object.defineProperty(globalThis.crypto, "subtle", {
+  Object.defineProperty(g.crypto, "subtle", {
     value: { importKey: mockImportKey, sign: mockSign },
     configurable: true,
   });
@@ -53,7 +55,7 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   if (originalSubtle) {
-    Object.defineProperty(globalThis.crypto, "subtle", {
+    Object.defineProperty(g.crypto, "subtle", {
       value: originalSubtle,
       configurable: true,
     });

@@ -171,7 +171,8 @@ describe("handleAuthLogin", () => {
     });
     await handleAuthLogin(req, env);
 
-    const [callUrl, callOpts] = mockFetch.mock.calls[0];
+    const call0 = mockFetch.mock.calls[0]!;
+    const [callUrl, callOpts] = call0;
     expect(callUrl).toBe("https://alc-api.test.example/api/auth/login");
     expect(callOpts.method).toBe("POST");
     const body = JSON.parse(callOpts.body);
@@ -197,7 +198,7 @@ describe("handleAuthLogin", () => {
     });
     await handleAuthLogin(req, env);
 
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const body = JSON.parse(mockFetch.mock.calls[0]![1]!.body);
     expect(body.organization_id).toBe("");
   });
 

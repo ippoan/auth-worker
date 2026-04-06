@@ -233,7 +233,8 @@ describe("handleGoogleCallback", () => {
     await handleGoogleCallback(req, env);
 
     // First call: Google token exchange
-    const [googleUrl, googleOpts] = mockFetch.mock.calls[0];
+    const googleCall = mockFetch.mock.calls[0]!;
+    const [googleUrl, googleOpts] = googleCall;
     expect(googleUrl).toBe("https://oauth2.googleapis.com/token");
     expect(googleOpts.method).toBe("POST");
     const body = googleOpts.body as URLSearchParams;
@@ -243,7 +244,8 @@ describe("handleGoogleCallback", () => {
     expect(body.get("redirect_uri")).toBe("https://auth.test.example/oauth/google/callback");
 
     // Second call: rust-alc-api auth
-    const [alcUrl] = mockFetch.mock.calls[1];
+    const alcCall = mockFetch.mock.calls[1]!;
+    const [alcUrl] = alcCall;
     expect(alcUrl).toBe("https://alc-api.test.example/api/auth/google");
   });
 
