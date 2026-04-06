@@ -38,6 +38,7 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     .header {
       text-align: center;
       margin-bottom: 2rem;
+      position: relative;
     }
     .header h1 {
       font-size: 1.5rem;
@@ -48,6 +49,103 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
       font-size: 0.875rem;
       color: #6b7280;
       margin-top: 0.25rem;
+    }
+
+    /* Hamburger menu */
+    .hamburger-btn {
+      display: none;
+      position: absolute;
+      top: -4px;
+      right: -8px;
+      width: 44px;
+      height: 44px;
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      color: #6b7280;
+      cursor: pointer;
+      border-radius: 8px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .hamburger-btn:hover { background: #f3f4f6; }
+    .hamburger-btn.visible { display: flex; align-items: center; justify-content: center; }
+    .nav-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 100;
+    }
+    .nav-overlay.open { display: block; }
+    .nav-drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: 280px;
+      max-width: 80vw;
+      height: 100%;
+      background: white;
+      z-index: 101;
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+      display: flex;
+      flex-direction: column;
+      box-shadow: -2px 0 8px rgba(0,0,0,0.1);
+    }
+    .nav-drawer.open { transform: translateX(0); }
+    .nav-drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .nav-drawer-header span {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #374151;
+    }
+    .nav-close-btn {
+      width: 36px;
+      height: 36px;
+      background: none;
+      border: none;
+      font-size: 1.25rem;
+      color: #9ca3af;
+      cursor: pointer;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .nav-close-btn:hover { background: #f3f4f6; color: #374151; }
+    .nav-items {
+      flex: 1;
+      padding: 0.5rem 0;
+      overflow-y: auto;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.875rem 1.25rem;
+      text-decoration: none;
+      color: #374151;
+      font-size: 0.9375rem;
+      transition: background 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .nav-item:hover { background: #f9fafb; }
+    .nav-item-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: #f3f4f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.875rem;
+      flex-shrink: 0;
     }
 
     /* Loading state */
@@ -158,6 +256,7 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     <div class="header">
       <h1>Logi</h1>
       <p id="org-name"></p>
+      <button id="hamburger-btn" class="hamburger-btn" onclick="toggleNav(true)">&#9776;</button>
     </div>
 
     <!-- Loading (shown during WOFF auth) -->
@@ -173,6 +272,29 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     <div id="menu">
       <div class="app-grid" id="app-grid"></div>
       <button class="logout-btn" onclick="window.location.replace('/logout')">Logout</button>
+    </div>
+  </div>
+
+  <!-- Navigation drawer -->
+  <div id="nav-overlay" class="nav-overlay" onclick="toggleNav(false)"></div>
+  <div id="nav-drawer" class="nav-drawer">
+    <div class="nav-drawer-header">
+      <span>管理メニュー</span>
+      <button class="nav-close-btn" onclick="toggleNav(false)">&times;</button>
+    </div>
+    <div class="nav-items">
+      <a href="/admin/users" class="nav-item">
+        <div class="nav-item-icon">👤</div>ユーザー管理
+      </a>
+      <a href="/admin/rich-menu" class="nav-item">
+        <div class="nav-item-icon">📋</div>リッチメニュー管理
+      </a>
+      <a href="/admin/requests" class="nav-item">
+        <div class="nav-item-icon">📩</div>アクセスリクエスト
+      </a>
+      <a href="/admin/sso" class="nav-item">
+        <div class="nav-item-icon">🔑</div>SSO設定
+      </a>
     </div>
   </div>
 
@@ -232,10 +354,16 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
       el.classList.remove('hidden');
     }
 
+    function toggleNav(open) {
+      document.getElementById('nav-overlay').classList.toggle('open', open);
+      document.getElementById('nav-drawer').classList.toggle('open', open);
+    }
+
     function showMenu() {
       document.getElementById('loading').classList.add('hidden');
       const menu = document.getElementById('menu');
       menu.classList.add('visible');
+      document.getElementById('hamburger-btn').classList.add('visible');
 
       const grid = document.getElementById('app-grid');
       grid.innerHTML = APPS.map(app => {
