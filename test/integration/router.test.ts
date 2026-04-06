@@ -87,6 +87,9 @@ vi.mock("../../src/handlers/api-access-requests", () => ({
   handleAccessRequestApprove: vi.fn(() => new Response("ar-approve")),
   handleAccessRequestDecline: vi.fn(() => new Response("ar-decline")),
 }));
+vi.mock("../../src/handlers/redirect", () => ({
+  handleRedirect: vi.fn(() => new Response("redirect")),
+}));
 vi.mock("../../src/handlers/join-page", () => ({
   handleJoinPage: vi.fn(() => new Response("join-page")),
 }));
@@ -128,6 +131,7 @@ describe("Router (index.ts)", () => {
     ["/admin/rich-menu/callback", "admin-rich-menu-cb"],
     ["/admin/requests", "admin-requests"],
     ["/admin/requests/callback", "admin-requests-cb"],
+    ["/redirect?to=https://app1.test.example", "redirect"],
     ["/logout", "logout"],
   ];
 

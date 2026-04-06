@@ -348,7 +348,7 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
         if (app.url.includes('carins')) iconClass = 'app-icon-carins';
         if (app.url.includes('ohishi2')) iconClass = 'app-icon-dtako';
         if (app.url.includes('items')) iconClass = 'app-icon-items';
-        return '<a href="' + escapeHtml(app.url) + '" class="app-card">' +
+        return '<a href="' + AUTH_WORKER + '/redirect?to=' + encodeURIComponent(app.url) + '" class="app-card">' +
           '<div class="app-icon ' + iconClass + '">' + escapeHtml(app.icon) + '</div>' +
           '<div><div class="app-name">' + escapeHtml(app.name) + '</div>' +
           '<div class="app-desc">' + escapeHtml(app.description) + '</div></div>' +

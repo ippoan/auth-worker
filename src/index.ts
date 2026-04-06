@@ -25,6 +25,7 @@ import {
 import { handleLogout } from "./handlers/logout";
 import { handleJoinPage } from "./handlers/join-page";
 import { handleJoinDone } from "./handlers/join-callback";
+import { handleRedirect } from "./handlers/redirect";
 import { handleAdminRequestsPage, handleAdminRequestsCallback } from "./handlers/admin-requests";
 import {
   handleAccessRequestCreate, handleAccessRequestList,
@@ -108,6 +109,8 @@ export default {
             return await handleAdminRequestsPage(request, env);
           case "/admin/requests/callback":
             return await handleAdminRequestsCallback();
+          case "/redirect":
+            return await handleRedirect(request, env);
           case "/logout":
             return await handleLogout(request, env);
           default:
