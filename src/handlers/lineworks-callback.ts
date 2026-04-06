@@ -85,23 +85,14 @@ export async function handleLineworksCallback(
       }
     }
 
-    function cookieDomainAttr(hostname: string): string {
-      if (hostname.endsWith(".workers.dev")) return "";
-      const parts = hostname.split(".");
-      const parent = parts.length > 2 ? parts.slice(-2).join(".") : hostname;
-      return `; Domain=.${parent}`;
-    }
-
     // Join flow: redirect to /join/:slug/done with JWT fragment
     if (joinOrg) {
       const joinDoneUrl = new URL(`${origin}/join/${joinOrg}/done`);
-      const joinCookie = `logi_auth_token=${authData.token}${cookieDomainAttr(joinDoneUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
       console.log(JSON.stringify({ event: "lw_login_join", joinOrg, externalOrgId }));
       return new Response(null, {
         status: 302,
         headers: {
           Location: `${joinDoneUrl.toString()}#${fragment.toString()}`,
-          "Set-Cookie": joinCookie,
         },
       });
     }
@@ -112,13 +103,12 @@ export async function handleLineworksCallback(
       finalUrl.searchParams.set("lw_callback", "1");
     }
 
-    const cookieValue = `logi_auth_token=${authData.token}${cookieDomainAttr(finalUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
+    // JWT は URL fragment (#token=xxx) で渡す。クライアント側で sessionStorage に保存。
     console.log(JSON.stringify({ event: "lw_login_success", externalOrgId, redirectUri }));
     return new Response(null, {
       status: 302,
       headers: {
         Location: `${finalUrl.toString()}#${fragment.toString()}`,
-        "Set-Cookie": cookieValue,
       },
     });
   }

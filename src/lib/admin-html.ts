@@ -299,11 +299,18 @@ export function renderAdminSsoPage(frontendOrigins: string[] = []): string {
     let deleteProvider = '';
     const frontendOrigins = ${originsJson};
 
-    // Auth: read JWT from cookie (set by /admin/sso/callback)
+    // Auth: read JWT from sessionStorage (set by /admin/sso/callback)
     function initAuth() {
-      const adminMatch = document.cookie.match(/sso_admin_token=([^;]+)/);
-      const sharedMatch = document.cookie.match(/logi_auth_token=([^;]+)/);
-      token = (adminMatch && adminMatch[1]) || (sharedMatch && sharedMatch[1]) || null;
+      token = sessionStorage.getItem('auth_token');
+      // cookie fallback (migration)
+      if (!token) {
+        var m = document.cookie.match(/sso_admin_token=([^;]+)/) ||
+                document.cookie.match(/logi_auth_token=([^;]+)/);
+        if (m && m[1]) {
+          token = m[1];
+          sessionStorage.setItem('auth_token', token);
+        }
+      }
       if (!token) {
         window.location.replace('/admin/sso');
         return;

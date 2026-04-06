@@ -55,14 +55,20 @@ export function renderAdminRequestsPage(): string {
     <div id="list"><div class="loading">読み込み中...</div></div>
   </div>
   <script>
-    const COOKIE_NAME = 'sso_admin_token';
     let currentFilter = 'pending';
 
     function getToken() {
-      const adminMatch = document.cookie.match(new RegExp(COOKIE_NAME + '=([^;]+)'));
-      if (adminMatch && adminMatch[1]) return adminMatch[1];
-      const sharedMatch = document.cookie.match(/logi_auth_token=([^;]+)/);
-      return sharedMatch ? sharedMatch[1] : null;
+      // sessionStorage (primary)
+      var t = sessionStorage.getItem('auth_token');
+      if (t) return t;
+      // cookie fallback (migration)
+      var m = document.cookie.match(/sso_admin_token=([^;]+)/) ||
+              document.cookie.match(/logi_auth_token=([^;]+)/);
+      if (m && m[1]) {
+        sessionStorage.setItem('auth_token', m[1]);
+        return m[1];
+      }
+      return null;
     }
 
     async function apiCall(endpoint, body) {

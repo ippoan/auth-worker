@@ -103,28 +103,14 @@ export async function handleGoogleCallback(
     }
   }
 
-  // Helper: build cookie Domain attribute
-  // workers.dev is a Public Suffix — browser rejects Domain=.workers.dev
-  // For *.workers.dev, omit Domain (same-host only). For custom domains, use parent domain.
-  function cookieDomainAttr(hostname: string): string {
-    if (hostname.endsWith(".workers.dev")) {
-      return ""; // no Domain attr = same-host cookie
-    }
-    const parts = hostname.split(".");
-    const parent = parts.length > 2 ? parts.slice(-2).join(".") : hostname;
-    return `; Domain=.${parent}`;
-  }
-
   // Join flow: redirect to /join/:slug/done with JWT fragment
   if (joinOrg) {
     const joinDoneUrl = new URL(`${origin}/join/${joinOrg}/done`);
-    const joinCookie = `logi_auth_token=${token}${cookieDomainAttr(joinDoneUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
     console.log(JSON.stringify({ event: "google_login_join", joinOrg }));
     return new Response(null, {
       status: 302,
       headers: {
         Location: `${joinDoneUrl.toString()}#${fragment.toString()}`,
-        "Set-Cookie": joinCookie,
       },
     });
   }
@@ -135,14 +121,12 @@ export async function handleGoogleCallback(
     finalUrl.searchParams.set("lw_callback", "1");
   }
 
-  // JWT を cookie でもセット（親ドメイン共有で auth-worker admin 等が読める）
-  const cookieValue = `logi_auth_token=${token}${cookieDomainAttr(finalUrl.hostname)}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
+  // JWT は URL fragment (#token=xxx) で渡す。クライアント側で sessionStorage に保存。
   console.log(JSON.stringify({ event: "google_login_success", redirectUri }));
   return new Response(null, {
     status: 302,
     headers: {
       Location: `${finalUrl.toString()}#${fragment.toString()}`,
-      "Set-Cookie": cookieValue,
     },
   });
 }

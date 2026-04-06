@@ -1,14 +1,11 @@
 /**
- * GET /logout — cookie 削除 + ログインページへリダイレクト
+ * GET /logout — sessionStorage + cookie クリア → ログインページへリダイレクト
+ *
+ * sessionStorage はサーバーサイドからクリアできないため、
+ * HTML ページを返して JS で実行する。
  */
 
 import type { Env } from "../index";
-
-/** 削除対象の cookie 一覧 */
-const COOKIES_TO_CLEAR = [
-  "sso_admin_token; Path=/admin",
-  "logi_auth_token; Path=/; Domain=.mtamaramu.com",
-];
 
 export async function handleLogout(
   request: Request,
@@ -17,13 +14,23 @@ export async function handleLogout(
   const url = new URL(request.url);
   const redirectTo = url.searchParams.get("redirect_uri") || "/login";
 
-  const headers = new Headers({ Location: redirectTo });
-  for (const cookie of COOKIES_TO_CLEAR) {
-    headers.append(
-      "Set-Cookie",
-      `${cookie}; Max-Age=0; Secure; SameSite=Lax`,
-    );
-  }
+  // Escape for safe embedding in JS string
+  const safeRedirect = redirectTo.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"');
 
-  return new Response(null, { status: 302, headers });
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Logging out...</title></head>
+<body>
+<script>
+  sessionStorage.removeItem('auth_token');
+  localStorage.removeItem('logi_auth');
+  // backward compat: clear cookies (no Domain attr = same-host)
+  document.cookie = 'sso_admin_token=; Path=/admin; Max-Age=0; Secure; SameSite=Lax';
+  document.cookie = 'logi_auth_token=; Path=/; Max-Age=0; Secure; SameSite=Lax';
+  window.location.replace('${safeRedirect}');
+</script>
+</body></html>`;
+
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
 }

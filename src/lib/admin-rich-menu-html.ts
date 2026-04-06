@@ -232,9 +232,16 @@ export function renderAdminRichMenuPage(): string {
     let imageStatus = {}; // richmenuId → boolean (has image)
 
     function initAuth() {
-      const adminMatch = document.cookie.match(/sso_admin_token=([^;]+)/);
-      const sharedMatch = document.cookie.match(/logi_auth_token=([^;]+)/);
-      token = (adminMatch && adminMatch[1]) || (sharedMatch && sharedMatch[1]) || null;
+      token = sessionStorage.getItem('auth_token');
+      // cookie fallback (migration)
+      if (!token) {
+        var m = document.cookie.match(/sso_admin_token=([^;]+)/) ||
+                document.cookie.match(/logi_auth_token=([^;]+)/);
+        if (m && m[1]) {
+          token = m[1];
+          sessionStorage.setItem('auth_token', token);
+        }
+      }
       if (!token) {
         const callbackUri = window.location.origin + '/admin/rich-menu/callback';
         window.location.replace('/login?redirect_uri=' + encodeURIComponent(callbackUri));

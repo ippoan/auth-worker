@@ -211,9 +211,10 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
       return localStorage.getItem(LW_DOMAIN_KEY) || null;
     }
 
-    /** Check if JWT cookie exists and is not expired */
+    /** Check if JWT exists (sessionStorage → cookie fallback) and is not expired */
     function getValidToken() {
-      const token = getCookie(AUTH_COOKIE);
+      var token = sessionStorage.getItem('auth_token');
+      if (!token) token = getCookie(AUTH_COOKIE);
       if (!token) return null;
       try {
         const payload = JSON.parse(atob(token.split('.')[1]));
@@ -321,8 +322,8 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
                 if (authRes.ok) {
                   var data = await authRes.json();
                   var expiresAt = Math.floor(new Date(data.expiresAt).getTime() / 1000);
-                  // Set JWT cookie on parent domain
-                  setCookie(AUTH_COOKIE, data.token, 86400);
+                  // Store JWT in sessionStorage (primary) + cookie for backward compat
+                  sessionStorage.setItem('auth_token', data.token);
                   // Also store in localStorage (for top page reuse)
                   localStorage.setItem(AUTH_STORAGE, JSON.stringify({
                     token: data.token,
