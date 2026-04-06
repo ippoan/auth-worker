@@ -13,9 +13,9 @@ const APP_PATTERNS: Array<{
   description: string;
 }> = [
   { match: (o) => o.includes("nuxt-pwa-carins") || o.includes("carins"), name: "車検証管理", icon: "車", description: "車検証・ファイル管理" },
-  { match: (o) => o.includes("ohishi2") || o.includes("dtako-admin"), name: "DTako 管理", icon: "DVR", description: "ドライブレコーダーログ" },
-  { match: (o) => o.includes("nuxt-items") || o.includes("items."), name: "物品管理", icon: "箱", description: "組織・個人の物品管理" },
-  { match: (o) => o.includes("alc-app"), name: "アルコールチェック", icon: "🍺", description: "アルコール検知・管理" },
+  { match: (o) => o.includes("ohishi2") || o.includes("dtako-admin") || o.includes("dtako"), name: "DTako 管理", icon: "DVR", description: "ドライブレコーダーログ" },
+  { match: (o) => o.includes("nuxt-items") || o.includes("items"), name: "物品管理", icon: "箱", description: "組織・個人の物品管理" },
+  { match: (o) => o.includes("alc-app") || (o.includes("alc") && !o.includes("alc-api")), name: "アルコールチェック", icon: "🍺", description: "アルコール検知・管理" },
   { match: (o) => o.includes("nuxt-ichibanboshi") || o.includes("ichibanboshi"), name: "一番星", icon: "⭐", description: "一番星管理" },
   { match: (o) => o.includes("nuxt-notify") || o.includes("notify"), name: "通知管理", icon: "📨", description: "メッセージ配信" },
 ];
@@ -45,7 +45,15 @@ export async function handleTopPage(
     )
     .map(originToApp);
 
-  const html = renderTopPage(apps, env.AUTH_WORKER_ORIGIN);
+  // Deduplicate by app name (ippoan.org URLs come first, so they take priority)
+  const seen = new Set<string>();
+  const uniqueApps = apps.filter((app) => {
+    if (seen.has(app.name)) return false;
+    seen.add(app.name);
+    return true;
+  });
+
+  const html = renderTopPage(uniqueApps, env.AUTH_WORKER_ORIGIN);
   return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
