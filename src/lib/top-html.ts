@@ -73,78 +73,59 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.4);
       z-index: 100;
     }
     .nav-overlay.open { display: block; }
-    .nav-drawer {
-      position: fixed;
-      top: 0;
-      right: 0;
-      width: 280px;
-      max-width: 80vw;
-      height: 100%;
+    .nav-popover {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: -8px;
+      margin-top: 8px;
+      width: 220px;
       background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.12);
       z-index: 101;
-      transform: translateX(100%);
-      transition: transform 0.25s ease;
-      display: flex;
-      flex-direction: column;
-      box-shadow: -2px 0 8px rgba(0,0,0,0.1);
+      overflow: hidden;
     }
-    .nav-drawer.open { transform: translateX(0); }
-    .nav-drawer-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 1rem 1.25rem;
-      border-bottom: 1px solid #e5e7eb;
+    .nav-popover::before {
+      content: '';
+      position: absolute;
+      top: -6px;
+      right: 18px;
+      width: 12px;
+      height: 12px;
+      background: white;
+      border-left: 1px solid #e5e7eb;
+      border-top: 1px solid #e5e7eb;
+      transform: rotate(45deg);
     }
-    .nav-drawer-header span {
-      font-size: 1rem;
-      font-weight: 600;
-      color: #374151;
-    }
-    .nav-close-btn {
-      width: 36px;
-      height: 36px;
-      background: none;
-      border: none;
-      font-size: 1.25rem;
-      color: #9ca3af;
-      cursor: pointer;
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .nav-close-btn:hover { background: #f3f4f6; color: #374151; }
-    .nav-items {
-      flex: 1;
-      padding: 0.5rem 0;
-      overflow-y: auto;
-    }
+    .nav-popover.open { display: block; }
     .nav-item {
       display: flex;
       align-items: center;
       gap: 0.75rem;
-      padding: 0.875rem 1.25rem;
+      padding: 0.75rem 1rem;
       text-decoration: none;
       color: #374151;
-      font-size: 0.9375rem;
+      font-size: 0.875rem;
       transition: background 0.15s;
       -webkit-tap-highlight-color: transparent;
     }
+    .nav-item:first-child { padding-top: 0.875rem; }
+    .nav-item:last-child { padding-bottom: 0.875rem; }
     .nav-item:hover { background: #f9fafb; }
     .nav-item-icon {
-      width: 32px;
-      height: 32px;
-      border-radius: 8px;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
       background: #f3f4f6;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 0.875rem;
+      font-size: 0.8rem;
       flex-shrink: 0;
     }
 
@@ -257,7 +238,22 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
       <h1>Logi</h1>
       <p id="org-name"></p>
       <button id="hamburger-btn" class="hamburger-btn" onclick="toggleNav(true)">&#9776;</button>
+      <div id="nav-popover" class="nav-popover">
+        <a href="/admin/users" class="nav-item">
+          <div class="nav-item-icon">👤</div>ユーザー管理
+        </a>
+        <a href="/admin/rich-menu" class="nav-item">
+          <div class="nav-item-icon">📋</div>リッチメニュー管理
+        </a>
+        <a href="/admin/requests" class="nav-item">
+          <div class="nav-item-icon">📩</div>アクセスリクエスト
+        </a>
+        <a href="/admin/sso" class="nav-item">
+          <div class="nav-item-icon">🔑</div>SSO設定
+        </a>
+      </div>
     </div>
+    <div id="nav-overlay" class="nav-overlay" onclick="toggleNav(false)"></div>
 
     <!-- Loading (shown during WOFF auth) -->
     <div id="loading">
@@ -275,28 +271,6 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     </div>
   </div>
 
-  <!-- Navigation drawer -->
-  <div id="nav-overlay" class="nav-overlay" onclick="toggleNav(false)"></div>
-  <div id="nav-drawer" class="nav-drawer">
-    <div class="nav-drawer-header">
-      <span>管理メニュー</span>
-      <button class="nav-close-btn" onclick="toggleNav(false)">&times;</button>
-    </div>
-    <div class="nav-items">
-      <a href="/admin/users" class="nav-item">
-        <div class="nav-item-icon">👤</div>ユーザー管理
-      </a>
-      <a href="/admin/rich-menu" class="nav-item">
-        <div class="nav-item-icon">📋</div>リッチメニュー管理
-      </a>
-      <a href="/admin/requests" class="nav-item">
-        <div class="nav-item-icon">📩</div>アクセスリクエスト
-      </a>
-      <a href="/admin/sso" class="nav-item">
-        <div class="nav-item-icon">🔑</div>SSO設定
-      </a>
-    </div>
-  </div>
 
   <script>
     const AUTH_WORKER = ${JSON.stringify(authWorkerOrigin)};
@@ -356,7 +330,7 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
 
     function toggleNav(open) {
       document.getElementById('nav-overlay').classList.toggle('open', open);
-      document.getElementById('nav-drawer').classList.toggle('open', open);
+      document.getElementById('nav-popover').classList.toggle('open', open);
     }
 
     function showMenu() {
