@@ -109,6 +109,43 @@ describe("handleTopPage", () => {
     );
   });
 
+  it("maps ippoan.org staging subdomains correctly", async () => {
+    const env = createMockEnv({
+      ALLOWED_REDIRECT_ORIGINS:
+        "https://alc-staging.ippoan.org,https://carins-staging.ippoan.org,https://dtako-staging.ippoan.org,https://ichibanboshi-staging.ippoan.org,https://notify-staging.ippoan.org,https://items-staging.ippoan.org",
+    });
+    const req = new Request("https://auth.test.example/top");
+
+    await handleTopPage(req, env);
+
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [
+        { name: "アルコールチェック", url: "https://alc-staging.ippoan.org", icon: "🍺", description: "アルコール検知・管理" },
+        { name: "車検証管理", url: "https://carins-staging.ippoan.org", icon: "車", description: "車検証・ファイル管理" },
+        { name: "DTako 管理", url: "https://dtako-staging.ippoan.org", icon: "DVR", description: "ドライブレコーダーログ" },
+        { name: "一番星", url: "https://ichibanboshi-staging.ippoan.org", icon: "⭐", description: "一番星管理" },
+        { name: "通知管理", url: "https://notify-staging.ippoan.org", icon: "📨", description: "メッセージ配信" },
+        { name: "物品管理", url: "https://items-staging.ippoan.org", icon: "箱", description: "組織・個人の物品管理" },
+      ],
+      "https://auth.test.example",
+    );
+  });
+
+  it("deduplicates apps by name, keeping first (ippoan.org) URL", async () => {
+    const env = createMockEnv({
+      ALLOWED_REDIRECT_ORIGINS:
+        "https://carins-staging.ippoan.org,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev",
+    });
+    const req = new Request("https://auth.test.example/top");
+
+    await handleTopPage(req, env);
+
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [{ name: "車検証管理", url: "https://carins-staging.ippoan.org", icon: "車", description: "車検証・ファイル管理" }],
+      "https://auth.test.example",
+    );
+  });
+
   it("handles empty ALLOWED_REDIRECT_ORIGINS", async () => {
     const env = createMockEnv({ ALLOWED_REDIRECT_ORIGINS: "" });
     const req = new Request("https://auth.test.example/top");
