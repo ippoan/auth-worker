@@ -37,7 +37,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [
         { name: "車検証管理", url: "https://nuxt-pwa-carins.example", icon: "車", description: "車検証・ファイル管理" },
-        { name: "DTako ログ", url: "https://ohishi2.example", icon: "DVR", description: "ドライブレコーダーログ" },
+        { name: "DTako 管理", url: "https://ohishi2.example", icon: "DVR", description: "ドライブレコーダーログ" },
       ],
       "https://auth.test.example",
     );
@@ -67,6 +67,27 @@ describe("handleTopPage", () => {
 
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "https://unknown.example", url: "https://unknown.example", icon: "App", description: "" }],
+      "https://auth.test.example",
+    );
+  });
+
+  it("maps staging URLs correctly", async () => {
+    const env = createMockEnv({
+      ALLOWED_REDIRECT_ORIGINS:
+        "https://alc-app-staging.m-tama-ramu.workers.dev,https://dtako-admin-staging.m-tama-ramu.workers.dev,https://nuxt-ichibanboshi-staging.m-tama-ramu.workers.dev,https://nuxt-notify-staging.m-tama-ramu.workers.dev,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev",
+    });
+    const req = new Request("https://auth.test.example/top");
+
+    await handleTopPage(req, env);
+
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [
+        { name: "アルコールチェック", url: "https://alc-app-staging.m-tama-ramu.workers.dev", icon: "🍺", description: "アルコール検知・管理" },
+        { name: "DTako 管理", url: "https://dtako-admin-staging.m-tama-ramu.workers.dev", icon: "DVR", description: "ドライブレコーダーログ" },
+        { name: "一番星", url: "https://nuxt-ichibanboshi-staging.m-tama-ramu.workers.dev", icon: "⭐", description: "一番星管理" },
+        { name: "通知管理", url: "https://nuxt-notify-staging.m-tama-ramu.workers.dev", icon: "📨", description: "メッセージ配信" },
+        { name: "車検証管理", url: "https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev", icon: "車", description: "車検証・ファイル管理" },
+      ],
       "https://auth.test.example",
     );
   });

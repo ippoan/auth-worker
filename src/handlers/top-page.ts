@@ -5,31 +5,27 @@
 import type { Env } from "../index";
 import { renderTopPage, type AppEntry } from "../lib/top-html";
 
+/** Known app patterns — matches both production and staging URLs */
+const APP_PATTERNS: Array<{
+  match: (origin: string) => boolean;
+  name: string;
+  icon: string;
+  description: string;
+}> = [
+  { match: (o) => o.includes("nuxt-pwa-carins") || o.includes("carins"), name: "車検証管理", icon: "車", description: "車検証・ファイル管理" },
+  { match: (o) => o.includes("ohishi2") || o.includes("dtako-admin"), name: "DTako 管理", icon: "DVR", description: "ドライブレコーダーログ" },
+  { match: (o) => o.includes("nuxt-items") || o.includes("items."), name: "物品管理", icon: "箱", description: "組織・個人の物品管理" },
+  { match: (o) => o.includes("alc-app"), name: "アルコールチェック", icon: "🍺", description: "アルコール検知・管理" },
+  { match: (o) => o.includes("nuxt-ichibanboshi") || o.includes("ichibanboshi"), name: "一番星", icon: "⭐", description: "一番星管理" },
+  { match: (o) => o.includes("nuxt-notify") || o.includes("notify"), name: "通知管理", icon: "📨", description: "メッセージ配信" },
+];
+
 /** Map origin URL to app metadata */
 function originToApp(origin: string): AppEntry {
-  if (origin.includes("nuxt-pwa-carins")) {
-    return {
-      name: "車検証管理",
-      url: origin,
-      icon: "車",
-      description: "車検証・ファイル管理",
-    };
-  }
-  if (origin.includes("ohishi2")) {
-    return {
-      name: "DTako ログ",
-      url: origin,
-      icon: "DVR",
-      description: "ドライブレコーダーログ",
-    };
-  }
-  if (origin.includes("nuxt-items")) {
-    return {
-      name: "物品管理",
-      url: origin,
-      icon: "箱",
-      description: "組織・個人の物品管理",
-    };
+  for (const pattern of APP_PATTERNS) {
+    if (pattern.match(origin)) {
+      return { name: pattern.name, url: origin, icon: pattern.icon, description: pattern.description };
+    }
   }
   return { name: origin, url: origin, icon: "App", description: "" };
 }
