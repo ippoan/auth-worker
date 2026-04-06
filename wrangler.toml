@@ -28,9 +28,12 @@ custom_domain = true
 [env.staging]
 name = "auth-worker-staging"
 workers_dev = true
-routes = []
+
+[[env.staging.routes]]
+pattern = "auth-staging.ippoan.org"
+custom_domain = true
 
 [env.staging.vars]
-AUTH_WORKER_ORIGIN = "https://auth-worker-staging.m-tama-ramu.workers.dev"
-ALLOWED_REDIRECT_ORIGINS = "https://auth-worker-staging.m-tama-ramu.workers.dev,https://alc-app-staging.m-tama-ramu.workers.dev,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev,https://dtako-admin-staging.m-tama-ramu.workers.dev,https://nuxt-ichibanboshi-staging.m-tama-ramu.workers.dev,https://nuxt-notify-staging.m-tama-ramu.workers.dev"
+AUTH_WORKER_ORIGIN = "https://auth-staging.ippoan.org"
+ALLOWED_REDIRECT_ORIGINS = "https://auth-staging.ippoan.org,https://auth-worker-staging.m-tama-ramu.workers.dev,https://alc-app-staging.m-tama-ramu.workers.dev,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev,https://dtako-admin-staging.m-tama-ramu.workers.dev,https://nuxt-ichibanboshi-staging.m-tama-ramu.workers.dev,https://nuxt-notify-staging.m-tama-ramu.workers.dev"
 ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
