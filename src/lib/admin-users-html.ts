@@ -124,18 +124,22 @@ export function renderAdminUsersPage(): string {
   </div>
 
 <script>
-  const TOKEN_KEY = 'sso_admin_token';
-
   function getToken() {
-    const admin = document.cookie.match(/sso_admin_token=([^;]+)/);
-    if (admin) return admin[1];
-    const shared = document.cookie.match(/logi_auth_token=([^;]+)/);
-    return shared ? shared[1] : null;
+    // sessionStorage (primary)
+    var t = sessionStorage.getItem('auth_token');
+    if (t) return t;
+    // cookie fallback (migration)
+    var m = document.cookie.match(/sso_admin_token=([^;]+)/) ||
+            document.cookie.match(/logi_auth_token=([^;]+)/);
+    if (m && m[1]) {
+      sessionStorage.setItem('auth_token', m[1]);
+      return m[1];
+    }
+    return null;
   }
 
   function logout() {
-    document.cookie = 'sso_admin_token=; path=/admin; max-age=0';
-    window.location.href = '/login';
+    window.location.href = '/logout';
   }
 
   function showMsg(text, type) {
