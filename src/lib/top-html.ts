@@ -78,28 +78,24 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     .nav-overlay.open { display: block; }
     .nav-popover {
       display: none;
-      position: absolute;
-      top: 100%;
-      right: 0;
-      margin-top: 8px;
+      position: fixed;
       width: 220px;
       background: white;
       border: 1px solid #e5e7eb;
       border-radius: 12px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.12);
       z-index: 101;
-      overflow: visible;
     }
     .nav-popover::before {
       content: '';
       position: absolute;
-      top: -6px;
-      right: 16px;
+      top: 16px;
+      left: -6px;
       width: 12px;
       height: 12px;
       background: white;
       border-left: 1px solid #e5e7eb;
-      border-top: 1px solid #e5e7eb;
+      border-bottom: 1px solid #e5e7eb;
       transform: rotate(45deg);
     }
     .nav-popover.open { display: block; }
@@ -329,8 +325,15 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     }
 
     function toggleNav(open) {
+      var popover = document.getElementById('nav-popover');
+      if (open) {
+        var btn = document.getElementById('hamburger-btn');
+        var r = btn.getBoundingClientRect();
+        popover.style.top = r.top + 'px';
+        popover.style.left = (r.right + 12) + 'px';
+      }
       document.getElementById('nav-overlay').classList.toggle('open', open);
-      document.getElementById('nav-popover').classList.toggle('open', open);
+      popover.classList.toggle('open', open);
     }
 
     function showMenu() {
