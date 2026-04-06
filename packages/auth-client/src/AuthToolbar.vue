@@ -152,7 +152,7 @@ const emit = defineEmits<{
 }>()
 
 const {
-  logout, copyLwLoginUrl, getSettingsUrl, getLwDomain, getAutoLoginUrl,
+  logout, copyLwLoginUrl, getAppsUrl, getSettingsUrl, getLwDomain, getAutoLoginUrl,
   isAuthenticated, username, provider, providerLabel, orgSlug, orgId, ownerType,
   organizations, isMultiOrg, switchOrganization,
 } = useAuth()
@@ -235,7 +235,7 @@ function handleLogout() {
 }
 
 function handleOpenApps() {
-  window.open('https://auth.ippoan.org/top', '_blank')
+  window.open(getAppsUrl(), '_blank')
 }
 
 function handleOpenSettings() {

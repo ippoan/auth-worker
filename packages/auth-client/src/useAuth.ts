@@ -312,9 +312,14 @@ export const useAuth = () => {
     }
   }
 
+  /** auth-worker のアプリ一覧ページ URL を取得 */
+  function getAppsUrl(): string {
+    return `${authWorkerUrl}/top`
+  }
+
   /** auth-worker の設定ページ URL を取得 */
   function getSettingsUrl(): string {
-    return `https://auth.ippoan.org/admin/sso`
+    return `${authWorkerUrl}/admin/sso`
   }
 
   // 組織一覧 + 切り替え
@@ -429,6 +434,7 @@ export const useAuth = () => {
     getLwLoginUrl,
     getAutoLoginUrl,
     copyLwLoginUrl,
+    getAppsUrl,
     getSettingsUrl,
     ownerType,
     setOwnerType,

@@ -3,3 +3,4 @@ node_modules/
 .wrangler/
 client_secret_*.json
 coverage/
+.claude/
