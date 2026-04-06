@@ -98,8 +98,8 @@ describe("handleLoginPage", () => {
     );
   });
 
-  it("handles empty ALC_API_ORIGIN", async () => {
-    const env = createMockEnv({ ALC_API_ORIGIN: "" });
+  it("handles empty ALC_API_ORIGIN and AUTH_WORKER_ORIGIN", async () => {
+    const env = createMockEnv({ ALC_API_ORIGIN: "", AUTH_WORKER_ORIGIN: "" });
     const request = new Request(
       "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
     );
