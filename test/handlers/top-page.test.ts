@@ -92,6 +92,23 @@ describe("handleTopPage", () => {
     );
   });
 
+  it("filters out auth-worker-staging URL", async () => {
+    const env = createMockEnv({
+      ALLOWED_REDIRECT_ORIGINS:
+        "https://auth-worker-staging.m-tama-ramu.workers.dev,https://alc-app-staging.m-tama-ramu.workers.dev",
+    });
+    const req = new Request("https://auth.test.example/top");
+
+    await handleTopPage(req, env);
+
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [
+        { name: "アルコールチェック", url: "https://alc-app-staging.m-tama-ramu.workers.dev", icon: "🍺", description: "アルコール検知・管理" },
+      ],
+      "https://auth.test.example",
+    );
+  });
+
   it("handles empty ALLOWED_REDIRECT_ORIGINS", async () => {
     const env = createMockEnv({ ALLOWED_REDIRECT_ORIGINS: "" });
     const req = new Request("https://auth.test.example/top");

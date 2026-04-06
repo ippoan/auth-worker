@@ -41,7 +41,7 @@ export async function handleTopPage(
     .map((s: string) => s.trim())
     .filter(
       (s: string) =>
-        s && s !== env.AUTH_WORKER_ORIGIN && !s.includes("auth."),
+        s && s !== env.AUTH_WORKER_ORIGIN && !s.includes("auth-worker") && !s.includes("auth."),
     )
     .map(originToApp);
 
