@@ -66,12 +66,6 @@ function readStorage(): AuthState | null {
 
 function writeStorage(state: AuthState): void {
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(state))
-
-  // cookie にもトークンを保存（server-side handler + cross-subdomain 共有用）
-  const now = Math.floor(Date.now() / 1000)
-  const maxAge = Math.max(state.expiresAt - now, 0)
-  const domain = getParentDomain()
-  document.cookie = `${AUTH_COOKIE_NAME}=${state.token}; Domain=${domain}; path=/; max-age=${maxAge}; secure; samesite=lax`
 }
 
 function clearStorage(): void {
