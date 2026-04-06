@@ -34,11 +34,11 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     .container {
       width: 100%;
       max-width: 400px;
-      position: relative;
     }
     .header {
       text-align: center;
       margin-bottom: 2rem;
+      position: relative;
     }
     .header h1 {
       font-size: 1.5rem;
@@ -52,13 +52,11 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     }
 
     /* Hamburger menu */
-    .hamburger-wrap {
-      position: absolute;
-      top: 0;
-      right: -56px;
-    }
     .hamburger-btn {
       display: none;
+      position: absolute;
+      top: -4px;
+      right: 0;
       width: 44px;
       height: 44px;
       background: none;
@@ -81,26 +79,27 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     .nav-popover {
       display: none;
       position: absolute;
-      top: 0;
-      left: calc(100% + 12px);
+      top: 100%;
+      right: 0;
+      margin-top: 8px;
       width: 220px;
       background: white;
       border: 1px solid #e5e7eb;
       border-radius: 12px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.12);
       z-index: 101;
-      overflow: hidden;
+      overflow: visible;
     }
     .nav-popover::before {
       content: '';
       position: absolute;
-      top: 16px;
-      left: -6px;
+      top: -6px;
+      right: 16px;
       width: 12px;
       height: 12px;
       background: white;
       border-left: 1px solid #e5e7eb;
-      border-bottom: 1px solid #e5e7eb;
+      border-top: 1px solid #e5e7eb;
       transform: rotate(45deg);
     }
     .nav-popover.open { display: block; }
@@ -238,8 +237,6 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     <div class="header">
       <h1>Logi</h1>
       <p id="org-name"></p>
-    </div>
-    <div id="hamburger-wrap" class="hamburger-wrap">
       <button id="hamburger-btn" class="hamburger-btn" onclick="toggleNav(true)">&#9776;</button>
       <div id="nav-popover" class="nav-popover">
         <a href="/admin/users" class="nav-item">
