@@ -98,16 +98,16 @@ describe("handleLoginPage", () => {
     );
   });
 
-  it("handles empty ALC_API_ORIGIN", async () => {
-    const env = createMockEnv({ ALC_API_ORIGIN: "" });
+  it("handles empty ALC_API_ORIGIN and AUTH_WORKER_ORIGIN", async () => {
+    const env = createMockEnv({ ALC_API_ORIGIN: "", AUTH_WORKER_ORIGIN: "" });
     const request = new Request(
       "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
     );
     await handleLoginPage(request, env);
     expect(renderLoginPage).toHaveBeenCalledWith(
       expect.objectContaining({
-        googleRedirectUrl: expect.stringContaining("/api/auth/google/redirect"),
-        lineworksRedirectUrl: "/api/auth/lineworks/redirect",
+        googleRedirectUrl: expect.stringContaining("/oauth/google/redirect"),
+        lineworksRedirectUrl: expect.stringContaining("/oauth/lineworks/redirect"),
       }),
     );
   });
