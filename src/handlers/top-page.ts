@@ -38,8 +38,9 @@ export async function handleTopPage(
   const url = new URL(request.url);
 
   // Server-side auth check: redirect to /login if no auth cookie
-  // Skip for WOFF flow (?woff=1) — WOFF SDK handles auth client-side
-  if (!url.searchParams.has("woff") && !getAuthCookie(request)) {
+  // Skip for WOFF flow (?woff=1) and OAuth callback return (?lw_callback=1)
+  // lw_callback: cookie was just set by callback, client JS will process #token fragment
+  if (!url.searchParams.has("woff") && !url.searchParams.has("lw_callback") && !getAuthCookie(request)) {
     const loginUrl = `${url.origin}/login?redirect_uri=${encodeURIComponent(url.origin + "/top")}`;
     return Response.redirect(loginUrl, 302);
   }

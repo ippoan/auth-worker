@@ -49,6 +49,16 @@ describe("handleTopPage", () => {
     expect(await res.text()).toBe("<html>mock top page</html>");
   });
 
+  it("allows access with ?lw_callback=1 even without cookie (OAuth return)", async () => {
+    const env = createMockEnv();
+    const req = new Request("https://auth.test.example/top?lw_callback=1");
+
+    const res = await handleTopPage(req, env);
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("<html>mock top page</html>");
+  });
+
   it("filters out auth origins and self from app list", async () => {
     const env = createMockEnv({
       ALLOWED_REDIRECT_ORIGINS:
