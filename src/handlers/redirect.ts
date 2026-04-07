@@ -26,7 +26,7 @@ export async function handleRedirect(
   var target = ${JSON.stringify(target)};
   var token = sessionStorage.getItem('auth_token');
   if (token) {
-    window.location.replace(target + '#token=' + encodeURIComponent(token));
+    var sep = target.includes('?') ? '&' : '?'; window.location.replace(target + sep + 'lw_callback#token=' + encodeURIComponent(token));
   } else {
     window.location.replace('/login?redirect_uri=' + encodeURIComponent(target));
   }
