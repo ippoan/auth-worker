@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  packages: read
+  packages: write
 
 jobs:
   ci:
@@ -25,4 +25,5 @@ jobs:
       deploy_staging_script: 'npx wrangler deploy --env staging --var VERSION:${{ github.sha }}'
       deploy_release_script: 'npx wrangler deploy --var VERSION:${{ github.ref_name }}'
       npm_scope: '@ippoan'
+      npm_publish_directory: 'packages/auth-client'
     secrets: inherit
