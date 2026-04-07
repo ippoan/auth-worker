@@ -34,7 +34,7 @@ export async function handleLogout(
   return new Response(html, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Set-Cookie": clearAuthCookie(),
+      "Set-Cookie": clearAuthCookie(new URL(request.url).hostname),
     },
   });
 }

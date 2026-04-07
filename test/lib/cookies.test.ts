@@ -3,19 +3,31 @@ import { setAuthCookie, clearAuthCookie, getAuthCookie } from "../../src/lib/coo
 
 describe("cookies", () => {
   describe("setAuthCookie", () => {
-    it("returns correct Set-Cookie string", () => {
-      const cookie = setAuthCookie("my-jwt-token");
+    it("sets Domain to parent domain for subdomain hosts", () => {
+      const cookie = setAuthCookie("my-jwt-token", "auth.ippoan.org");
       expect(cookie).toBe(
-        "logi_auth_token=my-jwt-token; Path=/; Max-Age=86400; Secure; SameSite=Lax",
+        "logi_auth_token=my-jwt-token; Domain=.ippoan.org; Path=/; Max-Age=86400; Secure; SameSite=Lax",
       );
+    });
+
+    it("uses hostname as-is for two-part domains", () => {
+      const cookie = setAuthCookie("my-jwt-token", "example.com");
+      expect(cookie).toBe(
+        "logi_auth_token=my-jwt-token; Domain=example.com; Path=/; Max-Age=86400; Secure; SameSite=Lax",
+      );
+    });
+
+    it("handles workers.dev subdomains", () => {
+      const cookie = setAuthCookie("tok", "auth-worker.m-tama-ramu.workers.dev");
+      expect(cookie).toContain("Domain=.workers.dev");
     });
   });
 
   describe("clearAuthCookie", () => {
-    it("returns cookie string with Max-Age=0", () => {
-      const cookie = clearAuthCookie();
+    it("returns cookie string with Max-Age=0 and parent Domain", () => {
+      const cookie = clearAuthCookie("auth.ippoan.org");
       expect(cookie).toBe(
-        "logi_auth_token=; Path=/; Max-Age=0; Secure; SameSite=Lax",
+        "logi_auth_token=; Domain=.ippoan.org; Path=/; Max-Age=0; Secure; SameSite=Lax",
       );
     });
   });

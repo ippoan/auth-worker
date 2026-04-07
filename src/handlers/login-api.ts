@@ -74,7 +74,7 @@ export async function handleAuthLogin(
     status: 302,
     headers: {
       Location: `${redirectUri}#${fragment.toString()}`,
-      "Set-Cookie": setAuthCookie(data.access_token),
+      "Set-Cookie": setAuthCookie(data.access_token, new URL(request.url).hostname),
     },
   });
 }

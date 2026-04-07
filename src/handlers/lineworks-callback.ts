@@ -61,7 +61,7 @@ export async function handleLineworksCallback(
       if (fragIdx !== -1) {
         const frag = new URLSearchParams(location.slice(fragIdx + 1));
         const token = frag.get("token");
-        if (token) headers["Set-Cookie"] = setAuthCookie(token);
+        if (token) headers["Set-Cookie"] = setAuthCookie(token, new URL(request.url).hostname);
       }
       return new Response(null, { status: 302, headers });
     }
@@ -98,7 +98,7 @@ export async function handleLineworksCallback(
         status: 302,
         headers: {
           Location: `${joinDoneUrl.toString()}#${fragment.toString()}`,
-          "Set-Cookie": setAuthCookie(authData.token),
+          "Set-Cookie": setAuthCookie(authData.token, new URL(request.url).hostname),
         },
       });
     }
@@ -115,7 +115,7 @@ export async function handleLineworksCallback(
       status: 302,
       headers: {
         Location: `${finalUrl.toString()}#${fragment.toString()}`,
-        "Set-Cookie": setAuthCookie(authData.token),
+        "Set-Cookie": setAuthCookie(authData.token, new URL(request.url).hostname),
       },
     });
   }

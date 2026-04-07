@@ -112,7 +112,7 @@ export async function handleGoogleCallback(
       status: 302,
       headers: {
         Location: `${joinDoneUrl.toString()}#${fragment.toString()}`,
-        "Set-Cookie": setAuthCookie(token),
+        "Set-Cookie": setAuthCookie(token, new URL(request.url).hostname),
       },
     });
   }
@@ -129,7 +129,7 @@ export async function handleGoogleCallback(
     status: 302,
     headers: {
       Location: `${finalUrl.toString()}#${fragment.toString()}`,
-      "Set-Cookie": setAuthCookie(token),
+      "Set-Cookie": setAuthCookie(token, new URL(request.url).hostname),
     },
   });
 }

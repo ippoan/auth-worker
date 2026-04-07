@@ -77,7 +77,7 @@ export async function handleWoffAuth(
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      "Set-Cookie": setAuthCookie(data.token),
+      "Set-Cookie": setAuthCookie(data.token, new URL(request.url).hostname),
     },
   });
 }
