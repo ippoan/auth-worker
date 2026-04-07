@@ -11,9 +11,11 @@ export async function handleLoginPage(
   const orgId = url.searchParams.get("org_id") || undefined;
   const error = url.searchParams.get("error") || undefined;
 
+  const requestOrigin = url.origin;
+
   if (!redirectUri) {
     return Response.redirect(
-      `${env.AUTH_WORKER_ORIGIN}/login?redirect_uri=${encodeURIComponent(env.AUTH_WORKER_ORIGIN + "/top")}`,
+      `${requestOrigin}/login?redirect_uri=${encodeURIComponent(requestOrigin + "/top")}`,
       302,
     );
   }
@@ -23,7 +25,7 @@ export async function handleLoginPage(
   }
 
   const googleEnabled = Boolean(env.GOOGLE_CLIENT_ID);
-  const authOrigin = env.AUTH_WORKER_ORIGIN || '';
+  const authOrigin = requestOrigin;
   const alcApiOrigin = env.ALC_API_ORIGIN || '';
   const googleRedirectUrl = googleEnabled
     ? `${authOrigin}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`

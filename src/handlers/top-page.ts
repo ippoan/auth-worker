@@ -31,10 +31,12 @@ function originToApp(origin: string): AppEntry {
 }
 
 export async function handleTopPage(
-  _request: Request,
+  request: Request,
   env: Env,
 ): Promise<Response> {
   console.log(JSON.stringify({ event: "top_page" }));
+
+  const requestOrigin = new URL(request.url).origin;
 
   const apps = (env.ALLOWED_REDIRECT_ORIGINS || "")
     .split(",")
@@ -53,7 +55,7 @@ export async function handleTopPage(
     return true;
   });
 
-  const html = renderTopPage(uniqueApps, env.AUTH_WORKER_ORIGIN);
+  const html = renderTopPage(uniqueApps, requestOrigin);
   return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
