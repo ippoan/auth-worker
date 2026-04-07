@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-REPO="yhonda-ohishi-alc/rust-alc-api"
+REPO="ippoan/rust-alc-api"
 
 if [ $# -lt 1 ]; then
   echo "Usage: $0 <output-dir> [sha]" >&2
@@ -30,7 +30,7 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 if [ -z "$SHA" ]; then
-  SHA=$(gh run list -R "$REPO" --branch main --status success --json headSha --jq '.[0].headSha' 2>/dev/null)
+  SHA=$(gh run list -R "$REPO" --branch main --status success --workflow ci.yml --json headSha --jq '.[0].headSha' 2>/dev/null)
   if [ -z "$SHA" ]; then
     echo "ERROR: Could not find successful run on main" >&2
     exit 1
