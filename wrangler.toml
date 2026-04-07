@@ -4,7 +4,7 @@ compatibility_date = "2024-12-01"
 account_id = "24b45709d060d957340180e995f0d373"
 
 [vars]
-AUTH_WORKER_ORIGIN = "https://auth.mtamaramu.com"
+AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
 ALLOWED_REDIRECT_ORIGINS = "https://carins.ippoan.org,https://dtako.ippoan.org,https://items.ippoan.org,https://auth.ippoan.org,https://alc.ippoan.org,https://ichibanboshi.ippoan.org,https://notify.ippoan.org,https://nuxt-pwa-carins.mtamaramu.com,https://ohishi2.mtamaramu.com,https://items.mtamaramu.com,https://auth.mtamaramu.com,https://dtako-admin.m-tama-ramu.workers.dev,https://alc-app.m-tama-ramu.workers.dev"
 ALC_API_ORIGIN = "https://alc-api.ippoan.org"
 
