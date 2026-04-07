@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-REPO="yhonda-ohishi-alc/rust-alc-api"
+REPO="ippoan/rust-alc-api"
 
 if [ $# -lt 1 ]; then
   echo "Usage: $0 <output-dir> [sha]" >&2
