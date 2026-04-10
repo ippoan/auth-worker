@@ -64,10 +64,7 @@ HEADER
 
 echo "" >> "$OUTPUT"
 
-# serde_json::Value equivalent (needed by some generated types)
-echo "export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };" >> "$OUTPUT"
-
-# Collect all export type lines, deduplicate by type name
+# Collect all export type lines, deduplicate by type name (includes JsonValue from serde_json/)
 find "$TMPDIR/bindings" -name "*.ts" -print0 | sort -z | while IFS= read -r -d '' f; do
   grep "^export type" "$f"
 done | awk -F'[ =]' '!seen[$3]++' >> "$OUTPUT"
