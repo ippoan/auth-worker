@@ -29,21 +29,25 @@ SHA="${2:-}"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-if [ -z "$SHA" ]; then
-  SHA=$(gh run list -R "$REPO" --branch main --status success --workflow ci.yml --json headSha --jq '.[0].headSha' 2>/dev/null)
-  if [ -z "$SHA" ]; then
-    echo "ERROR: Could not find successful run on main" >&2
+if [ -n "$SHA" ]; then
+  ARTIFACT_NAME="ts-bindings-${SHA}"
+  echo "Downloading: $ARTIFACT_NAME"
+  RUN_ID=$(gh api "repos/$REPO/actions/artifacts?name=$ARTIFACT_NAME" --jq '.artifacts[0].workflow_run.id' 2>/dev/null)
+  if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+    echo "ERROR: Artifact '$ARTIFACT_NAME' not found" >&2
     exit 1
   fi
-fi
-
-ARTIFACT_NAME="ts-bindings-${SHA}"
-echo "Downloading: $ARTIFACT_NAME"
-
-RUN_ID=$(gh api "repos/$REPO/actions/artifacts?name=$ARTIFACT_NAME" --jq '.artifacts[0].workflow_run.id' 2>/dev/null)
-if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-  echo "ERROR: Artifact '$ARTIFACT_NAME' not found" >&2
-  exit 1
+else
+  # Find latest ts-bindings artifact (check job runs on PR, not main push)
+  ARTIFACT_NAME=$(gh api "repos/$REPO/actions/artifacts?per_page=20" \
+    --jq '[.artifacts[] | select(.name | startswith("ts-bindings-")) | select(.expired == false)] | .[0].name' 2>/dev/null)
+  if [ -z "$ARTIFACT_NAME" ] || [ "$ARTIFACT_NAME" = "null" ]; then
+    echo "ERROR: No ts-bindings artifact found" >&2
+    exit 1
+  fi
+  RUN_ID=$(gh api "repos/$REPO/actions/artifacts?name=$ARTIFACT_NAME" --jq '.artifacts[0].workflow_run.id' 2>/dev/null)
+  SHA="${ARTIFACT_NAME#ts-bindings-}"
+  echo "Downloading latest: $ARTIFACT_NAME"
 fi
 
 gh run download "$RUN_ID" -R "$REPO" -n "$ARTIFACT_NAME" -D "$TMPDIR/bindings"
