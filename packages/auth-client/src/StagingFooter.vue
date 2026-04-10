@@ -55,12 +55,16 @@ const backendInfo = ref('')
 
 // /api/health から SHA + PR 名を取得
 if (typeof window !== 'undefined') {
-  fetch(`${props.apiBase}/api/health`).then(r => r.json()).then((h: Record<string, string>) => {
-    const parts: string[] = []
-    if (h.git_sha && h.git_sha !== 'dev') parts.push(h.git_sha)
-    if (h.git_ref) parts.push(h.git_ref)
-    if (parts.length) backendInfo.value = parts.join(' — ')
-  }).catch(() => {})
+  ;(async () => {
+    try {
+      const res = await fetch(`${props.apiBase}/api/health`)
+      const h = await res.json() as Record<string, string>
+      const parts: string[] = []
+      if (h.git_sha && h.git_sha !== 'dev') parts.push(h.git_sha)
+      if (h.git_ref) parts.push(h.git_ref)
+      if (parts.length) backendInfo.value = parts.join(' — ')
+    } catch { /* ignore */ }
+  })()
 }
 
 const busy = ref(false)
