@@ -55,8 +55,8 @@ const backendInfo = ref('')
 
 // /api/health から SHA + PR 名を取得
 if (typeof window !== 'undefined') {
-  fetch(`${props.apiBase}/api/health`).then(r => r.json()).then(h => {
-    const parts = []
+  fetch(`${props.apiBase}/api/health`).then(r => r.json()).then((h: Record<string, string>) => {
+    const parts: string[] = []
     if (h.git_sha && h.git_sha !== 'dev') parts.push(h.git_sha)
     if (h.git_ref) parts.push(h.git_ref)
     if (parts.length) backendInfo.value = parts.join(' — ')
@@ -121,7 +121,7 @@ async function handleImport(event: Event) {
       body: text,
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const result = await res.json()
+    const result = await res.json() as { counts?: Record<string, number> }
     const counts = result.counts || {}
     const total = Object.values(counts).reduce((a: number, b: any) => a + (b as number), 0)
     statusMsg.value = `Imported ${total} records`

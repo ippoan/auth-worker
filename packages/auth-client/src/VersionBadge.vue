@@ -31,7 +31,7 @@ onMounted(async () => {
   if (!url) return
   try {
     const res = await fetch(url)
-    const h = await res.json()
+    const h = await res.json() as Record<string, string>
     backendVersion.value = h.version || ''
     backendSha.value = h.git_sha || ''
     backendRef.value = h.git_ref || ''
