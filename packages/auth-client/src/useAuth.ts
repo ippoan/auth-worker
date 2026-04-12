@@ -107,13 +107,29 @@ function clearLwDomain(): void {
 
 export const useAuth = () => {
   const config = useRuntimeConfig()
-  const authWorkerUrl = config.public.authWorkerUrl as string
+  const authWorkerUrl = (config.public.authWorkerUrl as string | undefined) || ''
 
   // Global reactive state (shared across all composable calls via key 'auth')
   const authState = useState<AuthState | null>('auth', () => null)
+  const isLoading = useState<boolean>('auth_loading', () => true)
 
-  /** localStorage からトークンを復元。期限切れなら破棄。 */
+  /** localStorage からトークンを復元。期限切れなら破棄。staging bypass 対応。 */
   function loadFromStorage(): void {
+    // Staging bypass: stagingTenantId 設定時は JWT 不要で認証状態を初期化
+    const stagingTenantId = (config.public.stagingTenantId as string | undefined) || ''
+    if (stagingTenantId) {
+      clearStorage()
+      authState.value = {
+        token: '',
+        orgId: stagingTenantId,
+        expiresAt: Math.floor(Date.now() / 1000) + 86400 * 365,
+        username: 'staging',
+        provider: 'staging',
+      }
+      isLoading.value = false
+      return
+    }
+
     const stored = readStorage()
     if (stored) {
       const now = Math.floor(Date.now() / 1000)
@@ -132,6 +148,7 @@ export const useAuth = () => {
         authState.value = null
       }
     }
+    isLoading.value = false
   }
 
   /**
@@ -224,15 +241,25 @@ export const useAuth = () => {
   }
 
   /**
-   * auth-worker ログイン画面へリダイレクト
-   * LINE WORKS ドメインが保存済みなら OAuth を直接開始（ログインページスキップ）
+   * ログイン画面へリダイレクト
+   * - auth-worker モード: authWorkerUrl 設定時（既存動作）
+   * - Direct API モード: authWorkerUrl 未設定 + apiBase 設定時（rust-alc-api 直接 OAuth）
    */
-  function redirectToLogin(): void {
+  function redirectToLogin(options?: { provider?: 'google'; callbackPath?: string }): void {
+    const callbackPath = options?.callbackPath ?? '/?lw_callback=1'
+    const redirectUri = window.location.origin + callbackPath
+
+    // Direct API login: auth-worker を使わず API バックエンドに直接 OAuth リダイレクト
+    const apiBase = ((config.public.apiBase as string | undefined) || '').replace(/\/$/, '')
+    if (!authWorkerUrl && apiBase && options?.provider === 'google') {
+      window.location.href = `${apiBase}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+      return
+    }
+
     if (!authWorkerUrl) {
       console.error('[Auth] authWorkerUrl is not configured')
       return
     }
-    const redirectUri = window.location.origin + '/?lw_callback=1'
 
     // URL パラメータによる自動ログイン（QRコード等の明示的指定を優先）
     const urlParams = new URLSearchParams(window.location.search)
@@ -272,6 +299,13 @@ export const useAuth = () => {
     } else {
       window.location.href = window.location.origin + '/?logout=1'
     }
+  }
+
+  /** 認証状態クリア（リダイレクトなし。アプリ側で遷移を制御する場合用） */
+  function clearAuth(): void {
+    clearStorage()
+    clearLwDomain()
+    authState.value = null
   }
 
   /** LINE WORKS 自動ログイン URL を生成 */
@@ -412,6 +446,7 @@ export const useAuth = () => {
   return {
     authState,
     isAuthenticated,
+    isLoading,
     token,
     orgId,
     orgSlug,
@@ -423,6 +458,7 @@ export const useAuth = () => {
     consumeFragment,
     redirectToLogin,
     logout,
+    clearAuth,
     saveLwDomain,
     getLwDomain,
     clearLwDomain,
