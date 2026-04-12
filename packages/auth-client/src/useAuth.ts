@@ -249,10 +249,18 @@ export const useAuth = () => {
     const callbackPath = options?.callbackPath ?? '/?lw_callback=1'
     const redirectUri = window.location.origin + callbackPath
 
-    // Direct API login: auth-worker を使わず API バックエンドに直接 OAuth リダイレクト
-    const apiBase = ((config.public.apiBase as string | undefined) || '').replace(/\/$/, '')
-    if (!authWorkerUrl && apiBase && options?.provider === 'google') {
-      window.location.href = `${apiBase}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+    // 明示的 provider 指定: auth-worker 経由 or Direct API で Google OAuth に直接リダイレクト
+    if (options?.provider === 'google') {
+      if (authWorkerUrl) {
+        window.location.href = `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+      } else {
+        const apiBase = ((config.public.apiBase as string | undefined) || '').replace(/\/$/, '')
+        if (apiBase) {
+          window.location.href = `${apiBase}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+        } else {
+          console.error('[Auth] Neither authWorkerUrl nor apiBase is configured')
+        }
+      }
       return
     }
 
