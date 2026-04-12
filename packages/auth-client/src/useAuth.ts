@@ -252,7 +252,7 @@ export const useAuth = () => {
     // 明示的 provider 指定: auth-worker 経由 or Direct API で Google OAuth に直接リダイレクト
     if (options?.provider === 'google') {
       if (authWorkerUrl) {
-        window.location.href = `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+        window.location.href = `${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
       } else {
         const apiBase = ((config.public.apiBase as string | undefined) || '').replace(/\/$/, '')
         if (apiBase) {
@@ -272,13 +272,13 @@ export const useAuth = () => {
     // URL パラメータによる自動ログイン（QRコード等の明示的指定を優先）
     const urlParams = new URLSearchParams(window.location.search)
     if (urlParams.get('provider') === 'google') {
-      window.location.href = `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+      window.location.href = `${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
       return
     }
     const lwParam = urlParams.get('lw')
     if (lwParam) {
       const params = new URLSearchParams({ domain: lwParam, redirect_uri: redirectUri })
-      window.location.href = `${authWorkerUrl}/api/auth/lineworks/redirect?${params.toString()}`
+      window.location.href = `${authWorkerUrl}/oauth/lineworks/redirect?${params.toString()}`
       return
     }
 
@@ -286,7 +286,7 @@ export const useAuth = () => {
     const lwDomain = getLwDomain()
     if (lwDomain) {
       const params = new URLSearchParams({ domain: lwDomain, redirect_uri: redirectUri })
-      window.location.href = `${authWorkerUrl}/api/auth/lineworks/redirect?${params.toString()}`
+      window.location.href = `${authWorkerUrl}/oauth/lineworks/redirect?${params.toString()}`
       return
     }
 
@@ -329,10 +329,10 @@ export const useAuth = () => {
     const redirectUri = `${window.location.origin}/?lw_callback=1`
     const lwDomain = getLwDomain()
     if (lwDomain) {
-      return `${authWorkerUrl}/api/auth/lineworks/redirect?domain=${encodeURIComponent(lwDomain)}&redirect_uri=${encodeURIComponent(redirectUri)}`
+      return `${authWorkerUrl}/oauth/lineworks/redirect?domain=${encodeURIComponent(lwDomain)}&redirect_uri=${encodeURIComponent(redirectUri)}`
     }
     if (authState.value?.provider === 'google') {
-      return `${authWorkerUrl}/api/auth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+      return `${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
     }
     return `${authWorkerUrl}/login?redirect_uri=${encodeURIComponent(redirectUri)}`
   }
