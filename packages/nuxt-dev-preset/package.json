@@ -1,0 +1,26 @@
+{
+  "name": "@ippoan/nuxt-dev-preset",
+  "version": "0.0.1",
+  "description": "Shared Nuxt module for ippoan dev servers (reads .ippoan-dev.yaml + configures Vite HMR for <name>-dev.ippoan.org).",
+  "type": "module",
+  "main": "./src/module.ts",
+  "types": "./src/module.ts",
+  "exports": {
+    ".": "./src/module.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "peerDependencies": {
+    "@nuxt/kit": ">=3.0.0",
+    "nuxt": ">=3.0.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ippoan/auth-worker.git",
+    "directory": "packages/nuxt-dev-preset"
+  }
+}
