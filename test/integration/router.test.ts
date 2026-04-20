@@ -107,6 +107,8 @@ const env = {
   ALLOWED_REDIRECT_ORIGINS: "https://app.test.example",
   ALC_API_ORIGIN: "https://alc-api.test.example",
   VERSION: "test",
+  WORKER_ENV: "prod",
+  AUTH_CONFIG: { get: async () => null } as unknown as KVNamespace,
 };
 
 describe("Router (index.ts)", () => {
