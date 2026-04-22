@@ -64,6 +64,10 @@ vi.mock("../../src/handlers/admin-requests", () => ({
   handleAdminRequestsPage: vi.fn(() => new Response("admin-requests")),
   handleAdminRequestsCallback: vi.fn(() => new Response("admin-requests-cb")),
 }));
+vi.mock("../../src/handlers/admin-config", () => ({
+  handleAdminConfigPage: vi.fn(() => new Response("admin-config")),
+  handleAdminConfigCallback: vi.fn(() => new Response("admin-config-cb")),
+}));
 vi.mock("../../src/handlers/logout", () => ({
   handleLogout: vi.fn(() => new Response("logout")),
 }));
@@ -135,6 +139,8 @@ describe("Router (index.ts)", () => {
     ["/admin/rich-menu/callback", "admin-rich-menu-cb"],
     ["/admin/requests", "admin-requests"],
     ["/admin/requests/callback", "admin-requests-cb"],
+    ["/admin/config", "admin-config"],
+    ["/admin/config/callback", "admin-config-cb"],
     ["/redirect?to=https://app1.test.example", "redirect"],
     ["/logout", "logout"],
   ];
