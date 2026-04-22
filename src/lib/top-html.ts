@@ -361,6 +361,9 @@ export function renderTopPage(
         <a href="/admin/sso" class="nav-item">
           <div class="nav-item-icon">🔑</div>SSO設定
         </a>
+        <a href="/admin/notify" class="nav-item">
+          <div class="nav-item-icon">🔔</div>通知管理
+        </a>
       </div>
     </div>
     <div id="nav-overlay" class="nav-overlay" onclick="toggleNav(false)"></div>

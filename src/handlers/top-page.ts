@@ -52,6 +52,12 @@ export async function handleTopPage(
   env: Env,
 ): Promise<Response> {
   const url = new URL(request.url);
+  // cloudflared quick tunnel 経由では request.url が http scheme になるので
+  // X-Forwarded-Proto ヘッダーを優先して public origin を再構築する。
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  if (forwardedProto && forwardedProto !== url.protocol.replace(":", "")) {
+    url.protocol = `${forwardedProto}:`;
+  }
 
   // Server-side auth check: redirect to /login if no auth cookie
   // Skip for WOFF flow (?woff=1) and OAuth callback return (?lw_callback=1)
