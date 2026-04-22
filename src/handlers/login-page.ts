@@ -14,6 +14,19 @@ export async function handleLoginPage(
 
   const requestOrigin = url.origin;
 
+  // Delegate OAuth to another auth-worker (used by /wt-quick tunnel worktrees).
+  // Note: wrangler dev (miniflare) rewrites Response.redirect Location headers to
+  // the dev server host, so we use client-side JS redirect instead.
+  if (env.LOGIN_DELEGATE_TO) {
+    const selfOrigin = env.AUTH_WORKER_ORIGIN || requestOrigin;
+    const target = redirectUri || `${selfOrigin}/top`;
+    const params = new URLSearchParams({ redirect_uri: target });
+    if (orgId) params.set("org_id", orgId);
+    const loc = `${env.LOGIN_DELEGATE_TO}/login?${params.toString()}`;
+    const html = `<!DOCTYPE html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${loc}"><script>location.replace(${JSON.stringify(loc)})</script><a href="${loc}">continue to login</a>`;
+    return new Response(html, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+  }
+
   if (!redirectUri) {
     return Response.redirect(
       `${requestOrigin}/login?redirect_uri=${encodeURIComponent(requestOrigin + "/top")}`,

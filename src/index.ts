@@ -27,6 +27,7 @@ import { handleJoinPage } from "./handlers/join-page";
 import { handleJoinDone } from "./handlers/join-callback";
 import { handleRedirect } from "./handlers/redirect";
 import { handleAdminRequestsPage, handleAdminRequestsCallback } from "./handlers/admin-requests";
+import { handleAdminNotifyPage, handleAdminNotifyCallback } from "./handlers/admin-notify";
 import {
   handleAccessRequestCreate, handleAccessRequestList,
   handleAccessRequestApprove, handleAccessRequestDecline,
@@ -46,6 +47,10 @@ export interface Env {
    *  `{"ohishi-exp":["<uuid-1>","<uuid-2>"]}`.
    *  Missing / malformed → deny all ohishi-exp access (fail-closed). */
   TENANT_ACL?: string;
+  /** When set, /login delegates OAuth to the given auth-worker origin instead of
+   *  running OAuth locally. Used by /wt-quick worktree tunnels whose random
+   *  `*.trycloudflare.com` URLs cannot be registered in Google OAuth console. */
+  LOGIN_DELEGATE_TO?: string;
 }
 
 function errorResponse(status: number, message: string): Response {
@@ -114,6 +119,10 @@ export default {
             return await handleAdminRequestsPage(request, env);
           case "/admin/requests/callback":
             return await handleAdminRequestsCallback();
+          case "/admin/notify":
+            return await handleAdminNotifyPage(request, env);
+          case "/admin/notify/callback":
+            return await handleAdminNotifyCallback();
           case "/redirect":
             return await handleRedirect(request, env);
           case "/logout":
