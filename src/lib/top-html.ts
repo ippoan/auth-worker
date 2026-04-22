@@ -11,8 +11,122 @@ export interface AppEntry {
   description: string;
 }
 
-export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): string {
+/**
+ * StagingFooter-style bar for /top.
+ * Mirrors @ippoan/auth-client/StagingFooter.vue but as inline HTML+JS
+ * (auth-worker serves plain HTML, no Vue).
+ *
+ * tenantId / alcApiOrigin are embedded via JSON.stringify to survive
+ * arbitrary quote characters.
+ */
+export function renderStagingFooter(alcApiOrigin: string, tenantId: string): string {
+  const apiJson = JSON.stringify(alcApiOrigin);
+  const tidJson = JSON.stringify(tenantId);
+  return `<div id="staging-footer" style="position:fixed;bottom:0;left:0;right:0;background:#eab308;color:#713f12;font-size:0.75rem;padding:0.375rem 0.75rem;display:flex;align-items:center;justify-content:space-between;z-index:50;gap:0.5rem;">
+    <span style="font-weight:700;">STAGING</span>
+    <span id="staging-backend-info" style="flex:1;text-align:center;opacity:0.75;"></span>
+    <div style="display:flex;align-items:center;gap:0.5rem;">
+      <button id="staging-btn-export" style="padding:0.125rem 0.5rem;background:#ca8a04;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:0.75rem;">Export</button>
+      <button id="staging-btn-import" style="padding:0.125rem 0.5rem;background:#ca8a04;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:0.75rem;">Import</button>
+      <input id="staging-file-input" type="file" accept=".json" style="display:none;">
+      <span id="staging-status"></span>
+    </div>
+  </div>
+  <script>
+  (function(){
+    var ALC_API = ${apiJson};
+    var TENANT_ID = ${tidJson};
+    var exportBtn = document.getElementById('staging-btn-export');
+    var importBtn = document.getElementById('staging-btn-import');
+    var fileInput = document.getElementById('staging-file-input');
+    var statusEl = document.getElementById('staging-status');
+    var infoEl = document.getElementById('staging-backend-info');
+
+    if (!TENANT_ID) { exportBtn.disabled = true; exportBtn.style.opacity = 0.5; }
+
+    fetch(ALC_API + '/api/health').then(function(r){ return r.json(); }).then(function(h){
+      var parts = [];
+      if (h.git_sha && h.git_sha !== 'dev') parts.push(h.git_sha);
+      if (h.git_ref) parts.push(h.git_ref);
+      if (parts.length) infoEl.textContent = parts.join(' — ');
+    }).catch(function(){});
+
+    function setStatus(msg, ok) {
+      statusEl.textContent = msg;
+      statusEl.style.color = ok ? '#14532d' : '#7f1d1d';
+      setTimeout(function(){ statusEl.textContent = ''; }, 5000);
+    }
+
+    exportBtn.addEventListener('click', function(){
+      if (!TENANT_ID) return;
+      exportBtn.disabled = true;
+      fetch(ALC_API + '/api/staging/export?tenant_id=' + encodeURIComponent(TENANT_ID))
+        .then(function(res){
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then(function(data){
+          var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'staging-export-' + new Date().toISOString().slice(0, 10) + '.json';
+          a.click();
+          URL.revokeObjectURL(a.href);
+          setStatus('Exported!', true);
+        })
+        .catch(function(e){ setStatus('Export failed: ' + e.message, false); })
+        .finally(function(){ exportBtn.disabled = false; });
+    });
+
+    importBtn.addEventListener('click', function(){ fileInput.click(); });
+    fileInput.addEventListener('change', function(ev){
+      var file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      importBtn.disabled = true;
+      file.text().then(function(text){
+        return fetch(ALC_API + '/api/staging/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: text,
+        });
+      }).then(function(res){
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      }).then(function(result){
+        var counts = result.counts || {};
+        var total = Object.values(counts).reduce(function(a, b){ return a + b; }, 0);
+        setStatus('Imported ' + total + ' records', true);
+      }).catch(function(e){
+        setStatus('Import failed: ' + e.message, false);
+      }).finally(function(){
+        importBtn.disabled = false;
+        ev.target.value = '';
+      });
+    });
+  })();
+  </script>`;
+}
+
+export interface TopPageStagingOpts {
+  /** Worker env; staging footer is rendered only when this equals "staging". */
+  workerEnv?: string;
+  /** rust-alc-api origin used by Export/Import buttons. */
+  alcApiOrigin?: string;
+  /** Current user's tenant_id (from cookie/JWT). Export button disabled when empty. */
+  tenantId?: string;
+}
+
+export function renderTopPage(
+  apps: AppEntry[],
+  authWorkerOrigin: string,
+  stagingOpts: TopPageStagingOpts = {},
+): string {
   const appsJson = JSON.stringify(apps);
+  const showStagingFooter =
+    stagingOpts.workerEnv === "staging" && !!stagingOpts.alcApiOrigin;
+  const footerHtml = showStagingFooter
+    ? renderStagingFooter(stagingOpts.alcApiOrigin ?? "", stagingOpts.tenantId ?? "")
+    : "";
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -267,6 +381,7 @@ export function renderTopPage(apps: AppEntry[], authWorkerOrigin: string): strin
     </div>
   </div>
 
+  ${footerHtml}
 
   <script>
     const AUTH_WORKER = ${JSON.stringify(authWorkerOrigin)};

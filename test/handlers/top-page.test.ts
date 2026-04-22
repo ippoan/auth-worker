@@ -87,6 +87,7 @@ describe("handleTopPage", () => {
         { name: "DTako 管理", url: "https://ohishi2.example", icon: "DVR", description: "ドライブレコーダーログ" },
       ],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -103,6 +104,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "物品管理", url: "https://nuxt-items.example", icon: "箱", description: "組織・個人の物品管理" }],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -119,6 +121,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "https://unknown.example", url: "https://unknown.example", icon: "App", description: "" }],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -142,6 +145,7 @@ describe("handleTopPage", () => {
         { name: "車検証管理", url: "https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev", icon: "車", description: "車検証・ファイル管理" },
       ],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -161,6 +165,7 @@ describe("handleTopPage", () => {
         { name: "アルコールチェック", url: "https://alc-app-staging.m-tama-ramu.workers.dev", icon: "🍺", description: "アルコール検知・管理" },
       ],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -185,6 +190,7 @@ describe("handleTopPage", () => {
         { name: "物品管理", url: "https://items-staging.ippoan.org", icon: "箱", description: "組織・個人の物品管理" },
       ],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -202,6 +208,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車検証管理", url: "https://carins-staging.ippoan.org", icon: "車", description: "車検証・ファイル管理" }],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -213,7 +220,11 @@ describe("handleTopPage", () => {
 
     await handleTopPage(req, env);
 
-    expect(renderTopPage).toHaveBeenCalledWith([], "https://auth.test.example");
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [],
+      "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+    );
   });
 
   it("hides origins:wt entries from the rendered tile list", async () => {
@@ -232,6 +243,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車検証管理", url: "https://nuxt-pwa-carins.example", icon: "車", description: "車検証・ファイル管理" }],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
     const lastCall = vi.mocked(renderTopPage).mock.calls[0]!;
     const calledApps = lastCall[0];
@@ -256,6 +268,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "DTako 管理", url: "https://dtako-admin.example", icon: "DVR", description: "ドライブレコーダーログ" }],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -277,6 +290,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車検証管理", url: "https://nuxt-pwa-carins.example", icon: "車", description: "車検証・ファイル管理" }],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 
@@ -295,7 +309,11 @@ describe("handleTopPage", () => {
 
     await handleTopPage(req, env);
 
-    expect(renderTopPage).toHaveBeenCalledWith([], "https://auth.test.example");
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [],
+      "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+    );
   });
 
   it("hides ohishi-exp tile when cookie JWT payload is malformed", async () => {
@@ -312,7 +330,11 @@ describe("handleTopPage", () => {
 
     await handleTopPage(req, env);
 
-    expect(renderTopPage).toHaveBeenCalledWith([], "https://auth.test.example");
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [],
+      "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+    );
   });
 
   it("hides ohishi-exp tile when TENANT_ACL secret is missing (fail-closed)", async () => {
@@ -329,7 +351,11 @@ describe("handleTopPage", () => {
 
     await handleTopPage(req, env);
 
-    expect(renderTopPage).toHaveBeenCalledWith([], "https://auth.test.example");
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [],
+      "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+    );
   });
 
   it("leaves ippoan tiles visible regardless of tenant_id", async () => {
@@ -348,6 +374,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車検証管理", url: "https://nuxt-pwa-carins.example", icon: "車", description: "車検証・ファイル管理" }],
       "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
   });
 });

@@ -93,7 +93,11 @@ export async function handleTopPage(
     visibleApps.push(app);
   }
 
-  const html = renderTopPage(visibleApps, requestOrigin);
+  const html = renderTopPage(visibleApps, requestOrigin, {
+    workerEnv: env.WORKER_ENV,
+    alcApiOrigin: env.ALC_API_ORIGIN,
+    tenantId,
+  });
   return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
