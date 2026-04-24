@@ -2,6 +2,8 @@ import { handleLoginPage } from "./handlers/login-page";
 import { handleAuthLogin } from "./handlers/login-api";
 import { handleGoogleRedirect } from "./handlers/google-redirect";
 import { handleGoogleCallback } from "./handlers/google-callback";
+import { handleEgovRedirect } from "./handlers/egov-redirect";
+import { handleEgovCallback } from "./handlers/egov-callback";
 import { handleLineworksRedirect } from "./handlers/lineworks-redirect";
 import { handleLineworksCallback } from "./handlers/lineworks-callback";
 import { handleAdminSsoPage, handleAdminSsoCallback } from "./handlers/admin-sso";
@@ -43,6 +45,10 @@ export interface Env {
   VERSION: string;
   WORKER_ENV: string;
   AUTH_CONFIG: KVNamespace;
+  /** e-Gov (Keycloak) OAuth — all optional; handlers return 503 if unset. */
+  EGOV_CLIENT_ID?: string;
+  EGOV_CLIENT_SECRET?: string;
+  EGOV_AUTH_BASE?: string;
   /** JSON map of github-org → allowlisted tenant_ids. Example:
    *  `{"ohishi-exp":["<uuid-1>","<uuid-2>"]}`.
    *  Missing / malformed → deny all ohishi-exp access (fail-closed). */
@@ -97,6 +103,10 @@ export default {
             return await handleGoogleRedirect(request, env);
           case "/oauth/google/callback":
             return await handleGoogleCallback(request, env);
+          case "/oauth/egov/redirect":
+            return await handleEgovRedirect(request, env);
+          case "/oauth/egov/callback":
+            return await handleEgovCallback(request, env);
           case "/oauth/lineworks/redirect":
             return await handleLineworksRedirect(request, env);
           case "/oauth/lineworks/callback":
