@@ -44,6 +44,12 @@ vi.mock("../../src/handlers/lineworks-redirect", () => ({
 vi.mock("../../src/handlers/lineworks-callback", () => ({
   handleLineworksCallback: vi.fn(() => new Response("lw-callback")),
 }));
+vi.mock("../../src/handlers/egov-redirect", () => ({
+  handleEgovRedirect: vi.fn(() => new Response("egov-redirect")),
+}));
+vi.mock("../../src/handlers/egov-callback", () => ({
+  handleEgovCallback: vi.fn(() => new Response("egov-callback")),
+}));
 vi.mock("../../src/handlers/woff-auth", () => ({
   handleWoffAuth: vi.fn(() => new Response("woff-auth")),
   handleWoffConfig: vi.fn(() => new Response("woff-config")),
@@ -130,6 +136,8 @@ describe("Router (index.ts)", () => {
     ["/oauth/google/callback", "google-callback"],
     ["/oauth/lineworks/redirect", "lw-redirect"],
     ["/oauth/lineworks/callback", "lw-callback"],
+    ["/oauth/egov/redirect", "egov-redirect"],
+    ["/oauth/egov/callback", "egov-callback"],
     ["/auth/woff-config", "woff-config"],
     ["/admin/sso", "admin-sso"],
     ["/admin/sso/callback", "admin-sso-cb"],
