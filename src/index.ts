@@ -42,8 +42,9 @@ export interface Env {
   OAUTH_STATE_SECRET: string;
   AUTH_WORKER_ORIGIN: string;
   ALC_API_ORIGIN: string;
-  /** staging Cloud Run の rust-alc-api。Bot Config Import (developer 専用) 用 proxy 先 */
-  ALC_API_STAGING_ORIGIN: string;
+  /** staging Cloud Run の rust-alc-api。Bot Config Import (developer 専用) 用 proxy 先。
+   *  未設定なら handler 内で本番 staging URL に fallback する。 */
+  ALC_API_STAGING_ORIGIN?: string;
   VERSION: string;
   WORKER_ENV: string;
   AUTH_CONFIG: KVNamespace;
