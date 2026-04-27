@@ -45,6 +45,10 @@ export interface Env {
   VERSION: string;
   WORKER_ENV: string;
   AUTH_CONFIG: KVNamespace;
+  /** HS256 JWT secret, shared with rust-alc-api. Used by /top to verify the
+   *  `logi_auth_token` cookie before serving the page. Missing → /top
+   *  redirects everyone to /login (fail-closed). */
+  JWT_SECRET: string;
   /** e-Gov (Keycloak) OAuth — all optional; handlers return 503 if unset. */
   EGOV_CLIENT_ID?: string;
   EGOV_CLIENT_SECRET?: string;

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createMockEnv, createMockKV } from "../helpers/mock-env";
+import { createMockEnv, createMockKV, TEST_JWT_SECRET } from "../helpers/mock-env";
+import { signTestJwt } from "../helpers/test-jwt";
 
 vi.mock("../../src/lib/top-html", () => ({
   renderTopPage: vi.fn(() => "<html>mock top page</html>"),
@@ -8,14 +9,11 @@ vi.mock("../../src/lib/top-html", () => ({
 import { handleTopPage } from "../../src/handlers/top-page";
 import { renderTopPage } from "../../src/lib/top-html";
 
-/**
- * Build an HS256-looking JWT (unsigned — only the payload needs to be valid
- * base64 JSON, since the handler just decodes without verifying).
- */
-function jwtWithPayload(payload: Record<string, unknown>): string {
-  const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const body = btoa(JSON.stringify(payload));
-  return `${header}.${body}.fake-signature`;
+/** Sign a JWT with the test secret so verifyJwt accepts it. */
+function authedCookie(payload: Record<string, unknown> = {}): Promise<string> {
+  return signTestJwt(payload, TEST_JWT_SECRET).then(
+    (token) => `logi_auth_token=${token}`,
+  );
 }
 
 describe("handleTopPage", () => {
@@ -36,10 +34,52 @@ describe("handleTopPage", () => {
     expect(location).toContain(encodeURIComponent("https://auth.test.example/top"));
   });
 
-  it("returns HTML when auth cookie is present", async () => {
+  it("redirects to /login when cookie JWT signature is invalid", async () => {
+    // Token signed with a different secret → fails verifyJwt.
+    const token = await signTestJwt({ sub: "u1" }, "wrong-secret");
     const env = createMockEnv();
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=some-jwt-token" },
+      headers: { Cookie: `logi_auth_token=${token}` },
+    });
+
+    const res = await handleTopPage(req, env);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toContain("/login");
+  });
+
+  it("redirects to /login when cookie JWT is expired", async () => {
+    const token = await signTestJwt(
+      { sub: "u1", exp: Math.floor(Date.now() / 1000) - 60 },
+      TEST_JWT_SECRET,
+    );
+    const env = createMockEnv();
+    const req = new Request("https://auth.test.example/top", {
+      headers: { Cookie: `logi_auth_token=${token}` },
+    });
+
+    const res = await handleTopPage(req, env);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toContain("/login");
+  });
+
+  it("redirects to /login when cookie JWT is malformed", async () => {
+    const env = createMockEnv();
+    const req = new Request("https://auth.test.example/top", {
+      headers: { Cookie: "logi_auth_token=not.a.valid.jwt" },
+    });
+
+    const res = await handleTopPage(req, env);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toContain("/login");
+  });
+
+  it("returns HTML when auth cookie is a valid signed JWT", async () => {
+    const env = createMockEnv();
+    const req = new Request("https://auth.test.example/top", {
+      headers: { Cookie: await authedCookie() },
     });
 
     const res = await handleTopPage(req, env);
@@ -76,7 +116,7 @@ describe("handleTopPage", () => {
       AUTH_WORKER_ORIGIN: "https://auth.test.example",
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -96,7 +136,7 @@ describe("handleTopPage", () => {
       allowedOrigins: "https://nuxt-items.example",
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -113,7 +153,7 @@ describe("handleTopPage", () => {
       allowedOrigins: "https://unknown.example",
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -131,7 +171,7 @@ describe("handleTopPage", () => {
         "https://alc-app-staging.m-tama-ramu.workers.dev,https://dtako-admin-staging.m-tama-ramu.workers.dev,https://nuxt-ichibanboshi-staging.m-tama-ramu.workers.dev,https://nuxt-notify-staging.m-tama-ramu.workers.dev,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev",
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -155,7 +195,7 @@ describe("handleTopPage", () => {
         "https://auth-worker-staging.m-tama-ramu.workers.dev,https://alc-app-staging.m-tama-ramu.workers.dev",
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -175,7 +215,7 @@ describe("handleTopPage", () => {
         "https://alc-staging.ippoan.org,https://carins-staging.ippoan.org,https://dtako-staging.ippoan.org,https://ichibanboshi-staging.ippoan.org,https://notify-staging.ippoan.org,https://items-staging.ippoan.org",
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -200,7 +240,7 @@ describe("handleTopPage", () => {
         "https://carins-staging.ippoan.org,https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev",
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -215,7 +255,7 @@ describe("handleTopPage", () => {
   it("handles empty ALLOWED_REDIRECT_ORIGINS", async () => {
     const env = createMockEnv({ allowedOrigins: "" });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -235,7 +275,7 @@ describe("handleTopPage", () => {
       }),
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=test-jwt" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);
@@ -251,7 +291,6 @@ describe("handleTopPage", () => {
   });
 
   it("shows ohishi-exp tile when tenant_id is in TENANT_ACL", async () => {
-    const token = jwtWithPayload({ tenant_id: "tenant-a" });
     const env = createMockEnv({
       AUTH_CONFIG: createMockKV({
         "origins:prod": "https://dtako-admin.example",
@@ -260,7 +299,7 @@ describe("handleTopPage", () => {
       TENANT_ACL: JSON.stringify({ "ohishi-exp": ["tenant-a"] }),
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: `logi_auth_token=${token}` },
+      headers: { Cookie: await authedCookie({ tenant_id: "tenant-a" }) },
     });
 
     await handleTopPage(req, env);
@@ -273,7 +312,6 @@ describe("handleTopPage", () => {
   });
 
   it("hides ohishi-exp tile when tenant_id is not in TENANT_ACL", async () => {
-    const token = jwtWithPayload({ tenant_id: "tenant-z" });
     const env = createMockEnv({
       AUTH_CONFIG: createMockKV({
         "origins:prod": "https://dtako-admin.example,https://nuxt-pwa-carins.example",
@@ -282,7 +320,7 @@ describe("handleTopPage", () => {
       TENANT_ACL: JSON.stringify({ "ohishi-exp": ["tenant-a"] }),
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: `logi_auth_token=${token}` },
+      headers: { Cookie: await authedCookie({ tenant_id: "tenant-z" }) },
     });
 
     await handleTopPage(req, env);
@@ -295,7 +333,6 @@ describe("handleTopPage", () => {
   });
 
   it("hides ohishi-exp tile when cookie JWT has no tenant_id", async () => {
-    const token = jwtWithPayload({ sub: "user-1" });
     const env = createMockEnv({
       AUTH_CONFIG: createMockKV({
         "origins:prod": "https://dtako-admin.example",
@@ -304,28 +341,7 @@ describe("handleTopPage", () => {
       TENANT_ACL: JSON.stringify({ "ohishi-exp": ["tenant-a"] }),
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: `logi_auth_token=${token}` },
-    });
-
-    await handleTopPage(req, env);
-
-    expect(renderTopPage).toHaveBeenCalledWith(
-      [],
-      "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
-    );
-  });
-
-  it("hides ohishi-exp tile when cookie JWT payload is malformed", async () => {
-    const env = createMockEnv({
-      AUTH_CONFIG: createMockKV({
-        "origins:prod": "https://dtako-admin.example",
-        "app-orgs": JSON.stringify({ "dtako-admin": "ohishi-exp" }),
-      }),
-      TENANT_ACL: JSON.stringify({ "ohishi-exp": ["tenant-a"] }),
-    });
-    const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=not.a.valid.jwt" },
+      headers: { Cookie: await authedCookie({ sub: "user-1" }) },
     });
 
     await handleTopPage(req, env);
@@ -338,7 +354,6 @@ describe("handleTopPage", () => {
   });
 
   it("hides ohishi-exp tile when TENANT_ACL secret is missing (fail-closed)", async () => {
-    const token = jwtWithPayload({ tenant_id: "tenant-a" });
     const env = createMockEnv({
       AUTH_CONFIG: createMockKV({
         "origins:prod": "https://dtako-admin.example",
@@ -346,7 +361,7 @@ describe("handleTopPage", () => {
       }),
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: `logi_auth_token=${token}` },
+      headers: { Cookie: await authedCookie({ tenant_id: "tenant-a" }) },
     });
 
     await handleTopPage(req, env);
@@ -366,7 +381,7 @@ describe("handleTopPage", () => {
       }),
     });
     const req = new Request("https://auth.test.example/top", {
-      headers: { Cookie: "logi_auth_token=no-tenant-claim.test" },
+      headers: { Cookie: await authedCookie() },
     });
 
     await handleTopPage(req, env);

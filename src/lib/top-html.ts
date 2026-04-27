@@ -512,6 +512,17 @@ export function renderTopPage(
         }
       }
 
+      // 0b. Hydrate sessionStorage from the parent-domain cookie when missing.
+      // sessionStorage is per-tab/per-origin, so a tab that landed here without
+      // going through the OAuth callback (e.g. opened directly while another
+      // tab on a sibling subdomain was already logged in) starts empty even
+      // though the SSO cookie is present. /redirect reads only sessionStorage,
+      // so without this hydration clicking an app card would bounce to /login.
+      if (!sessionStorage.getItem('auth_token')) {
+        var cookieToken = getCookie(AUTH_COOKIE);
+        if (cookieToken) sessionStorage.setItem('auth_token', cookieToken);
+      }
+
       var params = new URLSearchParams(window.location.search);
       var errorParam = params.get('error');
       if (errorParam === 'no_permission') {
