@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { TEST_JWT_SECRET } from "../helpers/mock-env";
 
 // Mock handler modules
 vi.mock("../../src/handlers/api-sso", () => ({
@@ -113,6 +114,7 @@ const env = {
   GOOGLE_CLIENT_ID: "cid",
   GOOGLE_CLIENT_SECRET: "cs",
   OAUTH_STATE_SECRET: "os",
+  JWT_SECRET: TEST_JWT_SECRET,
   AUTH_WORKER_ORIGIN: "https://auth.test.example",
   ALC_API_ORIGIN: "https://alc-api.test.example",
   VERSION: "test",

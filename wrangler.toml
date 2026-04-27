@@ -32,6 +32,7 @@ custom_domain = true
 # GOOGLE_CLIENT_ID
 # GOOGLE_CLIENT_SECRET
 # OAUTH_STATE_SECRET
+# JWT_SECRET           (HS256 secret shared with rust-alc-api; verifies /top cookie)
 # EGOV_CLIENT_SECRET   (e-Gov sbx softwareID K26XGOmbDusxfKsp 用の client_secret)
 #
 # Allowlist (managed via `wrangler kv key put --remote --namespace-id=f13ecae4b69043819c09f606abb84797 <key>`):

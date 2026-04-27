@@ -29,6 +29,7 @@ export function createMockEnv(
     GOOGLE_CLIENT_ID: "test-google-client-id",
     GOOGLE_CLIENT_SECRET: "test-google-client-secret",
     OAUTH_STATE_SECRET: "test-oauth-state-secret-32chars!",
+    JWT_SECRET: TEST_JWT_SECRET,
     AUTH_WORKER_ORIGIN: "https://auth.test.example",
     ALC_API_ORIGIN: "https://alc-api.test.example",
     VERSION: "test",
@@ -37,3 +38,7 @@ export function createMockEnv(
     ...rest,
   };
 }
+
+/** Default HS256 secret used by createMockEnv. Re-exported so tests that
+ *  forge JWT cookies can sign them with the same key. */
+export const TEST_JWT_SECRET = "test-jwt-secret-32chars-padding!";

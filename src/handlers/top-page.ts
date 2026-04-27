@@ -7,6 +7,7 @@ import { renderTopPage, type AppEntry } from "../lib/top-html";
 import { getAuthCookie } from "../lib/cookies";
 import { classifyOrigin, getDisplayOrigins } from "../lib/config";
 import { isTenantInOrgAllowlist } from "../lib/acl";
+import { verifyJwt, type JwtPayload } from "../lib/jwt";
 
 /** Known app patterns — matches both production and staging URLs */
 const APP_PATTERNS: Array<{
@@ -34,20 +35,18 @@ function originToApp(origin: string): AppEntry {
   return { name: origin, url: origin, icon: "App", description: "" };
 }
 
-function claimsFromCookie(request: Request): { tenantId: string; email: string } {
-  const token = getAuthCookie(request);
-  if (!token) return { tenantId: "", email: "" };
-  const payloadB64 = token.split(".")[1];
-  if (!payloadB64) return { tenantId: "", email: "" };
-  try {
-    const payload = JSON.parse(atob(payloadB64));
-    return {
-      tenantId: payload.tenant_id || payload.org || "",
-      email: payload.email || "",
-    };
-  } catch {
-    return { tenantId: "", email: "" };
-  }
+function claimsFromPayload(payload: JwtPayload | null): {
+  tenantId: string;
+  email: string;
+} {
+  if (!payload) return { tenantId: "", email: "" };
+  return {
+    tenantId:
+      (payload.tenant_id as string | undefined) ||
+      (payload.org as string | undefined) ||
+      "",
+    email: (payload.email as string | undefined) || "",
+  };
 }
 
 export async function handleTopPage(
@@ -62,10 +61,20 @@ export async function handleTopPage(
     url.protocol = `${forwardedProto}:`;
   }
 
-  // Server-side auth check: redirect to /login if no auth cookie
-  // Skip for WOFF flow (?woff=1) and OAuth callback return (?lw_callback=1)
-  // lw_callback: cookie was just set by callback, client JS will process #token fragment
-  if (!url.searchParams.has("woff") && !url.searchParams.has("lw_callback") && !getAuthCookie(request)) {
+  // Server-side auth check: verify the cookie JWT (signature + exp).
+  // Skip verification for WOFF flow (?woff=1) — the page must render so the
+  // WOFF SDK can run and obtain a token client-side. ?lw_callback=1 also
+  // bypasses because the OAuth callback may redirect here in the same response
+  // that issued Set-Cookie, before the UA persists it for the next request.
+  const cookieToken = getAuthCookie(request);
+  const payload = cookieToken
+    ? await verifyJwt(cookieToken, env.JWT_SECRET)
+    : null;
+  if (
+    !url.searchParams.has("woff") &&
+    !url.searchParams.has("lw_callback") &&
+    !payload
+  ) {
     const loginUrl = `${url.origin}/login?redirect_uri=${encodeURIComponent(url.origin + "/top")}`;
     return Response.redirect(loginUrl, 302);
   }
@@ -73,7 +82,7 @@ export async function handleTopPage(
   console.log(JSON.stringify({ event: "top_page" }));
 
   const requestOrigin = url.origin;
-  const { tenantId, email } = claimsFromCookie(request);
+  const { tenantId, email } = claimsFromPayload(payload);
 
   const apps = (await getDisplayOrigins(env))
     .split(",")
