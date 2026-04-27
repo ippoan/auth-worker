@@ -225,6 +225,39 @@ export function renderAdminSsoPage(frontendOrigins: string[] = []): string {
       <div class="loading">\u8aad\u307f\u8fbc\u307f\u4e2d...</div>
     </div>
 
+    <!-- Developer-only: dump bot_configs JSON for staging restore -->
+    <div id="bot-export-section" class="hidden" style="margin-top:1rem;border:1px dashed #d1d5db;border-radius:6px;padding:0.75rem;background:#fafaf9;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+        <div style="font-size:0.875rem;color:#374151;">
+          <strong>\ud83d\udce5 Bot \u8a2d\u5b9a JSON \u30c0\u30a6\u30f3\u30ed\u30fc\u30c9</strong>
+          <div style="font-size:0.75rem;color:#6b7280;margin-top:0.25rem;">
+            \u958b\u767a\u8005\u5c02\u7528\u3002staging \u3067 <code>POST /api/staging/import</code> \u306b\u8cbc\u308a\u4ed8\u3051\u308b\u3068\u5fa9\u5143\u3067\u304d\u307e\u3059\u3002
+          </div>
+        </div>
+        <button class="btn btn-gray btn-sm" onclick="exportBotConfigs()" id="bot-export-btn">
+          \ud83d\udce5 JSON \u53d6\u5f97
+        </button>
+      </div>
+    </div>
+
+    <!-- Developer-only: import bot_configs JSON into staging -->
+    <div id="bot-import-section" class="hidden" style="margin-top:0.5rem;border:1px dashed #d1d5db;border-radius:6px;padding:0.75rem;background:#fafaf9;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+        <div style="font-size:0.875rem;color:#374151;">
+          <strong>\ud83d\udce4 staging \u306b Bot \u8a2d\u5b9a\u3092 Import</strong>
+          <div style="font-size:0.75rem;color:#6b7280;margin-top:0.25rem;">
+            \u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u3057\u305f JSON \u3092 staging Cloud Run \u306b upsert \u3057\u307e\u3059\u3002
+          </div>
+        </div>
+        <div style="display:flex;gap:0.5rem;align-items:center;">
+          <input type="file" id="bot-import-file" accept=".json" style="font-size:0.75rem;">
+          <button class="btn btn-gray btn-sm" onclick="importBotConfigs()" id="bot-import-btn">
+            \ud83d\udce4 Import
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="divider"></div>
 
     <h2 id="bot-form-title">\u65b0\u898f Bot \u8ffd\u52a0</h2>
@@ -589,9 +622,93 @@ export function renderAdminSsoPage(frontendOrigins: string[] = []): string {
       try {
         const data = await api('/api/bot-config/list');
         renderBotConfigs(data.configs || []);
+        maybeShowExportSection();
       } catch (e) {
         document.getElementById('bot-config-list').innerHTML =
           '<div class="error">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    // Show developer-only export section if logged-in email matches DEVELOPER_EMAILS.
+    // Server enforces the allowlist; this is just a UI gate to hide the button from others.
+    const DEVELOPER_EMAILS = ['m.tama.ramu@gmail.com'];
+    function maybeShowExportSection() {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        const email = (payload.username || payload.email || '').toLowerCase();
+        if (DEVELOPER_EMAILS.includes(email)) {
+          document.getElementById('bot-export-section').classList.remove('hidden');
+          document.getElementById('bot-import-section').classList.remove('hidden');
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    async function importBotConfigs() {
+      const fileEl = document.getElementById('bot-import-file');
+      if (!fileEl.files[0]) { alert('JSON ファイルを選択してください'); return; }
+      const btn = document.getElementById('bot-import-btn');
+      btn.disabled = true;
+      btn.textContent = 'Import 中...';
+      try {
+        const text = await fileEl.files[0].text();
+        const res = await fetch('/api/bot-config/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: text,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Import 失敗 (' + res.status + '): ' + JSON.stringify(data));
+          return;
+        }
+        document.getElementById('bot-msg').innerHTML =
+          '<div class="success">Import 完了: ' + escapeHtml(JSON.stringify(data)) + '</div>';
+      } catch (e) {
+        alert('Import 失敗: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📤 Import';
+      }
+    }
+
+    async function exportBotConfigs() {
+      const btn = document.getElementById('bot-export-btn');
+      btn.disabled = true;
+      btn.textContent = '取得中...';
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        const tenantId = payload.org || payload.tenant_id || payload.org_id;
+        if (!tenantId) {
+          alert('JWT にテナント ID が含まれていません');
+          return;
+        }
+        const res = await fetch('/api/bot-config/export?tenant_id=' + encodeURIComponent(tenantId), {
+          headers: { 'Authorization': 'Bearer ' + token },
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          alert('Export 失敗 (' + res.status + '): ' + text);
+          return;
+        }
+        const blob = await res.blob();
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename="([^"]+)"/);
+        const filename = m ? m[1] : ('bot-configs-' + tenantId + '.json');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        document.getElementById('bot-msg').innerHTML =
+          '<div class="success">' + escapeHtml(filename) + ' をダウンロードしました</div>';
+      } catch (e) {
+        alert('Export 失敗: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📥 JSON 取得';
       }
     }
 

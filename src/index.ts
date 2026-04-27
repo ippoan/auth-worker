@@ -9,7 +9,7 @@ import { handleLineworksCallback } from "./handlers/lineworks-callback";
 import { handleAdminSsoPage, handleAdminSsoCallback } from "./handlers/admin-sso";
 import { handleAdminUsersPage, handleAdminUsersCallback } from "./handlers/admin-users";
 import { handleSsoList, handleSsoUpsert, handleSsoDelete } from "./handlers/api-sso";
-import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete } from "./handlers/api-bot-config";
+import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete, handleBotConfigExport, handleBotConfigImport } from "./handlers/api-bot-config";
 import { handleWoffAuth, handleWoffConfig } from "./handlers/woff-auth";
 import { handleMyOrgs } from "./handlers/api-my-orgs";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
@@ -42,6 +42,8 @@ export interface Env {
   OAUTH_STATE_SECRET: string;
   AUTH_WORKER_ORIGIN: string;
   ALC_API_ORIGIN: string;
+  /** staging Cloud Run の rust-alc-api。Bot Config Import (developer 専用) 用 proxy 先 */
+  ALC_API_STAGING_ORIGIN: string;
   VERSION: string;
   WORKER_ENV: string;
   AUTH_CONFIG: KVNamespace;
@@ -143,6 +145,8 @@ export default {
             return await handleAdminNotifyPage(request, env);
           case "/admin/notify/callback":
             return await handleAdminNotifyCallback();
+          case "/api/bot-config/export":
+            return await handleBotConfigExport(request, env);
           case "/redirect":
             return await handleRedirect(request, env);
           case "/logout":
@@ -167,6 +171,8 @@ export default {
             return await handleBotConfigUpsert(request, env);
           case "/api/bot-config/delete":
             return await handleBotConfigDelete(request, env);
+          case "/api/bot-config/import":
+            return await handleBotConfigImport(request, env);
           // User Management API
           case "/api/users/list":
             return await handleUsersList(request, env);

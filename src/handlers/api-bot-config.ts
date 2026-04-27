@@ -125,6 +125,68 @@ export async function handleBotConfigUpsert(
   });
 }
 
+export async function handleBotConfigExport(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const token = extractToken(request);
+  if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const url = new URL(request.url);
+  const tenantId = url.searchParams.get("tenant_id");
+  if (!tenantId) return jsonResponse({ error: "tenant_id is required" }, 400);
+
+  console.log(JSON.stringify({ event: "bot_config_export", tenant_id: tenantId }));
+
+  const resp = await fetch(
+    `${env.ALC_API_ORIGIN}/api/admin/bot/configs/export?tenant_id=${encodeURIComponent(tenantId)}`,
+    { headers: { "Authorization": `Bearer ${token}` } },
+  );
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    return jsonResponse({ error: text }, resp.status);
+  }
+
+  // pass-through JSON body, suggest download with Content-Disposition
+  const body = await resp.text();
+  const filename = `bot-configs-${tenantId}-${new Date().toISOString().slice(0, 10)}.json`;
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    },
+  });
+}
+
+export async function handleBotConfigImport(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const token = extractToken(request);
+  if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const body = await request.text();
+  if (!body) return jsonResponse({ error: "body is empty" }, 400);
+
+  console.log(JSON.stringify({ event: "bot_config_import", bytes: body.length }));
+
+  // staging endpoint は STAGING_MODE=true でガードされた public route なので
+  // Authorization は付けない (むしろ付けると JWT 検証で弾かれる可能性あり)
+  const resp = await fetch(`${env.ALC_API_STAGING_ORIGIN}/api/staging/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+
+  const text = await resp.text();
+  return new Response(text, {
+    status: resp.status,
+    headers: { "Content-Type": resp.headers.get("Content-Type") ?? "application/json" },
+  });
+}
+
 export async function handleBotConfigDelete(
   request: Request,
   env: Env,

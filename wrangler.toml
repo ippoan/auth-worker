@@ -6,6 +6,7 @@ account_id = "24b45709d060d957340180e995f0d373"
 [vars]
 AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
 ALC_API_ORIGIN = "https://alc-api.ippoan.org"
+ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "prod"
 # e-Gov (Keycloak) OAuth — sbx (sandbox) endpoint; same on prod + staging since
 # we only integrate with e-Gov's sbx environment.
@@ -51,6 +52,7 @@ custom_domain = true
 [env.staging.vars]
 AUTH_WORKER_ORIGIN = "https://auth-staging.ippoan.org"
 ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
+ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "staging"
 EGOV_AUTH_BASE = "https://account2.sbx.e-gov.go.jp/auth"
 EGOV_CLIENT_ID = "K26XGOmbDusxfKsp"
