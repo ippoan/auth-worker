@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TEST_JWT_SECRET } from "../helpers/mock-env";
+import { TEST_JWT_SECRET, createMockDONamespace } from "../helpers/mock-env";
 
 // Mock handler modules
 vi.mock("../../src/handlers/api-sso", () => ({
@@ -109,6 +109,18 @@ vi.mock("../../src/handlers/join-page", () => ({
 vi.mock("../../src/handlers/join-callback", () => ({
   handleJoinDone: vi.fn(() => new Response("join-done")),
 }));
+vi.mock("../../src/handlers/lineworks-webhook", () => ({
+  handleLineworksWebhook: vi.fn((_req, _env, botId: string) =>
+    new Response(`lw-webhook:${botId}`),
+  ),
+  handleLineworksRefresh: vi.fn((_req, _env, botId: string) =>
+    new Response(`lw-refresh:${botId}`),
+  ),
+}));
+// Stub the DurableObject export so importing index.ts doesn't blow up
+vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
+  LineworksWebhookDO: class {},
+}));
 
 import worker from "../../src/index";
 
@@ -121,10 +133,13 @@ const env = {
   ALC_API_ORIGIN: "https://alc-api.test.example",
   VERSION: "test",
   WORKER_ENV: "prod",
+  SSO_ENCRYPTION_KEY: "test-encryption-key",
   AUTH_CONFIG: {
     get: async (key: string) =>
       key === "origins:prod" ? "https://app.test.example" : null,
   } as unknown as KVNamespace,
+  // Mocked handler doesn't actually use this binding
+  LINEWORKS_WEBHOOK_DO: createMockDONamespace(),
 };
 
 describe("Router (index.ts)", () => {
@@ -230,6 +245,23 @@ describe("Router (index.ts)", () => {
       expect(await res.text()).toBe(expected);
     });
   }
+
+  // --- Dynamic POST routes (lineworks webhook + refresh) ---
+  it("POST /lineworks/webhook/:bot_id → lw-webhook handler with bot_id", async () => {
+    const req = new Request("https://auth.test.example/lineworks/webhook/bot-abc", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("lw-webhook:bot-abc");
+  });
+
+  it("POST /lineworks/refresh/:bot_id → lw-refresh handler with bot_id", async () => {
+    const req = new Request("https://auth.test.example/lineworks/refresh/bot-xyz", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("lw-refresh:bot-xyz");
+  });
 
   // --- 404 / 405 ---
   it("GET unknown path returns 404", async () => {

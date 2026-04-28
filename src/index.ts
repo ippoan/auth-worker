@@ -35,6 +35,8 @@ import {
   handleAccessRequestApprove, handleAccessRequestDecline,
 } from "./handlers/api-access-requests";
 import { corsPreflight } from "./lib/errors";
+import { handleLineworksWebhook, handleLineworksRefresh } from "./handlers/lineworks-webhook";
+export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 
 export interface Env {
   GOOGLE_CLIENT_ID: string;
@@ -70,6 +72,10 @@ export interface Env {
    *  running OAuth locally. Used by /wt-quick worktree tunnels whose random
    *  `*.trycloudflare.com` URLs cannot be registered in Google OAuth console. */
   LOGIN_DELEGATE_TO?: string;
+  /** AES-256-GCM 鍵素材 (rust-alc-api と共有)。bot_secret_encrypted の復号で SHA-256(SSO_ENCRYPTION_KEY) を 32B 鍵として使う。 */
+  SSO_ENCRYPTION_KEY: string;
+  /** LINE WORKS webhook 受信用 Durable Object Namespace (bot_id ごとに 1 instance)。 */
+  LINEWORKS_WEBHOOK_DO: DurableObjectNamespace;
 }
 
 function errorResponse(status: number, message: string): Response {
@@ -158,6 +164,17 @@ export default {
       }
 
       if (request.method === "POST") {
+        // Dynamic path: /lineworks/webhook/:bot_id (LINE WORKS callback)
+        if (url.pathname.startsWith("/lineworks/webhook/")) {
+          const botId = url.pathname.slice("/lineworks/webhook/".length);
+          return await handleLineworksWebhook(request, env, botId);
+        }
+        // Dynamic path: /lineworks/refresh/:bot_id (DO bot_secret cache invalidation, internal)
+        if (url.pathname.startsWith("/lineworks/refresh/")) {
+          const botId = url.pathname.slice("/lineworks/refresh/".length);
+          return await handleLineworksRefresh(request, env, botId);
+        }
+
         switch (url.pathname) {
           case "/api/sso/list":
             return await handleSsoList(request, env);
