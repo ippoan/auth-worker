@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TEST_JWT_SECRET } from "../helpers/mock-env";
+import { TEST_JWT_SECRET, createMockDONamespace } from "../helpers/mock-env";
 
 // Mock handler modules
 vi.mock("../../src/handlers/api-sso", () => ({
@@ -139,7 +139,7 @@ const env = {
       key === "origins:prod" ? "https://app.test.example" : null,
   } as unknown as KVNamespace,
   // Mocked handler doesn't actually use this binding
-  LINEWORKS_WEBHOOK_DO: {} as unknown as DurableObjectNamespace,
+  LINEWORKS_WEBHOOK_DO: createMockDONamespace(),
 };
 
 describe("Router (index.ts)", () => {
