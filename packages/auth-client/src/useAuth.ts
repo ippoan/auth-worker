@@ -74,11 +74,9 @@ function clearStorage(): void {
   document.cookie = `${AUTH_COOKIE_NAME}=; Domain=${domain}; path=/; max-age=0; secure; samesite=lax`
   // host-only cookie も削除
   document.cookie = `${AUTH_COOKIE_NAME}=; path=/; max-age=0; secure; samesite=lax`
-  // 異なるドメインの cookie も削除（auth 統合移行期の互換性）
-  for (const d of ['.ippoan.org', '.mtamaramu.com']) {
-    if (d !== domain) {
-      document.cookie = `${AUTH_COOKIE_NAME}=; Domain=${d}; path=/; max-age=0; secure; samesite=lax`
-    }
+  // .ippoan.org parent cookie も削除（getParentDomain が host-only を返したケースの保険）
+  if (domain !== '.ippoan.org') {
+    document.cookie = `${AUTH_COOKIE_NAME}=; Domain=.ippoan.org; path=/; max-age=0; secure; samesite=lax`
   }
 }
 
@@ -206,7 +204,7 @@ export const useAuth = () => {
 
   /**
    * Cookie から認証状態を復旧（cross-subdomain 共有用）
-   * トップページや他アプリで認証済みの場合、.mtamaramu.com cookie から JWT を復元
+   * トップページや他アプリで認証済みの場合、.ippoan.org cookie から JWT を復元
    * @returns true if token was recovered from cookie
    */
   function recoverFromCookie(): boolean {

@@ -153,7 +153,7 @@ export function renderAdminSsoPage(
     </p>
     <div class="url-list" style="margin-bottom:1rem;">
       <div style="font-size:0.75rem;color:#6b7280;margin-bottom:0.25rem;">Redirect URI\uff08Developer Console \u306b\u8a2d\u5b9a\uff09:</div>
-      <div class="url-row"><code>https://auth.mtamaramu.com/oauth/lineworks/callback</code><button class="btn-copy" onclick="copyUrl(this, 'https://auth.mtamaramu.com/oauth/lineworks/callback')">\u30b3\u30d4\u30fc</button></div>
+      <div class="url-row"><code>https://auth.ippoan.org/oauth/lineworks/callback</code><button class="btn-copy" onclick="copyUrl(this, 'https://auth.ippoan.org/oauth/lineworks/callback')">\u30b3\u30d4\u30fc</button></div>
     </div>
     <div id="join-url-section" class="url-list hidden" style="margin-bottom:1rem;">
       <div style="font-size:0.75rem;color:#6b7280;margin-bottom:0.25rem;">\u53c2\u52a0\u30ea\u30af\u30a8\u30b9\u30c8URL:</div>
