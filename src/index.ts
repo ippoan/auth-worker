@@ -68,16 +68,24 @@ export interface Env {
    *  tenant_id or the email is in its org's allowlist. Useful when the
    *  tenant_id is not stable (e.g. staging DB with volatile UUIDs). */
   USER_ACL?: string;
-  /** JSON map of redirect-origin → allowlisted tenant_ids. Example:
-   *  `{"https://ichibanboshi.ippoan.org":["<uuid>"],
-   *    "https://ichibanboshi-staging.ippoan.org":["*"]}`.
-   *  Keys must match `new URL(redirectUri).origin` exactly (no trailing slash).
-   *  Use `"*"` to allow any tenant for that origin.
-   *  Origins not in the map pass (opt-in: only listed origins are restricted).
-   *  Missing / malformed → pass (fail-open; org-level ACL is the primary
-   *  defense, this is an additional partitioning layer).
-   *  Checked AFTER `checkOrgAccess` to partition tenants across apps within
-   *  the same org (e.g. only the ichibanboshi tenant can hit ichibanboshi). */
+  /** JSON config for per-app tenant ACL with optional global email bypass.
+   *  Example:
+   *  ```
+   *  {
+   *    "bypass_emails": ["m.tama.ramu@gmail.com"],
+   *    "apps": {
+   *      "https://ichibanboshi.ippoan.org":         ["<uuid>"],
+   *      "https://ichibanboshi-staging.ippoan.org": ["<uuid>"]
+   *    }
+   *  }
+   *  ```
+   *  `bypass_emails` (typically set on staging only): a JWT whose `email`
+   *  matches (case-insensitive) passes the app-level check for any origin.
+   *  `apps`: per-origin tenant allowlist. Keys must match
+   *  `new URL(redirectUri).origin` exactly (no trailing slash). Use `"*"`
+   *  to allow any tenant. Origins not in `apps` pass (opt-in).
+   *  Missing / malformed → pass (fail-open). Checked AFTER `checkOrgAccess`
+   *  to partition tenants across apps within the same org. */
   APP_TENANT_ACL?: string;
   /** When set, /login delegates OAuth to the given auth-worker origin instead of
    *  running OAuth locally. Used by /wt-quick worktree tunnels whose random
