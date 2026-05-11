@@ -5,7 +5,7 @@
 
 import type { Env } from "../index";
 import { getAllowedOrigins } from "../lib/config";
-import { checkOrgAccess } from "../lib/acl";
+import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { verifyOAuthState, isAllowedRedirectUri } from "../lib/security";
 import { setAuthCookie } from "../lib/cookies";
 
@@ -71,6 +71,10 @@ export async function handleLineworksCallback(
             console.log(JSON.stringify({ event: "lw_login_acl_denied", redirectUri, tenantId, email }));
             return new Response("このアプリへのアクセスが許可されていません", { status: 403 });
           }
+          if (!checkAppTenant(env, redirectOrigin, tenantId)) {
+            console.log(JSON.stringify({ event: "lw_login_app_tenant_denied", redirectUri, tenantId, email }));
+            return new Response("このアカウントはこのアプリにアクセスできません", { status: 403 });
+          }
           headers["Set-Cookie"] = setAuthCookie(token, new URL(request.url).hostname);
         }
       }
@@ -100,6 +104,11 @@ export async function handleLineworksCallback(
     if (!(await checkOrgAccess(env, redirectOrigin, tenantId, email))) {
       console.log(JSON.stringify({ event: "lw_login_acl_denied", redirectUri, tenantId, email }));
       return new Response("このアプリへのアクセスが許可されていません", { status: 403 });
+    }
+    // Per-app tenant partitioning (after org ACL).
+    if (!checkAppTenant(env, redirectOrigin, tenantId)) {
+      console.log(JSON.stringify({ event: "lw_login_app_tenant_denied", redirectUri, tenantId, email }));
+      return new Response("このアカウントはこのアプリにアクセスできません", { status: 403 });
     }
 
     // Join flow: redirect to /join/:slug/done with JWT fragment

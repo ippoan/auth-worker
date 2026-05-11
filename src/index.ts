@@ -68,6 +68,17 @@ export interface Env {
    *  tenant_id or the email is in its org's allowlist. Useful when the
    *  tenant_id is not stable (e.g. staging DB with volatile UUIDs). */
   USER_ACL?: string;
+  /** JSON map of redirect-origin → allowlisted tenant_ids. Example:
+   *  `{"https://ichibanboshi.ippoan.org":["<uuid>"],
+   *    "https://ichibanboshi-staging.ippoan.org":["*"]}`.
+   *  Keys must match `new URL(redirectUri).origin` exactly (no trailing slash).
+   *  Use `"*"` to allow any tenant for that origin.
+   *  Origins not in the map pass (opt-in: only listed origins are restricted).
+   *  Missing / malformed → pass (fail-open; org-level ACL is the primary
+   *  defense, this is an additional partitioning layer).
+   *  Checked AFTER `checkOrgAccess` to partition tenants across apps within
+   *  the same org (e.g. only the ichibanboshi tenant can hit ichibanboshi). */
+  APP_TENANT_ACL?: string;
   /** When set, /login delegates OAuth to the given auth-worker origin instead of
    *  running OAuth locally. Used by /wt-quick worktree tunnels whose random
    *  `*.trycloudflare.com` URLs cannot be registered in Google OAuth console. */

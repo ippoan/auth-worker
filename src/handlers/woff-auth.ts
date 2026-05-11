@@ -6,7 +6,7 @@
 
 import type { Env } from "../index";
 import { getAllowedOrigins } from "../lib/config";
-import { checkOrgAccess } from "../lib/acl";
+import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { corsJsonResponse } from "../lib/errors";
 import { isAllowedRedirectUri } from "../lib/security";
 import { setAuthCookie } from "../lib/cookies";
@@ -77,6 +77,11 @@ export async function handleWoffAuth(
   if (!(await checkOrgAccess(env, redirectOrigin, orgId, email))) {
     console.log(JSON.stringify({ event: "woff_auth_acl_denied", domainId, orgId, email }));
     return corsJsonResponse({ error: "このアプリへのアクセスが許可されていません" }, 403);
+  }
+  // Per-app tenant partitioning (after org ACL).
+  if (!checkAppTenant(env, redirectOrigin, orgId)) {
+    console.log(JSON.stringify({ event: "woff_auth_app_tenant_denied", domainId, orgId, email }));
+    return corsJsonResponse({ error: "このアカウントはこのアプリにアクセスできません" }, 403);
   }
 
   console.log(JSON.stringify({ event: "woff_auth_success", domainId, orgId }));

@@ -6,6 +6,9 @@
  *   - `app-orgs` (KV JSON) — origin URL → github-org classification
  *   - `TENANT_ACL` (Worker secret JSON) — per-org allowlisted tenant_ids
  *   - `USER_ACL` (Worker secret JSON) — per-org allowlisted user emails
+ *   - `APP_TENANT_ACL` (Worker secret JSON) — per-redirect-origin allowlisted
+ *     tenant_ids; partitions tenants across apps within the same org
+ *     (checked AFTER checkOrgAccess in handlers)
  *
  * Used by /top (tile filtering) and the OAuth callback handlers (redirect
  * authorization).
@@ -41,6 +44,46 @@ export async function checkOrgAccess(
   if (org !== "ohishi-exp") return true;
 
   return matchesOrgAllowlist(env, org, tenantId, email);
+}
+
+/**
+ * Per-app tenant ACL: partitions tenants across apps within the same org.
+ *
+ * Returns true iff `tenantId` is allowed to access the app at
+ * `redirectOrigin`. Called *after* `checkOrgAccess` — org-level ACL is the
+ * primary defense, this layer additionally restricts which tenants can use
+ * which app (e.g. only the ichibanboshi tenant can hit ichibanboshi, even
+ * though dtako-admin tenants also pass the ohishi-exp org check).
+ *
+ * Semantics:
+ * - `APP_TENANT_ACL` missing → pass (no restriction configured)
+ * - origin not in map → pass (opt-in: only origins with explicit entries
+ *   are restricted; new apps don't need to register here)
+ * - allowed list contains `"*"` → any tenant passes (useful for staging)
+ * - allowed list contains `tenantId` → pass
+ * - otherwise → deny
+ * - malformed JSON or non-array value → pass (fail-open; we don't want a
+ *   new check to break existing logins on parse error — the org ACL is
+ *   still enforced)
+ *
+ * Keys must be the exact origin string returned by `new URL(uri).origin`
+ * (no trailing slash).
+ */
+export function checkAppTenant(
+  env: Env,
+  redirectOrigin: string,
+  tenantId: string,
+): boolean {
+  if (!env.APP_TENANT_ACL) return true;
+  try {
+    const map = JSON.parse(env.APP_TENANT_ACL) as Record<string, string[]>;
+    const allowed = map[redirectOrigin];
+    if (!Array.isArray(allowed)) return true; // unregistered origin = pass
+    if (allowed.includes("*")) return true;
+    return allowed.includes(tenantId);
+  } catch {
+    return true; // malformed → fail-open
+  }
 }
 
 /**
