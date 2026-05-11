@@ -117,7 +117,7 @@ export async function handleGoogleCallback(
     return new Response("このアプリへのアクセスが許可されていません", { status: 403 });
   }
   // Per-app tenant partitioning (after org ACL).
-  if (!checkAppTenant(env, redirectOrigin, tenantId)) {
+  if (!checkAppTenant(env, redirectOrigin, tenantId, email)) {
     console.log(JSON.stringify({ event: "google_login_app_tenant_denied", redirectUri, tenantId, email }));
     return new Response("このアカウントはこのアプリにアクセスできません", { status: 403 });
   }

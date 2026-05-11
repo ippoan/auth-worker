@@ -79,7 +79,7 @@ export async function handleWoffAuth(
     return corsJsonResponse({ error: "このアプリへのアクセスが許可されていません" }, 403);
   }
   // Per-app tenant partitioning (after org ACL).
-  if (!checkAppTenant(env, redirectOrigin, orgId)) {
+  if (!checkAppTenant(env, redirectOrigin, orgId, email)) {
     console.log(JSON.stringify({ event: "woff_auth_app_tenant_denied", domainId, orgId, email }));
     return corsJsonResponse({ error: "このアカウントはこのアプリにアクセスできません" }, 403);
   }

@@ -184,16 +184,20 @@ describe("checkAppTenant", () => {
   const ICHIBANBOSHI = "https://ichibanboshi.ippoan.org";
   const ICHIBANBOSHI_STAGING = "https://ichibanboshi-staging.ippoan.org";
   const DTAKO_ADMIN = "https://dtako-admin.ippoan.org";
+  const DEV_EMAIL = "m.tama.ramu@gmail.com";
+  const PROD_TENANT = "536859de-d43e-4932-9d16-f60cac8fa426";
 
   it("passes when APP_TENANT_ACL is unset (no restriction configured)", () => {
     const env = createMockEnv();
-    expect(checkAppTenant(env, ICHIBANBOSHI, "any-tenant")).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI, "any-tenant", DEV_EMAIL)).toBe(true);
     expect(checkAppTenant(env, ICHIBANBOSHI, "")).toBe(true);
   });
 
-  it("passes when origin has no entry in the map (opt-in)", () => {
+  it("passes when origin has no entry in apps (opt-in)", () => {
     const env = createMockEnv({
-      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: ["tenant-a"] }),
+      APP_TENANT_ACL: JSON.stringify({
+        apps: { [ICHIBANBOSHI]: [PROD_TENANT] },
+      }),
     });
     // dtako-admin has no entry → unrestricted
     expect(checkAppTenant(env, DTAKO_ADMIN, "any-tenant")).toBe(true);
@@ -203,23 +207,27 @@ describe("checkAppTenant", () => {
   it("allows tenant listed for the origin", () => {
     const env = createMockEnv({
       APP_TENANT_ACL: JSON.stringify({
-        [ICHIBANBOSHI]: ["tenant-a", "tenant-b"],
+        apps: { [ICHIBANBOSHI]: [PROD_TENANT, "tenant-b"] },
       }),
     });
-    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-a")).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI, PROD_TENANT)).toBe(true);
     expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-b")).toBe(true);
   });
 
   it("denies tenant not in the origin's allowlist", () => {
     const env = createMockEnv({
-      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: ["tenant-a"] }),
+      APP_TENANT_ACL: JSON.stringify({
+        apps: { [ICHIBANBOSHI]: [PROD_TENANT] },
+      }),
     });
     expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-z")).toBe(false);
   });
 
-  it("wildcard '*' allows any tenant (including empty)", () => {
+  it("wildcard '*' allows any tenant for that origin", () => {
     const env = createMockEnv({
-      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI_STAGING]: ["*"] }),
+      APP_TENANT_ACL: JSON.stringify({
+        apps: { [ICHIBANBOSHI_STAGING]: ["*"] },
+      }),
     });
     expect(checkAppTenant(env, ICHIBANBOSHI_STAGING, "any-tenant")).toBe(true);
     expect(checkAppTenant(env, ICHIBANBOSHI_STAGING, "")).toBe(true);
@@ -227,28 +235,88 @@ describe("checkAppTenant", () => {
 
   it("denies empty tenant when origin has a concrete allowlist", () => {
     const env = createMockEnv({
-      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: ["tenant-a"] }),
+      APP_TENANT_ACL: JSON.stringify({
+        apps: { [ICHIBANBOSHI]: [PROD_TENANT] },
+      }),
     });
     expect(checkAppTenant(env, ICHIBANBOSHI, "")).toBe(false);
+  });
+
+  it("bypass_emails allows the email past the tenant check (any app)", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({
+        bypass_emails: [DEV_EMAIL],
+        apps: {
+          [ICHIBANBOSHI]: [PROD_TENANT],
+          [ICHIBANBOSHI_STAGING]: [PROD_TENANT],
+        },
+      }),
+    });
+    // dev's tenant doesn't match, but bypass_emails passes them through.
+    expect(checkAppTenant(env, ICHIBANBOSHI, "wrong-tenant", DEV_EMAIL)).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI_STAGING, "wrong-tenant", DEV_EMAIL)).toBe(true);
+    // Also applies to origins with no entry (no-op there anyway).
+    expect(checkAppTenant(env, DTAKO_ADMIN, "wrong-tenant", DEV_EMAIL)).toBe(true);
+  });
+
+  it("bypass_emails is case-insensitive", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({
+        bypass_emails: [DEV_EMAIL],
+        apps: { [ICHIBANBOSHI]: [PROD_TENANT] },
+      }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "wrong", "M.Tama.Ramu@GMAIL.com")).toBe(true);
+  });
+
+  it("non-bypass email still has to match tenant", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({
+        bypass_emails: [DEV_EMAIL],
+        apps: { [ICHIBANBOSHI]: [PROD_TENANT] },
+      }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "wrong-tenant", "other@example.com")).toBe(false);
+    expect(checkAppTenant(env, ICHIBANBOSHI, PROD_TENANT, "other@example.com")).toBe(true);
+  });
+
+  it("bypass_emails works even when apps is absent", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({ bypass_emails: [DEV_EMAIL] }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "any", DEV_EMAIL)).toBe(true);
+    // No bypass, no apps entry → pass via opt-in
+    expect(checkAppTenant(env, ICHIBANBOSHI, "any", "other@example.com")).toBe(true);
   });
 
   it("fail-open on malformed JSON", () => {
     const env = createMockEnv({ APP_TENANT_ACL: "not-json{" });
     expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-a")).toBe(true);
-    expect(checkAppTenant(env, ICHIBANBOSHI, "")).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI, "", DEV_EMAIL)).toBe(true);
   });
 
-  it("passes when map value for the origin is not an array (treated as unregistered)", () => {
+  it("passes when apps[origin] is not an array (treated as unregistered)", () => {
     const env = createMockEnv({
-      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: "tenant-a" }),
+      APP_TENANT_ACL: JSON.stringify({
+        apps: { [ICHIBANBOSHI]: "tenant-a" },
+      }),
     });
     expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-a")).toBe(true);
     expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-z")).toBe(true);
   });
 
+  it("passes when apps is missing entirely (only bypass_emails configured)", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({ bypass_emails: [] }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-z")).toBe(true);
+  });
+
   it("origin key match is exact (trailing slash matters)", () => {
     const env = createMockEnv({
-      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: ["tenant-a"] }),
+      APP_TENANT_ACL: JSON.stringify({
+        apps: { [ICHIBANBOSHI]: [PROD_TENANT] },
+      }),
     });
     // The canonical origin (no slash) is restricted.
     expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-z")).toBe(false);

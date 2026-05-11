@@ -43,9 +43,10 @@ custom_domain = true
 # SSO_ENCRYPTION_KEY   (LINE WORKS bot_secret_encrypted 復号用、rust-alc-api と同値)
 # TENANT_ACL           (JSON: {"<github-org>": ["<tenant-id>", ...]}; gates per-org access)
 # USER_ACL             (JSON: {"<github-org>": ["email@example.com", ...]}; OR-composed with TENANT_ACL)
-# APP_TENANT_ACL       (JSON: {"<redirect-origin>": ["<tenant-id>", ...]} or "*";
-#                       partitions tenants across apps WITHIN the same org;
-#                       opt-in: origins not in the map pass; fail-open on parse error)
+# APP_TENANT_ACL       (JSON: {"bypass_emails":[...], "apps":{"<origin>":["<tenant>"|"*",...]}};
+#                       bypass_emails is a global dev-bypass list (typically staging only);
+#                       apps partitions tenants per redirect-origin within the same org;
+#                       opt-in: origins not in apps pass; fail-open on parse error)
 #
 # Allowlist (managed via `wrangler kv key put --remote --namespace-id=f13ecae4b69043819c09f606abb84797 <key>`):
 #   origins:prod    - production frontends

@@ -47,37 +47,65 @@ export async function checkOrgAccess(
 }
 
 /**
- * Per-app tenant ACL: partitions tenants across apps within the same org.
+ * Per-app tenant ACL: partitions tenants across apps within the same org,
+ * with an optional global email bypass (typically used for developer access
+ * on staging).
  *
- * Returns true iff `tenantId` is allowed to access the app at
+ * Returns true iff (`tenantId`, `email`) is allowed to access the app at
  * `redirectOrigin`. Called *after* `checkOrgAccess` — org-level ACL is the
  * primary defense, this layer additionally restricts which tenants can use
- * which app (e.g. only the ichibanboshi tenant can hit ichibanboshi, even
- * though dtako-admin tenants also pass the ohishi-exp org check).
+ * which app.
  *
- * Semantics:
- * - `APP_TENANT_ACL` missing → pass (no restriction configured)
- * - origin not in map → pass (opt-in: only origins with explicit entries
- *   are restricted; new apps don't need to register here)
- * - allowed list contains `"*"` → any tenant passes (useful for staging)
- * - allowed list contains `tenantId` → pass
- * - otherwise → deny
- * - malformed JSON or non-array value → pass (fail-open; we don't want a
- *   new check to break existing logins on parse error — the org ACL is
- *   still enforced)
+ * JSON shape (Worker secret `APP_TENANT_ACL`):
+ * ```
+ * {
+ *   "bypass_emails": ["m.tama.ramu@gmail.com"],
+ *   "apps": {
+ *     "https://ichibanboshi.ippoan.org":         ["<prod-tenant-uuid>"],
+ *     "https://ichibanboshi-staging.ippoan.org": ["<prod-tenant-uuid>"]
+ *   }
+ * }
+ * ```
  *
- * Keys must be the exact origin string returned by `new URL(uri).origin`
- * (no trailing slash).
+ * Resolution order:
+ * 1. `APP_TENANT_ACL` missing → pass (no restriction configured)
+ * 2. `email` ∈ `bypass_emails` (case-insensitive) → pass
+ *    (global developer bypass; typically set on staging only)
+ * 3. `apps[redirectOrigin]` absent / not array → pass
+ *    (opt-in: only origins with explicit entries are restricted)
+ * 4. `apps[redirectOrigin]` contains `"*"` → pass (any tenant)
+ * 5. `apps[redirectOrigin]` contains `tenantId` → pass
+ * 6. Otherwise → deny
+ * 7. Malformed JSON → pass (fail-open; we don't want a new check to break
+ *    existing logins on parse error — the org ACL is still enforced)
+ *
+ * Keys in `apps` must be the exact origin string returned by
+ * `new URL(uri).origin` (no trailing slash).
  */
 export function checkAppTenant(
   env: Env,
   redirectOrigin: string,
   tenantId: string,
+  email?: string,
 ): boolean {
   if (!env.APP_TENANT_ACL) return true;
   try {
-    const map = JSON.parse(env.APP_TENANT_ACL) as Record<string, string[]>;
-    const allowed = map[redirectOrigin];
+    const config = JSON.parse(env.APP_TENANT_ACL) as {
+      bypass_emails?: string[];
+      apps?: Record<string, string[]>;
+    };
+
+    // 1. Global email bypass (staging dev access).
+    if (email && Array.isArray(config.bypass_emails)) {
+      const lower = email.toLowerCase();
+      if (config.bypass_emails.some((e) => typeof e === "string" && e.toLowerCase() === lower)) {
+        return true;
+      }
+    }
+
+    // 2. Per-app tenant check.
+    if (!config.apps || typeof config.apps !== "object") return true;
+    const allowed = config.apps[redirectOrigin];
     if (!Array.isArray(allowed)) return true; // unregistered origin = pass
     if (allowed.includes("*")) return true;
     return allowed.includes(tenantId);
