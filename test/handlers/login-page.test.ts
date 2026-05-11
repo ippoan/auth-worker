@@ -130,7 +130,7 @@ describe("handleLoginPage", () => {
 
   describe("LOGIN_DELEGATE_TO delegation (wt-quick tunnel mode)", () => {
     it("delegates to LOGIN_DELEGATE_TO preserving explicit redirect_uri", async () => {
-      const env = createMockEnv({ LOGIN_DELEGATE_TO: "https://auth.mtamaramu.com" });
+      const env = createMockEnv({ LOGIN_DELEGATE_TO: "https://auth.ippoan.org" });
       const request = new Request(
         "https://wt.trycloudflare.com/login?redirect_uri=https://wt.trycloudflare.com/top",
       );
@@ -141,7 +141,7 @@ describe("handleLoginPage", () => {
       expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
       const body = await response.text();
       expect(body).toContain(
-        'https://auth.mtamaramu.com/login?redirect_uri=https%3A%2F%2Fwt.trycloudflare.com%2Ftop',
+        'https://auth.ippoan.org/login?redirect_uri=https%3A%2F%2Fwt.trycloudflare.com%2Ftop',
       );
       expect(body).toContain("location.replace");
       expect(body).toContain('<meta http-equiv="refresh"');
@@ -150,7 +150,7 @@ describe("handleLoginPage", () => {
 
     it("falls back target to AUTH_WORKER_ORIGIN/top when redirect_uri is missing", async () => {
       const env = createMockEnv({
-        LOGIN_DELEGATE_TO: "https://auth.mtamaramu.com",
+        LOGIN_DELEGATE_TO: "https://auth.ippoan.org",
         AUTH_WORKER_ORIGIN: "https://wt.trycloudflare.com",
       });
       const request = new Request("https://wt.trycloudflare.com/login");
@@ -166,7 +166,7 @@ describe("handleLoginPage", () => {
 
     it("falls back target to url.origin/top when AUTH_WORKER_ORIGIN is empty", async () => {
       const env = createMockEnv({
-        LOGIN_DELEGATE_TO: "https://auth.mtamaramu.com",
+        LOGIN_DELEGATE_TO: "https://auth.ippoan.org",
         AUTH_WORKER_ORIGIN: "",
       });
       const request = new Request("https://fallback.example/login");
@@ -181,7 +181,7 @@ describe("handleLoginPage", () => {
     });
 
     it("forwards org_id in delegation URL when present", async () => {
-      const env = createMockEnv({ LOGIN_DELEGATE_TO: "https://auth.mtamaramu.com" });
+      const env = createMockEnv({ LOGIN_DELEGATE_TO: "https://auth.ippoan.org" });
       const request = new Request(
         "https://wt.trycloudflare.com/login?redirect_uri=https://wt.trycloudflare.com/top&org_id=org-xyz",
       );

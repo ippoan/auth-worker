@@ -31,10 +31,6 @@ enabled = true
 head_sampling_rate = 1
 
 [[routes]]
-pattern = "auth.mtamaramu.com"
-custom_domain = true
-
-[[routes]]
 pattern = "auth.ippoan.org"
 custom_domain = true
 
