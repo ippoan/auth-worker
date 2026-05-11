@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { checkOrgAccess, isTenantInOrgAllowlist } from "../../src/lib/acl";
+import {
+  checkOrgAccess,
+  checkAppTenant,
+  isTenantInOrgAllowlist,
+} from "../../src/lib/acl";
 import { _clearAllowedOriginsCache } from "../../src/lib/config";
 import { createMockEnv, createMockKV } from "../helpers/mock-env";
 
@@ -173,5 +177,82 @@ describe("isTenantInOrgAllowlist", () => {
   it("returns false when TENANT_ACL value for org is not an array", () => {
     const env = createMockEnv({ TENANT_ACL: JSON.stringify({ "ohishi-exp": "not-array" }) });
     expect(isTenantInOrgAllowlist(env, "ohishi-exp", "tenant-a")).toBe(false);
+  });
+});
+
+describe("checkAppTenant", () => {
+  const ICHIBANBOSHI = "https://ichibanboshi.ippoan.org";
+  const ICHIBANBOSHI_STAGING = "https://ichibanboshi-staging.ippoan.org";
+  const DTAKO_ADMIN = "https://dtako-admin.ippoan.org";
+
+  it("passes when APP_TENANT_ACL is unset (no restriction configured)", () => {
+    const env = createMockEnv();
+    expect(checkAppTenant(env, ICHIBANBOSHI, "any-tenant")).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI, "")).toBe(true);
+  });
+
+  it("passes when origin has no entry in the map (opt-in)", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: ["tenant-a"] }),
+    });
+    // dtako-admin has no entry → unrestricted
+    expect(checkAppTenant(env, DTAKO_ADMIN, "any-tenant")).toBe(true);
+    expect(checkAppTenant(env, DTAKO_ADMIN, "")).toBe(true);
+  });
+
+  it("allows tenant listed for the origin", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({
+        [ICHIBANBOSHI]: ["tenant-a", "tenant-b"],
+      }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-a")).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-b")).toBe(true);
+  });
+
+  it("denies tenant not in the origin's allowlist", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: ["tenant-a"] }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-z")).toBe(false);
+  });
+
+  it("wildcard '*' allows any tenant (including empty)", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI_STAGING]: ["*"] }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI_STAGING, "any-tenant")).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI_STAGING, "")).toBe(true);
+  });
+
+  it("denies empty tenant when origin has a concrete allowlist", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: ["tenant-a"] }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "")).toBe(false);
+  });
+
+  it("fail-open on malformed JSON", () => {
+    const env = createMockEnv({ APP_TENANT_ACL: "not-json{" });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-a")).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI, "")).toBe(true);
+  });
+
+  it("passes when map value for the origin is not an array (treated as unregistered)", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: "tenant-a" }),
+    });
+    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-a")).toBe(true);
+    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-z")).toBe(true);
+  });
+
+  it("origin key match is exact (trailing slash matters)", () => {
+    const env = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({ [ICHIBANBOSHI]: ["tenant-a"] }),
+    });
+    // The canonical origin (no slash) is restricted.
+    expect(checkAppTenant(env, ICHIBANBOSHI, "tenant-z")).toBe(false);
+    // A variant with trailing slash does not match → falls through to pass.
+    expect(checkAppTenant(env, `${ICHIBANBOSHI}/`, "tenant-z")).toBe(true);
   });
 });
