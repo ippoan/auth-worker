@@ -17,7 +17,11 @@ const APP_PATTERNS: Array<{
   description: string;
 }> = [
   { match: (o) => o.includes("nuxt-pwa-carins") || o.includes("carins"), name: "車検証管理", icon: "車", description: "車検証・ファイル管理" },
-  { match: (o) => o.includes("ohishi2") || o.includes("dtako-admin") || o.includes("dtako"), name: "DTako 管理", icon: "DVR", description: "ドライブレコーダーログ" },
+  // ohishi2.mtamaramu.com (nuxt-dtako-logs) は GPS トラック位置を表示する別アプリ。
+  // dtako.ippoan.org (運行管理) と分離して独立タイルにする。
+  // 配列順 = dedup priority なので、ここで定義した「車両位置」は ohishi2 専用 origin 用。
+  { match: (o) => o.includes("ohishi2"), name: "車両位置", icon: "🚛", description: "GPS トラック位置" },
+  { match: (o) => o.includes("dtako-admin") || o.includes("dtako"), name: "DTako 管理", icon: "DVR", description: "ドライブレコーダーログ" },
   { match: (o) => o.includes("nuxt-items") || o.includes("items"), name: "物品管理", icon: "箱", description: "組織・個人の物品管理" },
   { match: (o) => o.includes("alc-app") || (o.includes("alc") && !o.includes("alc-api")), name: "アルコールチェック", icon: "🍺", description: "アルコール検知・管理" },
   { match: (o) => o.includes("nuxt-ichibanboshi") || o.includes("ichibanboshi"), name: "一番星", icon: "⭐", description: "一番星管理" },

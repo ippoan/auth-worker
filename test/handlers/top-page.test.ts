@@ -124,7 +124,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [
         { name: "車検証管理", url: "https://nuxt-pwa-carins.example", icon: "車", description: "車検証・ファイル管理" },
-        { name: "DTako 管理", url: "https://ohishi2.example", icon: "DVR", description: "ドライブレコーダーログ" },
+        { name: "車両位置", url: "https://ohishi2.example", icon: "🚛", description: "GPS トラック位置" },
       ],
       "https://auth.test.example",
       expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
