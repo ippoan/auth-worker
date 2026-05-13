@@ -40,6 +40,24 @@ branches = true
 path = "src/handlers/api-users.ts"
 branches = true
 
+# --- MCP OAuth Provider (Phase 1+) ---
+
+[[files]]
+path = "src/lib/mcp-codes.ts"
+branches = true
+
+[[files]]
+path = "src/lib/mcp-kv.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-as-metadata.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-device-authorization.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]

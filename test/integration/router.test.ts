@@ -117,6 +117,12 @@ vi.mock("../../src/handlers/lineworks-webhook", () => ({
     new Response(`lw-refresh:${botId}`),
   ),
 }));
+vi.mock("../../src/handlers/mcp-as-metadata", () => ({
+  handleMcpAsMetadata: vi.fn(() => new Response("mcp-as-metadata")),
+}));
+vi.mock("../../src/handlers/mcp-device-authorization", () => ({
+  handleMcpDeviceAuthorization: vi.fn(() => new Response("mcp-device-authorization")),
+}));
 // Stub the DurableObject export so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
@@ -171,6 +177,7 @@ describe("Router (index.ts)", () => {
     ["/redirect?to=https://app1.test.example", "redirect"],
     ["/logout", "logout"],
     ["/api/bot-config/export?tenant_id=abc", "bot-export"],
+    ["/.well-known/oauth-authorization-server", "mcp-as-metadata"],
   ];
 
   it("GET /api/health → health proxy", async () => {
@@ -236,6 +243,7 @@ describe("Router (index.ts)", () => {
     ["/api/access-requests/decline", "ar-decline"],
     ["/api/switch-org", "switch-org"],
     ["/api/my-orgs", "my-orgs"],
+    ["/mcp/device_authorization", "mcp-device-authorization"],
   ];
 
   for (const [path, expected] of postRoutes) {

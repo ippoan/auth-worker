@@ -1,11 +1,40 @@
 import type { Env } from "../../src/index";
 import { _clearAllowedOriginsCache } from "../../src/lib/config";
 
-/** Minimal in-memory KV mock that satisfies the methods getAllowedOrigins calls. */
-export function createMockKV(data: Record<string, string> = {}): KVNamespace {
-  return {
+/** Minimal in-memory KV mock that satisfies the methods getAllowedOrigins calls.
+ *  Also supports `put` (with optional `expirationTtl`) and `delete` for MCP /
+ *  device flow tests (Phase 1+).
+ *
+ *  テストから書込内容を直接検査したいときは `as unknown as MockKV` で cast。
+ */
+export interface MockKV extends KVNamespace {
+  /** 直接読み出し用 (test 内で `kv._data[key]` で内容確認できる) */
+  _data: Record<string, string>;
+  /** put 呼び出し時に渡された expirationTtl の記録 */
+  _ttls: Record<string, number>;
+}
+
+export function createMockKV(initial: Record<string, string> = {}): KVNamespace {
+  const data: Record<string, string> = { ...initial };
+  const ttls: Record<string, number> = {};
+  const kv = {
     get: async (key: string) => data[key] ?? null,
-  } as unknown as KVNamespace;
+    put: async (
+      key: string,
+      value: string,
+      opts?: { expirationTtl?: number; expiration?: number },
+    ) => {
+      data[key] = value;
+      if (opts?.expirationTtl !== undefined) ttls[key] = opts.expirationTtl;
+    },
+    delete: async (key: string) => {
+      delete data[key];
+      delete ttls[key];
+    },
+    _data: data,
+    _ttls: ttls,
+  };
+  return kv as unknown as KVNamespace;
 }
 
 /**
