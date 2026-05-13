@@ -17,9 +17,14 @@ export interface DeviceCodeRecord {
   user_code: string;        // formatted "XXXX-XXXX"
   client_id: string;
   scope: string;            // space-separated; empty string when not provided
-  status: "pending" | "approved" | "denied"; // Phase 2 で update
+  /** "approved" は issue #95 spec の "authorized" と同義 (Phase 2 互換維持) */
+  status: "pending" | "approved" | "denied";
   created_at: number;       // ms epoch
   expires_at: number;       // ms epoch (created_at + 900_000)
+  /** Phase 3: GitHub callback で ACL pass 後に書く github login */
+  github_login?: string;
+  /** Phase 3: approve した ms epoch (debug / introspect 補助) */
+  authorized_at?: number;
 }
 
 /** RFC 8628 §3.2 expires_in。issue #93 仕様 = 15 min。 */
@@ -92,5 +97,36 @@ export async function setDeviceCodeStatus(
     { expirationTtl: remainingSec },
   );
   // user_code:* 逆引きは status を持たないので unchanged
+  return updated;
+}
+
+/**
+ * Phase 3: GitHub OAuth callback で ACL pass → status="approved" + github_login + authorized_at を
+ * atomic に書き込む。`setDeviceCodeStatus` を分離する理由は既存呼び出し (Phase 2 deny path) の
+ * シグネチャを温存するため。残 TTL を保つロジックは setDeviceCodeStatus と同じ。
+ */
+export async function setDeviceCodeStatusApproved(
+  env: Env,
+  device_code: string,
+  github_login: string,
+): Promise<DeviceCodeRecord | null> {
+  if (!env.MCP_OAUTH_KV) return null;
+  const rec = await getDeviceCode(env, device_code);
+  if (!rec) return null;
+  const updated: DeviceCodeRecord = {
+    ...rec,
+    status: "approved",
+    github_login,
+    authorized_at: Date.now(),
+  };
+  const remainingSec = Math.max(
+    60,
+    Math.floor((rec.expires_at - Date.now()) / 1000),
+  );
+  await env.MCP_OAUTH_KV.put(
+    `device_code:${device_code}`,
+    JSON.stringify(updated),
+    { expirationTtl: remainingSec },
+  );
   return updated;
 }
