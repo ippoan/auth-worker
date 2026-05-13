@@ -58,10 +58,19 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-/** auth-worker 側 → binary 側 → Claude Code Web へ返さない頭 (hop-by-hop / 危険系)。 */
+/**
+ * auth-worker 側 → binary 側 → Claude Code Web へ送らない頭 (hop-by-hop / 危険系)。
+ *
+ * `host` は **意図的に保持** (issue #121): binary 側 rmcp `StreamableHttpService` が
+ * Host header を必須としている (欠落で 400 "missing Host header" を返す)。Cloudflare
+ * 経由なので Host は `mcp(-staging).ippoan.org` のいずれか。binary 側で Host validation
+ * が必要なら `with_allowed_hosts` で個別許可する。
+ *
+ * `authorization` は drop: Bearer JWT は auth-worker 側 gate で消費済み、binary 側に
+ * 漏らさない。
+ */
 const HEADERS_BLOCKLIST = new Set([
   "authorization",
-  "host",
   "content-length",
   "x-forwarded-for",
   "x-forwarded-proto",
