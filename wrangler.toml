@@ -47,6 +47,11 @@ custom_domain = true
 #                       bypass_emails is a global dev-bypass list (typically staging only);
 #                       apps partitions tenants per redirect-origin within the same org;
 #                       opt-in: origins not in apps pass; fail-open on parse error)
+# GITHUB_MCP_CLIENT_ID       (MCP OAuth Provider 用 GitHub OAuth App の Client ID; staging/prod 別 App)
+# GITHUB_MCP_CLIENT_SECRET   (同上 Secret)
+# MCP_JWT_SECRET             (HS256 secret for MCP access tokens (JWT); 既存 JWT_SECRET と別管理)
+# INTERNAL_SHARED_SECRET     (Rust binary github-mcp-server-rs が /mcp/introspect 叩く際の Bearer)
+# GITHUB_MCP_USER_ALLOWLIST  (JSON array of github logins, e.g. ["yhonda-ohishi"]; fail-closed)
 #
 # Allowlist (managed via `wrangler kv key put --remote --namespace-id=f13ecae4b69043819c09f606abb84797 <key>`):
 #   origins:prod    - production frontends
@@ -72,6 +77,11 @@ EGOV_CLIENT_ID = "K26XGOmbDusxfKsp"
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"
+
+# MCP OAuth Provider 用 — device_codes / sessions / refresh tokens を保持
+[[env.staging.kv_namespaces]]
+binding = "MCP_OAUTH_KV"
+id = "0498e6057b8c4d7fbca92e9de41524ee"
 
 [[env.staging.durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
