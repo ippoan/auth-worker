@@ -95,6 +95,22 @@ export interface Env {
   SSO_ENCRYPTION_KEY: string;
   /** LINE WORKS webhook 受信用 Durable Object Namespace (bot_id ごとに 1 instance)。 */
   LINEWORKS_WEBHOOK_DO: DurableObjectNamespace;
+  /** MCP OAuth Provider 用 GitHub OAuth App credentials.
+   *  staging/prod で別 App (callback URL が異なるため)。 */
+  GITHUB_MCP_CLIENT_ID?: string;
+  GITHUB_MCP_CLIENT_SECRET?: string;
+  /** HS256 secret for MCP access tokens (JWT). 既存 JWT_SECRET とは別管理。
+   *  Phase 1+ で MCP endpoint が実装されるまでは未参照。 */
+  MCP_JWT_SECRET?: string;
+  /** Rust binary (github-mcp-server-rs) が /mcp/introspect 叩く際の認証用。
+   *  Bearer header で送られる固定共有鍵。 */
+  INTERNAL_SHARED_SECRET?: string;
+  /** JSON array of github logins allowed to use MCP server.
+   *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed). */
+  GITHUB_MCP_USER_ALLOWLIST?: string;
+  /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens).
+   *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
+  MCP_OAUTH_KV?: KVNamespace;
 }
 
 function errorResponse(status: number, message: string): Response {
