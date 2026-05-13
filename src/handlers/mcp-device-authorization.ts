@@ -16,11 +16,10 @@ import { corsJsonResponse } from "../lib/errors";
 import { generateDeviceCode, generateUserCode } from "../lib/mcp-codes";
 import { putDeviceCode, DEVICE_CODE_TTL_SEC } from "../lib/mcp-kv";
 
-/** RFC 6749 §5.2 OAuth error response (error_description は optional だが付ける) */
-function oauthError(error: string, description?: string, status = 400): Response {
-  const body: Record<string, string> = { error };
-  if (description) body.error_description = description;
-  return corsJsonResponse(body, status);
+/** RFC 6749 §5.2 OAuth error response。description は spec 上 optional だが、
+ *  全 caller で常に渡すため required にして branch を 1 本にする (テスト容易性 + coverage 100%)。 */
+function oauthError(error: string, description: string, status = 400): Response {
+  return corsJsonResponse({ error, error_description: description }, status);
 }
 
 export async function handleMcpDeviceAuthorization(

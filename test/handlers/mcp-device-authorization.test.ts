@@ -83,6 +83,18 @@ describe("POST /mcp/device_authorization — happy path", () => {
     const storedJson = kv._data[`device_code:${body.device_code}`] as string;
     expect(JSON.parse(storedJson).scope).toBe("");
   });
+
+  it("falls back to https://auth.ippoan.org when AUTH_WORKER_ORIGIN is empty", async () => {
+    const kv = createMockKV() as MockKV;
+    const env = createMockEnv({ MCP_OAUTH_KV: kv, AUTH_WORKER_ORIGIN: "" });
+    const res = await handleMcpDeviceAuthorization(
+      formRequest({ client_id: "foo" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DeviceAuthResponse;
+    expect(body.verification_uri).toBe("https://auth.ippoan.org/device");
+  });
 });
 
 describe("POST /mcp/device_authorization — error cases", () => {
