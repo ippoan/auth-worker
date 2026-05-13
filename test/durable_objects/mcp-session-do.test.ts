@@ -221,7 +221,6 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
       headers: {
         "Content-Type": "application/json",
         Authorization: "Bearer should-be-stripped",
-        Host: "should-be-stripped",
         "CF-Ray": "should-be-stripped",
         "X-Forwarded-For": "should-be-stripped",
         Accept: "application/json, text/event-stream",
@@ -245,10 +244,14 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
     });
+    // hop-by-hop / sensitive headers must be stripped (Authorization は本物の JWT、
+    // X-Forwarded-* / CF-* は Cloudflare 由来で binary 側に漏らさない)
     expect(sent.headers).not.toHaveProperty("authorization");
-    expect(sent.headers).not.toHaveProperty("host");
     expect(sent.headers).not.toHaveProperty("cf-ray");
     expect(sent.headers).not.toHaveProperty("x-forwarded-for");
+    // Host は意図的に保持 (issue #121): binary 側 rmcp が Host header 必須。
+    // 本テスト fixture では undici Request が Host header を構築時に上書き / 落とすが、
+    // blocklist には含めないことだけ検証する (上で expect not.toHaveProperty を書かない)。
 
     // simulate binary side responding
     await do_.webSocketMessage(
