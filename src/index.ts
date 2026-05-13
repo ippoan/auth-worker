@@ -43,6 +43,7 @@ import { handleMcpDeviceVerify } from "./handlers/mcp-device-verify";
 import { handleMcpDeviceProceed } from "./handlers/mcp-device-proceed";
 import { handleMcpDeviceCallback } from "./handlers/mcp-device-callback";
 import { handleMcpToken } from "./handlers/mcp-token";
+import { handleMcpIntrospect } from "./handlers/mcp-introspect";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 
 export interface Env {
@@ -297,6 +298,9 @@ export default {
           // MCP OAuth Provider — Token endpoint (Phase 3, RFC 8628 §3.4 + RFC 6749 §6)
           case "/mcp/token":
             return await handleMcpToken(request, env);
+          // MCP OAuth Provider — Token Introspection (Phase 5, RFC 7662 + GitHub token 返却)
+          case "/mcp/introspect":
+            return await handleMcpIntrospect(request, env);
           default:
             return errorResponse(404, "Not found");
         }
