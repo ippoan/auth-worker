@@ -138,6 +138,9 @@ vi.mock("../../src/handlers/mcp-device-callback", () => ({
 vi.mock("../../src/handlers/mcp-token", () => ({
   handleMcpToken: vi.fn(() => new Response("mcp-token")),
 }));
+vi.mock("../../src/handlers/mcp-introspect", () => ({
+  handleMcpIntrospect: vi.fn(() => new Response("mcp-introspect")),
+}));
 // Stub the DurableObject export so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
@@ -265,6 +268,7 @@ describe("Router (index.ts)", () => {
     ["/device/verify", "mcp-device-verify"],
     ["/device/proceed", "mcp-device-proceed"],
     ["/mcp/token", "mcp-token"],
+    ["/mcp/introspect", "mcp-introspect"],
   ];
 
   for (const [path, expected] of postRoutes) {

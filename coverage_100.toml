@@ -96,6 +96,11 @@ branches = true
 path = "src/handlers/mcp-token.ts"
 branches = true
 
+# Phase 5: Token introspection endpoint (#96)
+[[files]]
+path = "src/handlers/mcp-introspect.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]
