@@ -38,6 +38,9 @@ import { corsPreflight } from "./lib/errors";
 import { handleLineworksWebhook, handleLineworksRefresh } from "./handlers/lineworks-webhook";
 import { handleMcpAsMetadata } from "./handlers/mcp-as-metadata";
 import { handleMcpDeviceAuthorization } from "./handlers/mcp-device-authorization";
+import { handleMcpDevicePage } from "./handlers/mcp-device-page";
+import { handleMcpDeviceVerify } from "./handlers/mcp-device-verify";
+import { handleMcpDeviceProceed } from "./handlers/mcp-device-proceed";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 
 export interface Env {
@@ -198,6 +201,9 @@ export default {
           // MCP OAuth Provider — AS metadata (RFC 8414)
           case "/.well-known/oauth-authorization-server":
             return handleMcpAsMetadata(request, env);
+          // MCP OAuth Provider — Device authorization page (RFC 8628 §3.3)
+          case "/device":
+            return handleMcpDevicePage(request, env);
           default:
             return errorResponse(404, "Not found");
         }
@@ -278,6 +284,11 @@ export default {
           // MCP OAuth Provider — Device Authorization (RFC 8628 §3.1)
           case "/mcp/device_authorization":
             return await handleMcpDeviceAuthorization(request, env);
+          // MCP OAuth Provider — Device verify / proceed (RFC 8628 §3.3)
+          case "/device/verify":
+            return await handleMcpDeviceVerify(request, env);
+          case "/device/proceed":
+            return await handleMcpDeviceProceed(request, env);
           default:
             return errorResponse(404, "Not found");
         }

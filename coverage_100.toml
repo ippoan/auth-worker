@@ -58,6 +58,23 @@ branches = true
 path = "src/handlers/mcp-device-authorization.ts"
 branches = true
 
+# Phase 2: Browser-side device authorization UI
+[[files]]
+path = "src/lib/mcp-device-html.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-device-page.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-device-verify.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-device-proceed.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]

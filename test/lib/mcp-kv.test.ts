@@ -6,6 +6,7 @@ import {
   getDeviceCode,
   getDeviceCodeByUserCode,
   putDeviceCode,
+  setDeviceCodeStatus,
   type DeviceCodeRecord,
 } from "../../src/lib/mcp-kv";
 
@@ -98,6 +99,55 @@ describe("getDeviceCodeByUserCode", () => {
   it("returns null if MCP_OAUTH_KV is not bound", async () => {
     const env = createMockEnv({ MCP_OAUTH_KV: undefined });
     const got = await getDeviceCodeByUserCode(env, "anything");
+    expect(got).toBeNull();
+  });
+});
+
+describe("setDeviceCodeStatus", () => {
+  it("updates status and re-puts with remaining TTL", async () => {
+    const { env, kv } = envWithMcpKv();
+    const now = Date.now();
+    const r = rec({
+      device_code: "abc",
+      expires_at: now + 600_000, // 10 min remaining
+      status: "pending",
+    });
+    kv._data[`device_code:abc`] = JSON.stringify(r);
+
+    const updated = await setDeviceCodeStatus(env, "abc", "approved");
+    expect(updated).not.toBeNull();
+    expect(updated!.status).toBe("approved");
+
+    const stored = JSON.parse(kv._data[`device_code:abc`] as string);
+    expect(stored.status).toBe("approved");
+    // remaining TTL should be ~600 sec, allow ±5 sec for test runtime
+    expect(kv._ttls[`device_code:abc`]).toBeGreaterThanOrEqual(595);
+    expect(kv._ttls[`device_code:abc`]).toBeLessThanOrEqual(600);
+  });
+
+  it("clamps TTL to 60s when remaining time is below 60s", async () => {
+    const { env, kv } = envWithMcpKv();
+    const now = Date.now();
+    const r = rec({
+      device_code: "abc",
+      expires_at: now + 5_000, // 5s remaining → below 60s minimum
+      status: "pending",
+    });
+    kv._data[`device_code:abc`] = JSON.stringify(r);
+
+    await setDeviceCodeStatus(env, "abc", "denied");
+    expect(kv._ttls[`device_code:abc`]).toBe(60);
+  });
+
+  it("returns null when device_code record missing", async () => {
+    const { env } = envWithMcpKv();
+    const got = await setDeviceCodeStatus(env, "nope", "denied");
+    expect(got).toBeNull();
+  });
+
+  it("returns null when MCP_OAUTH_KV not bound", async () => {
+    const env = createMockEnv({ MCP_OAUTH_KV: undefined });
+    const got = await setDeviceCodeStatus(env, "abc", "approved");
     expect(got).toBeNull();
   });
 });
