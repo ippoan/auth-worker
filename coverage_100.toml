@@ -101,6 +101,19 @@ branches = true
 path = "src/handlers/mcp-introspect.ts"
 branches = true
 
+# Phase 6: MCP relay routes + McpSession DO skeleton (#117)
+[[files]]
+path = "src/durable_objects/mcp-session-do.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-relay-connect.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-relay-bridge.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]
