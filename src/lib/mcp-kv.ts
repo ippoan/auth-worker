@@ -65,3 +65,32 @@ export async function getDeviceCodeByUserCode(
   if (!env.MCP_OAUTH_KV) return null;
   return env.MCP_OAUTH_KV.get(`user_code:${user_code}`);
 }
+
+/**
+ * device_code レコードの status を更新する。残 TTL を保ったまま re-put する。
+ * Phase 2 の deny path / Phase 3 の callback (approved) で利用。
+ *
+ * 戻り値: 更新後のレコード。レコード不在 / KV 未 bind の場合は null。
+ */
+export async function setDeviceCodeStatus(
+  env: Env,
+  device_code: string,
+  status: DeviceCodeRecord["status"],
+): Promise<DeviceCodeRecord | null> {
+  if (!env.MCP_OAUTH_KV) return null;
+  const rec = await getDeviceCode(env, device_code);
+  if (!rec) return null;
+  const updated: DeviceCodeRecord = { ...rec, status };
+  // 残 TTL を秒換算 (Cloudflare KV expirationTtl の minimum = 60s)
+  const remainingSec = Math.max(
+    60,
+    Math.floor((rec.expires_at - Date.now()) / 1000),
+  );
+  await env.MCP_OAUTH_KV.put(
+    `device_code:${device_code}`,
+    JSON.stringify(updated),
+    { expirationTtl: remainingSec },
+  );
+  // user_code:* 逆引きは status を持たないので unchanged
+  return updated;
+}
