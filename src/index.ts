@@ -41,6 +41,8 @@ import { handleMcpDeviceAuthorization } from "./handlers/mcp-device-authorizatio
 import { handleMcpDevicePage } from "./handlers/mcp-device-page";
 import { handleMcpDeviceVerify } from "./handlers/mcp-device-verify";
 import { handleMcpDeviceProceed } from "./handlers/mcp-device-proceed";
+import { handleMcpDeviceCallback } from "./handlers/mcp-device-callback";
+import { handleMcpToken } from "./handlers/mcp-token";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 
 export interface Env {
@@ -204,6 +206,9 @@ export default {
           // MCP OAuth Provider — Device authorization page (RFC 8628 §3.3)
           case "/device":
             return handleMcpDevicePage(request, env);
+          // MCP OAuth Provider — GitHub OAuth callback (Phase 3, RFC 8628 §3.4)
+          case "/mcp/device_callback":
+            return await handleMcpDeviceCallback(request, env);
           default:
             return errorResponse(404, "Not found");
         }
@@ -289,6 +294,9 @@ export default {
             return await handleMcpDeviceVerify(request, env);
           case "/device/proceed":
             return await handleMcpDeviceProceed(request, env);
+          // MCP OAuth Provider — Token endpoint (Phase 3, RFC 8628 §3.4 + RFC 6749 §6)
+          case "/mcp/token":
+            return await handleMcpToken(request, env);
           default:
             return errorResponse(404, "Not found");
         }

@@ -132,6 +132,12 @@ vi.mock("../../src/handlers/mcp-device-verify", () => ({
 vi.mock("../../src/handlers/mcp-device-proceed", () => ({
   handleMcpDeviceProceed: vi.fn(() => new Response("mcp-device-proceed")),
 }));
+vi.mock("../../src/handlers/mcp-device-callback", () => ({
+  handleMcpDeviceCallback: vi.fn(() => new Response("mcp-device-callback")),
+}));
+vi.mock("../../src/handlers/mcp-token", () => ({
+  handleMcpToken: vi.fn(() => new Response("mcp-token")),
+}));
 // Stub the DurableObject export so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
@@ -189,6 +195,7 @@ describe("Router (index.ts)", () => {
     ["/.well-known/oauth-authorization-server", "mcp-as-metadata"],
     ["/device", "mcp-device-page"],
     ["/device?user_code=BCDF-GHJK", "mcp-device-page"],
+    ["/mcp/device_callback?code=abc&state=xyz", "mcp-device-callback"],
   ];
 
   it("GET /api/health → health proxy", async () => {
@@ -257,6 +264,7 @@ describe("Router (index.ts)", () => {
     ["/mcp/device_authorization", "mcp-device-authorization"],
     ["/device/verify", "mcp-device-verify"],
     ["/device/proceed", "mcp-device-proceed"],
+    ["/mcp/token", "mcp-token"],
   ];
 
   for (const [path, expected] of postRoutes) {

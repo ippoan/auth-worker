@@ -42,6 +42,8 @@ export async function verifyOAuthState(
   join_org?: string;
   code_verifier?: string;
   idp_hint?: string;
+  /** Phase 3 (MCP OAuth): /device/proceed → GitHub redirect の state に埋める device_code */
+  device_code?: string;
 } | null> {
   const dotIndex = state.indexOf(".");
   if (dotIndex === -1) return null;
@@ -61,6 +63,7 @@ export async function verifyOAuthState(
       join_org?: string;
       code_verifier?: string;
       idp_hint?: string;
+      device_code?: string;
     };
   } catch {
     return null;

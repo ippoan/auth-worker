@@ -75,6 +75,27 @@ branches = true
 path = "src/handlers/mcp-device-proceed.ts"
 branches = true
 
+# Phase 3: GitHub callback + Token endpoint (#95)
+[[files]]
+path = "src/lib/mcp-crypto.ts"
+branches = true
+
+[[files]]
+path = "src/lib/mcp-jwt.ts"
+branches = true
+
+[[files]]
+path = "src/lib/mcp-refresh.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-device-callback.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-token.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]
