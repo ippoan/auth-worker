@@ -141,9 +141,22 @@ vi.mock("../../src/handlers/mcp-token", () => ({
 vi.mock("../../src/handlers/mcp-introspect", () => ({
   handleMcpIntrospect: vi.fn(() => new Response("mcp-introspect")),
 }));
-// Stub the DurableObject export so importing index.ts doesn't blow up
+vi.mock("../../src/handlers/mcp-relay-connect", () => ({
+  handleMcpRelayConnect: vi.fn((_req, _env, user: string) =>
+    new Response(`relay-connect:${user}`),
+  ),
+}));
+vi.mock("../../src/handlers/mcp-relay-bridge", () => ({
+  handleMcpRelayBridge: vi.fn((_req, _env, user: string) =>
+    new Response(`relay-bridge:${user}`),
+  ),
+}));
+// Stub the DurableObject exports so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
+}));
+vi.mock("../../src/durable_objects/mcp-session-do", () => ({
+  McpSession: class {},
 }));
 
 import worker from "../../src/index";
@@ -294,6 +307,47 @@ describe("Router (index.ts)", () => {
     });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("lw-refresh:bot-xyz");
+  });
+
+  // --- MCP relay host dispatcher (mcp.ippoan.org / mcp-staging.ippoan.org) ---
+  it("GET mcp.* /u/:user/connect → relay-connect:<user>", async () => {
+    const req = new Request("https://mcp.ippoan.org/u/yhonda-ohishi/connect");
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("relay-connect:yhonda-ohishi");
+  });
+
+  it("POST mcp.* /u/:user/mcp → relay-bridge:<user>", async () => {
+    const req = new Request("https://mcp.ippoan.org/u/yhonda-ohishi/mcp", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("relay-bridge:yhonda-ohishi");
+  });
+
+  it("GET mcp-staging.* /u/:user/connect also routes to relay-connect", async () => {
+    const req = new Request("https://mcp-staging.ippoan.org/u/alice/connect");
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("relay-connect:alice");
+  });
+
+  it("POST mcp.* /u/:user/connect → 404 (wrong method)", async () => {
+    const req = new Request("https://mcp.ippoan.org/u/alice/connect", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET mcp.* /u/:user/mcp → 404 (wrong method)", async () => {
+    const req = new Request("https://mcp.ippoan.org/u/alice/mcp");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET mcp.* unknown path → 404 (relay 404, doesn't fall through to auth routes)", async () => {
+    const req = new Request("https://mcp.ippoan.org/login");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
   });
 
   // --- 404 / 405 ---

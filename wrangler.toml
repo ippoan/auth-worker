@@ -22,9 +22,19 @@ id = "f13ecae4b69043819c09f606abb84797"
 name = "LINEWORKS_WEBHOOK_DO"
 class_name = "LineworksWebhookDO"
 
+# MCP relay 用 Durable Object (github_login ごとに 1 instance, hibernatable WS)
+# Phase 6: routes + DO skeleton のみ。Phase 7 で frame 変換を実装する。
+[[durable_objects.bindings]]
+name = "MCP_SESSION_DO"
+class_name = "McpSession"
+
 [[migrations]]
 tag = "v1-lineworks-webhook"
 new_sqlite_classes = ["LineworksWebhookDO"]
+
+[[migrations]]
+tag = "v2-mcp-session"
+new_sqlite_classes = ["McpSession"]
 
 [observability]
 enabled = true
@@ -32,6 +42,12 @@ head_sampling_rate = 1
 
 [[routes]]
 pattern = "auth.ippoan.org"
+custom_domain = true
+
+# MCP relay endpoint — github-mcp-server-rs 用 outbound WebSocket relay
+# (issue #117 / Phase 6). cloudflared Quick Tunnel の置き換え。
+[[routes]]
+pattern = "mcp.ippoan.org"
 custom_domain = true
 
 # Secrets (set via `wrangler secret put` — prod / staging とも同名):
@@ -66,6 +82,11 @@ workers_dev = true
 pattern = "auth-staging.ippoan.org"
 custom_domain = true
 
+# MCP relay (staging) — github-mcp-server-rs 用 outbound WebSocket relay
+[[env.staging.routes]]
+pattern = "mcp-staging.ippoan.org"
+custom_domain = true
+
 [env.staging.vars]
 AUTH_WORKER_ORIGIN = "https://auth-staging.ippoan.org"
 ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
@@ -87,6 +108,14 @@ id = "0498e6057b8c4d7fbca92e9de41524ee"
 name = "LINEWORKS_WEBHOOK_DO"
 class_name = "LineworksWebhookDO"
 
+[[env.staging.durable_objects.bindings]]
+name = "MCP_SESSION_DO"
+class_name = "McpSession"
+
 [[env.staging.migrations]]
 tag = "v1-lineworks-webhook"
 new_sqlite_classes = ["LineworksWebhookDO"]
+
+[[env.staging.migrations]]
+tag = "v2-mcp-session"
+new_sqlite_classes = ["McpSession"]

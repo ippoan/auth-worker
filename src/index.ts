@@ -44,7 +44,10 @@ import { handleMcpDeviceProceed } from "./handlers/mcp-device-proceed";
 import { handleMcpDeviceCallback } from "./handlers/mcp-device-callback";
 import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
+import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
+import { handleMcpRelayBridge } from "./handlers/mcp-relay-bridge";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
+export { McpSession } from "./durable_objects/mcp-session-do";
 
 export interface Env {
   GOOGLE_CLIENT_ID: string;
@@ -119,6 +122,11 @@ export interface Env {
   /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens).
    *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
   MCP_OAUTH_KV?: KVNamespace;
+  /** MCP relay 用 Durable Object Namespace (github_login ごとに 1 instance)。
+   *  binary 側 (`github-mcp-server-rs`) からの outbound WebSocket を保持し、
+   *  Claude Code Web からの bridge request を frame に変換して転送する。
+   *  Phase 6 で binding 追加、Phase 7 で実 frame 変換を実装する (issue #117)。 */
+  MCP_SESSION_DO?: DurableObjectNamespace;
 }
 
 function errorResponse(status: number, message: string): Response {
@@ -126,6 +134,38 @@ function errorResponse(status: number, message: string): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * MCP relay route dispatcher (issue #117 / Phase 6).
+ *
+ * `mcp.ippoan.org` / `mcp-staging.ippoan.org` host で来た request を
+ * `GET /u/:user/connect` (WS upgrade) と `POST /u/:user/mcp` (HTTP bridge) に
+ * 振り分ける。マッチしなければ 404 を返す (auth routes は通さない)。
+ *
+ * 戻り値が `null` なら relay host ではなかったので caller は既存処理に進む。
+ */
+async function dispatchMcpRelay(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response | null> {
+  if (!url.host.startsWith("mcp.") && !url.host.startsWith("mcp-staging.")) {
+    return null;
+  }
+  // [^/]+ で 1 文字以上を強制しているので、マッチ時は両 capture group が必ず存在する。
+  const m = /^\/u\/([^/]+)\/(connect|mcp)$/.exec(url.pathname);
+  if (m) {
+    const user = m[1] as string;
+    const action = m[2];
+    if (action === "connect" && request.method === "GET") {
+      return handleMcpRelayConnect(request, env, user);
+    }
+    if (action === "mcp" && request.method === "POST") {
+      return handleMcpRelayBridge(request, env, user);
+    }
+  }
+  return errorResponse(404, "Not found");
 }
 
 export default {
@@ -140,6 +180,9 @@ export default {
     }));
 
     try {
+      const relay = await dispatchMcpRelay(request, env, url);
+      if (relay) return relay;
+
       if (request.method === "GET") {
         // Dynamic path: /join/:slug and /join/:slug/done
         if (url.pathname.startsWith("/join/")) {
