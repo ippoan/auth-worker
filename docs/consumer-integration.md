@@ -84,18 +84,38 @@ github logins) で決まり、`client_id` は通らない。
 
 ### 3.2 scope
 
-device_authorization に `scope` を渡すこともできるが、現状の auth-worker は
-GitHub OAuth App 側で固定 scope (Issues r/w + metadata r 相当) を要求しており、
-`scope` 値は token response に echo されるだけ。cc-relay の broker が Issue
-body の CAS + comments の post/list をやる用途なら現行 scope で十分。
+auth-worker は consumer が要求した抽象 MCP scope を実 GitHub OAuth scope に
+翻訳する ([`src/lib/mcp-scope.ts`](../src/lib/mcp-scope.ts), issue #130)。
+cc-relay は `/mcp/device_authorization` の form に **`scope=mcp.read mcp.write`**
+を渡す必要がある。
 
-### 3.3 INTERNAL_SHARED_SECRET 共有
+| MCP scope (consumer 要求) | GitHub scope (auth-worker → github.com) | 用途 |
+|---|---|---|
+| `mcp.read` (or 省略) | `read:user` | login 取得のみ (default / 下位互換) |
+| `mcp.write` | `read:user repo` | Issues r/w + private repo 含む完全アクセス |
+| `offline_access` | (no-op) | 現状 token endpoint が常に refresh_token を発行 |
+
+cc-relay broker は Issue body CAS + comments の post/list をやるため
+`mcp.write` 必須。GitHub `repo` scope は private repo 含む完全アクセスで
+あり、Issues 単独 scope は GitHub OAuth (classic) に存在しないため
+最小選択肢として採用 (issue #130 決定)。
+
+unknown / 未知 scope は silent drop (RFC 6749 §3.3)。全 token が drop された
+場合は `mcp.read` に decay する (下位互換)。
+
+### 3.3 後方互換: github-mcp-server-rs
+
+github-mcp-server-rs は `scope` 未指定で `/mcp/device_authorization` を叩く
+ため、自動的に `mcp.read` decay → GitHub `read:user` で従来通り動作する。
+binary 側の変更は不要。
+
+### 3.4 INTERNAL_SHARED_SECRET 共有
 
 cc-relay broker は `/mcp/introspect` を叩くため `INTERNAL_SHARED_SECRET` を
 保持する必要がある。github-mcp-server-rs と **同じ値** を共有する。
 将来 Service Binding 化される (Epic [#91](https://github.com/ippoan/auth-worker/issues/91))。
 
-### 3.4 JWT `aud`
+### 3.5 JWT `aud`
 
 `/mcp/token` が発行する JWT の `aud` は固定 `"github-mcp-server-rs"`。
 `/mcp/introspect` も `aud === "github-mcp-server-rs"` を strict 検証する
@@ -107,7 +127,7 @@ cc-relay も **同 aud の JWT を introspect する** 形になる。これは 
 将来 aud を consumer 毎に分けたくなったら `/mcp/token` を multi-aud 対応に
 拡張する必要がある (現状は単一 aud)。
 
-### 3.5 GITHUB_MCP_USER_ALLOWLIST
+### 3.6 GITHUB_MCP_USER_ALLOWLIST
 
 device_callback (`mcp-device-callback.ts`) は GitHub OAuth callback 後に
 `GITHUB_MCP_USER_ALLOWLIST` (JSON array) で github_login を gate する。
@@ -155,11 +175,13 @@ host 側で flow を回す必要なし。期限切れ時は host 側でログイ
 cc-relay 統合確認用の最小 smoke test:
 
 ```bash
-# 1. device_authorization
+# 1. device_authorization (cc-relay は mcp.write を要求 → GitHub repo scope)
 curl -s -X POST https://auth.ippoan.org/mcp/device_authorization \
-  -d 'client_id=cc-relay' | jq .
+  -d 'client_id=cc-relay&scope=mcp.read+mcp.write' | jq .
 
 # → user_code / verification_uri_complete を取得 → ブラウザで approve
+# → GitHub consent 画面に "Full control of private repositories" (repo) と
+#   "Read user profile" (read:user) の 2 つが出ることを目視確認
 
 # 2. polling
 curl -s -X POST https://auth.ippoan.org/mcp/token \
@@ -174,9 +196,13 @@ curl -s -X POST https://auth.ippoan.org/mcp/introspect \
   -d "{\"token\":\"$ACCESS_TOKEN\"}" | jq .
 # → { active: true, github_login, github_token, ... }
 
-# 4. github_token で api.github.com に到達確認
+# 4. github_token で api.github.com に到達確認 (login)
 curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
   https://api.github.com/user | jq .login
+
+# 5. mcp.write requested → Issues API が叩けることを確認 (issue #130 のゴール)
+curl -s -H "Authorization: token $GITHUB_TOKEN" \
+  https://api.github.com/repos/ippoan/cc-relay/issues | jq '.[0].number'
 ```
 
 ## 6. 関連 issue

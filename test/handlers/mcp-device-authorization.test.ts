@@ -72,7 +72,7 @@ describe("POST /mcp/device_authorization — happy path", () => {
     expect(kv._ttls[`user_code:${body.user_code}`]).toBe(900);
   });
 
-  it("accepts request without scope (empty string stored)", async () => {
+  it("accepts request without scope (decays to 'mcp.read')", async () => {
     const { env, kv } = envWithKv();
     const res = await handleMcpDeviceAuthorization(
       formRequest({ client_id: "github-mcp-server-rs" }),
@@ -81,7 +81,31 @@ describe("POST /mcp/device_authorization — happy path", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as DeviceAuthResponse;
     const storedJson = kv._data[`device_code:${body.device_code}`] as string;
-    expect(JSON.parse(storedJson).scope).toBe("");
+    expect(JSON.parse(storedJson).scope).toBe("mcp.read");
+  });
+
+  it("normalizes scope to canonical order (issue #130)", async () => {
+    const { env, kv } = envWithKv();
+    const res = await handleMcpDeviceAuthorization(
+      formRequest({ client_id: "cc-relay", scope: "mcp.write mcp.read" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DeviceAuthResponse;
+    const stored = JSON.parse(kv._data[`device_code:${body.device_code}`] as string);
+    expect(stored.scope).toBe("mcp.read mcp.write");
+  });
+
+  it("drops unknown scope tokens and decays empty result to 'mcp.read'", async () => {
+    const { env, kv } = envWithKv();
+    const res = await handleMcpDeviceAuthorization(
+      formRequest({ client_id: "cc-relay", scope: "garbage" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DeviceAuthResponse;
+    const stored = JSON.parse(kv._data[`device_code:${body.device_code}`] as string);
+    expect(stored.scope).toBe("mcp.read");
   });
 
   it("falls back to https://auth.ippoan.org when AUTH_WORKER_ORIGIN is empty", async () => {

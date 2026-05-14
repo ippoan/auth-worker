@@ -15,6 +15,7 @@ import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
 import { generateDeviceCode, generateUserCode } from "../lib/mcp-codes";
 import { putDeviceCode, DEVICE_CODE_TTL_SEC } from "../lib/mcp-kv";
+import { normalizeMcpScope } from "../lib/mcp-scope";
 
 /** RFC 6749 §5.2 OAuth error response。description は spec 上 optional だが、
  *  全 caller で常に渡すため required にして branch を 1 本にする (テスト容易性 + coverage 100%)。 */
@@ -42,7 +43,7 @@ export async function handleMcpDeviceAuthorization(
   if (!client_id) {
     return oauthError("invalid_request", "client_id is required");
   }
-  const scope = ((form.get("scope") as string | null) ?? "").trim();
+  const scope = normalizeMcpScope(((form.get("scope") as string | null) ?? "").trim());
 
   const device_code = generateDeviceCode();
   const user_code = generateUserCode();

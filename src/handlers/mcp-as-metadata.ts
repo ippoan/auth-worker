@@ -9,6 +9,13 @@
  * AS metadata は完成形を返す (URL を先に約束する形)。Phase 1 段階で
  * クライアントが上記 endpoint を叩いても 404 になるが、AS metadata 自体は
  * 安定して publish される。
+ *
+ * `scopes_supported` は consumer が `/mcp/device_authorization` `/mcp/authorize`
+ * の `scope` パラメータに渡せる抽象 MCP scope。実 GitHub OAuth scope への
+ * 翻訳は `src/lib/mcp-scope.ts` で行う (issue #130):
+ *   - `mcp.read`        → GitHub `read:user`
+ *   - `mcp.write`       → GitHub `read:user repo` (Issues r/w + private repo 含む)
+ *   - `offline_access`  → 現状 no-op (token endpoint が常に refresh_token を発行)
  */
 
 import type { Env } from "../index";

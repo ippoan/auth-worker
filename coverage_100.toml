@@ -77,6 +77,10 @@ path = "src/lib/mcp-authcode.ts"
 branches = true
 
 [[files]]
+path = "src/lib/mcp-scope.ts"
+branches = true
+
+[[files]]
 path = "src/handlers/mcp-register.ts"
 branches = true
 
