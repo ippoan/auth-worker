@@ -37,6 +37,7 @@ import {
 import { corsPreflight } from "./lib/errors";
 import { handleLineworksWebhook, handleLineworksRefresh } from "./handlers/lineworks-webhook";
 import { handleMcpAsMetadata } from "./handlers/mcp-as-metadata";
+import { handleMcpResourceMetadata } from "./handlers/mcp-resource-metadata";
 import { handleMcpDeviceAuthorization } from "./handlers/mcp-device-authorization";
 import { handleMcpDevicePage } from "./handlers/mcp-device-page";
 import { handleMcpDeviceVerify } from "./handlers/mcp-device-verify";
@@ -247,6 +248,11 @@ export default {
           // MCP OAuth Provider — AS metadata (RFC 8414)
           case "/.well-known/oauth-authorization-server":
             return handleMcpAsMetadata(request, env);
+          // MCP OAuth Provider — Protected Resource metadata (RFC 9728, Phase 4 / issue #126)
+          // client は MCP relay URL の 401 応答 `WWW-Authenticate.resource_metadata`
+          // 経由で本 endpoint を踏み、authorization_servers から AS metadata を発見する
+          case "/.well-known/oauth-protected-resource":
+            return handleMcpResourceMetadata(request, env);
           // MCP OAuth Provider — Device authorization page (RFC 8628 §3.3)
           case "/device":
             return handleMcpDevicePage(request, env);

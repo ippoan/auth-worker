@@ -15,9 +15,22 @@
 
 import type { Env } from "../index";
 import { verifyMcpJwt } from "../lib/mcp-jwt";
+import { wwwAuthenticateValue } from "../lib/mcp-origins";
 
 /** Phase 3 `/mcp/token` で発行される JWT の aud と一致させる (Rust binary 名)。 */
 const MCP_AUD = "github-mcp-server-rs";
+
+/**
+ * 401 応答用 helper (Phase 4 / issue #126)。
+ * `mcp-relay-bridge.ts` と同方針: WS upgrade 401 にも spec 準拠で
+ * `WWW-Authenticate.resource_metadata` を載せる (binary 側がこれを見て JWT 取得 flow に進む)。
+ */
+function unauthorizedResponse(env: Env, body: string): Response {
+  return new Response(body, {
+    status: 401,
+    headers: { "WWW-Authenticate": wwwAuthenticateValue(env) },
+  });
+}
 
 export async function handleMcpRelayConnect(
   request: Request,
@@ -40,11 +53,11 @@ export async function handleMcpRelayConnect(
   const authz = request.headers.get("Authorization") ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(authz);
   if (!m || !m[1]) {
-    return new Response("Unauthorized", { status: 401 });
+    return unauthorizedResponse(env, "Unauthorized");
   }
   const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, MCP_AUD);
   if (!payload) {
-    return new Response("Invalid token", { status: 401 });
+    return unauthorizedResponse(env, "Invalid token");
   }
   if (payload.github_login !== user) {
     return new Response("User mismatch", { status: 403 });
