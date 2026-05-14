@@ -153,14 +153,17 @@ vi.mock("../../src/handlers/mcp-token", () => ({
 vi.mock("../../src/handlers/mcp-introspect", () => ({
   handleMcpIntrospect: vi.fn(() => new Response("mcp-introspect")),
 }));
+// ADR-003: handler signature now accepts `string | null`. The mock tags the
+// user-less variant as `(jwt)` so the dispatch tests can tell the two
+// callsites apart.
 vi.mock("../../src/handlers/mcp-relay-connect", () => ({
-  handleMcpRelayConnect: vi.fn((_req, _env, user: string) =>
-    new Response(`relay-connect:${user}`),
+  handleMcpRelayConnect: vi.fn((_req, _env, user: string | null) =>
+    new Response(`relay-connect:${user ?? "(jwt)"}`),
   ),
 }));
 vi.mock("../../src/handlers/mcp-relay-bridge", () => ({
-  handleMcpRelayBridge: vi.fn((_req, _env, user: string) =>
-    new Response(`relay-bridge:${user}`),
+  handleMcpRelayBridge: vi.fn((_req, _env, user: string | null) =>
+    new Response(`relay-bridge:${user ?? "(jwt)"}`),
   ),
 }));
 // Stub the DurableObject exports so importing index.ts doesn't blow up
@@ -343,6 +346,33 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://mcp-staging.ippoan.org/u/alice/connect");
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("relay-connect:alice");
+  });
+
+  // ADR-003 (ippoan/cc-relay#35): user-less endpoints. `.mcp.json` committed
+  // to a consumer repo root points at these; the handler derives DO id from
+  // the JWT's github_login claim. The mock tags this with `(jwt)`.
+  it("POST mcp.* /mcp → relay-bridge:(jwt) [user-less, ADR-003]", async () => {
+    const req = new Request("https://mcp.ippoan.org/mcp", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("relay-bridge:(jwt)");
+  });
+
+  it("GET mcp.* /connect → relay-connect:(jwt) [user-less, ADR-003]", async () => {
+    const req = new Request("https://mcp.ippoan.org/connect");
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("relay-connect:(jwt)");
+  });
+
+  it("GET mcp.* /mcp → 404 (wrong method for user-less bridge)", async () => {
+    const req = new Request("https://mcp.ippoan.org/mcp");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
+  it("POST mcp.* /connect → 404 (wrong method for user-less connect)", async () => {
+    const req = new Request("https://mcp.ippoan.org/connect", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
   });
 
   // Phase 5 (#128): mcp-staging.* host で /register と /authorize も dispatch される
