@@ -35,10 +35,8 @@ import {
   putAuthRequest,
 } from "../lib/mcp-authcode";
 import { getDcrClient } from "../lib/mcp-dcr";
+import { mcpToGithubScope, normalizeMcpScope, parseMcpScope } from "../lib/mcp-scope";
 import { generateOAuthState } from "../lib/security";
-
-/** GitHub OAuth scope。`/user` で login を取得するために `read:user` 必須。 */
-const GITHUB_OAUTH_SCOPE = "read:user";
 
 /** redirect 先 URL に `error` を query string で乗せる helper (RFC 6749 §4.1.2.1)。 */
 function redirectErrorResponse(
@@ -76,7 +74,7 @@ export async function handleMcpAuthorize(
   const state = params.get("state") ?? "";
   const code_challenge = params.get("code_challenge") ?? "";
   const code_challenge_method = params.get("code_challenge_method") ?? "";
-  const scope = params.get("scope") ?? "";
+  const scope = normalizeMcpScope(params.get("scope") ?? "");
 
   // ── client_id / redirect_uri は DCR と照合。失敗時は redirect せず 400 表示
   //    (spec §4.1.2.1: redirect_uri が信用できないので) ──
@@ -126,7 +124,7 @@ export async function handleMcpAuthorize(
   const ghAuthorize = new URL("https://github.com/login/oauth/authorize");
   ghAuthorize.searchParams.set("client_id", env.GITHUB_MCP_CLIENT_ID);
   ghAuthorize.searchParams.set("redirect_uri", callbackUri);
-  ghAuthorize.searchParams.set("scope", GITHUB_OAUTH_SCOPE);
+  ghAuthorize.searchParams.set("scope", mcpToGithubScope(parseMcpScope(scope)));
   ghAuthorize.searchParams.set("state", ghState);
   return Response.redirect(ghAuthorize.toString(), 302);
 }

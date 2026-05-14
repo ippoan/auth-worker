@@ -29,7 +29,7 @@ function rec(overrides: Partial<DeviceCodeRecord> = {}): DeviceCodeRecord {
     device_code: "d".repeat(64),
     user_code: "BCDF-GHJK",
     client_id: "github-mcp-server-rs",
-    scope: "read:user",
+    scope: "mcp.read",
     status: "pending",
     created_at: now,
     expires_at: now + 900_000,
@@ -233,5 +233,35 @@ describe("POST /device/proceed — approve", () => {
     expect(decoded).not.toBeNull();
     expect((decoded as { device_code?: string }).device_code).toBe(r.device_code);
     expect((decoded as { provider?: string }).provider).toBe("github_mcp");
+  });
+
+  it("requests GitHub 'read:user repo' scope when record.scope contains mcp.write (issue #130)", async () => {
+    const r = rec({ scope: "mcp.read mcp.write" });
+    const { env } = envWithKv({
+      [`user_code:${r.user_code}`]: r.device_code,
+      [`device_code:${r.device_code}`]: JSON.stringify(r),
+    });
+    const res = await handleMcpDeviceProceed(
+      postForm({ user_code: r.user_code, action: "approve" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const u = new URL(res.headers.get("Location") ?? "");
+    expect(u.searchParams.get("scope")).toBe("read:user repo");
+  });
+
+  it("decays empty record.scope to GitHub 'read:user' (backward compat)", async () => {
+    const r = rec({ scope: "" });
+    const { env } = envWithKv({
+      [`user_code:${r.user_code}`]: r.device_code,
+      [`device_code:${r.device_code}`]: JSON.stringify(r),
+    });
+    const res = await handleMcpDeviceProceed(
+      postForm({ user_code: r.user_code, action: "approve" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const u = new URL(res.headers.get("Location") ?? "");
+    expect(u.searchParams.get("scope")).toBe("read:user");
   });
 });

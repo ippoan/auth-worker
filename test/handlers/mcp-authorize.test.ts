@@ -134,7 +134,8 @@ describe("handleMcpAuthorize — successful redirect to GitHub", () => {
     expect(loc.searchParams.get("redirect_uri")).toBe(
       "https://auth.test.example/mcp/auth_callback",
     );
-    expect(loc.searchParams.get("scope")).toBe("read:user");
+    // validParams() sends scope="mcp.read mcp.write" → GitHub repo grant (issue #130)
+    expect(loc.searchParams.get("scope")).toBe("read:user repo");
     expect(loc.searchParams.get("state")).toBeTruthy();
     // KV に auth:request:* が 1 件入った
     const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"));
@@ -151,16 +152,46 @@ describe("handleMcpAuthorize — successful redirect to GitHub", () => {
     expect(stored.client_state).toBe("csrf-1");
   });
 
-  // L79 (`scope ?? ""` の null branch) と success path で scope=空 の record 保存検証
-  it("stores empty scope and succeeds when scope param is omitted", async () => {
+  // L79 (`scope ?? ""` の null branch) と success path で scope 省略時の default decay 検証
+  it("decays omitted scope to 'mcp.read' and requests GitHub 'read:user'", async () => {
     const { env, kv, client_id } = await envWithRegisteredClient();
     const params = validParams(client_id);
     delete (params as Record<string, string | undefined>)["scope"];
     const res = await handleMcpAuthorize(authorizeReq(params as Record<string, string>), env);
     expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("scope")).toBe("read:user");
     const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
     const stored = JSON.parse(kv._data[reqKey]!) as { scope: string };
-    expect(stored.scope).toBe("");
+    expect(stored.scope).toBe("mcp.read");
+  });
+
+  it("normalizes scope=mcp.write to KV 'mcp.write' and GitHub 'read:user repo' (issue #130)", async () => {
+    const { env, kv, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), scope: "mcp.write" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("scope")).toBe("read:user repo");
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { scope: string };
+    expect(stored.scope).toBe("mcp.write");
+  });
+
+  it("drops unknown scope tokens and decays to 'mcp.read'", async () => {
+    const { env, kv, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), scope: "garbage" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("scope")).toBe("read:user");
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { scope: string };
+    expect(stored.scope).toBe("mcp.read");
   });
 });
 
