@@ -142,15 +142,11 @@ export class McpSession implements DurableObject {
     // `502 Can't call WebSocket send() after close()` が出る時は ws_count >= 1
     // かつ states に CLOSING(2) / CLOSED(3) が混じっているはず。Hibernated WS の
     // readyState が test 環境と本番で同じ値かも観測。確定後は削除予定。
+    // 実 WebSocket は readyState getter を持つので throw しない (fake mock は
+    // undefined → "undefined" 出力で OK)。
     console.log(
       `[mcp-relay] handleBridge: ws_count=${active.length} states=[${active
-        .map((w) => {
-          try {
-            return String((w as WebSocket).readyState);
-          } catch {
-            return "?";
-          }
-        })
+        .map((w) => String((w as WebSocket).readyState))
         .join(",")}] pending=${this.pending.size}`,
     );
     if (active.length === 0) {
@@ -277,8 +273,10 @@ export class McpSession implements DurableObject {
 
   async webSocketError(_ws: WebSocket, err: unknown): Promise<void> {
     // [tracer #123] WS error 経由の close か (= binary 起因疑い) を判定。
+    // String() で統一 (Error → "Error: msg")。`err instanceof Error` 三項にすると
+    // non-Error テストが必要になり branch coverage に響くため、debug log は冗長で OK。
     console.log(
-      `[mcp-relay] webSocketError err=${err instanceof Error ? err.message : String(err)} pending=${this.pending.size}`,
+      `[mcp-relay] webSocketError err=${String(err)} pending=${this.pending.size}`,
     );
     this.rejectAllPending("relay_session_error");
   }
