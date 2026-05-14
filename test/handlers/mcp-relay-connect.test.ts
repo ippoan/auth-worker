@@ -118,7 +118,12 @@ describe("handleMcpRelayConnect — env / pre-flight guards", () => {
 });
 
 describe("handleMcpRelayConnect — JWT authentication", () => {
-  it("returns 401 when Authorization header is missing", async () => {
+  // Phase 4 / issue #126: WS upgrade の 401 にも `WWW-Authenticate` を付ける
+  // (binary 側 client が JWT 取り直し flow に進めるように)。
+  const expectedWwwAuth =
+    'Bearer realm="MCP", resource_metadata="https://auth.test.example/.well-known/oauth-protected-resource"';
+
+  it("returns 401 + WWW-Authenticate when Authorization header is missing", async () => {
     const { env } = envWithDO();
     const res = await handleMcpRelayConnect(
       wsReq({ upgrade: "websocket" }),
@@ -126,9 +131,10 @@ describe("handleMcpRelayConnect — JWT authentication", () => {
       "alice",
     );
     expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(expectedWwwAuth);
   });
 
-  it("returns 401 when Authorization is not Bearer-format", async () => {
+  it("returns 401 + WWW-Authenticate when Authorization is not Bearer-format", async () => {
     const { env } = envWithDO();
     const res = await handleMcpRelayConnect(
       wsReq({ upgrade: "websocket", auth: "Basic xyz" }),
@@ -136,9 +142,10 @@ describe("handleMcpRelayConnect — JWT authentication", () => {
       "alice",
     );
     expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(expectedWwwAuth);
   });
 
-  it("returns 401 when JWT signature is invalid", async () => {
+  it("returns 401 + WWW-Authenticate when JWT signature is invalid", async () => {
     const { env } = envWithDO();
     const res = await handleMcpRelayConnect(
       wsReq({ upgrade: "websocket", auth: "Bearer a.b.c" }),
@@ -146,6 +153,7 @@ describe("handleMcpRelayConnect — JWT authentication", () => {
       "alice",
     );
     expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(expectedWwwAuth);
   });
 
   it("returns 403 when payload.github_login does not match :user", async () => {

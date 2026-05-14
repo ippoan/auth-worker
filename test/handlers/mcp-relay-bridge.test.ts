@@ -102,13 +102,20 @@ describe("handleMcpRelayBridge — env / pre-flight guards", () => {
 });
 
 describe("handleMcpRelayBridge — JWT authentication", () => {
-  it("returns 401 when Authorization header missing", async () => {
+  // Phase 4 / issue #126: 401 応答は MCP Authorization spec に従い
+  // `WWW-Authenticate: Bearer realm="MCP", resource_metadata="..."` を持つ。
+  // Anthropic Claude.ai client はこの header を見て AS metadata を発見する。
+  const expectedWwwAuth =
+    'Bearer realm="MCP", resource_metadata="https://auth.test.example/.well-known/oauth-protected-resource"';
+
+  it("returns 401 + WWW-Authenticate when Authorization header missing", async () => {
     const { env } = envWithDO();
     const res = await handleMcpRelayBridge(bridgeReq({}), env, "alice");
     expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(expectedWwwAuth);
   });
 
-  it("returns 401 when Authorization is not Bearer", async () => {
+  it("returns 401 + WWW-Authenticate when Authorization is not Bearer", async () => {
     const { env } = envWithDO();
     const res = await handleMcpRelayBridge(
       bridgeReq({ auth: "Basic xyz" }),
@@ -116,9 +123,10 @@ describe("handleMcpRelayBridge — JWT authentication", () => {
       "alice",
     );
     expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(expectedWwwAuth);
   });
 
-  it("returns 401 when JWT signature is invalid", async () => {
+  it("returns 401 + WWW-Authenticate when JWT signature is invalid", async () => {
     const { env } = envWithDO();
     const res = await handleMcpRelayBridge(
       bridgeReq({ auth: "Bearer a.b.c" }),
@@ -126,6 +134,7 @@ describe("handleMcpRelayBridge — JWT authentication", () => {
       "alice",
     );
     expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(expectedWwwAuth);
   });
 
   it("returns 403 when payload.github_login !== :user", async () => {

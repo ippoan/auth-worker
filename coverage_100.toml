@@ -54,6 +54,15 @@ branches = true
 path = "src/handlers/mcp-as-metadata.ts"
 branches = true
 
+# Phase 4 (#126): MCP Auth Resource Metadata + WWW-Authenticate
+[[files]]
+path = "src/handlers/mcp-resource-metadata.ts"
+branches = true
+
+[[files]]
+path = "src/lib/mcp-origins.ts"
+branches = true
+
 [[files]]
 path = "src/handlers/mcp-device-authorization.ts"
 branches = true

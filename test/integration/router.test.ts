@@ -120,6 +120,9 @@ vi.mock("../../src/handlers/lineworks-webhook", () => ({
 vi.mock("../../src/handlers/mcp-as-metadata", () => ({
   handleMcpAsMetadata: vi.fn(() => new Response("mcp-as-metadata")),
 }));
+vi.mock("../../src/handlers/mcp-resource-metadata", () => ({
+  handleMcpResourceMetadata: vi.fn(() => new Response("mcp-resource-metadata")),
+}));
 vi.mock("../../src/handlers/mcp-device-authorization", () => ({
   handleMcpDeviceAuthorization: vi.fn(() => new Response("mcp-device-authorization")),
 }));
@@ -209,6 +212,7 @@ describe("Router (index.ts)", () => {
     ["/logout", "logout"],
     ["/api/bot-config/export?tenant_id=abc", "bot-export"],
     ["/.well-known/oauth-authorization-server", "mcp-as-metadata"],
+    ["/.well-known/oauth-protected-resource", "mcp-resource-metadata"],
     ["/device", "mcp-device-page"],
     ["/device?user_code=BCDF-GHJK", "mcp-device-page"],
     ["/mcp/device_callback?code=abc&state=xyz", "mcp-device-callback"],
