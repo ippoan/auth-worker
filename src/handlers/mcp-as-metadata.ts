@@ -19,18 +19,23 @@ export function handleMcpAsMetadata(_request: Request, env: Env): Response {
   const res = corsJsonResponse({
     issuer,
     device_authorization_endpoint: `${issuer}/mcp/device_authorization`,
-    token_endpoint: `${issuer}/mcp/token`,               // Phase 3 で実装
-    introspection_endpoint: `${issuer}/mcp/introspect`,  // Phase 5 で実装
+    token_endpoint: `${issuer}/mcp/token`,
+    introspection_endpoint: `${issuer}/mcp/introspect`,
+    // Phase 5 (issue #128): Browser client (Anthropic Claude.ai 等) 向け
+    // Authorization Code grant + Dynamic Client Registration を追加
+    authorization_endpoint: `${issuer}/mcp/authorize`,
+    registration_endpoint: `${issuer}/mcp/register`,
     grant_types_supported: [
       "urn:ietf:params:oauth:grant-type:device_code",
+      "authorization_code",
       "refresh_token",
     ],
-    // RFC 8628 device flow = public client (binary 配布のため secret 隠匿不可)
+    // public client only (Rust binary は配布、Browser client は secret 隠匿不可)
     token_endpoint_auth_methods_supported: ["none"],
-    // device flow は authorization_endpoint を使わない (response_type も不要)
-    response_types_supported: [],
+    // Phase 5: code response_type 対応
+    response_types_supported: ["code"],
     scopes_supported: ["mcp.read", "mcp.write", "offline_access"],
-    // Phase 5+ で PKCE 拡張する余地として宣言
+    // PKCE: S256 のみ (Phase 5 で実装)
     code_challenge_methods_supported: ["S256"],
   });
   // AS metadata は静的なので edge cache を許可 (corsJsonResponse は

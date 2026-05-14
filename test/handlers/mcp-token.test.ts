@@ -279,3 +279,173 @@ describe("POST /mcp/token — refresh_token grant", () => {
     expect((await res2.json() as { error: string }).error).toBe("invalid_grant");
   });
 });
+
+// =============================================================================
+// Phase 5 (#128): authorization_code grant + PKCE
+// =============================================================================
+import { putAuthCode, type AuthCodeRecord } from "../../src/lib/mcp-authcode";
+
+const PKCE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const PKCE_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+function authCodeRec(overrides: Partial<AuthCodeRecord> = {}): AuthCodeRecord {
+  return {
+    code: "ac-1",
+    client_id: "c-1",
+    redirect_uri: "https://claude.ai/cb",
+    code_challenge: PKCE_CHALLENGE,
+    code_challenge_method: "S256",
+    github_login: "alice",
+    scope: "mcp.read mcp.write",
+    expires_at: Date.now() + 60_000,
+    ...overrides,
+  };
+}
+
+describe("POST /mcp/token — authorization_code grant (Phase 5 #128)", () => {
+  it("400 invalid_request when any of code/code_verifier/redirect_uri/client_id missing", async () => {
+    const { env } = envWithKv();
+    for (const missing of ["code", "code_verifier", "redirect_uri", "client_id"]) {
+      const fields: Record<string, string> = {
+        grant_type: "authorization_code",
+        code: "ac",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      };
+      delete fields[missing];
+      const res = await handleMcpToken(postForm(fields), env);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("invalid_request");
+    }
+  });
+
+  it("400 invalid_grant when code unknown", async () => {
+    const { env } = envWithKv();
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "missing",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("400 invalid_grant when code expired", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec({ expires_at: Date.now() - 1000 }));
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("400 invalid_grant when client_id mismatch", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec());
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "other-client",
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("400 invalid_grant when redirect_uri mismatch", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec());
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://attacker.example/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("400 invalid_grant when PKCE verifier does not match challenge", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec());
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: "wrong-verifier",
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("200 with access_token + refresh_token on success; auth code single-use", async () => {
+    const { env, kv } = envWithKv();
+    await putAuthCode(env, authCodeRec());
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      access_token: string;
+      refresh_token: string;
+      scope: string;
+      token_type: string;
+      expires_in: number;
+    };
+    expect(body.token_type).toBe("Bearer");
+    expect(body.expires_in).toBe(3600);
+    expect(body.scope).toBe("mcp.read mcp.write");
+    const payload = await verifyMcpJwt(body.access_token, TEST_MCP_JWT_SECRET, AUD);
+    expect(payload!.sub).toBe("github:alice");
+    expect(payload!.github_login).toBe("alice");
+
+    // KV: auth:code:ac-1 削除済 (single-use)
+    expect(kv._data["auth:code:ac-1"]).toBeUndefined();
+    // 2 度目は invalid_grant
+    const res2 = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res2.status).toBe(400);
+  });
+});
