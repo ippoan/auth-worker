@@ -44,3 +44,10 @@ nuxt-pwa-carins / nuxt-dtako-logs のログイン画面・JWT 発行を担当。
 ```bash
 npx wrangler deploy
 ```
+
+## MCP OAuth Provider
+
+auth-worker は GitHub OAuth を delegation する **MCP OAuth Provider** でもある
+(epic [#91](https://github.com/ippoan/auth-worker/issues/91))。
+consumer (`github-mcp-server-rs`, `cc-relay` broker, Claude.ai) からの統合
+手順は [`docs/consumer-integration.md`](docs/consumer-integration.md) を参照。
