@@ -7,7 +7,17 @@
  * を import する。
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
+
+// [tracer #123] DO に追加した `[mcp-relay] ...` 観測 log で test 出力が騒がしく
+// なるのを防ぐ。本物の挙動は staging wrangler tail で確認する。
+let consoleLogSpy: ReturnType<typeof vi.spyOn> | undefined;
+beforeAll(() => {
+  consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+});
+afterAll(() => {
+  consoleLogSpy?.mockRestore();
+});
 
 // --- Response polyfill: allow status 101 + webSocket prop ---
 const OriginalResponse = globalThis.Response;

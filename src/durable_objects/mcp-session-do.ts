@@ -112,7 +112,16 @@ export class McpSession implements DurableObject {
     }
 
     // 同時 1 本のみ: 既存 WS があれば close してから新規 accept。
-    for (const old of this.state.getWebSockets(WS_TAG)) {
+    const existing = this.state.getWebSockets(WS_TAG);
+    if (existing.length > 0) {
+      // [tracer #123] handleConnect race 仮説の検証用。新 upgrade で既存 WS を
+      // close するパスが頻発するなら、CF keepalive 等が新 connect を発火させて
+      // いる疑い。確定後は削除予定。
+      console.log(
+        `[mcp-relay] handleConnect: replacing ${existing.length} existing WS (suspect handleConnect race)`,
+      );
+    }
+    for (const old of existing) {
       try {
         old.close(1000, "replaced");
       } catch {
@@ -129,6 +138,21 @@ export class McpSession implements DurableObject {
 
   private async handleBridge(req: Request): Promise<Response> {
     const active = this.state.getWebSockets(WS_TAG);
+    // [tracer #123] stale WS race の症状特定用。
+    // `502 Can't call WebSocket send() after close()` が出る時は ws_count >= 1
+    // かつ states に CLOSING(2) / CLOSED(3) が混じっているはず。Hibernated WS の
+    // readyState が test 環境と本番で同じ値かも観測。確定後は削除予定。
+    console.log(
+      `[mcp-relay] handleBridge: ws_count=${active.length} states=[${active
+        .map((w) => {
+          try {
+            return String((w as WebSocket).readyState);
+          } catch {
+            return "?";
+          }
+        })
+        .join(",")}] pending=${this.pending.size}`,
+    );
     if (active.length === 0) {
       return jsonResponse(503, { error: "no_active_relay_session" });
     }
@@ -234,14 +258,28 @@ export class McpSession implements DurableObject {
 
   async webSocketClose(
     _ws: WebSocket,
-    _code: number,
-    _reason: string,
-    _wasClean: boolean,
+    code: number,
+    reason: string,
+    wasClean: boolean,
   ): Promise<void> {
+    // [tracer #123] WS が server 側で頻繁に close される根本原因の切り分け。
+    // - code=1006 wasClean=false 多発 → CF idle limit / network drop
+    // - code=1000 reason="replaced" → handleConnect race (直前の handleConnect log と対)
+    // - code=1001 (Going Away) 規則的 → hibernation race
+    // - 直前に webSocketError → binary 起因 (writer_task の sink.close())
+    // remaining は close 後に残っている WS 数 (新しい WS が attach 済かの判定)。
+    const remaining = this.state.getWebSockets(WS_TAG).length;
+    console.log(
+      `[mcp-relay] webSocketClose code=${code} reason=${JSON.stringify(reason)} wasClean=${wasClean} remaining=${remaining} pending=${this.pending.size}`,
+    );
     this.rejectAllPending("relay_session_closed");
   }
 
-  async webSocketError(_ws: WebSocket, _err: unknown): Promise<void> {
+  async webSocketError(_ws: WebSocket, err: unknown): Promise<void> {
+    // [tracer #123] WS error 経由の close か (= binary 起因疑い) を判定。
+    console.log(
+      `[mcp-relay] webSocketError err=${err instanceof Error ? err.message : String(err)} pending=${this.pending.size}`,
+    );
     this.rejectAllPending("relay_session_error");
   }
 
