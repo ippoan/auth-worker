@@ -1,15 +1,23 @@
 /**
- * MCP relay HTTP bridge handler (issue #117 / Phase 6)。
+ * MCP relay HTTP bridge handler (issue #117 / Phase 6 + ADR-003 user-less variant)。
  *
- * `POST https://mcp.ippoan.org/u/<github_login>/mcp` を受けて
- * JWT を検証し、`McpSession` DO の `/__bridge` に request を転送する。
+ * Two callsites in `src/index.ts:dispatchMcpRelay`:
+ *
+ * - `POST /u/<github_login>/mcp` — back-compat for `github-mcp-server-rs`,
+ *   `user` arg is the captured path segment.
+ * - `POST /mcp` — ADR-003 user-less endpoint for `.mcp.json` committed to a
+ *   consumer repo root. `user` is `null`; DO id is derived from
+ *   `verifyMcpJwt(jwt).github_login` so a single static config works for
+ *   every collaborator.
  *
  * Phase 6 では DO 側が常に 503 ("no active relay session") or 501
- * ("bridge not implemented") を返す。Phase 7 で実際の frame 変換を実装する。
+ * ("bridge not implemented") を返す。Phase 7 で実際の frame 変換を実装する
+ * (`src/durable_objects/mcp-session-do.ts`)。
  *
  * 認証モデル: binary 側と同じ MCP access JWT を Claude Code Web の MCP 設定に
  * 載せる (`install-mcp.sh` が出力する) ことを前提に、`payload.github_login`
- * と path の `:user` を一致させる。
+ * と path の `:user` を一致させる (user-less mode は JWT を origin of truth と
+ * して照合をスキップする)。
  */
 
 import type { Env } from "../index";
@@ -35,7 +43,7 @@ function unauthorizedResponse(env: Env, body: string): Response {
 export async function handleMcpRelayBridge(
   request: Request,
   env: Env,
-  user: string,
+  user: string | null,
 ): Promise<Response> {
   if (!env.MCP_JWT_SECRET) {
     return new Response("MCP not configured", { status: 503 });
@@ -43,7 +51,9 @@ export async function handleMcpRelayBridge(
   if (!env.MCP_SESSION_DO) {
     return new Response("MCP relay not configured", { status: 503 });
   }
-  if (!user) {
+  // user-less route (ADR-003) は `null` を渡す。空文字列は user-scoped route
+  // 経由では起き得ない (regex `[^/]+`) が、直接呼出のガードとして残す。
+  if (user === "") {
     return new Response("Missing user", { status: 400 });
   }
 
@@ -56,11 +66,15 @@ export async function handleMcpRelayBridge(
   if (!payload) {
     return unauthorizedResponse(env, "Invalid token");
   }
-  if (payload.github_login !== user) {
+  // user-scoped route のときだけ path と JWT の一致を強制する。
+  // user-less route (user === null) は JWT の github_login を最終的な DO key
+  // にするので mismatch 概念がそもそも存在しない。
+  if (user !== null && payload.github_login !== user) {
     return new Response("User mismatch", { status: 403 });
   }
 
-  const id = env.MCP_SESSION_DO.idFromName(user);
+  const doKey = user ?? payload.github_login;
+  const id = env.MCP_SESSION_DO.idFromName(doKey);
   const stub = env.MCP_SESSION_DO.get(id);
   // Phase 6: DO に body をそのまま渡すが、Phase 7 で frame 変換実装時に
   // headers / body を再構築する余地を残しておく。
