@@ -1,7 +1,11 @@
 /**
- * `handleMcpRelayBridge` unit test (issue #117 / Phase 6)。
+ * `handleMcpRelayBridge` unit test (issue #117 / Phase 6 + ADR-003)。
  *
- * `POST /u/:user/mcp` の認証パス (JWT 検証 + user 一致) と DO への forward を検証する。
+ * Verifies:
+ * - `POST /u/:user/mcp` の認証パス (JWT 検証 + user 一致) と DO への forward
+ * - ADR-003 user-less `POST /mcp` (user=null) で DO id が JWT.github_login から
+ *   解決されること
+ *
  * Phase 6 では DO 側が 503/501 を返すので、bridge 側はそのまま passthrough する
  * ことを確認する。
  */
@@ -70,11 +74,12 @@ function bridgeReq(opts: {
   auth?: string | null;
   body?: BodyInit | null;
   contentType?: string;
+  url?: string;
 }): Request {
   const headers: Record<string, string> = {};
   if (opts.auth !== null && opts.auth !== undefined) headers.Authorization = opts.auth;
   if (opts.contentType !== undefined) headers["Content-Type"] = opts.contentType;
-  return new Request("https://mcp.test.example/u/alice/mcp", {
+  return new Request(opts.url ?? "https://mcp.test.example/u/alice/mcp", {
     method: "POST",
     headers,
     body: opts.body ?? null,
@@ -191,5 +196,62 @@ describe("handleMcpRelayBridge — DO forwarding", () => {
     expect(res.status).toBe(501);
     const body = (await res.json()) as { error: string; phase: number };
     expect(body.phase).toBe(7);
+  });
+});
+
+// ADR-003 (ippoan/cc-relay#35) Phase A: user-less endpoint variant.
+// `POST /mcp` (no `/u/<github_login>/` segment) lets a `.mcp.json` committed
+// at a consumer repo root work for every collaborator — the DO id is
+// derived from the JWT's `github_login` claim instead of the URL.
+describe("handleMcpRelayBridge — user-less mode (ADR-003)", () => {
+  it("uses jwt.github_login as DO key when user is null", async () => {
+    const { env, idFromNameCalls, fetchCalls } = envWithDO();
+    const jwt = await validJwt("yhonda-ohishi");
+    const res = await handleMcpRelayBridge(
+      bridgeReq({
+        url: "https://mcp.test.example/mcp",
+        auth: `Bearer ${jwt}`,
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+        contentType: "application/json",
+      }),
+      env,
+      null,
+    );
+    // user-scoped と同様、Phase 6 default stub は 503 を返す — 重要なのは
+    // 「DO id が jwt.github_login から解決された」こと。
+    expect(res.status).toBe(503);
+    expect(idFromNameCalls).toEqual(["yhonda-ohishi"]);
+    expect(fetchCalls).toHaveLength(1);
+    expect(new URL(fetchCalls[0]!.url).pathname).toBe("/__bridge");
+  });
+
+  it("does NOT 403 on user-less when JWT has any github_login (mismatch check is skipped)", async () => {
+    const stubFetch = vi.fn(
+      async () => new Response("ok", { status: 200 }),
+    );
+    const { env, idFromNameCalls } = envWithDO(stubFetch);
+    // どんな github_login だろうと user=null なら OK
+    const jwt = await validJwt("someone-else");
+    const res = await handleMcpRelayBridge(
+      bridgeReq({
+        url: "https://mcp.test.example/mcp",
+        auth: `Bearer ${jwt}`,
+      }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(200);
+    expect(idFromNameCalls).toEqual(["someone-else"]);
+  });
+
+  it("returns 401 (not 400) when user is null and Authorization is missing", async () => {
+    const { env } = envWithDO();
+    // user === null なので 400 (Missing user) パスには入らず、JWT 检査を走る。
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/mcp" }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(401);
   });
 });

@@ -1,10 +1,13 @@
 /**
- * `handleMcpRelayConnect` unit test (issue #117 / Phase 6)。
+ * `handleMcpRelayConnect` unit test (issue #117 / Phase 6 + ADR-003)。
  *
  * `Authorization` / Upgrade ヘッダ / JWT 検証 / user 一致のみを検証する。
  * DO の WS accept ロジックは `test/durable_objects/mcp-session-do.test.ts` で
  * 別途検証するので、ここでは DO stub に流れたか (forward) と stub レスポンスを
  * passthrough したかだけ確認する。
+ *
+ * ADR-003 (ippoan/cc-relay#35) Phase A: `GET /connect` (user=null) も
+ * 同じパスを通り、DO id が JWT.github_login から解決されることを確認する。
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -80,11 +83,11 @@ async function validJwt(login = "alice"): Promise<string> {
   );
 }
 
-function wsReq(opts: { auth?: string | null; upgrade?: string }): Request {
+function wsReq(opts: { auth?: string | null; upgrade?: string; url?: string }): Request {
   const headers: Record<string, string> = {};
   if (opts.upgrade !== undefined) headers.Upgrade = opts.upgrade;
   if (opts.auth !== null && opts.auth !== undefined) headers.Authorization = opts.auth;
-  return new Request("https://mcp.test.example/u/alice/connect", {
+  return new Request(opts.url ?? "https://mcp.test.example/u/alice/connect", {
     method: "GET",
     headers,
   });
@@ -203,5 +206,55 @@ describe("handleMcpRelayConnect — DO forwarding", () => {
     );
     expect(res.status).toBe(503);
     expect(res.headers.get("X-DO")).toBe("1");
+  });
+});
+
+// ADR-003 (ippoan/cc-relay#35) Phase A: user-less endpoint variant.
+// `GET /connect` (no `/u/<github_login>/` segment) lets a host-side binary
+// connect without pinning its github_login in URL config — the DO id is
+// derived from the JWT's `github_login` claim instead of the URL.
+describe("handleMcpRelayConnect — user-less mode (ADR-003)", () => {
+  it("uses jwt.github_login as DO key when user is null", async () => {
+    const { env, idFromNameCalls, fetchCalls } = envWithDO();
+    const jwt = await validJwt("yhonda-ohishi");
+    const res = await handleMcpRelayConnect(
+      wsReq({
+        url: "https://mcp.test.example/connect",
+        upgrade: "websocket",
+        auth: `Bearer ${jwt}`,
+      }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(101);
+    expect(idFromNameCalls).toEqual(["yhonda-ohishi"]);
+    expect(fetchCalls).toHaveLength(1);
+    expect(new URL(fetchCalls[0]!.url).pathname).toBe("/__connect");
+  });
+
+  it("does NOT 403 on user-less when JWT has any github_login (mismatch check is skipped)", async () => {
+    const { env, idFromNameCalls } = envWithDO();
+    const jwt = await validJwt("someone-else");
+    const res = await handleMcpRelayConnect(
+      wsReq({
+        url: "https://mcp.test.example/connect",
+        upgrade: "websocket",
+        auth: `Bearer ${jwt}`,
+      }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(101);
+    expect(idFromNameCalls).toEqual(["someone-else"]);
+  });
+
+  it("returns 401 (not 400) when user is null and Authorization is missing", async () => {
+    const { env } = envWithDO();
+    const res = await handleMcpRelayConnect(
+      wsReq({ url: "https://mcp.test.example/connect", upgrade: "websocket" }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(401);
   });
 });

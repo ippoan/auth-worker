@@ -114,7 +114,7 @@ export interface Env {
    *  staging/prod で別 App (callback URL が異なるため)。 */
   GITHUB_MCP_CLIENT_ID?: string;
   GITHUB_MCP_CLIENT_SECRET?: string;
-  /** HS256 secret for MCP access tokens (JWT). 既存 JWT_SECRET とは別管理。
+  /** HS256 secret for MCP access tokens (JWT)。既存 JWT_SECRET とは別管理。
    *  Phase 1+ で MCP endpoint が実装されるまでは未参照。 */
   MCP_JWT_SECRET?: string;
   /** Rust binary (github-mcp-server-rs) が /mcp/introspect 叩く際の認証用。
@@ -123,7 +123,7 @@ export interface Env {
   /** JSON array of github logins allowed to use MCP server.
    *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed). */
   GITHUB_MCP_USER_ALLOWLIST?: string;
-  /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens).
+  /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens)。
    *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
   MCP_OAUTH_KV?: KVNamespace;
   /** MCP relay 用 Durable Object Namespace (github_login ごとに 1 instance)。
@@ -141,13 +141,19 @@ function errorResponse(status: number, message: string): Response {
 }
 
 /**
- * MCP relay route dispatcher (issue #117 / Phase 6).
+ * MCP relay route dispatcher (issue #117 / Phase 6 + ADR-003 user-less).
  *
- * `mcp.ippoan.org` / `mcp-staging.ippoan.org` host で来た request を
- * `GET /u/:user/connect` (WS upgrade) と `POST /u/:user/mcp` (HTTP bridge) に
- * 振り分ける。マッチしなければ 404 を返す (auth routes は通さない)。
+ * `mcp.ippoan.org` / `mcp-staging.ippoan.org` host で来た request を以下に振り分ける:
  *
- * 戻り値が `null` なら relay host ではなかったので caller は既存処理に進む。
+ * - `GET  /u/:user/connect` (WS upgrade)  — github-mcp-server-rs 互換 (Phase 6)
+ * - `POST /u/:user/mcp`     (HTTP bridge) — github-mcp-server-rs 互換 (Phase 6)
+ * - `GET  /connect`         (WS upgrade)  — ADR-003 user-less: DO id from JWT
+ * - `POST /mcp`             (HTTP bridge) — ADR-003 user-less: DO id from JWT
+ * - `POST /register`        (DCR)         — Phase 5 / #128
+ * - `GET  /authorize`       (Auth Code)   — Phase 5 / #128
+ *
+ * マッチしなければ 404 を返す (auth routes は通さない)。戻り値が `null` なら
+ * relay host ではなかったので caller は既存処理に進む。
  */
 async function dispatchMcpRelay(
   request: Request,
@@ -168,6 +174,17 @@ async function dispatchMcpRelay(
     if (action === "mcp" && request.method === "POST") {
       return handleMcpRelayBridge(request, env, user);
     }
+  }
+  // ADR-003 (ippoan/cc-relay#35): user-less variants. `.mcp.json` committed
+  // to a consumer repo root can point at `/mcp` / `/connect` (no user
+  // segment); the DO id is derived from the JWT's `github_login` claim
+  // inside the handlers. The user-scoped routes above remain for
+  // `github-mcp-server-rs` backward compatibility.
+  if (url.pathname === "/mcp" && request.method === "POST") {
+    return handleMcpRelayBridge(request, env, null);
+  }
+  if (url.pathname === "/connect" && request.method === "GET") {
+    return handleMcpRelayConnect(request, env, null);
   }
   // Phase 5 (issue #128): Browser-based MCP client (Anthropic Claude.ai 等) は
   // resource server URL の host (`mcp(-staging).ippoan.org`) 上で `/register`
