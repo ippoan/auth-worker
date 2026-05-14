@@ -63,6 +63,31 @@ branches = true
 path = "src/lib/mcp-origins.ts"
 branches = true
 
+# Phase 5 (#128): DCR + Authorization Code + PKCE for browser-based MCP clients
+[[files]]
+path = "src/lib/mcp-pkce.ts"
+branches = true
+
+[[files]]
+path = "src/lib/mcp-dcr.ts"
+branches = true
+
+[[files]]
+path = "src/lib/mcp-authcode.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-register.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-authorize.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-auth-callback.ts"
+branches = true
+
 [[files]]
 path = "src/handlers/mcp-device-authorization.ts"
 branches = true

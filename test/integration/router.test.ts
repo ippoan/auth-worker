@@ -123,6 +123,15 @@ vi.mock("../../src/handlers/mcp-as-metadata", () => ({
 vi.mock("../../src/handlers/mcp-resource-metadata", () => ({
   handleMcpResourceMetadata: vi.fn(() => new Response("mcp-resource-metadata")),
 }));
+vi.mock("../../src/handlers/mcp-register", () => ({
+  handleMcpRegister: vi.fn(() => new Response("mcp-register")),
+}));
+vi.mock("../../src/handlers/mcp-authorize", () => ({
+  handleMcpAuthorize: vi.fn(() => new Response("mcp-authorize")),
+}));
+vi.mock("../../src/handlers/mcp-auth-callback", () => ({
+  handleMcpAuthCallback: vi.fn(() => new Response("mcp-auth-callback")),
+}));
 vi.mock("../../src/handlers/mcp-device-authorization", () => ({
   handleMcpDeviceAuthorization: vi.fn(() => new Response("mcp-device-authorization")),
 }));
@@ -216,6 +225,8 @@ describe("Router (index.ts)", () => {
     ["/device", "mcp-device-page"],
     ["/device?user_code=BCDF-GHJK", "mcp-device-page"],
     ["/mcp/device_callback?code=abc&state=xyz", "mcp-device-callback"],
+    ["/mcp/authorize?response_type=code&client_id=x", "mcp-authorize"],
+    ["/mcp/auth_callback?code=ghc&state=xyz", "mcp-auth-callback"],
   ];
 
   it("GET /api/health → health proxy", async () => {
@@ -332,6 +343,29 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://mcp-staging.ippoan.org/u/alice/connect");
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("relay-connect:alice");
+  });
+
+  // Phase 5 (#128): mcp-staging.* host で /register と /authorize も dispatch される
+  it("POST mcp.* /register → mcp-register handler (DCR, Phase 5 #128)", async () => {
+    const req = new Request("https://mcp-staging.ippoan.org/register", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-register");
+  });
+
+  it("GET mcp.* /authorize → mcp-authorize handler (Auth Code, Phase 5 #128)", async () => {
+    const req = new Request("https://mcp-staging.ippoan.org/authorize");
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-authorize");
+  });
+
+  it("auth-staging.* POST /mcp/register → mcp-register handler", async () => {
+    const req = new Request("https://auth.test.example/mcp/register", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-register");
   });
 
   it("POST mcp.* /u/:user/connect → 404 (wrong method)", async () => {

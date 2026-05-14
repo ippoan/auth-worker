@@ -47,6 +47,9 @@ import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
 import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge } from "./handlers/mcp-relay-bridge";
+import { handleMcpRegister } from "./handlers/mcp-register";
+import { handleMcpAuthorize } from "./handlers/mcp-authorize";
+import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
 
@@ -166,6 +169,16 @@ async function dispatchMcpRelay(
       return handleMcpRelayBridge(request, env, user);
     }
   }
+  // Phase 5 (issue #128): Browser-based MCP client (Anthropic Claude.ai 等) は
+  // resource server URL の host (`mcp(-staging).ippoan.org`) 上で `/register`
+  // (DCR, RFC 7591) と `/authorize` (Auth Code, RFC 6749) を期待する。
+  // auth-worker は同 script なので、これらも relay host 上で受け付ける。
+  if (url.pathname === "/register" && request.method === "POST") {
+    return handleMcpRegister(request, env);
+  }
+  if (url.pathname === "/authorize" && request.method === "GET") {
+    return handleMcpAuthorize(request, env);
+  }
   return errorResponse(404, "Not found");
 }
 
@@ -259,6 +272,12 @@ export default {
           // MCP OAuth Provider — GitHub OAuth callback (Phase 3, RFC 8628 §3.4)
           case "/mcp/device_callback":
             return await handleMcpDeviceCallback(request, env);
+          // MCP OAuth Provider — Authorization Code flow start (Phase 5 / issue #128)
+          case "/mcp/authorize":
+            return await handleMcpAuthorize(request, env);
+          // MCP OAuth Provider — Authorization Code GitHub OAuth callback (Phase 5)
+          case "/mcp/auth_callback":
+            return await handleMcpAuthCallback(request, env);
           default:
             return errorResponse(404, "Not found");
         }
@@ -344,9 +363,12 @@ export default {
             return await handleMcpDeviceVerify(request, env);
           case "/device/proceed":
             return await handleMcpDeviceProceed(request, env);
-          // MCP OAuth Provider — Token endpoint (Phase 3, RFC 8628 §3.4 + RFC 6749 §6)
+          // MCP OAuth Provider — Token endpoint (Phase 3 device_code/refresh + Phase 5 authorization_code)
           case "/mcp/token":
             return await handleMcpToken(request, env);
+          // MCP OAuth Provider — Dynamic Client Registration (Phase 5 / issue #128, RFC 7591)
+          case "/mcp/register":
+            return await handleMcpRegister(request, env);
           // MCP OAuth Provider — Token Introspection (Phase 5, RFC 7662 + GitHub token 返却)
           case "/mcp/introspect":
             return await handleMcpIntrospect(request, env);

@@ -22,8 +22,10 @@
 
 import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
+import { consumeAuthCode } from "../lib/mcp-authcode";
 import { signMcpJwt } from "../lib/mcp-jwt";
 import { getDeviceCode } from "../lib/mcp-kv";
+import { verifyPkceS256 } from "../lib/mcp-pkce";
 import {
   consumeRefreshToken,
   issueRefreshToken,
@@ -76,10 +78,70 @@ export async function handleMcpToken(
   if (grant_type === "urn:ietf:params:oauth:grant-type:device_code") {
     return await handleDeviceCodeGrant(form, env);
   }
+  if (grant_type === "authorization_code") {
+    return await handleAuthorizationCodeGrant(form, env);
+  }
   if (grant_type === "refresh_token") {
     return await handleRefreshGrant(form, env);
   }
   return oauthError("unsupported_grant_type", `grant_type "${grant_type}" not supported`);
+}
+
+/**
+ * Phase 5 (issue #128) — RFC 6749 §4.1.3 + RFC 7636 PKCE.
+ * `/authorize` で発行された code を `/mcp/auth_callback` 経由で client が受領、
+ * code_verifier 添えて本 endpoint に POST する。
+ */
+async function handleAuthorizationCodeGrant(
+  form: FormData,
+  env: Env,
+): Promise<Response> {
+  const code = ((form.get("code") as string | null) ?? "").trim();
+  const code_verifier = ((form.get("code_verifier") as string | null) ?? "").trim();
+  const redirect_uri = ((form.get("redirect_uri") as string | null) ?? "").trim();
+  const client_id = ((form.get("client_id") as string | null) ?? "").trim();
+  if (!code || !code_verifier || !redirect_uri || !client_id) {
+    return oauthError(
+      "invalid_request",
+      "code, code_verifier, redirect_uri, client_id are required",
+    );
+  }
+
+  const rec = await consumeAuthCode(env, code);
+  if (!rec) {
+    return oauthError("invalid_grant", "auth code is invalid or already used");
+  }
+  if (rec.expires_at < Date.now()) {
+    return oauthError("invalid_grant", "auth code has expired");
+  }
+  if (rec.client_id !== client_id) {
+    return oauthError("invalid_grant", "client_id does not match the issued auth code");
+  }
+  if (rec.redirect_uri !== redirect_uri) {
+    return oauthError("invalid_grant", "redirect_uri does not match the issued auth code");
+  }
+  const pkceOk = await verifyPkceS256(code_verifier, rec.code_challenge);
+  if (!pkceOk) {
+    return oauthError("invalid_grant", "PKCE verification failed");
+  }
+
+  const sub = `github:${rec.github_login}`;
+  const access_token = await signMcpJwt(
+    {
+      sub,
+      github_login: rec.github_login,
+      scope: rec.scope,
+      aud: MCP_AUD,
+    },
+    env.MCP_JWT_SECRET!,
+    ACCESS_TOKEN_TTL_SEC,
+  );
+  const refresh_token = await issueRefreshToken(env, {
+    sub,
+    scope: rec.scope,
+    github_login: rec.github_login,
+  });
+  return successResponse({ access_token, refresh_token, scope: rec.scope });
 }
 
 async function handleDeviceCodeGrant(form: FormData, env: Env): Promise<Response> {

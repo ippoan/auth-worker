@@ -41,7 +41,7 @@ describe("GET /.well-known/oauth-authorization-server", () => {
     expect(body.introspection_endpoint).toBe("https://issuer.example/mcp/introspect");
   });
 
-  it("advertises device_code + refresh_token grants and public-client auth", async () => {
+  it("advertises device_code + authorization_code + refresh_token grants and public-client auth", async () => {
     const body = (await call(createMockEnv()).json()) as {
       grant_types_supported: string[];
       token_endpoint_auth_methods_supported: string[];
@@ -50,10 +50,23 @@ describe("GET /.well-known/oauth-authorization-server", () => {
       code_challenge_methods_supported: string[];
     };
     expect(body.grant_types_supported).toContain("urn:ietf:params:oauth:grant-type:device_code");
+    expect(body.grant_types_supported).toContain("authorization_code");
     expect(body.grant_types_supported).toContain("refresh_token");
     expect(body.token_endpoint_auth_methods_supported).toEqual(["none"]);
     expect(body.scopes_supported).toEqual(["mcp.read", "mcp.write", "offline_access"]);
-    expect(body.response_types_supported).toEqual([]);
+    // Phase 5: Browser client 向け Auth Code grant 追加で response_types に "code"
+    expect(body.response_types_supported).toEqual(["code"]);
     expect(body.code_challenge_methods_supported).toEqual(["S256"]);
+  });
+
+  // Phase 5 (#128): Browser client (Anthropic Claude.ai) 用 endpoint 追加
+  it("includes authorization_endpoint and registration_endpoint (Phase 5 #128)", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://issuer.example" });
+    const body = (await call(env).json()) as {
+      authorization_endpoint: string;
+      registration_endpoint: string;
+    };
+    expect(body.authorization_endpoint).toBe("https://issuer.example/mcp/authorize");
+    expect(body.registration_endpoint).toBe("https://issuer.example/mcp/register");
   });
 });
