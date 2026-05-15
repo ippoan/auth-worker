@@ -2,8 +2,9 @@ import { describe, expect, test, vi } from "vitest";
 import { handleGithubWebhook } from "../../src/handlers/github-webhook";
 import type { Env } from "../../src/index";
 
-/** GitHub webhook の HMAC-SHA256 を再現する。本実装と同じアルゴリズムで sign。 */
-async function sign(secret: string, body: ArrayBuffer): Promise<string> {
+/** GitHub webhook の HMAC-SHA256 を再現する。本実装と同じアルゴリズムで sign。
+ *  body は `BufferSource` を受けて WebCrypto に通す (Uint8Array / ArrayBuffer 両対応)。 */
+async function sign(secret: string, body: BufferSource): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
