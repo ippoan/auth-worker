@@ -203,6 +203,93 @@ describe("handleGithubWebhook", () => {
     expect(forwardedJson.issue_number).toBe(42);
   });
 
+  test("ADR-006: routes org-owned repo to mapped github_login via AUTH_CONFIG KV", async () => {
+    const fetchSpy = vi.fn(
+      async (_req: Request) =>
+        new Response(JSON.stringify({ delivered: 0, dead: 0, total: 0, queued: true, queue_size: 1 }), {
+          status: 200,
+        }),
+    );
+    const { ns, idFromNameCalls } = mockMcpSessionDO(fetchSpy);
+    const kvGets: string[] = [];
+    const authConfig = {
+      get: async (key: string) => {
+        kvGets.push(key);
+        return key === "gh_org:ippoan" ? "yhonda-ohishi" : null;
+      },
+    } as unknown as KVNamespace;
+    const env = makeEnv({ MCP_SESSION_DO: ns, AUTH_CONFIG: authConfig });
+
+    const body = JSON.stringify(ISSUE_PAYLOAD);
+    const sig = await sign(env.GITHUB_WEBHOOK_SECRET as string, new TextEncoder().encode(body));
+    const req = new Request("https://mcp.test/webhooks/github", {
+      method: "POST",
+      body,
+      headers: {
+        "X-Hub-Signature-256": sig,
+        "X-GitHub-Event": "issue_comment",
+        "X-GitHub-Delivery": "org-map-delivery",
+      },
+    });
+    const resp = await handleGithubWebhook(req, env);
+    expect(resp.status).toBe(200);
+
+    expect(kvGets).toEqual(["gh_org:ippoan"]);
+    // doKey は org login ではなく mapped github_login であること
+    expect(idFromNameCalls).toEqual(["yhonda-ohishi"]);
+  });
+
+  test("ADR-006: ignores malformed mapping value and falls back to owner", async () => {
+    const { ns, idFromNameCalls } = mockMcpSessionDO(
+      async () =>
+        new Response(JSON.stringify({ delivered: 0, dead: 0, total: 0 }), { status: 200 }),
+    );
+    const authConfig = {
+      get: async () => "not a valid github login!!", // 不正な login pattern
+    } as unknown as KVNamespace;
+    const env = makeEnv({ MCP_SESSION_DO: ns, AUTH_CONFIG: authConfig });
+
+    const body = JSON.stringify(ISSUE_PAYLOAD);
+    const sig = await sign(env.GITHUB_WEBHOOK_SECRET as string, new TextEncoder().encode(body));
+    const req = new Request("https://mcp.test/webhooks/github", {
+      method: "POST",
+      body,
+      headers: {
+        "X-Hub-Signature-256": sig,
+        "X-GitHub-Event": "issue_comment",
+        "X-GitHub-Delivery": "bad-map-delivery",
+      },
+    });
+    const resp = await handleGithubWebhook(req, env);
+    expect(resp.status).toBe(200);
+    // 不正値は無視して owner へ fallback
+    expect(idFromNameCalls).toEqual(["ippoan"]);
+  });
+
+  test("ADR-006: tolerates KV throwing (binding cast as {}) and falls back to owner", async () => {
+    const { ns, idFromNameCalls } = mockMcpSessionDO(
+      async () =>
+        new Response(JSON.stringify({ delivered: 0, dead: 0, total: 0 }), { status: 200 }),
+    );
+    // AUTH_CONFIG が `{}` cast の既存テストパターン: `.get` が throw する。
+    const env = makeEnv({ MCP_SESSION_DO: ns });
+
+    const body = JSON.stringify(ISSUE_PAYLOAD);
+    const sig = await sign(env.GITHUB_WEBHOOK_SECRET as string, new TextEncoder().encode(body));
+    const req = new Request("https://mcp.test/webhooks/github", {
+      method: "POST",
+      body,
+      headers: {
+        "X-Hub-Signature-256": sig,
+        "X-GitHub-Event": "issue_comment",
+        "X-GitHub-Delivery": "kv-throw-delivery",
+      },
+    });
+    const resp = await handleGithubWebhook(req, env);
+    expect(resp.status).toBe(200);
+    expect(idFromNameCalls).toEqual(["ippoan"]);
+  });
+
   test("returns 200 ignored when payload lacks owner/repo/issue", async () => {
     const env = makeEnv();
     const body = JSON.stringify({ action: "edited" });
