@@ -44,6 +44,11 @@ export function handleMcpAsMetadata(_request: Request, env: Env): Response {
     scopes_supported: ["mcp.read", "mcp.write", "offline_access"],
     // PKCE: S256 のみ (Phase 5 で実装)
     code_challenge_methods_supported: ["S256"],
+    // RFC 8707 Resource Indicators — MCP Authorization spec 2025-06-18 で
+    // 必須化された audience binding を本 AS がサポートする旨を advertise。
+    // client (Anthropic Claude.ai 等) は本 flag を見て `/authorize` `/mcp/token`
+    // に `resource=https://mcp-staging.ippoan.org` を載せる。
+    resource_indicators_supported: true,
   });
   // AS metadata は静的なので edge cache を許可 (corsJsonResponse は
   // Cache-Control を付けないので後付け)

@@ -449,3 +449,129 @@ describe("POST /mcp/token — authorization_code grant (Phase 5 #128)", () => {
     expect(res2.status).toBe(400);
   });
 });
+
+// =============================================================================
+// RFC 8707 Resource Indicators (MCP Authorization spec 2025-06-18)
+// =============================================================================
+describe("POST /mcp/token — RFC 8707 resource indicator (authorization_code)", () => {
+  const RESOURCE = "https://mcp.test.example";
+
+  it("issues access_token with aud=resource when AuthCodeRecord carries resource", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec({ resource: RESOURCE }));
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+        resource: RESOURCE,
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string };
+    // legacy aud では verify 失敗、resource を expected aud に渡すと通る
+    const legacyVerify = await verifyMcpJwt(body.access_token, TEST_MCP_JWT_SECRET, AUD);
+    expect(legacyVerify).toBeNull();
+    const payload = await verifyMcpJwt(body.access_token, TEST_MCP_JWT_SECRET, RESOURCE);
+    expect(payload!.aud).toBe(RESOURCE);
+  });
+
+  it("400 invalid_target when token request resource does not match bound resource", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec({ resource: RESOURCE }));
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+        resource: "https://attacker.example",
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_target");
+  });
+
+  it("uses bound resource as aud even when token request omits resource (rec.resource side)", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec({ resource: RESOURCE }));
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string };
+    const payload = await verifyMcpJwt(body.access_token, TEST_MCP_JWT_SECRET, RESOURCE);
+    expect(payload!.aud).toBe(RESOURCE);
+  });
+
+  it("ignores form resource (no invalid_target) when AuthCodeRecord has no bound resource — legacy aud", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec()); // no resource
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+        resource: "https://anything.example",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string };
+    const payload = await verifyMcpJwt(body.access_token, TEST_MCP_JWT_SECRET, AUD);
+    expect(payload!.aud).toBe(AUD);
+  });
+
+  it("refresh_token grant preserves aud from initial Authorization Code issuance", async () => {
+    const { env } = envWithKv();
+    // 1. Authorization code grant → refresh が aud=resource を持つ
+    await putAuthCode(env, authCodeRec({ resource: RESOURCE }));
+    const firstRes = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+        resource: RESOURCE,
+      }),
+      env,
+    );
+    expect(firstRes.status).toBe(200);
+    const first = (await firstRes.json()) as { refresh_token: string };
+
+    // 2. refresh → 新 access_token も aud=resource のはず
+    const res = await handleMcpToken(
+      postForm({ grant_type: "refresh_token", refresh_token: first.refresh_token }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string; refresh_token: string };
+    const payload = await verifyMcpJwt(body.access_token, TEST_MCP_JWT_SECRET, RESOURCE);
+    expect(payload!.aud).toBe(RESOURCE);
+
+    // 3. 二度目の refresh (rotation) でも aud 継承
+    const res3 = await handleMcpToken(
+      postForm({ grant_type: "refresh_token", refresh_token: body.refresh_token }),
+      env,
+    );
+    expect(res3.status).toBe(200);
+    const body3 = (await res3.json()) as { access_token: string };
+    const p3 = await verifyMcpJwt(body3.access_token, TEST_MCP_JWT_SECRET, RESOURCE);
+    expect(p3!.aud).toBe(RESOURCE);
+  });
+});

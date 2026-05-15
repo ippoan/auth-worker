@@ -47,13 +47,16 @@ export async function signMcpJwt(
 }
 
 /**
- * Verify HS256 JWT with `secret` and check `payload.aud === expectedAud` + `exp`.
+ * Verify HS256 JWT with `secret` and check `payload.aud` ∈ expectedAud + `exp`.
+ * `expectedAud` は legacy device-flow (Rust binary) と Authorization Code +
+ * RFC 8707 Resource Indicator (browser client) で aud が異なるため、配列で
+ * 「いずれか一致」を許容する形に拡張している。
  * 不正 (alg mismatch / signature 不一致 / expired / aud 不一致) → null。
  */
 export async function verifyMcpJwt(
   token: string,
   secret: string,
-  expectedAud: string,
+  expectedAud: string | readonly string[],
 ): Promise<McpJwtPayload | null> {
   if (!secret) return null;
   const parts = token.split(".");
@@ -81,7 +84,9 @@ export async function verifyMcpJwt(
   }
   if (typeof payload.exp !== "number") return null;
   if (payload.exp <= Math.floor(Date.now() / 1000)) return null;
-  if (payload.aud !== expectedAud) return null;
+  const allowed =
+    typeof expectedAud === "string" ? [expectedAud] : expectedAud;
+  if (!allowed.includes(payload.aud)) return null;
   return payload;
 }
 

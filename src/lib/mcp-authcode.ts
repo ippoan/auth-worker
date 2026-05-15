@@ -34,6 +34,15 @@ export interface AuthRequestRecord {
   client_state: string;
   /** 任意 scope (space separated)。空文字 OK */
   scope: string;
+  /**
+   * RFC 8707 Resource Indicator (MCP Authorization spec 2025-06-18 で必須化)。
+   * MCP client (Anthropic Claude.ai 等) が `/authorize` の `resource` query で
+   * 送る canonical MCP server URI (例 `https://mcp-staging.ippoan.org`)。
+   * `/mcp/token` で aud=resource な access_token を発行するために伝播する。
+   * legacy client (Rust binary device flow など) が送らないケースを許容するため
+   * optional。
+   */
+  resource?: string;
   expires_at: number;
 }
 
@@ -46,6 +55,8 @@ export interface AuthCodeRecord {
   code_challenge_method: "S256";
   github_login: string;
   scope: string;
+  /** RFC 8707 Resource Indicator (AuthRequestRecord から伝播。詳細は同 doc 参照)。 */
+  resource?: string;
   expires_at: number;
 }
 

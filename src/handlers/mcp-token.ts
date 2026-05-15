@@ -33,7 +33,15 @@ import {
 
 /** access_token (JWT) の有効期間: 1 時間 */
 const ACCESS_TOKEN_TTL_SEC = 3600;
-/** JWT の `aud` claim — Rust binary 名 (introspect 側が strict 検証) */
+/**
+ * JWT の `aud` claim 既定値 (legacy: Rust binary `github-mcp-server-rs` 用)。
+ *
+ * Authorization Code grant で client (Anthropic Claude.ai 等) が RFC 8707
+ * `resource` を `/authorize` + `/mcp/token` で送ってきた場合は、その値を
+ * aud として焼く (MCP Authorization spec 2025-06-18 で必須化)。送ってこない
+ * legacy client (Rust binary device flow) では引き続き本値を使う。
+ * `/mcp` 側 (mcp-relay-bridge.ts) は両 aud を許容する。
+ */
 const MCP_AUD = "github-mcp-server-rs";
 
 /** RFC 6749 §5.2 OAuth error response。description を常に渡す (分岐 1 本)。 */
@@ -125,13 +133,25 @@ async function handleAuthorizationCodeGrant(
     return oauthError("invalid_grant", "PKCE verification failed");
   }
 
+  // RFC 8707 §2.2: token endpoint も `resource` を受け得る。`/authorize` で
+  // bind されているなら token request の値と一致を要求 (confused-deputy 防止)。
+  // `/authorize` で未指定 (legacy) なら token request 側も無視する。
+  const formResource = ((form.get("resource") as string | null) ?? "").trim();
+  if (rec.resource !== undefined && formResource && formResource !== rec.resource) {
+    return oauthError(
+      "invalid_target",
+      "resource does not match the one bound at /authorize",
+    );
+  }
+  const aud = rec.resource ?? MCP_AUD;
+
   const sub = `github:${rec.github_login}`;
   const access_token = await signMcpJwt(
     {
       sub,
       github_login: rec.github_login,
       scope: rec.scope,
-      aud: MCP_AUD,
+      aud,
     },
     env.MCP_JWT_SECRET!,
     ACCESS_TOKEN_TTL_SEC,
@@ -140,6 +160,7 @@ async function handleAuthorizationCodeGrant(
     sub,
     scope: rec.scope,
     github_login: rec.github_login,
+    aud,
   });
   return successResponse({ access_token, refresh_token, scope: rec.scope });
 }
@@ -205,12 +226,17 @@ async function handleRefreshGrant(form: FormData, env: Env): Promise<Response> {
     return oauthError("invalid_grant", "refresh_token is invalid, expired, or already used");
   }
 
+  // 初回発行時の aud を継承する。RFC 8707 で resource 指定された Authorization
+  // Code grant 発の refresh なら MCP server origin、device flow なら legacy 値。
+  // 旧 KV record (本 PR 反映前に発行された refresh) に aud field が無い場合は
+  // legacy にフォールバック。
+  const aud = consumed.aud ?? MCP_AUD;
   const access_token = await signMcpJwt(
     {
       sub: consumed.sub,
       github_login: consumed.github_login,
       scope: consumed.scope,
-      aud: MCP_AUD,
+      aud,
     },
     env.MCP_JWT_SECRET!,
     ACCESS_TOKEN_TTL_SEC,
@@ -219,6 +245,7 @@ async function handleRefreshGrant(form: FormData, env: Env): Promise<Response> {
     sub: consumed.sub,
     scope: consumed.scope,
     github_login: consumed.github_login,
+    aud,
     rotated_from: consumed.hash,
   });
 
