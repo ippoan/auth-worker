@@ -49,6 +49,23 @@ const FRAME_VERSION = 1;
 /** 1 request あたりの WS frame round-trip timeout (ms)。 */
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/** SSE channel の memory 上での registry entry。Workers DO は hibernation
+ *  すると memory が消えるので、SSE は live container 限定 (Claude.ai は
+ *  再接続するので OK)。 */
+interface SseChannel {
+  /** stable client identifier (= `Mcp-Session-Id`)。 */
+  sessionId: string;
+  /** SSE body の writer (TextEncoder で utf-8 byte 化したものを write)。 */
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  /** event-id 採番カウンタ (SSE replay 用、Phase D では再接続時 reset)。 */
+  nextEventId: number;
+  /** keepalive setInterval ハンドル。close 時に clear するため保持。 */
+  keepalive: ReturnType<typeof setInterval>;
+}
+
+/** SSE keepalive 間隔 (ms)。Cloudflare の idle timeout (100s) より十分短い。 */
+const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
+
 /** binary 側から送られてくる Frame::Resp の構造 (parse 後)。 */
 interface RespFrame {
   kind: "resp";
@@ -93,6 +110,10 @@ export class McpSession implements DurableObject {
   env: McpSessionEnv;
   /** in-flight HTTP bridge request の解決待ち。WS 切断時に全て reject される。 */
   private pending: Map<string, PendingRequest> = new Map();
+  /** ADR-004 Phase D: 現在 attach 中の SSE channel (= `GET /mcp` で開いた
+   *  Streamable HTTP stream)。`/__push_event` と binary 側からの
+   *  `kind:"notif"` frame を fan-out する。Hibernation 跨ぎでは保持されない。 */
+  private sseChannels: Map<string, SseChannel> = new Map();
 
   constructor(state: DurableObjectState, env: McpSessionEnv) {
     this.state = state;
@@ -112,6 +133,10 @@ export class McpSession implements DurableObject {
 
     if (url.pathname === "/__push_event") {
       return this.handlePushEvent(req);
+    }
+
+    if (url.pathname === "/__connect_sse") {
+      return this.handleConnectSse(req);
     }
 
     return new Response("Not Found", { status: 404 });
@@ -155,7 +180,111 @@ export class McpSession implements DurableObject {
         dead += 1;
       }
     }
-    return jsonResponse(200, { delivered, dead, total: wsList.length });
+    // ADR-004 Phase D: SSE channel が attached なら、binary 側を介さず DO 自身が
+    // `notifications/message` を直接 push する経路も用意する。binary 未起動でも
+    // Claude session が event を受け取れる fallback。binary が起動中なら
+    // 同じ event が両方の経路で届くが、Claude 側で de-dup (delivery_id) する想定。
+    //
+    // write は fire-and-forget。`await writer.write()` は TransformStream の
+    // backpressure (default HWM=1) で hang し得るので、push_event の応答性を
+    // 守るため Promise は捨てる (失敗は .catch で channel cleanup する)。
+    const sseFrame = sseFormatNotification("notifications/message", {
+      level: "info",
+      logger: "cc-relay/issue-events",
+      data: eventBody,
+    });
+    const sseTotal = this.sseChannels.size;
+    for (const ch of this.sseChannels.values()) {
+      this.writeSse(ch, sseFrame);
+    }
+    return jsonResponse(200, {
+      delivered,
+      dead,
+      total: wsList.length,
+      sse_total: sseTotal,
+    });
+  }
+
+  /**
+   * ADR-004 Phase D: GET /mcp → SSE stream upgrade。bridge handler から
+   * 認証済みの request だけが forward されてくる。SSE channel を 1 本開いて
+   * `Mcp-Session-Id` header を返し、後段の push_event / notif 経路から
+   * `notifications/message` を write する。Claude.ai は EventSource として
+   * 読む (`event: message\ndata: <json>\n\n`)。
+   *
+   * Hibernation 跨ぎは保証しない (memory channel)。クライアントは EventSource
+   * の自動 reconnect で復帰する想定。
+   */
+  private handleConnectSse(req: Request): Response {
+    if (req.method !== "GET") {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+    // 既存 session-id があれば再利用、無ければ採番。
+    const incoming = req.headers.get("Mcp-Session-Id");
+    const sessionId =
+      incoming && /^[a-z0-9-]{1,128}$/i.test(incoming)
+        ? incoming
+        : crypto.randomUUID();
+
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    // channel object を先に作って `keepalive` を後付け。`as SseChannel` cast
+    // で TS の non-optional 制約をパスし、`setInterval` callback が channel
+    // 自身を参照キャプチャできるようにする。`if (ch) ...` のような defensive
+    // branch は不要 — channel の cleanup は writeSseRaw の `.catch` 内で
+    // `clearInterval(channel.keepalive)` を呼ぶ事で timer 自体が停止する。
+    const channel = {
+      sessionId,
+      writer,
+      nextEventId: 0,
+    } as SseChannel;
+    channel.keepalive = setInterval(
+      () => this.writeSseRaw(channel, ": keepalive\n\n"),
+      SSE_KEEPALIVE_INTERVAL_MS,
+    );
+    this.sseChannels.set(sessionId, channel);
+
+    // 初回 hello (MCP 慣習に依存しない、診断 + 接続確認用)。
+    this.writeSse(channel, sseFormatNotification("notifications/message", {
+      level: "info",
+      logger: "cc-relay/sse",
+      data: { msg: "sse_connected", session_id: sessionId },
+    }));
+
+    return new Response(readable, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "Mcp-Session-Id": sessionId,
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+
+  /**
+   * SSE writer に 1 frame 書く。fire-and-forget。`await writer.write()` は
+   * TransformStream の backpressure (default HWM=1) で hang し得るので、
+   * push_event 応答性のため Promise は捨てる。MCP `notifications/message`
+   * 用に `id: N\nevent: message\ndata: <body>\n\n` で wrap する。
+   */
+  private writeSse(channel: SseChannel, body: string): void {
+    channel.nextEventId += 1;
+    this.writeSseRaw(
+      channel,
+      `id: ${channel.nextEventId}\nevent: message\ndata: ${body}\n\n`,
+    );
+  }
+
+  /** SSE wire への raw write — `: comment\n\n` 形式の keepalive と
+   *  `event: message` frame の両方で共通。書込失敗時は channel を
+   *  registry から削除して keepalive を止める。 */
+  private writeSseRaw(channel: SseChannel, wire: string): void {
+    const enc = new TextEncoder();
+    channel.writer.write(enc.encode(wire)).catch(() => {
+      clearInterval(channel.keepalive);
+      this.sseChannels.delete(channel.sessionId);
+    });
   }
 
   private handleConnect(req: Request): Response {
@@ -295,8 +424,22 @@ export class McpSession implements DurableObject {
     }
     if (typeof parsed !== "object" || parsed === null) return;
     const f = parsed as Record<string, unknown>;
-    if (f["kind"] !== "resp") {
-      // hello / req は auth-worker 側では何もしない
+    const kind = f["kind"];
+    if (kind === "notif") {
+      // ADR-004 Phase D: binary 側 (`agent-mcp/src/relay.rs`) が event 受信時に
+      // back-pipe してきた MCP `notifications/message`。`body` は JSON-RPC 2.0
+      // notification (method = "notifications/message" etc) の object そのまま。
+      // attached SSE channel 全部に fan-out する。
+      const body = f["body"];
+      if (typeof body !== "object" || body === null) return;
+      const wire = JSON.stringify(body);
+      for (const ch of this.sseChannels.values()) {
+        this.writeSse(ch, wire);
+      }
+      return;
+    }
+    if (kind !== "resp") {
+      // hello / req / unknown は auth-worker 側では何もしない
       return;
     }
     const id = f["id"];
@@ -353,6 +496,14 @@ function jsonResponse(status: number, body: unknown): Response {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+/** ADR-004 Phase D: MCP `notifications/message` JSON-RPC envelope を 1 行で
+ *  作る。SSE 上にそのまま流す。binary が back-pipe してくる本番経路と
+ *  形式を揃える (binary 側でも同じ shape を吐く)。 */
+function sseFormatNotification(method: string, params: unknown): string {
+  return JSON.stringify({ jsonrpc: "2.0", method, params });
+}
+
 
 // ────────────────────────────────────────────────────────────────────────────
 // Inline stub MCP server (ADR-003)

@@ -46,7 +46,7 @@ import { handleMcpDeviceCallback } from "./handlers/mcp-device-callback";
 import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
 import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
-import { handleMcpRelayBridge } from "./handlers/mcp-relay-bridge";
+import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
 import { handleMcpRegister } from "./handlers/mcp-register";
 import { handleMcpAuthorize } from "./handlers/mcp-authorize";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
@@ -179,6 +179,10 @@ async function dispatchMcpRelay(
     if (action === "mcp" && request.method === "POST") {
       return handleMcpRelayBridge(request, env, user);
     }
+    // ADR-004 Phase D: GET /u/:user/mcp → SSE stream (Streamable HTTP transport)。
+    if (action === "mcp" && request.method === "GET") {
+      return handleMcpRelaySse(request, env, user);
+    }
   }
   // ADR-003 (ippoan/cc-relay#35): user-less variants. `.mcp.json` committed
   // to a consumer repo root can point at `/mcp` / `/connect` (no user
@@ -187,6 +191,11 @@ async function dispatchMcpRelay(
   // `github-mcp-server-rs` backward compatibility.
   if (url.pathname === "/mcp" && request.method === "POST") {
     return handleMcpRelayBridge(request, env, null);
+  }
+  // ADR-004 Phase D: GET /mcp → SSE stream (Streamable HTTP transport for
+  // Anthropic Claude.ai / Claude Code Web `notifications/message` push)。
+  if (url.pathname === "/mcp" && request.method === "GET") {
+    return handleMcpRelaySse(request, env, null);
   }
   if (url.pathname === "/connect" && request.method === "GET") {
     return handleMcpRelayConnect(request, env, null);

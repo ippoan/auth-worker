@@ -165,6 +165,11 @@ vi.mock("../../src/handlers/mcp-relay-bridge", () => ({
   handleMcpRelayBridge: vi.fn((_req, _env, user: string | null) =>
     new Response(`relay-bridge:${user ?? "(jwt)"}`),
   ),
+  // ADR-004 Phase D: GET /mcp → SSE stream handler。本 integration test では
+  // dispatchMcpRelay の routing 経路だけ検証すればよく、SSE body は不要。
+  handleMcpRelaySse: vi.fn((_req, _env, user: string | null) =>
+    new Response(`relay-sse:${user ?? "(jwt)"}`),
+  ),
 }));
 // ADR-004 (multiplex): GitHub webhook receiver。専用 IssueRoom route は
 // 廃止し、既存 McpSession DO に push する形に変更されたので handler は 1 つ。
@@ -368,10 +373,13 @@ describe("Router (index.ts)", () => {
     expect(await res.text()).toBe("relay-connect:(jwt)");
   });
 
-  it("GET mcp.* /mcp → 404 (wrong method for user-less bridge)", async () => {
+  // ADR-004 Phase D: GET /mcp → SSE stream (Streamable HTTP transport)。
+  // 旧バージョンでは 404 だったが、Phase D で routing が増えたので
+  // relay-sse handler に振られる。
+  it("GET mcp.* /mcp → relay-sse:(jwt) [user-less, ADR-004 Phase D]", async () => {
     const req = new Request("https://mcp.ippoan.org/mcp");
     const res = await worker.fetch(req, env);
-    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("relay-sse:(jwt)");
   });
 
   it("POST mcp.* /connect → 404 (wrong method for user-less connect)", async () => {
@@ -426,10 +434,11 @@ describe("Router (index.ts)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("GET mcp.* /u/:user/mcp → 404 (wrong method)", async () => {
+  // ADR-004 Phase D: GET /u/:user/mcp も SSE stream に振る (legacy user-scoped)。
+  it("GET mcp.* /u/:user/mcp → relay-sse:<user> [ADR-004 Phase D]", async () => {
     const req = new Request("https://mcp.ippoan.org/u/alice/mcp");
     const res = await worker.fetch(req, env);
-    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("relay-sse:alice");
   });
 
   it("GET mcp.* unknown path → 404 (relay 404, doesn't fall through to auth routes)", async () => {

@@ -316,6 +316,193 @@ describe("McpSession.fetch — /__push_event (ADR-004)", () => {
 });
 
 // =============================================================================
+// ADR-004 Phase D: /__connect_sse + binary notif frame fan-out
+// =============================================================================
+
+describe("McpSession.fetch — /__connect_sse (ADR-004 Phase D)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  /**
+   * SSE body は ReadableStream。Node の Response polyfill (undici) で
+   * stream の透過挙動が完全に再現されないため (`reader.read()` が writer
+   * 経由の write を pick up しないケースが出る)、テストは「Response の
+   * headers と push_event の counter」を中心に検証する。実 stream の中身
+   * 検証は staging で `curl -N` で行う。
+   */
+
+  it("returns 405 when method is not GET", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect_sse", { method: "POST" });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(405);
+  });
+
+  it("returns 200 + SSE headers + freshly-generated Mcp-Session-Id when none provided", async () => {
+    setStubUUID("00000000-0000-0000-0000-000000000abc");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect_sse", { method: "GET" });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-transform");
+    expect(res.headers.get("Mcp-Session-Id")).toBe(
+      "00000000-0000-0000-0000-000000000abc",
+    );
+    expect(res.body).not.toBeNull();
+    // body の chunk 検証は polyfill の都合で flaky なので、ここでは
+    // ReadableStream の存在だけ確認する。
+    await res.body!.cancel();
+  });
+
+  it("reuses Mcp-Session-Id header when provided and valid", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect_sse", {
+      method: "GET",
+      headers: { "Mcp-Session-Id": "abc-123" },
+    });
+    const res = await do_.fetch(req);
+    expect(res.headers.get("Mcp-Session-Id")).toBe("abc-123");
+    await res.body!.cancel();
+  });
+
+  it("rejects malformed Mcp-Session-Id by generating a fresh one", async () => {
+    setStubUUID("11111111-2222-3333-4444-555555555555");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect_sse", {
+      method: "GET",
+      headers: { "Mcp-Session-Id": "bad value with spaces!" },
+    });
+    const res = await do_.fetch(req);
+    expect(res.headers.get("Mcp-Session-Id")).toBe(
+      "11111111-2222-3333-4444-555555555555",
+    );
+    await res.body!.cancel();
+  });
+
+  it("push_event reports sse_total when channel attached", async () => {
+    setStubUUID("sse-id-1");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    // open SSE — channel が registry に登録される
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    // push event
+    const pushRes = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "issue_comment.created",
+          delivery_id: "d-1",
+          owner: "ippoan",
+          repo: "cc-relay",
+          issue_number: 46,
+          payload: { action: "created" },
+        }),
+      }),
+    );
+    expect(pushRes.status).toBe(200);
+    const counts = (await pushRes.json()) as { sse_total?: number };
+    expect(counts.sse_total).toBe(1);
+
+    await sseRes.body!.cancel();
+  });
+
+  it("push_event returns sse_total=0 when no SSE channels attached", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const pushRes = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: "issues.opened" }),
+      }),
+    );
+    expect(pushRes.status).toBe(200);
+    const counts = (await pushRes.json()) as { sse_total?: number };
+    expect(counts.sse_total).toBe(0);
+  });
+
+  // 書込失敗時の cleanup path: body.cancel() 後に writeSse が write し、
+  // 非同期 catch で channel が registry から消える。タイミングは
+  // microtask 1〜2 段なので await Promise.resolve() 数回挟んで観測する。
+  it("drops SSE channel when writer.write() rejects (body cancelled)", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    // body をすぐ cancel して以後の write が reject する状態にする
+    await sseRes.body!.cancel();
+
+    // push_event → writeSse → writer.write() → reject → channel cleanup
+    const pushRes = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: "issues.opened" }),
+      }),
+    );
+    expect(pushRes.status).toBe(200);
+    // この push_event の時点では channel はまだ map にいる (catch は async)
+    // 数 tick 待って catch が走ってから 2 回目 push_event で 0 を確認する。
+    await new Promise((r) => setTimeout(r, 10));
+    const pushRes2 = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: "issues.opened" }),
+      }),
+    );
+    const counts2 = (await pushRes2.json()) as { sse_total?: number };
+    expect(counts2.sse_total).toBe(0);
+  });
+
+  // keepalive setInterval body: fake timers で 1 回 fire させて write が
+  // 走ることを確認する (実 write の中身は polyfill 都合で見えなくても、
+  // setInterval callback の coverage 取れれば OK)。
+  it("keepalive setInterval fires raw SSE comment write", async () => {
+    vi.useFakeTimers();
+    try {
+      const { state } = createMockState();
+      const do_ = new McpSession(state, {});
+      const sseRes = await do_.fetch(
+        new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+      );
+      // 26s 進めて 1 回 keepalive fire
+      await vi.advanceTimersByTimeAsync(26_000);
+      // session が依然 attached
+      const pushRes = await do_.fetch(
+        new Request("https://do.invalid/__push_event", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event_type: "issues.opened" }),
+        }),
+      );
+      const counts = (await pushRes.json()) as { sse_total?: number };
+      expect(counts.sse_total).toBe(1);
+      await sseRes.body!.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// =============================================================================
 // Phase 7: handleBridge — frame round-trip
 // =============================================================================
 
@@ -878,6 +1065,76 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     const ab = new ArrayBuffer(u8.byteLength);
     new Uint8Array(ab).set(u8);
     await do_.webSocketMessage(ws as unknown as WebSocket, ab);
+  });
+});
+
+// =============================================================================
+// ADR-004 Phase D: binary → DO の `kind:"notif"` frame を SSE に forward
+// =============================================================================
+
+describe("McpSession.webSocketMessage — kind:notif fan-out to SSE", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  it("accepts notif frame with object body without throwing (fan-out to SSE)", async () => {
+    setStubUUID("sse-notif-1");
+    const ws = makeFakeWs("active");
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+
+    // open SSE channel first (so notif has somewhere to fan out)
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    const notifBody = {
+      jsonrpc: "2.0",
+      method: "notifications/message",
+      params: {
+        level: "info",
+        logger: "cc-relay/issue-events",
+        data: {
+          event_type: "issue_comment.created",
+          owner: "ippoan",
+          repo: "cc-relay",
+          issue_number: 46,
+        },
+      },
+    };
+    // should not throw — stream の中身検証は polyfill の制約で staging に任せる
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "notif", v: 1, body: notifBody }),
+    );
+
+    await sseRes.body!.cancel();
+  });
+
+  it("ignores notif frame with non-object body", async () => {
+    const ws = makeFakeWs("active");
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    // should not throw — covers `typeof body !== "object"` branch
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "notif", v: 1, body: "not-an-object" }),
+    );
+    // covers missing body (undefined → typeof !== "object" still true)
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "notif", v: 1 }),
+    );
+    // covers `body === null` branch (typeof null === "object" so first
+    // clause is false, second clause catches it)
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "notif", v: 1, body: null }),
+    );
   });
 });
 
