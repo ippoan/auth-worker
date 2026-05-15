@@ -1119,14 +1119,21 @@ describe("McpSession.webSocketMessage — kind:notif fan-out to SSE", () => {
     const ws = makeFakeWs("active");
     const { state } = createMockState([ws]);
     const do_ = new McpSession(state, {});
-    // should not throw
+    // should not throw — covers `typeof body !== "object"` branch
     await do_.webSocketMessage(
       ws as unknown as WebSocket,
       JSON.stringify({ kind: "notif", v: 1, body: "not-an-object" }),
     );
+    // covers missing body (undefined → typeof !== "object" still true)
     await do_.webSocketMessage(
       ws as unknown as WebSocket,
-      JSON.stringify({ kind: "notif", v: 1 }), // missing body
+      JSON.stringify({ kind: "notif", v: 1 }),
+    );
+    // covers `body === null` branch (typeof null === "object" so first
+    // clause is false, second clause catches it)
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "notif", v: 1, body: null }),
     );
   });
 });
