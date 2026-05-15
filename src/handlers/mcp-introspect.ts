@@ -21,13 +21,14 @@
  *   - mode 1 は OAuth で発行された JWT を提示している = ユーザーが当該 client
  *     を authz 済 = raw token を返してよい。
  *
- * Request body: `application/json` `{ "token": "<JWT>" }` (mode 2 のみ必須)
+ * Request body (mode 2 のみ必須): `application/json` `{ "token": "<JWT>" }`
  *
  * Response (RFC 7662 §2.2):
  *   - 有効: 200 `{ active: true, scope, sub, github_login, github_token, exp }`
  *   - 無効 / 期限切れ / KV miss: 200 `{ active: false }` (情報リーク回避)
  *   - 認証失敗: 401 (どちらの mode も成立しない)
- *   - body parse 失敗 / token 欠落 (mode 2 のみ): 200 `{ active: false }` (RFC 7662 spec)
+ *   - body parse 失敗 / token 欠落 (mode 2 のみ): 200 `{ active: false }`
+ *     (RFC 7662 §2.2 — caller は認証済み、トークン側の問題なので active:false)
  *   - 設定不備 (env 欠落): 503 `{ active: false, error: "server_error" }`
  *
  * Cache-Control: no-store。
@@ -57,40 +58,31 @@ function constantTimeEquals(a: string, b: string): boolean {
 }
 
 /**
- * 認証を解決する。成功時は introspect 対象の JWT payload を返す。
- *
- * - mode 1 (Bearer JWT): header の JWT を verify → payload を返却。
- * - mode 2 (shared secret): header が secret と一致したら body の token を
- *   verify → payload を返却。
- * - どちらも不成立: `null`。
+ * Resolve `payload.sub` to its KV-encrypted `github_token` and build the
+ * RFC 7662 `active:true` response. Common between mode 1 and mode 2.
  */
-async function resolveAuth(
-  request: Request,
+async function respondWithGithubToken(
   env: Env,
-  body: { token?: unknown },
-): Promise<McpJwtPayload | null> {
-  const authz = request.headers.get("Authorization") ?? "";
-
-  // Mode 1: Bearer JWT (推奨)
-  const bearer = /^Bearer\s+(.+)$/i.exec(authz);
-  if (bearer && bearer[1]) {
-    const payload = await verifyMcpJwt(bearer[1], env.MCP_JWT_SECRET!, MCP_AUD);
-    if (payload) return payload;
-    // Bearer 形式で来たが verify 失敗 → これは「JWT を提示して認証を試みた」
-    // ことが明らかなので mode 2 にフォールバックさせず即失敗扱い (timing
-    // attack 経路を増やさない)。
-    return null;
+  payload: McpJwtPayload,
+): Promise<Response> {
+  const encrypted = await env.MCP_OAUTH_KV!.get(`github_token:${payload.sub}`);
+  if (!encrypted) {
+    return jsonNoStore({ active: false });
   }
-
-  // Mode 2: 生 shared secret (legacy)
-  if (authz && env.INTERNAL_SHARED_SECRET
-      && constantTimeEquals(authz, env.INTERNAL_SHARED_SECRET)) {
-    const token = typeof body.token === "string" ? body.token : "";
-    if (!token) return null;
-    return await verifyMcpJwt(token, env.MCP_JWT_SECRET!, MCP_AUD);
+  let github_token: string;
+  try {
+    github_token = await decryptWithKey(encrypted, env.SSO_ENCRYPTION_KEY!);
+  } catch {
+    return jsonNoStore({ active: false });
   }
-
-  return null;
+  return jsonNoStore({
+    active: true,
+    scope: payload.scope,
+    sub: payload.sub,
+    github_login: payload.github_login,
+    github_token,
+    exp: payload.exp,
+  });
 }
 
 export async function handleMcpIntrospect(
@@ -98,9 +90,8 @@ export async function handleMcpIntrospect(
   env: Env,
 ): Promise<Response> {
   // ── env guard ────────────────────────────────────────────────────────────
-  // INTERNAL_SHARED_SECRET は mode 2 でのみ必須。mode 1 (Bearer JWT) しか
-  // 使わない deployment では未設定でも 503 にしない方が望ましいが、当面は
-  // 既存 deployment との互換を優先して必須のままにする (廃止は ADR-004)。
+  // INTERNAL_SHARED_SECRET は mode 2 でのみ実質必須。当面は既存 deployment
+  // との互換を優先して両 mode の前提として require する (廃止は ADR-004)。
   if (
     !env.MCP_OAUTH_KV ||
     !env.MCP_JWT_SECRET ||
@@ -110,41 +101,41 @@ export async function handleMcpIntrospect(
     return jsonNoStore({ active: false, error: "server_error" }, 503);
   }
 
-  // ── body parse (mode 2 用、mode 1 でも害なし) ───────────────────────────
-  let body: { token?: unknown } = {};
-  try {
-    body = (await request.json()) as { token?: unknown };
-  } catch {
-    // body 無し / 不正でも mode 1 なら通る可能性があるので 401 にせず継続。
+  const authz = request.headers.get("Authorization") ?? "";
+
+  // ── Mode 1: Bearer JWT (推奨) ───────────────────────────────────────────
+  const bearer = /^Bearer\s+(.+)$/i.exec(authz);
+  if (bearer && bearer[1]) {
+    const payload = await verifyMcpJwt(bearer[1], env.MCP_JWT_SECRET, MCP_AUD);
+    if (!payload) {
+      // Bearer 形式で来たが verify 失敗 → mode 2 フォールバックさせず即 401
+      // (timing attack 経路を増やさない、かつ legacy caller は Bearer prefix
+      // を付けないので意図せず mode 2 に降りることはない)。
+      return jsonNoStore({ error: "unauthorized" }, 401);
+    }
+    return await respondWithGithubToken(env, payload);
   }
 
-  // ── 認証解決 (Bearer JWT or legacy shared secret) ────────────────────────
-  const payload = await resolveAuth(request, env, body);
-  if (!payload) {
-    // どちらの mode も成立しない。RFC 7662 は「無効トークン」を 200 active:false
-    // で返すが、こちらは「認証されていない caller」なので 401 を返す (mode 2
-    // 既存挙動を踏襲)。
+  // ── Mode 2: 生 shared secret (legacy) ────────────────────────────────────
+  if (!authz || !constantTimeEquals(authz, env.INTERNAL_SHARED_SECRET)) {
     return jsonNoStore({ error: "unauthorized" }, 401);
   }
 
-  // ── github_token を KV から復号 ─────────────────────────────────────────
-  const encrypted = await env.MCP_OAUTH_KV.get(`github_token:${payload.sub}`);
-  if (!encrypted) {
-    return jsonNoStore({ active: false });
-  }
-  let github_token: string;
+  // 認証通過後の body 不正は RFC 7662 §2.2 に従い active:false (200)。
+  let body: { token?: unknown };
   try {
-    github_token = await decryptWithKey(encrypted, env.SSO_ENCRYPTION_KEY);
+    body = (await request.json()) as { token?: unknown };
   } catch {
     return jsonNoStore({ active: false });
   }
+  const token = typeof body.token === "string" ? body.token : "";
+  if (!token) {
+    return jsonNoStore({ active: false });
+  }
 
-  return jsonNoStore({
-    active: true,
-    scope: payload.scope,
-    sub: payload.sub,
-    github_login: payload.github_login,
-    github_token,
-    exp: payload.exp,
-  });
+  const payload = await verifyMcpJwt(token, env.MCP_JWT_SECRET, MCP_AUD);
+  if (!payload) {
+    return jsonNoStore({ active: false });
+  }
+  return await respondWithGithubToken(env, payload);
 }
