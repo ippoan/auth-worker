@@ -184,6 +184,10 @@ export class McpSession implements DurableObject {
     // `notifications/message` を直接 push する経路も用意する。binary 未起動でも
     // Claude session が event を受け取れる fallback。binary が起動中なら
     // 同じ event が両方の経路で届くが、Claude 側で de-dup (delivery_id) する想定。
+    //
+    // write は fire-and-forget。`await writer.write()` は TransformStream の
+    // backpressure (default HWM=1) で hang し得るので、push_event の応答性を
+    // 守るため Promise は捨てる (失敗は .catch で channel cleanup する)。
     const sseFrame = sseFormatNotification("notifications/message", {
       level: "info",
       logger: "cc-relay/issue-events",
@@ -192,7 +196,7 @@ export class McpSession implements DurableObject {
     let sseDelivered = 0;
     let sseDead = 0;
     for (const ch of this.sseChannels.values()) {
-      const ok = await this.writeSse(ch, sseFrame);
+      const ok = this.writeSse(ch, sseFrame);
       if (ok) sseDelivered += 1;
       else sseDead += 1;
     }
@@ -233,7 +237,7 @@ export class McpSession implements DurableObject {
     this.sseChannels.set(sessionId, channel);
 
     // 初回 hello (MCP 慣習に依存しない、診断 + 接続確認用)。
-    void this.writeSse(channel, sseFormatNotification("notifications/message", {
+    this.writeSse(channel, sseFormatNotification("notifications/message", {
       level: "info",
       logger: "cc-relay/sse",
       data: { msg: "sse_connected", session_id: sessionId },
@@ -261,13 +265,21 @@ export class McpSession implements DurableObject {
     });
   }
 
-  /** SSE writer に 1 frame 書く。書込失敗なら channel を drop して false。 */
-  private async writeSse(channel: SseChannel, body: string): Promise<boolean> {
+  /**
+   * SSE writer に 1 frame 書く。書込は fire-and-forget で同期 return する
+   * (`await writer.write()` は backpressure で hang する可能性があり、
+   * push_event の応答時間を守る必要があるため)。同期 throw した時のみ
+   * `false` を返して channel を cleanup する。非同期 reject は `.catch`
+   * 経由で同じ cleanup を行う。
+   */
+  private writeSse(channel: SseChannel, body: string): boolean {
     const enc = new TextEncoder();
     channel.nextEventId += 1;
     const wire = `id: ${channel.nextEventId}\nevent: message\ndata: ${body}\n\n`;
     try {
-      await channel.writer.write(enc.encode(wire));
+      channel.writer.write(enc.encode(wire)).catch(() => {
+        this.removeSseChannel(channel.sessionId);
+      });
       return true;
     } catch {
       this.removeSseChannel(channel.sessionId);
@@ -430,7 +442,7 @@ export class McpSession implements DurableObject {
       if (typeof body !== "object" || body === null) return;
       const wire = JSON.stringify(body);
       for (const ch of this.sseChannels.values()) {
-        void this.writeSse(ch, wire);
+        this.writeSse(ch, wire);
       }
       return;
     }
