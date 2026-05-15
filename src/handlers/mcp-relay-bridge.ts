@@ -53,50 +53,10 @@ export async function handleMcpRelayBridge(
   env: Env,
   user: string | null,
 ): Promise<Response> {
-  if (!env.MCP_JWT_SECRET) {
-    return new Response("MCP not configured", { status: 503 });
-  }
-  if (!env.MCP_SESSION_DO) {
-    return new Response("MCP relay not configured", { status: 503 });
-  }
-  // user-less route (ADR-003) は `null` を渡す。空文字列は user-scoped route
-  // 経由では起き得ない (regex `[^/]+`) が、直接呼出のガードとして残す。
-  if (user === "") {
-    return new Response("Missing user", { status: 400 });
-  }
+  const gate = await authenticateMcpRelay(request, env, user);
+  if (gate.kind === "error") return gate.response;
+  const stub = gate.stub;
 
-  const authz = request.headers.get("Authorization") ?? "";
-  const m = /^Bearer\s+(.+)$/i.exec(authz);
-  if (!m || !m[1]) {
-    return unauthorizedResponse(env, "Unauthorized");
-  }
-  // legacy device-flow JWT は aud=`"github-mcp-server-rs"` (固定文字列)。
-  // Authorization Code + RFC 8707 JWT は aud = client が `/authorize` で送った
-  // resource URI そのまま (例 `https://mcp-staging.ippoan.org/mcp`)。後者は
-  // path / trailing slash が可変なので、origin が relay の canonical origin と
-  // 一致する URL なら受理する (詳細は mcp-authorize.ts のコメント参照)。
-  const relayOrigin = mcpRelayOrigin(env);
-  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, (aud) => {
-    if (aud === MCP_AUD_LEGACY) return true;
-    try {
-      return new URL(aud).origin === relayOrigin;
-    } catch {
-      return false;
-    }
-  });
-  if (!payload) {
-    return unauthorizedResponse(env, "Invalid token");
-  }
-  // user-scoped route のときだけ path と JWT の一致を強制する。
-  // user-less route (user === null) は JWT の github_login を最終的な DO key
-  // にするので mismatch 概念がそもそも存在しない。
-  if (user !== null && payload.github_login !== user) {
-    return new Response("User mismatch", { status: 403 });
-  }
-
-  const doKey = user ?? payload.github_login;
-  const id = env.MCP_SESSION_DO.idFromName(doKey);
-  const stub = env.MCP_SESSION_DO.get(id);
   // Phase 6: DO に body をそのまま渡すが、Phase 7 で frame 変換実装時に
   // headers / body を再構築する余地を残しておく。
   // `duplex: "half"` は streaming body を渡すとき undici / Workers 双方が要求する。
@@ -108,4 +68,79 @@ export async function handleMcpRelayBridge(
   };
   const doReq = new Request("https://do.invalid/__bridge", init);
   return stub.fetch(doReq);
+}
+
+/**
+ * ADR-004 Phase D: `GET /mcp` (Streamable HTTP transport, MCP spec 2025-06-18)。
+ *
+ * Claude.ai / Claude Code Web が server-initiated `notifications/message`
+ * を受け取るための SSE channel を開く。auth/JWT 検証は POST と同じ。`Mcp-Session-Id`
+ * header が無ければ DO 側で採番、ある場合は再利用 (replay の足場、Phase D では
+ * 完全 reconnect)。実体は `McpSession` DO の `/__connect_sse` で、push_event /
+ * binary back-pipe (`kind:"notif"`) から fan-out される。
+ */
+export async function handleMcpRelaySse(
+  request: Request,
+  env: Env,
+  user: string | null,
+): Promise<Response> {
+  const gate = await authenticateMcpRelay(request, env, user);
+  if (gate.kind === "error") return gate.response;
+  const stub = gate.stub;
+
+  const headers = new Headers();
+  const sid = request.headers.get("Mcp-Session-Id");
+  if (sid) headers.set("Mcp-Session-Id", sid);
+  const doReq = new Request("https://do.invalid/__connect_sse", {
+    method: "GET",
+    headers,
+  });
+  return stub.fetch(doReq);
+}
+
+/** JWT 検証 + DO stub 解決の共通ロジック (POST `/mcp` と GET `/mcp` で共有)。 */
+type Gate =
+  | { kind: "ok"; stub: DurableObjectStub; doKey: string }
+  | { kind: "error"; response: Response };
+
+async function authenticateMcpRelay(
+  request: Request,
+  env: Env,
+  user: string | null,
+): Promise<Gate> {
+  if (!env.MCP_JWT_SECRET) {
+    return { kind: "error", response: new Response("MCP not configured", { status: 503 }) };
+  }
+  if (!env.MCP_SESSION_DO) {
+    return { kind: "error", response: new Response("MCP relay not configured", { status: 503 }) };
+  }
+  if (user === "") {
+    return { kind: "error", response: new Response("Missing user", { status: 400 }) };
+  }
+
+  const authz = request.headers.get("Authorization") ?? "";
+  const m = /^Bearer\s+(.+)$/i.exec(authz);
+  if (!m || !m[1]) {
+    return { kind: "error", response: unauthorizedResponse(env, "Unauthorized") };
+  }
+  const relayOrigin = mcpRelayOrigin(env);
+  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, (aud) => {
+    if (aud === MCP_AUD_LEGACY) return true;
+    try {
+      return new URL(aud).origin === relayOrigin;
+    } catch {
+      return false;
+    }
+  });
+  if (!payload) {
+    return { kind: "error", response: unauthorizedResponse(env, "Invalid token") };
+  }
+  if (user !== null && payload.github_login !== user) {
+    return { kind: "error", response: new Response("User mismatch", { status: 403 }) };
+  }
+
+  const doKey = user ?? payload.github_login;
+  const id = env.MCP_SESSION_DO.idFromName(doKey);
+  const stub = env.MCP_SESSION_DO.get(id);
+  return { kind: "ok", stub, doKey };
 }

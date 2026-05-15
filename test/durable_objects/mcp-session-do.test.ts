@@ -316,6 +316,134 @@ describe("McpSession.fetch — /__push_event (ADR-004)", () => {
 });
 
 // =============================================================================
+// ADR-004 Phase D: /__connect_sse + binary notif frame fan-out
+// =============================================================================
+
+describe("McpSession.fetch — /__connect_sse (ADR-004 Phase D)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  /**
+   * SSE body は ReadableStream で、`writer.write()` を経由しないと flush
+   * されない。テストでは Response.body の reader で 1 chunk 読んで、`hello`
+   * frame を含むことだけ確認する (keepalive 25s は待たない)。
+   */
+  async function readFirstChunk(res: Response): Promise<string> {
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    const { value } = await reader.read();
+    await reader.cancel();
+    return value ? dec.decode(value) : "";
+  }
+
+  it("returns 405 when method is not GET", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect_sse", { method: "POST" });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(405);
+  });
+
+  it("returns 200 + SSE headers + freshly-generated Mcp-Session-Id when none provided", async () => {
+    setStubUUID("00000000-0000-0000-0000-000000000abc");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect_sse", { method: "GET" });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-transform");
+    expect(res.headers.get("Mcp-Session-Id")).toBe(
+      "00000000-0000-0000-0000-000000000abc",
+    );
+    const chunk = await readFirstChunk(res);
+    // hello frame (notifications/message with "sse_connected")
+    expect(chunk).toMatch(/event: message/);
+    expect(chunk).toMatch(/"sse_connected"/);
+    expect(chunk).toMatch(/"session_id":"00000000-0000-0000-0000-000000000abc"/);
+  });
+
+  it("reuses Mcp-Session-Id header when provided and valid", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect_sse", {
+      method: "GET",
+      headers: { "Mcp-Session-Id": "abc-123" },
+    });
+    const res = await do_.fetch(req);
+    expect(res.headers.get("Mcp-Session-Id")).toBe("abc-123");
+    await readFirstChunk(res);
+  });
+
+  it("rejects malformed Mcp-Session-Id by generating a fresh one", async () => {
+    setStubUUID("11111111-2222-3333-4444-555555555555");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect_sse", {
+      method: "GET",
+      headers: { "Mcp-Session-Id": "bad value with spaces!" },
+    });
+    const res = await do_.fetch(req);
+    expect(res.headers.get("Mcp-Session-Id")).toBe(
+      "11111111-2222-3333-4444-555555555555",
+    );
+    await readFirstChunk(res);
+  });
+
+  it("push_event fans out to attached SSE channel as notifications/message", async () => {
+    setStubUUID("sse-id-1");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    // 1) open SSE
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+    const reader = sseRes.body!.getReader();
+    const dec = new TextDecoder();
+    // drain hello
+    await reader.read();
+
+    // 2) push event
+    const pushRes = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "issue_comment.created",
+          delivery_id: "d-1",
+          owner: "ippoan",
+          repo: "cc-relay",
+          issue_number: 46,
+          payload: { action: "created" },
+        }),
+      }),
+    );
+    expect(pushRes.status).toBe(200);
+    const counts = (await pushRes.json()) as {
+      sse_delivered?: number;
+      sse_total?: number;
+    };
+    expect(counts.sse_total).toBe(1);
+    expect(counts.sse_delivered).toBe(1);
+
+    // 3) SSE reader should now see the notifications/message frame
+    const { value } = await reader.read();
+    await reader.cancel();
+    const chunk = value ? dec.decode(value) : "";
+    expect(chunk).toMatch(/event: message/);
+    expect(chunk).toMatch(/"method":"notifications\/message"/);
+    expect(chunk).toMatch(/"event_type":"issue_comment.created"/);
+    expect(chunk).toMatch(/"issue_number":46/);
+  });
+});
+
+// =============================================================================
 // Phase 7: handleBridge — frame round-trip
 // =============================================================================
 
@@ -878,6 +1006,76 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     const ab = new ArrayBuffer(u8.byteLength);
     new Uint8Array(ab).set(u8);
     await do_.webSocketMessage(ws as unknown as WebSocket, ab);
+  });
+});
+
+// =============================================================================
+// ADR-004 Phase D: binary → DO の `kind:"notif"` frame を SSE に forward
+// =============================================================================
+
+describe("McpSession.webSocketMessage — kind:notif fan-out to SSE", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  it("forwards notif frame body to attached SSE channels", async () => {
+    setStubUUID("sse-notif-1");
+    const ws = makeFakeWs("active");
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+
+    // open SSE channel first
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    const reader = sseRes.body!.getReader();
+    const dec = new TextDecoder();
+    await reader.read(); // hello
+
+    // binary sends a notif frame containing a JSON-RPC notifications/message
+    const notifBody = {
+      jsonrpc: "2.0",
+      method: "notifications/message",
+      params: {
+        level: "info",
+        logger: "cc-relay/issue-events",
+        data: {
+          event_type: "issue_comment.created",
+          owner: "ippoan",
+          repo: "cc-relay",
+          issue_number: 46,
+        },
+      },
+    };
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "notif", v: 1, body: notifBody }),
+    );
+
+    const { value } = await reader.read();
+    await reader.cancel();
+    const chunk = value ? dec.decode(value) : "";
+    expect(chunk).toMatch(/event: message/);
+    expect(chunk).toMatch(/"method":"notifications\/message"/);
+    expect(chunk).toMatch(/"issue_number":46/);
+  });
+
+  it("ignores notif frame with non-object body", async () => {
+    const ws = makeFakeWs("active");
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    // should not throw
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "notif", v: 1, body: "not-an-object" }),
+    );
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "notif", v: 1 }), // missing body
+    );
   });
 });
 
