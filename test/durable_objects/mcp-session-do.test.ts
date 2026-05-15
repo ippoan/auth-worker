@@ -66,17 +66,31 @@ function createMockState(initial: FakeWebSocket[] = []): {
   state: DurableObjectState;
   current: FakeWebSocket[];
   acceptCalls: { ws: WebSocket; tags: string[] | undefined }[];
+  storageMap: Map<string, unknown>;
 } {
   const current: FakeWebSocket[] = [...initial];
   const acceptCalls: { ws: WebSocket; tags: string[] | undefined }[] = [];
+  // ADR-006: in-memory storage mock. DO `state.storage.get/put` を `Map` で擬装。
+  // 実 DO storage は `Promise<T|undefined>` を返すので async を真似る。
+  const storageMap = new Map<string, unknown>();
+  const storage = {
+    get: async <T>(key: string) => storageMap.get(key) as T | undefined,
+    put: async (key: string, value: unknown) => {
+      storageMap.set(key, value);
+    },
+    delete: async (key: string) => {
+      storageMap.delete(key);
+    },
+  };
   const state = {
     getWebSockets: (_tag?: string) => current as unknown as WebSocket[],
     acceptWebSocket: (ws: WebSocket, tags?: string[]) => {
       acceptCalls.push({ ws, tags });
       current.push(ws as unknown as FakeWebSocket);
     },
+    storage,
   } as unknown as DurableObjectState;
-  return { state, current, acceptCalls };
+  return { state, current, acceptCalls, storageMap };
 }
 
 // import after the polyfills
@@ -576,7 +590,7 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     expect(body.result.protocolVersion).toBe("2025-06-18");
   });
 
-  it("inline stub: tools/list returns the cc_relay_ping placeholder tool", async () => {
+  it("inline stub: tools/list returns cc_relay_ping + ADR-006 server-side tools", async () => {
     const { state } = createMockState();
     const do_ = new McpSession(state, {});
     const req = new Request("https://do.invalid/__bridge", {
@@ -588,8 +602,15 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     const body = (await res.json()) as {
       result: { tools: { name: string; description: string }[] };
     };
-    expect(body.result.tools).toHaveLength(1);
-    expect(body.result.tools[0]!.name).toBe("cc_relay_ping");
+    // ADR-006: 5 tools total — ping + subscribe/unsubscribe/list/drain.
+    const names = body.result.tools.map((t) => t.name).sort();
+    expect(names).toEqual([
+      "cc_relay_ping",
+      "get_pending_events",
+      "list_watched_issues",
+      "subscribe_issue_activity",
+      "unsubscribe_issue_activity",
+    ]);
   });
 
   it("inline stub: tools/call cc_relay_ping returns pong", async () => {
@@ -1135,6 +1156,356 @@ describe("McpSession.webSocketMessage — kind:notif fan-out to SSE", () => {
       ws as unknown as WebSocket,
       JSON.stringify({ kind: "notif", v: 1, body: null }),
     );
+  });
+});
+
+// =============================================================================
+// ADR-006: server-side subscription + event queue (POST /mcp only, no binary)
+// =============================================================================
+
+describe("McpSession inline stub — ADR-006 server-side tools", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Send a JSON-RPC body through /__bridge (= inline stub path when no WS). */
+  async function rpc(
+    do_: McpSession,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const res = await do_.fetch(req);
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  function getText(resp: Record<string, unknown>): string {
+    const result = resp.result as { content: { text: string }[] };
+    return result.content[0]!.text;
+  }
+
+  it("tools/list includes the 5 server-side stub tools", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const r = await rpc(do_, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const tools = (r.result as { tools: { name: string }[] }).tools;
+    const names = tools.map((t) => t.name).sort();
+    expect(names).toEqual([
+      "cc_relay_ping",
+      "get_pending_events",
+      "list_watched_issues",
+      "subscribe_issue_activity",
+      "unsubscribe_issue_activity",
+    ]);
+  });
+
+  it("subscribe → list → unsubscribe → list roundtrip persists in DO storage", async () => {
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    // subscribe
+    const sub = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "subscribe_issue_activity",
+        arguments: { owner: "ippoan", repo: "cc-relay", issue_number: 46 },
+      },
+    });
+    expect(getText(sub)).toBe("subscribed: ippoan/cc-relay#46");
+    expect(storageMap.get("subs")).toEqual(["ippoan/cc-relay#46"]);
+
+    // subscribe again — idempotent
+    const sub2 = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "subscribe_issue_activity",
+        arguments: { owner: "ippoan", repo: "cc-relay", issue_number: 46 },
+      },
+    });
+    expect(getText(sub2)).toBe("already subscribed: ippoan/cc-relay#46");
+
+    // list
+    const list = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "list_watched_issues" },
+    });
+    expect(JSON.parse(getText(list))).toEqual(["ippoan/cc-relay#46"]);
+
+    // unsubscribe
+    const unsub = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "unsubscribe_issue_activity",
+        arguments: { owner: "ippoan", repo: "cc-relay", issue_number: 46 },
+      },
+    });
+    expect(getText(unsub)).toBe("unsubscribed: ippoan/cc-relay#46");
+    expect(storageMap.get("subs")).toEqual([]);
+
+    // unsubscribe again — was not subscribed
+    const unsub2 = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: {
+        name: "unsubscribe_issue_activity",
+        arguments: { owner: "ippoan", repo: "cc-relay", issue_number: 46 },
+      },
+    });
+    expect(getText(unsub2)).toBe("was not subscribed: ippoan/cc-relay#46");
+  });
+
+  it("subscribe rejects invalid args (empty owner, empty repo, non-int issue_number, zero)", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const cases: Array<Record<string, unknown>> = [
+      { owner: "", repo: "x", issue_number: 1 },
+      { owner: "x", repo: "", issue_number: 1 },
+      { owner: "x", repo: "y", issue_number: 0 },
+      { owner: "x", repo: "y", issue_number: 1.5 }, // non-integer
+      { owner: "x", repo: "y" }, // missing issue_number
+    ];
+    for (const args of cases) {
+      const r = await rpc(do_, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "subscribe_issue_activity", arguments: args },
+      });
+      expect((r.result as { isError: boolean }).isError).toBe(true);
+    }
+    // unsubscribe with invalid args also returns isError
+    const u = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "unsubscribe_issue_activity",
+        arguments: { owner: "", repo: "y", issue_number: 1 },
+      },
+    });
+    expect((u.result as { isError: boolean }).isError).toBe(true);
+  });
+
+  it("push_event with missing owner/repo/issue_number does not queue", async () => {
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+    const partial = {
+      event_type: "issue_comment.created",
+      // owner/repo/issue_number 欠落
+      payload: {},
+    };
+    const r = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(partial),
+      }),
+    );
+    expect(r.status).toBe(200);
+    const counts = (await r.json()) as { queued?: boolean };
+    expect(counts.queued).toBe(false);
+    // storage は events key を含まない (or empty array)
+    const evs = storageMap.get("events");
+    expect(Array.isArray(evs) ? evs.length : 0).toBe(0);
+  });
+
+  // parseIssueKey は ternary が args.owner/repo/issue_number の型分岐を
+  // 持つ。`{ owner: 123 }` 等の non-string / non-number を渡して
+  // ternary の false 側を踏む。
+  it("subscribe handles non-string / non-number arg types (ternary false branch)", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const cases: Array<Record<string, unknown>> = [
+      { owner: 123, repo: "y", issue_number: 1 }, // owner not string
+      { owner: "x", repo: false, issue_number: 1 }, // repo not string
+      { owner: "x", repo: "y", issue_number: "1" }, // issue_number not number
+    ];
+    for (const args of cases) {
+      const r = await rpc(do_, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "subscribe_issue_activity", arguments: args },
+      });
+      expect((r.result as { isError: boolean }).isError).toBe(true);
+    }
+  });
+
+  // queueEventIfSubscribed の `!owner || !repo || num === null` 短絡分岐 — 各 disjunct で
+  // 独立に false が起きる経路をカバー。前テストは「全部欠落」(最初の項で短絡)
+  // しか踏んでいないので、中間 / 最後の disjunct を別ケースで起こす。
+  it("push_event with only `repo` missing or only `issue_number` missing skips queue", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    // owner OK, repo missing
+    const r1 = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "x",
+          owner: "ippoan",
+          issue_number: 46,
+          payload: {},
+        }),
+      }),
+    );
+    expect(((await r1.json()) as { queued?: boolean }).queued).toBe(false);
+    // owner OK, repo OK, issue_number missing
+    const r2 = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "x",
+          owner: "ippoan",
+          repo: "cc-relay",
+          payload: {},
+        }),
+      }),
+    );
+    expect(((await r2.json()) as { queued?: boolean }).queued).toBe(false);
+  });
+
+  it("event queue drops oldest when overflowing MAX_QUEUED_EVENTS", async () => {
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+    // pre-seed storage with subs (= subscribe done) AND 500 events (= queue full).
+    await state.storage.put("subs", ["ippoan/cc-relay#46"]);
+    const seeded: Record<string, unknown>[] = [];
+    for (let i = 0; i < 500; i++) {
+      seeded.push({
+        event_type: "issue_comment.created",
+        delivery_id: `d-${i}`,
+        owner: "ippoan",
+        repo: "cc-relay",
+        issue_number: 46,
+        payload: {},
+      });
+    }
+    await state.storage.put("events", seeded);
+    // push one more — oldest (d-0) should drop.
+    await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "issue_comment.created",
+          delivery_id: "d-500",
+          owner: "ippoan",
+          repo: "cc-relay",
+          issue_number: 46,
+          payload: {},
+        }),
+      }),
+    );
+    const after = storageMap.get("events") as Record<string, unknown>[];
+    expect(after.length).toBe(500);
+    expect(after[0]!.delivery_id).toBe("d-1");
+    expect(after[after.length - 1]!.delivery_id).toBe("d-500");
+  });
+
+  it("push_event queues event for subscribed issue + get_pending_events drains", async () => {
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    // subscribe to #46 only
+    await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "subscribe_issue_activity",
+        arguments: { owner: "ippoan", repo: "cc-relay", issue_number: 46 },
+      },
+    });
+
+    // push 2 events: one matching #46, one not matching (#99)
+    const eventA = {
+      event_type: "issue_comment.created",
+      delivery_id: "d-1",
+      owner: "ippoan",
+      repo: "cc-relay",
+      issue_number: 46,
+      payload: { action: "created", body: "hi" },
+    };
+    const eventB = {
+      event_type: "issues.opened",
+      delivery_id: "d-2",
+      owner: "ippoan",
+      repo: "cc-relay",
+      issue_number: 99,
+      payload: { action: "opened" },
+    };
+
+    const r1 = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(eventA),
+      }),
+    );
+    const counts1 = (await r1.json()) as { queued?: boolean; queue_size?: number };
+    expect(counts1.queued).toBe(true);
+    expect(counts1.queue_size).toBe(1);
+
+    const r2 = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(eventB),
+      }),
+    );
+    const counts2 = (await r2.json()) as { queued?: boolean };
+    expect(counts2.queued).toBe(false);
+
+    // get_pending_events returns only the subscribed one
+    const drain = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 10,
+      method: "tools/call",
+      params: { name: "get_pending_events" },
+    });
+    const arr = JSON.parse(getText(drain)) as Record<string, unknown>[];
+    expect(arr.length).toBe(1);
+    expect(arr[0]!.delivery_id).toBe("d-1");
+    expect(arr[0]!.issue_number).toBe(46);
+
+    // 2nd drain is empty (queue cleared)
+    const drain2 = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 11,
+      method: "tools/call",
+      params: { name: "get_pending_events" },
+    });
+    expect(JSON.parse(getText(drain2))).toEqual([]);
+    expect(storageMap.get("events")).toEqual([]);
+  });
+
+  it("initialize includes ADR-006 instructions", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const r = await rpc(do_, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18" },
+    });
+    const result = r.result as { instructions: string };
+    expect(result.instructions).toContain("subscribe_issue_activity");
+    expect(result.instructions).toContain("get_pending_events");
   });
 });
 

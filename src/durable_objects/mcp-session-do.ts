@@ -197,11 +197,19 @@ export class McpSession implements DurableObject {
     for (const ch of this.sseChannels.values()) {
       this.writeSse(ch, sseFrame);
     }
+
+    // ADR-006: server-side event queue にも push (subscription filter 経由)。
+    // CCoW の `get_pending_events` polling 経路。binary も SSE channel も
+    // 無くて queue も空、で初めて event が dead-letter になる。
+    const queueResult = await this.queueEventIfSubscribed(eventBody);
+
     return jsonResponse(200, {
       delivered,
       dead,
       total: wsList.length,
       sse_total: sseTotal,
+      queued: queueResult.queued,
+      queue_size: queueResult.queue_size,
     });
   }
 
@@ -335,7 +343,13 @@ export class McpSession implements DurableObject {
       // 503 を返すと Anthropic 側 connector が "Authorization failed" を誤表示する
       // ため、最低限の MCP JSON-RPC (initialize / tools/list / tools/call) は本 DO で
       // 自前応答し、connector を「接続済み・stub tool 1 個」状態にする。
-      return handleInlineMcp(req);
+      //
+      // ADR-006: stub server に subscribe_issue_activity / unsubscribe_issue_activity
+      // / list_watched_issues / get_pending_events 4 tool を追加。state は DO
+      // storage に持つ (`subs` set + `events` FIFO)。CCoW のように binary を
+      // 動かせない環境でも、`POST /mcp` 経由でこの 4 tool だけで「subscribe →
+      // webhook 受信 → polling drain」が完結する。
+      return this.handleInlineMcp(req);
     }
     const ws = active[0] as WebSocket;
 
@@ -488,6 +502,210 @@ export class McpSession implements DurableObject {
     }
     this.pending.clear();
   }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // ADR-006: server-side subscription / event queue tools (`POST /mcp` only)
+  //
+  // CCoW のように binary を起動できない環境向け。state は DO storage:
+  //   key "subs"   → string[]   ("owner/repo#N")
+  //   key "events" → Array<EventEnvelope> (FIFO、上限 MAX_QUEUED_EVENTS)
+  //
+  // 4 tool:
+  //   - subscribe_issue_activity(owner, repo, issue_number)
+  //   - unsubscribe_issue_activity(...)
+  //   - list_watched_issues()
+  //   - get_pending_events()    — ドレイン (read + clear)
+  //
+  // webhook 受信時に `handlePushEvent` がここの `events` array に append する
+  // (subscription filter 通過時のみ)。CCoW Claude が `get_pending_events` を
+  // POST /mcp 経由で呼んでドレインする。`--channels` 不要。
+  // ────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Inline stub MCP server (ADR-003 + ADR-006)。
+   *
+   * WS relay 未接続時は本 DO 自身が最小 MCP server として応答する。
+   * CCoW で binary を spawn できない constraint があるため、stub に
+   * subscribe / unsubscribe / list / get_pending_events を 4 つ追加して、
+   * webhook → DO storage → polling drain の経路を `POST /mcp` だけで完結
+   * させる。
+   */
+  private async handleInlineMcp(req: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonRpcResponse(null, {
+        error: { code: -32700, message: "Parse error" },
+      });
+    }
+    if (typeof body !== "object" || body === null) {
+      return jsonRpcResponse(null, {
+        error: { code: -32600, message: "Invalid Request" },
+      });
+    }
+    const msg = body as JsonRpcMessage;
+    const method = typeof msg.method === "string" ? msg.method : "";
+    const id = msg.id;
+
+    // JSON-RPC notification (id 不在) — Streamable HTTP §2.1.1: 202 Accepted, no body
+    if (id === undefined || id === null) {
+      return new Response(null, { status: 202 });
+    }
+
+    switch (method) {
+      case "initialize": {
+        const params = (msg.params ?? {}) as { protocolVersion?: unknown };
+        const proto =
+          typeof params.protocolVersion === "string"
+            ? params.protocolVersion
+            : STUB_PROTOCOL_VERSION;
+        return jsonRpcResponse(id, {
+          result: {
+            protocolVersion: proto,
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: STUB_SERVER_NAME, version: STUB_SERVER_VERSION },
+            instructions: STUB_SERVER_INSTRUCTIONS,
+          },
+        });
+      }
+      case "tools/list":
+        return jsonRpcResponse(id, {
+          result: { tools: STUB_TOOLS },
+        });
+      case "tools/call": {
+        const params = (msg.params ?? {}) as { name?: unknown; arguments?: unknown };
+        const name = typeof params.name === "string" ? params.name : "";
+        const args = (params.arguments ?? {}) as Record<string, unknown>;
+        switch (name) {
+          case "cc_relay_ping":
+            return jsonRpcResponse(id, {
+              result: { content: [{ type: "text", text: "pong" }], isError: false },
+            });
+          case "subscribe_issue_activity":
+            return await this.toolSubscribe(id, args);
+          case "unsubscribe_issue_activity":
+            return await this.toolUnsubscribe(id, args);
+          case "list_watched_issues":
+            return await this.toolListWatched(id);
+          case "get_pending_events":
+            return await this.toolGetPendingEvents(id);
+          default:
+            return jsonRpcResponse(id, {
+              error: { code: -32602, message: `Unknown tool: ${name}` },
+            });
+        }
+      }
+      case "ping":
+        return jsonRpcResponse(id, { result: {} });
+      case "prompts/list":
+        return jsonRpcResponse(id, { result: { prompts: [] } });
+      case "resources/list":
+        return jsonRpcResponse(id, { result: { resources: [] } });
+      default:
+        return jsonRpcResponse(id, {
+          error: { code: -32601, message: `Method not found: ${method}` },
+        });
+    }
+  }
+
+  /** ADR-006: subscribe_issue_activity tool — DO storage の `subs` set に追加。 */
+  private async toolSubscribe(
+    id: unknown,
+    args: Record<string, unknown>,
+  ): Promise<Response> {
+    const key = parseIssueKey(args);
+    if (typeof key !== "string") {
+      return jsonRpcResponse(id, toolError(key.error));
+    }
+    const subs = await this.loadSubs();
+    let added = false;
+    if (!subs.includes(key)) {
+      subs.push(key);
+      subs.sort();
+      await this.state.storage.put("subs", subs);
+      added = true;
+    }
+    return jsonRpcResponse(
+      id,
+      toolOk(added ? `subscribed: ${key}` : `already subscribed: ${key}`),
+    );
+  }
+
+  /** ADR-006: unsubscribe_issue_activity tool — DO storage の `subs` set から削除。 */
+  private async toolUnsubscribe(
+    id: unknown,
+    args: Record<string, unknown>,
+  ): Promise<Response> {
+    const key = parseIssueKey(args);
+    if (typeof key !== "string") {
+      return jsonRpcResponse(id, toolError(key.error));
+    }
+    const subs = await this.loadSubs();
+    const idx = subs.indexOf(key);
+    if (idx < 0) {
+      return jsonRpcResponse(id, toolOk(`was not subscribed: ${key}`));
+    }
+    subs.splice(idx, 1);
+    await this.state.storage.put("subs", subs);
+    return jsonRpcResponse(id, toolOk(`unsubscribed: ${key}`));
+  }
+
+  /** ADR-006: list_watched_issues tool — 現在 subscribe 中の set を返す。 */
+  private async toolListWatched(id: unknown): Promise<Response> {
+    const subs = await this.loadSubs();
+    return jsonRpcResponse(id, toolOk(JSON.stringify(subs)));
+  }
+
+  /** ADR-006: get_pending_events tool — `events` queue を drain して返す。
+   *  返した event は storage から削除する (at-most-once、operator は idempotent
+   *  処理を前提)。サイズが大きい場合は将来 cursor-based に拡張する。 */
+  private async toolGetPendingEvents(id: unknown): Promise<Response> {
+    const events = await this.loadEvents();
+    if (events.length > 0) {
+      await this.state.storage.put("events", []);
+    }
+    return jsonRpcResponse(id, toolOk(JSON.stringify(events)));
+  }
+
+  /** ADR-006: webhook handler から呼ばれる。subscription filter を通った
+   *  event だけ `events` queue に append。queue は FIFO、上限を超えたら oldest
+   *  を捨てる (drop-oldest policy)。 */
+  async queueEventIfSubscribed(eventBody: Record<string, unknown>): Promise<{
+    queued: boolean;
+    matched: string | null;
+    queue_size: number;
+  }> {
+    const owner = typeof eventBody.owner === "string" ? eventBody.owner : null;
+    const repo = typeof eventBody.repo === "string" ? eventBody.repo : null;
+    const num =
+      typeof eventBody.issue_number === "number" ? eventBody.issue_number : null;
+    if (!owner || !repo || num === null) {
+      return { queued: false, matched: null, queue_size: 0 };
+    }
+    const key = `${owner}/${repo}#${num}`;
+    const subs = await this.loadSubs();
+    if (!subs.includes(key)) {
+      return { queued: false, matched: null, queue_size: 0 };
+    }
+    const events = await this.loadEvents();
+    events.push(eventBody);
+    while (events.length > MAX_QUEUED_EVENTS) {
+      events.shift();
+    }
+    await this.state.storage.put("events", events);
+    return { queued: true, matched: key, queue_size: events.length };
+  }
+
+  private async loadSubs(): Promise<string[]> {
+    const v = await this.state.storage.get<string[]>("subs");
+    return Array.isArray(v) ? v.slice() : [];
+  }
+
+  private async loadEvents(): Promise<Record<string, unknown>[]> {
+    const v = await this.state.storage.get<Record<string, unknown>[]>("events");
+    return Array.isArray(v) ? v.slice() : [];
+  }
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -522,6 +740,97 @@ const STUB_PROTOCOL_VERSION = "2025-06-18";
 const STUB_SERVER_NAME = "cc-relay-stub";
 const STUB_SERVER_VERSION = "0.1.0";
 
+/** ADR-006: server-side event queue 上限。webhook 大量受信時の DO storage
+ *  破裂を防ぐ。drop-oldest policy で古い event から捨てる。値は経験則
+ *  (1 issue で 1 日あたり ~100 events を見込み、1 週間分くらい)。 */
+const MAX_QUEUED_EVENTS = 500;
+
+/** ADR-006: initialize response に乗せる instructions。CCoW Claude が
+ *  POST /mcp 経由で見つけるので、subscribe → wait → drain の運用を伝える。 */
+const STUB_SERVER_INSTRUCTIONS =
+  "Server-side GitHub issue activity broker. Call `subscribe_issue_activity` " +
+  "to register interest in an issue, then `get_pending_events` to drain " +
+  "webhook events received since the last call. The server filters by " +
+  "subscription set and stores events in Durable Object storage; no client " +
+  "binary or local file is needed.";
+
+/** ADR-006: stub mode で露出する tools (CCoW 経路)。 */
+const STUB_TOOLS = [
+  {
+    name: "cc_relay_ping",
+    description:
+      "Health-check tool exposed by the cc-relay stub MCP server when no live relay binary is connected. Returns 'pong'.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "subscribe_issue_activity",
+    description:
+      "Subscribe to GitHub issue activity (comments, labels, state changes). " +
+      "Persists the (owner, repo, issue_number) tuple to server-side Durable " +
+      "Object storage. Events arriving via webhook are filtered against the " +
+      "subscription set and queued for `get_pending_events`. Idempotent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        issue_number: { type: "integer", minimum: 1 },
+      },
+      required: ["owner", "repo", "issue_number"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "unsubscribe_issue_activity",
+    description:
+      "Unsubscribe from GitHub issue activity. Removes the (owner, repo, " +
+      "issue_number) tuple from server-side subscription set. Future events " +
+      "for this issue are dropped at the filter step. Idempotent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        issue_number: { type: "integer", minimum: 1 },
+      },
+      required: ["owner", "repo", "issue_number"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "list_watched_issues",
+    description:
+      "Return the list of (owner, repo, issue_number) tuples currently " +
+      "subscribed via subscribe_issue_activity. JSON array of strings of the " +
+      "form 'owner/repo#N'.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_pending_events",
+    description:
+      "Drain webhook events queued since the last call. Returns a JSON " +
+      "array of event objects (each with event_type, delivery_id, owner, " +
+      "repo, issue_number, received_at, payload). The queue is cleared on " +
+      "drain, so subsequent calls return only newly arrived events.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+];
+
 interface JsonRpcMessage {
   jsonrpc?: unknown;
   id?: unknown;
@@ -529,87 +838,33 @@ interface JsonRpcMessage {
   params?: unknown;
 }
 
-async function handleInlineMcp(req: Request): Promise<Response> {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return jsonRpcResponse(null, {
-      error: { code: -32700, message: "Parse error" },
-    });
+/** ADR-006: tools/call の引数から `IssueKey` 文字列を抽出。失敗時は
+ *  `{error}` を返す (call site が `toolError` で wrap する)。 */
+function parseIssueKey(
+  args: Record<string, unknown>,
+): string | { error: string } {
+  const owner = typeof args.owner === "string" ? args.owner : "";
+  const repo = typeof args.repo === "string" ? args.repo : "";
+  const num =
+    typeof args.issue_number === "number" && Number.isInteger(args.issue_number)
+      ? args.issue_number
+      : null;
+  if (!owner) return { error: "missing or non-string 'owner'" };
+  if (!repo) return { error: "missing or non-string 'repo'" };
+  if (num === null || num <= 0) {
+    return { error: "missing or non-positive-integer 'issue_number'" };
   }
-  if (typeof body !== "object" || body === null) {
-    return jsonRpcResponse(null, {
-      error: { code: -32600, message: "Invalid Request" },
-    });
-  }
-  const msg = body as JsonRpcMessage;
-  const method = typeof msg.method === "string" ? msg.method : "";
-  const id = msg.id;
+  return `${owner}/${repo}#${num}`;
+}
 
-  // JSON-RPC notification (id 不在) — Streamable HTTP §2.1.1: 202 Accepted, no body
-  if (id === undefined || id === null) {
-    return new Response(null, { status: 202 });
-  }
+/** MCP tool 成功レスポンス wrapper (text content 1 個)。 */
+function toolOk(text: string): { result: unknown } {
+  return { result: { content: [{ type: "text", text }], isError: false } };
+}
 
-  switch (method) {
-    case "initialize": {
-      const params = (msg.params ?? {}) as { protocolVersion?: unknown };
-      const proto =
-        typeof params.protocolVersion === "string"
-          ? params.protocolVersion
-          : STUB_PROTOCOL_VERSION;
-      return jsonRpcResponse(id, {
-        result: {
-          protocolVersion: proto,
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: STUB_SERVER_NAME, version: STUB_SERVER_VERSION },
-        },
-      });
-    }
-    case "tools/list":
-      return jsonRpcResponse(id, {
-        result: {
-          tools: [
-            {
-              name: "cc_relay_ping",
-              description:
-                "Health-check tool exposed by the cc-relay stub MCP server when no live relay binary is connected. Returns 'pong'.",
-              inputSchema: {
-                type: "object",
-                properties: {},
-                required: [],
-                additionalProperties: false,
-              },
-            },
-          ],
-        },
-      });
-    case "tools/call": {
-      const params = (msg.params ?? {}) as { name?: unknown };
-      if (params.name === "cc_relay_ping") {
-        return jsonRpcResponse(id, {
-          result: {
-            content: [{ type: "text", text: "pong" }],
-            isError: false,
-          },
-        });
-      }
-      return jsonRpcResponse(id, {
-        error: { code: -32602, message: `Unknown tool: ${String(params.name)}` },
-      });
-    }
-    case "ping":
-      return jsonRpcResponse(id, { result: {} });
-    case "prompts/list":
-      return jsonRpcResponse(id, { result: { prompts: [] } });
-    case "resources/list":
-      return jsonRpcResponse(id, { result: { resources: [] } });
-    default:
-      return jsonRpcResponse(id, {
-        error: { code: -32601, message: `Method not found: ${method}` },
-      });
-  }
+/** MCP tool エラーレスポンス wrapper (text content + isError=true)。 */
+function toolError(text: string): { result: unknown } {
+  return { result: { content: [{ type: "text", text }], isError: true } };
 }
 
 function jsonRpcResponse(
