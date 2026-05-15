@@ -103,18 +103,27 @@ export async function handleMcpAuthorize(
 
   // ── RFC 8707 Resource Indicator (MCP Authorization spec 2025-06-18 で必須化) ──
   // browser MCP client (Anthropic Claude.ai 等) は canonical resource URI を送る。
-  // 値があるなら本 AS が発行する resource (= mcpRelayOrigin) と完全一致を要求し、
-  // 不一致は RFC 8707 §2 `invalid_target` で redirect エラー返却 (confused-deputy 防止)。
+  // 値の URL.origin が本 AS の MCP relay origin と一致することを要求し、不一致は
+  // RFC 8707 §2 `invalid_target` で redirect エラー返却 (confused-deputy 防止)。
+  // path / trailing slash 等は client が指定したまま echo し token aud にする
+  // (Anthropic は自分が送った resource と JWT aud の完全一致を client 側で
+  // 検証する。例: client が `https://mcp.example/mcp` を送ったら aud も同値)。
   // 未送信 (rust binary / legacy client) は許容し、token 発行時 aud は legacy 値で
   // 焼く (mcp-token.ts 参照)。
   const resourceRaw = params.get("resource");
   let resource: string | undefined;
   if (resourceRaw !== null) {
-    if (resourceRaw !== mcpRelayOrigin(env)) {
+    let parsedOrigin: string | null = null;
+    try {
+      parsedOrigin = new URL(resourceRaw).origin;
+    } catch {
+      parsedOrigin = null;
+    }
+    if (parsedOrigin === null || parsedOrigin !== mcpRelayOrigin(env)) {
       return redirectErrorResponse(
         redirect_uri,
         "invalid_target",
-        "resource must equal this MCP server's canonical URI",
+        "resource origin must equal this MCP server's canonical origin",
         state || null,
       );
     }

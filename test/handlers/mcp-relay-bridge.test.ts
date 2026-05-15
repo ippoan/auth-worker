@@ -255,3 +255,92 @@ describe("handleMcpRelayBridge — user-less mode (ADR-003)", () => {
     expect(res.status).toBe(401);
   });
 });
+
+// RFC 8707 (MCP Authorization spec 2025-06-18): Authorization Code grant 用の
+// JWT は aud = client が `/authorize` で送った resource URI (path 込み)。bridge
+// 側は legacy aud と「relay origin と origin 一致する URI」の両方を受理する。
+describe("handleMcpRelayBridge — RFC 8707 audience (URL origin match)", () => {
+  it("accepts JWT whose aud is relay origin + path (e.g. /mcp)", async () => {
+    const { env, idFromNameCalls } = envWithDO(async () => new Response("ok", { status: 200 }));
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "https://mcp.test.example/mcp",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({
+        url: "https://mcp.test.example/mcp",
+        auth: `Bearer ${jwt}`,
+      }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(200);
+    expect(idFromNameCalls).toEqual(["alice"]);
+  });
+
+  it("accepts JWT whose aud is relay origin only", async () => {
+    const { env } = envWithDO(async () => new Response("ok", { status: 200 }));
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "https://mcp.test.example",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/mcp", auth: `Bearer ${jwt}` }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects JWT whose aud is a foreign origin (401)", async () => {
+    const { env } = envWithDO();
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "https://attacker.example/mcp",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/mcp", auth: `Bearer ${jwt}` }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects JWT whose aud is not a valid URL and is not legacy (401)", async () => {
+    const { env } = envWithDO();
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "not a url",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/mcp", auth: `Bearer ${jwt}` }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(401);
+  });
+});
