@@ -28,6 +28,12 @@ class_name = "LineworksWebhookDO"
 name = "MCP_SESSION_DO"
 class_name = "McpSession"
 
+# ADR-004 (cc-relay): GitHub issue 単位の WebSocket room
+# (key: `issue:<owner>/<repo>#<N>`)。subscription = WS そのもの、storage 不使用。
+[[durable_objects.bindings]]
+name = "ISSUE_ROOM_DO"
+class_name = "IssueRoomDO"
+
 [[migrations]]
 tag = "v1-lineworks-webhook"
 new_sqlite_classes = ["LineworksWebhookDO"]
@@ -35,6 +41,10 @@ new_sqlite_classes = ["LineworksWebhookDO"]
 [[migrations]]
 tag = "v2-mcp-session"
 new_sqlite_classes = ["McpSession"]
+
+[[migrations]]
+tag = "v3-issue-room"
+new_sqlite_classes = ["IssueRoomDO"]
 
 [observability]
 enabled = true
@@ -68,6 +78,8 @@ custom_domain = true
 # MCP_JWT_SECRET             (HS256 secret for MCP access tokens (JWT); 既存 JWT_SECRET と別管理)
 # INTERNAL_SHARED_SECRET     (Rust binary github-mcp-server-rs が /mcp/introspect 叩く際の Bearer)
 # GITHUB_MCP_USER_ALLOWLIST  (JSON array of github logins, e.g. ["yhonda-ohishi"]; fail-closed)
+# GITHUB_WEBHOOK_SECRET      (ADR-004: HMAC-SHA256 shared secret for `POST /webhooks/github`.
+#                             public issue 前提なので authn ではなく spam 対策、全 repo 共通値)
 #
 # Allowlist (managed via `wrangler kv key put --remote --namespace-id=f13ecae4b69043819c09f606abb84797 <key>`):
 #   origins:prod    - production frontends
@@ -112,6 +124,10 @@ class_name = "LineworksWebhookDO"
 name = "MCP_SESSION_DO"
 class_name = "McpSession"
 
+[[env.staging.durable_objects.bindings]]
+name = "ISSUE_ROOM_DO"
+class_name = "IssueRoomDO"
+
 [[env.staging.migrations]]
 tag = "v1-lineworks-webhook"
 new_sqlite_classes = ["LineworksWebhookDO"]
@@ -119,3 +135,7 @@ new_sqlite_classes = ["LineworksWebhookDO"]
 [[env.staging.migrations]]
 tag = "v2-mcp-session"
 new_sqlite_classes = ["McpSession"]
+
+[[env.staging.migrations]]
+tag = "v3-issue-room"
+new_sqlite_classes = ["IssueRoomDO"]
