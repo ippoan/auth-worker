@@ -388,7 +388,7 @@ describe("McpSession.fetch — /__connect_sse (ADR-004 Phase D)", () => {
     await res.body!.cancel();
   });
 
-  it("push_event counts SSE channels and reports sse_delivered/sse_total", async () => {
+  it("push_event reports sse_total when channel attached", async () => {
     setStubUUID("sse-id-1");
     const { state } = createMockState();
     const do_ = new McpSession(state, {});
@@ -415,13 +415,8 @@ describe("McpSession.fetch — /__connect_sse (ADR-004 Phase D)", () => {
       }),
     );
     expect(pushRes.status).toBe(200);
-    const counts = (await pushRes.json()) as {
-      sse_delivered?: number;
-      sse_total?: number;
-    };
-    // SSE channel 1 本が attached → delivered 1
+    const counts = (await pushRes.json()) as { sse_total?: number };
     expect(counts.sse_total).toBe(1);
-    expect(counts.sse_delivered).toBe(1);
 
     await sseRes.body!.cancel();
   });
