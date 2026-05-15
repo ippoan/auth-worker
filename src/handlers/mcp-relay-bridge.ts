@@ -70,10 +70,20 @@ export async function handleMcpRelayBridge(
   if (!m || !m[1]) {
     return unauthorizedResponse(env, "Unauthorized");
   }
-  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, [
-    MCP_AUD_LEGACY,
-    mcpRelayOrigin(env),
-  ]);
+  // legacy device-flow JWT は aud=`"github-mcp-server-rs"` (固定文字列)。
+  // Authorization Code + RFC 8707 JWT は aud = client が `/authorize` で送った
+  // resource URI そのまま (例 `https://mcp-staging.ippoan.org/mcp`)。後者は
+  // path / trailing slash が可変なので、origin が relay の canonical origin と
+  // 一致する URL なら受理する (詳細は mcp-authorize.ts のコメント参照)。
+  const relayOrigin = mcpRelayOrigin(env);
+  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, (aud) => {
+    if (aud === MCP_AUD_LEGACY) return true;
+    try {
+      return new URL(aud).origin === relayOrigin;
+    } catch {
+      return false;
+    }
+  });
   if (!payload) {
     return unauthorizedResponse(env, "Invalid token");
   }

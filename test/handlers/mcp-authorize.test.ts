@@ -239,24 +239,41 @@ describe("handleMcpAuthorize — error redirects with empty client state (?? + |
 // `mcp-staging.example` host で `AUTH_WORKER_ORIGIN=https://auth.test.example`
 // → `mcpRelayOrigin(env)` = `https://mcp.test.example` (mcp-origins.ts の derive 規約)
 describe("handleMcpAuthorize — RFC 8707 resource parameter", () => {
-  const expectedResource = "https://mcp.test.example";
+  // mcpRelayOrigin(env) は `auth-` → `mcp-` の置換で導出。test env では
+  // `auth.test.example` → `mcp.test.example`。
+  const RELAY_ORIGIN = "https://mcp.test.example";
 
-  it("stores resource on AuthRequestRecord when client sends matching canonical URI", async () => {
+  it("stores resource on AuthRequestRecord when origin matches (path included)", async () => {
     const { env, kv, client_id } = await envWithRegisteredClient();
+    // Anthropic Claude.ai は MCP server URL のフルパス (例 `/mcp`) を送る。
+    const withPath = `${RELAY_ORIGIN}/mcp`;
     const res = await handleMcpAuthorize(
-      authorizeReq({ ...validParams(client_id), resource: expectedResource }),
+      authorizeReq({ ...validParams(client_id), resource: withPath }),
       env,
     );
     expect(res.status).toBe(302);
     const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
     const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
-    expect(stored.resource).toBe(expectedResource);
+    // 送信値をそのまま echo (Anthropic 側 aud 検証用)。
+    expect(stored.resource).toBe(withPath);
   });
 
-  it("redirects with invalid_target when resource does not equal MCP server origin", async () => {
+  it("accepts origin-only resource (no path)", async () => {
+    const { env, kv, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), resource: RELAY_ORIGIN }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
+    expect(stored.resource).toBe(RELAY_ORIGIN);
+  });
+
+  it("redirects with invalid_target when resource origin does not match", async () => {
     const { env, client_id } = await envWithRegisteredClient();
     const res = await handleMcpAuthorize(
-      authorizeReq({ ...validParams(client_id), resource: "https://attacker.example" }),
+      authorizeReq({ ...validParams(client_id), resource: "https://attacker.example/mcp" }),
       env,
     );
     expect(res.status).toBe(302);
@@ -266,12 +283,23 @@ describe("handleMcpAuthorize — RFC 8707 resource parameter", () => {
     expect(loc.searchParams.get("state")).toBe("csrf-1");
   });
 
+  it("redirects with invalid_target when resource is not a valid URL", async () => {
+    const { env, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), resource: "not a url" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("error")).toBe("invalid_target");
+  });
+
   it("invalid_target redirect drops state when client_state is empty", async () => {
     const { env, client_id } = await envWithRegisteredClient();
     const res = await handleMcpAuthorize(
       authorizeReq({
         ...validParams(client_id),
-        resource: "https://attacker.example",
+        resource: "https://attacker.example/mcp",
         state: "",
       }),
       env,

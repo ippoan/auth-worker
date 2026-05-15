@@ -103,6 +103,54 @@ describe("mcp-jwt", () => {
     expect(await verifyMcpJwt(`${header}.${garbage}.${sigB64}`, SECRET, AUD)).toBeNull();
   });
 
+  it("verify accepts array of expectedAud — any match", async () => {
+    const token = await signMcpJwt(
+      { sub: "github:bob", github_login: "bob", scope: "", aud: "https://mcp.example/mcp" },
+      SECRET,
+      3600,
+    );
+    const payload = await verifyMcpJwt(token, SECRET, [
+      AUD,
+      "https://mcp.example/mcp",
+    ]);
+    expect(payload).not.toBeNull();
+    expect(payload!.aud).toBe("https://mcp.example/mcp");
+  });
+
+  it("verify with array of expectedAud — none match → null", async () => {
+    const token = await signMcpJwt(
+      { sub: "github:bob", github_login: "bob", scope: "", aud: "x" },
+      SECRET,
+      3600,
+    );
+    expect(await verifyMcpJwt(token, SECRET, [AUD, "y"])).toBeNull();
+  });
+
+  it("verify accepts predicate for aud (RFC 8707 URL origin match)", async () => {
+    const token = await signMcpJwt(
+      { sub: "github:bob", github_login: "bob", scope: "", aud: "https://mcp.example/mcp" },
+      SECRET,
+      3600,
+    );
+    const payload = await verifyMcpJwt(token, SECRET, (aud) => {
+      try {
+        return new URL(aud).origin === "https://mcp.example";
+      } catch {
+        return false;
+      }
+    });
+    expect(payload).not.toBeNull();
+  });
+
+  it("verify with predicate returning false → null", async () => {
+    const token = await signMcpJwt(
+      { sub: "github:bob", github_login: "bob", scope: "", aud: "https://mcp.example/mcp" },
+      SECRET,
+      3600,
+    );
+    expect(await verifyMcpJwt(token, SECRET, () => false)).toBeNull();
+  });
+
   it("verify returns null when exp is not a number", async () => {
     const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }))
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
