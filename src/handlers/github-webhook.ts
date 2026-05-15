@@ -1,5 +1,5 @@
 /**
- * GitHub webhook receiver — ADR-004 Phase B.
+ * GitHub webhook receiver — ADR-004 (multiplex 修正版)。
  *
  * `POST /webhooks/github` (host: `mcp.ippoan.org` / `mcp-staging.ippoan.org`)
  *
@@ -7,19 +7,23 @@
  * 2. `X-GitHub-Event` が `{issues, issue_comment}` 以外なら 200 で ignore。
  * 3. payload から `(owner, repo, issue_number, event_type, delivery_id)`
  *    を抽出。
- * 4. `idFromName(`issue:${owner}/${repo}#${number}`)` で `IssueRoomDO`
- *    stub を取得、`/__push_event` に raw event JSON を POST。
+ * 4. `idFromName(payload.repository.owner.login)` で **既存** `McpSession`
+ *    DO (per `github_login`) を取得、`/__push_event` に raw event JSON を
+ *    POST。McpSession DO 内で attached `client` WS 全部に `{kind:"event"}`
+ *    frame として broadcast される。binary 側 (`agent-mcp/src/relay.rs`)
+ *    が `~/.cc-relay/watched-issues.txt` で filter する。
  * 5. 200 を返す (subscriber 0 でも 200 で構わない、GitHub の retry を防ぐ)。
  *
  * 設計判断:
+ * - MCP は通常 1 endpoint。専用 `IssueRoomDO` を作らず、既存 `McpSession`
+ *   DO を multiplex する形で event を流す。binary に 2 本目の WS を張らせる
+ *   必要が無くなり、auth 経路も 1 つに揃う。
  * - public issue 前提なので signature 検証は **spam 対策** であって
  *   authentication ではない。secret は 1 個共有 (`GITHUB_WEBHOOK_SECRET`)、
  *   全 repo の webhook 設定で同じ値を使う。
- * - DO への push は fire-and-forget でも良いが、`waitUntil` 経由ではなく
- *   素直に await する。fan-out 不要 (single target DO) なので latency 影響
- *   は無視できる。
- * - body は consumable なので `text()` で 1 度だけ読み、検証に使ったあと
- *   そのまま DO に渡す。
+ * - routing key は `repository.owner.login`。個人 repo (`ippoan/cc-relay`)
+ *   なら owner == github_login で自然に解決。organization repo 対応は
+ *   後追い (KV / D1 で github_login mapping を導入)。
  *
  * cross-reference: `cc-relay/ARCHITECTURE.md` ADR-004。
  */
@@ -58,9 +62,9 @@ export async function handleGithubWebhook(
     console.error("github_webhook_secret_not_configured");
     return jsonResp(503, { error: "webhook_not_configured" });
   }
-  if (!env.ISSUE_ROOM_DO) {
-    console.error("issue_room_do_binding_missing");
-    return jsonResp(503, { error: "issue_room_not_configured" });
+  if (!env.MCP_SESSION_DO) {
+    console.error("mcp_session_do_binding_missing");
+    return jsonResp(503, { error: "mcp_session_not_configured" });
   }
 
   const sig = request.headers.get(SIG_HEADER);
@@ -116,10 +120,11 @@ export async function handleGithubWebhook(
 
   const action = payload.action ?? "unknown";
   const fullEventType = `${eventType}.${action}`;
-  const doKey = `issue:${owner}/${repo}#${issueNumber}`;
+  // multiplex on existing McpSession DO (per github_login)。
+  // 個人 repo は `owner.login == github_login`。
+  const doKey = owner;
 
   const eventJson = JSON.stringify({
-    v: 1,
     event_type: fullEventType,
     delivery_id: delivery,
     owner,
@@ -129,7 +134,7 @@ export async function handleGithubWebhook(
     payload,
   });
 
-  const stub = env.ISSUE_ROOM_DO.get(env.ISSUE_ROOM_DO.idFromName(doKey));
+  const stub = env.MCP_SESSION_DO.get(env.MCP_SESSION_DO.idFromName(doKey));
   try {
     const doResp = await stub.fetch(
       new Request("https://do.invalid/__push_event", {
@@ -141,7 +146,7 @@ export async function handleGithubWebhook(
     if (!doResp.ok) {
       console.warn(
         JSON.stringify({
-          event: "issue_room_push_failed",
+          event: "mcp_session_push_failed",
           status: doResp.status,
           doKey,
           delivery,
@@ -154,7 +159,7 @@ export async function handleGithubWebhook(
       };
       console.log(
         JSON.stringify({
-          event: "issue_room_pushed",
+          event: "mcp_session_pushed",
           doKey,
           delivery,
           fullEventType,
@@ -166,7 +171,7 @@ export async function handleGithubWebhook(
   } catch (e) {
     console.error(
       JSON.stringify({
-        event: "issue_room_push_error",
+        event: "mcp_session_push_error",
         error: String(e),
         doKey,
         delivery,

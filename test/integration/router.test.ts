@@ -166,15 +166,10 @@ vi.mock("../../src/handlers/mcp-relay-bridge", () => ({
     new Response(`relay-bridge:${user ?? "(jwt)"}`),
   ),
 }));
-// ADR-004: GitHub webhook + per-issue WebSocket room handlers.
+// ADR-004 (multiplex): GitHub webhook receiver。専用 IssueRoom route は
+// 廃止し、既存 McpSession DO に push する形に変更されたので handler は 1 つ。
 vi.mock("../../src/handlers/github-webhook", () => ({
   handleGithubWebhook: vi.fn(() => new Response("github-webhook")),
-}));
-vi.mock("../../src/handlers/issue-room-connect", () => ({
-  handleIssueRoomConnect: vi.fn(
-    (_req, _env, owner: string, repo: string, num: string) =>
-      new Response(`issue-room-connect:${owner}/${repo}#${num}`),
-  ),
 }));
 // Stub the DurableObject exports so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
@@ -182,9 +177,6 @@ vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
 }));
 vi.mock("../../src/durable_objects/mcp-session-do", () => ({
   McpSession: class {},
-}));
-vi.mock("../../src/durable_objects/issue-room-do", () => ({
-  IssueRoomDO: class {},
 }));
 
 import worker from "../../src/index";
@@ -388,7 +380,7 @@ describe("Router (index.ts)", () => {
     expect(res.status).toBe(404);
   });
 
-  // ADR-004 (cc-relay): GitHub issue activity routes
+  // ADR-004 (multiplex): GitHub webhook route
   it("POST mcp.* /webhooks/github → github-webhook handler", async () => {
     const req = new Request("https://mcp.ippoan.org/webhooks/github", {
       method: "POST",
@@ -399,31 +391,6 @@ describe("Router (index.ts)", () => {
 
   it("GET mcp.* /webhooks/github → 404 (wrong method)", async () => {
     const req = new Request("https://mcp.ippoan.org/webhooks/github");
-    const res = await worker.fetch(req, env);
-    expect(res.status).toBe(404);
-  });
-
-  it("GET mcp.* /issues/:owner/:repo/:N/connect → issue-room-connect handler", async () => {
-    const req = new Request(
-      "https://mcp.ippoan.org/issues/ippoan/cc-relay/42/connect",
-    );
-    const res = await worker.fetch(req, env);
-    expect(await res.text()).toBe("issue-room-connect:ippoan/cc-relay#42");
-  });
-
-  it("GET mcp-staging.* /issues/:owner/:repo/:N/connect → issue-room-connect handler", async () => {
-    const req = new Request(
-      "https://mcp-staging.ippoan.org/issues/ippoan/auth-worker/137/connect",
-    );
-    const res = await worker.fetch(req, env);
-    expect(await res.text()).toBe("issue-room-connect:ippoan/auth-worker#137");
-  });
-
-  it("POST mcp.* /issues/.../connect → 404 (wrong method)", async () => {
-    const req = new Request(
-      "https://mcp.ippoan.org/issues/ippoan/cc-relay/42/connect",
-      { method: "POST" },
-    );
     const res = await worker.fetch(req, env);
     expect(res.status).toBe(404);
   });

@@ -21,7 +21,7 @@ async function sign(secret: string, body: BufferSource): Promise<string> {
   return `sha256=${hex}`;
 }
 
-function mockIssueRoomDO(stubFetch: (req: Request) => Promise<Response>): {
+function mockMcpSessionDO(stubFetch: (req: Request) => Promise<Response>): {
   ns: DurableObjectNamespace;
   idFromNameCalls: string[];
   fetchCalls: Request[];
@@ -45,7 +45,7 @@ function mockIssueRoomDO(stubFetch: (req: Request) => Promise<Response>): {
 }
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
-  const { ns } = mockIssueRoomDO(
+  const { ns } = mockMcpSessionDO(
     async () =>
       new Response(JSON.stringify({ delivered: 0, dead: 0, total: 0 }), {
         status: 200,
@@ -64,7 +64,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     LINEWORKS_WEBHOOK_DO: {} as unknown as DurableObjectNamespace,
     AUTH_CONFIG: {} as unknown as KVNamespace,
     GITHUB_WEBHOOK_SECRET: "shhh",
-    ISSUE_ROOM_DO: ns,
+    MCP_SESSION_DO: ns,
     ...overrides,
   } as Env;
 }
@@ -165,8 +165,8 @@ describe("handleGithubWebhook", () => {
           status: 200,
         }),
     );
-    const { ns, idFromNameCalls, fetchCalls } = mockIssueRoomDO(fetchSpy);
-    const env = makeEnv({ ISSUE_ROOM_DO: ns });
+    const { ns, idFromNameCalls, fetchCalls } = mockMcpSessionDO(fetchSpy);
+    const env = makeEnv({ MCP_SESSION_DO: ns });
 
     const body = JSON.stringify(ISSUE_PAYLOAD);
     const sig = await sign(env.GITHUB_WEBHOOK_SECRET as string, new TextEncoder().encode(body));
@@ -182,21 +182,20 @@ describe("handleGithubWebhook", () => {
     const resp = await handleGithubWebhook(req, env);
     expect(resp.status).toBe(200);
 
-    expect(idFromNameCalls).toEqual(["issue:ippoan/cc-relay#42"]);
+    // multiplex: routing key = repository.owner.login
+    expect(idFromNameCalls).toEqual(["ippoan"]);
     expect(fetchCalls).toHaveLength(1);
 
     const forwarded = fetchCalls[0] as Request;
     expect(new URL(forwarded.url).pathname).toBe("/__push_event");
 
     const forwardedJson = (await forwarded.json()) as {
-      v?: number;
       event_type?: string;
       delivery_id?: string;
       owner?: string;
       repo?: string;
       issue_number?: number;
     };
-    expect(forwardedJson.v).toBe(1);
     expect(forwardedJson.event_type).toBe("issue_comment.created");
     expect(forwardedJson.delivery_id).toBe("test-delivery-uuid");
     expect(forwardedJson.owner).toBe("ippoan");
