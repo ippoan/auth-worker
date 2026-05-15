@@ -121,8 +121,14 @@ export async function handleGithubWebhook(
   const action = payload.action ?? "unknown";
   const fullEventType = `${eventType}.${action}`;
   // multiplex on existing McpSession DO (per github_login)。
-  // 個人 repo は `owner.login == github_login`。
-  const doKey = owner;
+  // 個人 repo は `owner.login == github_login` で自然に解決。
+  // organization repo は `AUTH_CONFIG` KV `gh_org:<owner>` で
+  // routing 先 github_login を lookup する。mapping 不在なら owner を
+  // そのまま使う (= 既存挙動)。set 例:
+  //   wrangler kv key put --remote --binding=AUTH_CONFIG --env staging \
+  //     gh_org:ippoan yhonda-ohishi
+  const mappedLogin = await lookupOrgMapping(env, owner);
+  const doKey = mappedLogin ?? owner;
 
   const eventJson = JSON.stringify({
     event_type: fullEventType,
@@ -149,6 +155,8 @@ export async function handleGithubWebhook(
           event: "mcp_session_push_failed",
           status: doResp.status,
           doKey,
+          owner,
+          mapped: mappedLogin !== null,
           delivery,
         }),
       );
@@ -161,6 +169,8 @@ export async function handleGithubWebhook(
         JSON.stringify({
           event: "mcp_session_pushed",
           doKey,
+          owner,
+          mapped: mappedLogin !== null,
           delivery,
           fullEventType,
           delivered: summary.delivered ?? 0,
@@ -181,6 +191,51 @@ export async function handleGithubWebhook(
   }
 
   return jsonResp(200, { ok: true });
+}
+
+/**
+ * ADR-006 follow-up: organization repo → github_login mapping。
+ *
+ * webhook payload の `repository.owner.login` が org のとき、その org に
+ * 紐付く McpSession DO routing key (= github_login) を `AUTH_CONFIG` KV
+ * から lookup する。key 形式 `gh_org:<owner>`、value は plaintext login。
+ *
+ * - KV binding 自体が未設定なら null (= caller は owner fallback)。
+ * - key 未登録 / 空文字 / 不正な login pattern なら null。
+ * - login は GitHub の handle 規約に合わせ `[A-Za-z0-9-]{1,39}` のみ許可。
+ *   不正な KV value で DO key を汚染しないための安全弁。
+ */
+async function lookupOrgMapping(
+  env: Env,
+  owner: string,
+): Promise<string | null> {
+  const kv = env.AUTH_CONFIG;
+  if (!kv) return null;
+  let mapped: string | null;
+  try {
+    mapped = await kv.get(`gh_org:${owner}`);
+  } catch (e) {
+    console.warn(
+      JSON.stringify({
+        event: "github_webhook_org_mapping_lookup_failed",
+        owner,
+        error: String(e),
+      }),
+    );
+    return null;
+  }
+  if (!mapped) return null;
+  if (!/^[A-Za-z0-9-]{1,39}$/.test(mapped)) {
+    console.warn(
+      JSON.stringify({
+        event: "github_webhook_org_mapping_invalid",
+        owner,
+        mapped,
+      }),
+    );
+    return null;
+  }
+  return mapped;
 }
 
 /**
