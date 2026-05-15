@@ -22,10 +22,18 @@
 
 import type { Env } from "../index";
 import { verifyMcpJwt } from "../lib/mcp-jwt";
-import { wwwAuthenticateValue } from "../lib/mcp-origins";
+import { mcpRelayOrigin, wwwAuthenticateValue } from "../lib/mcp-origins";
 
-/** Phase 3 `/mcp/token` で発行される JWT の aud と一致させる (Rust binary 名)。 */
-const MCP_AUD = "github-mcp-server-rs";
+/**
+ * 受け入れる JWT の `aud` claim:
+ *  - legacy `"github-mcp-server-rs"` — Rust binary (`github-mcp-server-rs`) が
+ *    device flow で得たトークン (Phase 3 互換)。
+ *  - `mcpRelayOrigin(env)` (例 `https://mcp-staging.ippoan.org`) — Authorization
+ *    Code grant + RFC 8707 Resource Indicator で browser MCP client (Anthropic
+ *    Claude.ai 等) 向けに発行したトークン。MCP Authorization spec 2025-06-18
+ *    が要求する audience binding の対象。
+ */
+const MCP_AUD_LEGACY = "github-mcp-server-rs";
 
 /**
  * 401 応答用 helper (Phase 4 / issue #126)。
@@ -62,7 +70,10 @@ export async function handleMcpRelayBridge(
   if (!m || !m[1]) {
     return unauthorizedResponse(env, "Unauthorized");
   }
-  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, MCP_AUD);
+  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, [
+    MCP_AUD_LEGACY,
+    mcpRelayOrigin(env),
+  ]);
   if (!payload) {
     return unauthorizedResponse(env, "Invalid token");
   }

@@ -35,6 +35,7 @@ import {
   putAuthRequest,
 } from "../lib/mcp-authcode";
 import { getDcrClient } from "../lib/mcp-dcr";
+import { mcpRelayOrigin } from "../lib/mcp-origins";
 import { mcpToGithubScope, normalizeMcpScope, parseMcpScope } from "../lib/mcp-scope";
 import { generateOAuthState } from "../lib/security";
 
@@ -100,6 +101,26 @@ export async function handleMcpAuthorize(
     return redirectErrorResponse(redirect_uri, "invalid_request", "code_challenge_method must be 'S256'", state || null);
   }
 
+  // ── RFC 8707 Resource Indicator (MCP Authorization spec 2025-06-18 で必須化) ──
+  // browser MCP client (Anthropic Claude.ai 等) は canonical resource URI を送る。
+  // 値があるなら本 AS が発行する resource (= mcpRelayOrigin) と完全一致を要求し、
+  // 不一致は RFC 8707 §2 `invalid_target` で redirect エラー返却 (confused-deputy 防止)。
+  // 未送信 (rust binary / legacy client) は許容し、token 発行時 aud は legacy 値で
+  // 焼く (mcp-token.ts 参照)。
+  const resourceRaw = params.get("resource");
+  let resource: string | undefined;
+  if (resourceRaw !== null) {
+    if (resourceRaw !== mcpRelayOrigin(env)) {
+      return redirectErrorResponse(
+        redirect_uri,
+        "invalid_target",
+        "resource must equal this MCP server's canonical URI",
+        state || null,
+      );
+    }
+    resource = resourceRaw;
+  }
+
   // ── auth request 保存 ──
   const id = crypto.randomUUID();
   const rec: AuthRequestRecord = {
@@ -110,6 +131,7 @@ export async function handleMcpAuthorize(
     code_challenge_method: "S256",
     client_state: state,
     scope,
+    ...(resource !== undefined ? { resource } : {}),
     expires_at: Date.now() + AUTH_REQUEST_TTL_SEC * 1000,
   };
   await putAuthRequest(env, rec);

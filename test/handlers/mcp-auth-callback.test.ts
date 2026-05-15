@@ -361,6 +361,38 @@ describe("handleMcpAuthCallback — success", () => {
     expect(loc.searchParams.get("error")).toBe("server_error");
   });
 
+  // RFC 8707 Resource Indicator (MCP Authorization spec 2025-06-18) の伝播。
+  // `/authorize` で bind した resource を AuthCodeRecord に propagate する。
+  it("propagates resource from AuthRequestRecord to AuthCodeRecord", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+        .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+    );
+    const { env, kv } = envWithKv();
+    await env.MCP_OAUTH_KV!.put(
+      "auth:request:ar-resource",
+      JSON.stringify({
+        id: "ar-resource",
+        client_id: "c-1",
+        redirect_uri: "https://claude.ai/cb",
+        code_challenge: "abc",
+        code_challenge_method: "S256",
+        client_state: "csrf-1",
+        scope: "mcp.read",
+        resource: "https://mcp.test.example",
+        expires_at: Date.now() + 60_000,
+      }),
+    );
+    const state = await buildState("ar-resource");
+    const res = await handleMcpAuthCallback(callbackReq({ state, code: "ghc" }), env);
+    expect(res.status).toBe(302);
+    const codeKey = Object.keys(kv._data).find((k) => k.startsWith("auth:code:"))!;
+    const codeRec = JSON.parse(kv._data[codeKey]!) as { resource?: string };
+    expect(codeRec.resource).toBe("https://mcp.test.example");
+  });
+
   // redirectError 内 `if (clientState)` else branch (error path で client_state 空)
   it("redirects with error params but no state when client_state is empty (error path)", async () => {
     vi.stubGlobal(

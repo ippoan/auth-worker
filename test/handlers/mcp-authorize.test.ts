@@ -235,6 +235,63 @@ describe("handleMcpAuthorize — error redirects with empty client state (?? + |
   });
 });
 
+// RFC 8707 Resource Indicators (MCP Authorization spec 2025-06-18)
+// `mcp-staging.example` host で `AUTH_WORKER_ORIGIN=https://auth.test.example`
+// → `mcpRelayOrigin(env)` = `https://mcp.test.example` (mcp-origins.ts の derive 規約)
+describe("handleMcpAuthorize — RFC 8707 resource parameter", () => {
+  const expectedResource = "https://mcp.test.example";
+
+  it("stores resource on AuthRequestRecord when client sends matching canonical URI", async () => {
+    const { env, kv, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), resource: expectedResource }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
+    expect(stored.resource).toBe(expectedResource);
+  });
+
+  it("redirects with invalid_target when resource does not equal MCP server origin", async () => {
+    const { env, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), resource: "https://attacker.example" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.origin + loc.pathname).toBe("https://claude.ai/cb");
+    expect(loc.searchParams.get("error")).toBe("invalid_target");
+    expect(loc.searchParams.get("state")).toBe("csrf-1");
+  });
+
+  it("invalid_target redirect drops state when client_state is empty", async () => {
+    const { env, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({
+        ...validParams(client_id),
+        resource: "https://attacker.example",
+        state: "",
+      }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("error")).toBe("invalid_target");
+    expect(loc.searchParams.has("state")).toBe(false);
+  });
+
+  it("omits resource from KV record when client does not send it (legacy path)", async () => {
+    const { env, kv, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(authorizeReq(validParams(client_id)), env);
+    expect(res.status).toBe(302);
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
+    expect(stored.resource).toBeUndefined();
+  });
+});
+
 // `params.get(...) ?? ""` の null branch カバー (string-empty vs null は別 branch 扱い)
 describe("handleMcpAuthorize — query param truly missing (?? null branch)", () => {
   it("response_type missing → defaults to '' → unsupported_response_type", async () => {

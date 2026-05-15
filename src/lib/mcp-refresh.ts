@@ -24,6 +24,14 @@ export interface RefreshRecord {
   sub: string;
   scope: string;
   github_login: string;
+  /**
+   * 初回発行時の JWT `aud` claim を保存しておき、rotation 時にそのまま継承する。
+   * Authorization Code flow + RFC 8707 Resource Indicator なら MCP server origin、
+   * Device Code flow (Rust binary) なら legacy `"github-mcp-server-rs"`。
+   * 旧 KV value (Phase 3 deploy 前) には無いので optional。読み取り時に
+   * fallback を caller 側で持つ。
+   */
+  aud?: string;
   expires_at: number; // ms epoch
   rotated_from?: string; // 旧 refresh hash (audit / double-spend 検出ログ用)
   /** consume が caller に返す用 (KV value には書かない、in-memory only) */
@@ -40,6 +48,7 @@ export async function issueRefreshToken(
     sub: string;
     scope: string;
     github_login: string;
+    aud?: string;
     rotated_from?: string;
   },
 ): Promise<string> {
@@ -51,6 +60,7 @@ export async function issueRefreshToken(
     scope: args.scope,
     github_login: args.github_login,
     expires_at: Date.now() + REFRESH_TTL_SEC * 1000,
+    ...(args.aud ? { aud: args.aud } : {}),
     ...(args.rotated_from ? { rotated_from: args.rotated_from } : {}),
   };
   await env.MCP_OAUTH_KV.put(`refresh:${hash}`, JSON.stringify(value), {

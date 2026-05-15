@@ -196,6 +196,9 @@ export async function handleMcpAuthCallback(
     code_challenge_method: "S256",
     github_login: login,
     scope: reqRec.scope,
+    // RFC 8707 Resource Indicator を `/authorize` から token endpoint に伝播。
+    // 未指定 (legacy client) は AuthCodeRecord 側も undefined のまま。
+    ...(reqRec.resource !== undefined ? { resource: reqRec.resource } : {}),
     expires_at: Date.now() + AUTH_CODE_TTL_SEC * 1000,
   };
   await putAuthCode(env, codeRec);
