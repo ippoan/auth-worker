@@ -440,6 +440,71 @@ describe("McpSession.fetch — /__connect_sse (ADR-004 Phase D)", () => {
     const counts = (await pushRes.json()) as { sse_total?: number };
     expect(counts.sse_total).toBe(0);
   });
+
+  // 書込失敗時の cleanup path: body.cancel() 後に writeSse が write し、
+  // 非同期 catch で channel が registry から消える。タイミングは
+  // microtask 1〜2 段なので await Promise.resolve() 数回挟んで観測する。
+  it("drops SSE channel when writer.write() rejects (body cancelled)", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    // body をすぐ cancel して以後の write が reject する状態にする
+    await sseRes.body!.cancel();
+
+    // push_event → writeSse → writer.write() → reject → channel cleanup
+    const pushRes = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: "issues.opened" }),
+      }),
+    );
+    expect(pushRes.status).toBe(200);
+    // この push_event の時点では channel はまだ map にいる (catch は async)
+    // 数 tick 待って catch が走ってから 2 回目 push_event で 0 を確認する。
+    await new Promise((r) => setTimeout(r, 10));
+    const pushRes2 = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: "issues.opened" }),
+      }),
+    );
+    const counts2 = (await pushRes2.json()) as { sse_total?: number };
+    expect(counts2.sse_total).toBe(0);
+  });
+
+  // keepalive setInterval body: fake timers で 1 回 fire させて write が
+  // 走ることを確認する (実 write の中身は polyfill 都合で見えなくても、
+  // setInterval callback の coverage 取れれば OK)。
+  it("keepalive setInterval fires raw SSE comment write", async () => {
+    vi.useFakeTimers();
+    try {
+      const { state } = createMockState();
+      const do_ = new McpSession(state, {});
+      const sseRes = await do_.fetch(
+        new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+      );
+      // 26s 進めて 1 回 keepalive fire
+      await vi.advanceTimersByTimeAsync(26_000);
+      // session が依然 attached
+      const pushRes = await do_.fetch(
+        new Request("https://do.invalid/__push_event", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event_type: "issues.opened" }),
+        }),
+      );
+      const counts = (await pushRes.json()) as { sse_total?: number };
+      expect(counts.sse_total).toBe(1);
+      await sseRes.body!.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // =============================================================================

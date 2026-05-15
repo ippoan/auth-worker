@@ -60,7 +60,7 @@ interface SseChannel {
   /** event-id 採番カウンタ (SSE replay 用、Phase D では再接続時 reset)。 */
   nextEventId: number;
   /** keepalive setInterval ハンドル。close 時に clear するため保持。 */
-  keepalive?: ReturnType<typeof setInterval>;
+  keepalive: ReturnType<typeof setInterval>;
 }
 
 /** SSE keepalive 間隔 (ms)。Cloudflare の idle timeout (100s) より十分短い。 */
@@ -193,20 +193,15 @@ export class McpSession implements DurableObject {
       logger: "cc-relay/issue-events",
       data: eventBody,
     });
-    let sseDelivered = 0;
-    let sseDead = 0;
+    const sseTotal = this.sseChannels.size;
     for (const ch of this.sseChannels.values()) {
-      const ok = this.writeSse(ch, sseFrame);
-      if (ok) sseDelivered += 1;
-      else sseDead += 1;
+      this.writeSse(ch, sseFrame);
     }
     return jsonResponse(200, {
       delivered,
       dead,
       total: wsList.length,
-      sse_delivered: sseDelivered,
-      sse_dead: sseDead,
-      sse_total: this.sseChannels.size,
+      sse_total: sseTotal,
     });
   }
 
@@ -236,23 +231,21 @@ export class McpSession implements DurableObject {
     const channel: SseChannel = { sessionId, writer, nextEventId: 0 };
     this.sseChannels.set(sessionId, channel);
 
+    // 接続維持用 keepalive: 25s ごとに SSE comment を流す。Cloudflare の
+    // idle timeout (100s) より十分短い。SSE comment は `: <text>\n\n` 形式。
+    // close 時に clear するため channel に保持。失敗 cleanup は writeSseRaw
+    // 経由で writeSse と統一する。
+    channel.keepalive = setInterval(
+      () => this.writeSseRaw(channel, ": keepalive\n\n"),
+      SSE_KEEPALIVE_INTERVAL_MS,
+    );
+
     // 初回 hello (MCP 慣習に依存しない、診断 + 接続確認用)。
     this.writeSse(channel, sseFormatNotification("notifications/message", {
       level: "info",
       logger: "cc-relay/sse",
       data: { msg: "sse_connected", session_id: sessionId },
     }));
-
-    // 接続維持用 keepalive: 25s ごとに SSE comment を流す。Cloudflare の
-    // idle timeout (100s) より十分短い。close 時に clear するため channel に保持。
-    const enc = new TextEncoder();
-    channel.keepalive = setInterval(() => {
-      const ch = this.sseChannels.get(sessionId);
-      if (!ch) return;
-      ch.writer.write(enc.encode(": keepalive\n\n")).catch(() => {
-        this.removeSseChannel(sessionId);
-      });
-    }, SSE_KEEPALIVE_INTERVAL_MS);
 
     return new Response(readable, {
       status: 200,
@@ -266,33 +259,28 @@ export class McpSession implements DurableObject {
   }
 
   /**
-   * SSE writer に 1 frame 書く。書込は fire-and-forget で同期 return する
-   * (`await writer.write()` は backpressure で hang する可能性があり、
-   * push_event の応答時間を守る必要があるため)。同期 throw した時のみ
-   * `false` を返して channel を cleanup する。非同期 reject は `.catch`
-   * 経由で同じ cleanup を行う。
+   * SSE writer に 1 frame 書く。fire-and-forget。`await writer.write()` は
+   * TransformStream の backpressure (default HWM=1) で hang し得るので、
+   * push_event 応答性のため Promise は捨てる。MCP `notifications/message`
+   * 用に `id: N\nevent: message\ndata: <body>\n\n` で wrap する。
    */
-  private writeSse(channel: SseChannel, body: string): boolean {
-    const enc = new TextEncoder();
+  private writeSse(channel: SseChannel, body: string): void {
     channel.nextEventId += 1;
-    const wire = `id: ${channel.nextEventId}\nevent: message\ndata: ${body}\n\n`;
-    try {
-      channel.writer.write(enc.encode(wire)).catch(() => {
-        this.removeSseChannel(channel.sessionId);
-      });
-      return true;
-    } catch {
-      this.removeSseChannel(channel.sessionId);
-      return false;
-    }
+    this.writeSseRaw(
+      channel,
+      `id: ${channel.nextEventId}\nevent: message\ndata: ${body}\n\n`,
+    );
   }
 
-  /** SSE channel を registry から削除して keepalive timer を停止する。 */
-  private removeSseChannel(sessionId: string): void {
-    const ch = this.sseChannels.get(sessionId);
-    if (!ch) return;
-    if (ch.keepalive !== undefined) clearInterval(ch.keepalive);
-    this.sseChannels.delete(sessionId);
+  /** SSE wire への raw write — `: comment\n\n` 形式の keepalive と
+   *  `event: message` frame の両方で共通。書込失敗時は channel を
+   *  registry から削除して keepalive を止める。 */
+  private writeSseRaw(channel: SseChannel, wire: string): void {
+    const enc = new TextEncoder();
+    channel.writer.write(enc.encode(wire)).catch(() => {
+      clearInterval(channel.keepalive);
+      this.sseChannels.delete(channel.sessionId);
+    });
   }
 
   private handleConnect(req: Request): Response {

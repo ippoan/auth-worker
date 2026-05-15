@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { handleMcpRelayBridge } from "../../src/handlers/mcp-relay-bridge";
+import { handleMcpRelayBridge, handleMcpRelaySse } from "../../src/handlers/mcp-relay-bridge";
 import { createMockEnv } from "../helpers/mock-env";
 import { signMcpJwt } from "../../src/lib/mcp-jwt";
 import type { Env } from "../../src/index";
@@ -342,5 +342,111 @@ describe("handleMcpRelayBridge — RFC 8707 audience (URL origin match)", () => 
       null,
     );
     expect(res.status).toBe(401);
+  });
+});
+
+// ADR-004 Phase D: `handleMcpRelaySse` (`GET /mcp` → SSE stream)。
+// JWT 検証は POST と同じロジックを共有しているので、ここは SSE 固有の
+// route (= DO `/__connect_sse` への forward) と `Mcp-Session-Id` header
+// passthrough を主に検証する。
+describe("handleMcpRelaySse — env / pre-flight + DO forwarding", () => {
+  function sseReq(opts: {
+    auth?: string | null;
+    sessionId?: string;
+    url?: string;
+  }): Request {
+    const headers: Record<string, string> = {};
+    if (opts.auth) headers.Authorization = opts.auth;
+    if (opts.sessionId) headers["Mcp-Session-Id"] = opts.sessionId;
+    return new Request(opts.url ?? "https://mcp.test.example/mcp", {
+      method: "GET",
+      headers,
+    });
+  }
+
+  it("returns 503 when MCP_JWT_SECRET missing", async () => {
+    const env = createMockEnv({ MCP_JWT_SECRET: undefined });
+    const res = await handleMcpRelaySse(sseReq({}), env, "alice");
+    expect(res.status).toBe(503);
+  });
+
+  it("returns 503 when MCP_SESSION_DO binding missing", async () => {
+    const env = createMockEnv({ MCP_JWT_SECRET: TEST_SECRET });
+    const res = await handleMcpRelaySse(sseReq({}), env, "alice");
+    expect(res.status).toBe(503);
+  });
+
+  it("returns 400 when :user is empty", async () => {
+    const { env } = envWithDO();
+    const res = await handleMcpRelaySse(sseReq({}), env, "");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 401 when Authorization missing", async () => {
+    const { env } = envWithDO();
+    const res = await handleMcpRelaySse(sseReq({}), env, "alice");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when Authorization is not Bearer", async () => {
+    const { env } = envWithDO();
+    const res = await handleMcpRelaySse(sseReq({ auth: "Basic xyz" }), env, "alice");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when JWT signature invalid", async () => {
+    const { env } = envWithDO();
+    const res = await handleMcpRelaySse(sseReq({ auth: "Bearer a.b.c" }), env, "alice");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 when payload.github_login !== :user", async () => {
+    const { env } = envWithDO();
+    const jwt = await validJwt("alice");
+    const res = await handleMcpRelaySse(sseReq({ auth: `Bearer ${jwt}` }), env, "bob");
+    expect(res.status).toBe(403);
+  });
+
+  it("forwards to DO /__connect_sse without Mcp-Session-Id header by default", async () => {
+    const stubFetch = vi.fn(async () => new Response("ok-no-sid", { status: 200 }));
+    const { env, idFromNameCalls, fetchCalls } = envWithDO(stubFetch);
+    const jwt = await validJwt("alice");
+    const res = await handleMcpRelaySse(sseReq({ auth: `Bearer ${jwt}` }), env, "alice");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("ok-no-sid");
+    expect(idFromNameCalls).toEqual(["alice"]);
+    expect(fetchCalls).toHaveLength(1);
+    const forwarded = fetchCalls[0]!;
+    expect(new URL(forwarded.url).pathname).toBe("/__connect_sse");
+    expect(forwarded.method).toBe("GET");
+    expect(forwarded.headers.get("Mcp-Session-Id")).toBeNull();
+  });
+
+  it("passes Mcp-Session-Id header through to DO when provided", async () => {
+    const stubFetch = vi.fn(async () => new Response("ok-sid", { status: 200 }));
+    const { env, fetchCalls } = envWithDO(stubFetch);
+    const jwt = await validJwt("alice");
+    const res = await handleMcpRelaySse(
+      sseReq({ auth: `Bearer ${jwt}`, sessionId: "abc-123" }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(200);
+    const forwarded = fetchCalls[0]!;
+    expect(forwarded.headers.get("Mcp-Session-Id")).toBe("abc-123");
+  });
+
+  // ADR-003 user-less variant: DO key = jwt.github_login
+  it("uses jwt.github_login as DO key when user is null (user-less ADR-003)", async () => {
+    const stubFetch = vi.fn(async () => new Response("ok-userless", { status: 200 }));
+    const { env, idFromNameCalls } = envWithDO(stubFetch);
+    const jwt = await validJwt("yhonda-ohishi");
+    const res = await handleMcpRelaySse(
+      sseReq({ url: "https://mcp.test.example/mcp", auth: `Bearer ${jwt}` }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(200);
+    expect(idFromNameCalls).toEqual(["yhonda-ohishi"]);
   });
 });
