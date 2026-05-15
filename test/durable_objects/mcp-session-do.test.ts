@@ -198,6 +198,124 @@ describe("McpSession.fetch — unknown path", () => {
 });
 
 // =============================================================================
+// ADR-004 (multiplex): /__push_event broadcast
+// =============================================================================
+
+describe("McpSession.fetch — /__push_event (ADR-004)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 405 when method is not POST", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__push_event", { method: "GET" });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(405);
+  });
+
+  it("returns 400 when body is invalid JSON", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__push_event", {
+      method: "POST",
+      body: "not json",
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(400);
+  });
+
+  it("broadcasts wrapped frame to all attached client WS and returns counts", async () => {
+    const ws1 = makeFakeWs("ws1");
+    const ws2 = makeFakeWs("ws2");
+    const { state } = createMockState([ws1, ws2]);
+    const do_ = new McpSession(state, {});
+
+    const eventBody = {
+      event_type: "issue_comment.created",
+      delivery_id: "delivery-xyz",
+      owner: "ippoan",
+      repo: "cc-relay",
+      issue_number: 42,
+      received_at: "2026-05-15T11:00:00Z",
+      payload: { action: "created" },
+    };
+    const req = new Request("https://do.invalid/__push_event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(eventBody),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      delivered?: number;
+      dead?: number;
+      total?: number;
+    };
+    expect(json.delivered).toBe(2);
+    expect(json.dead).toBe(0);
+    expect(json.total).toBe(2);
+
+    expect(ws1.send).toHaveBeenCalledTimes(1);
+    expect(ws2.send).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse((ws1.send.mock.calls[0]?.[0] as string) ?? "{}") as {
+      kind?: string;
+      v?: number;
+      event_type?: string;
+      owner?: string;
+      issue_number?: number;
+    };
+    expect(sent.kind).toBe("event");
+    expect(sent.v).toBe(1);
+    expect(sent.event_type).toBe("issue_comment.created");
+    expect(sent.owner).toBe("ippoan");
+    expect(sent.issue_number).toBe(42);
+  });
+
+  it("counts dead WS but keeps broadcasting", async () => {
+    const ws1 = makeFakeWs("ws1");
+    const ws2 = makeFakeWs("ws2");
+    ws1.send.mockImplementation(() => {
+      throw new Error("dead");
+    });
+    const { state } = createMockState([ws1, ws2]);
+    const do_ = new McpSession(state, {});
+
+    const req = new Request("https://do.invalid/__push_event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event_type: "issues.opened" }),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { delivered?: number; dead?: number };
+    expect(json.delivered).toBe(1);
+    expect(json.dead).toBe(1);
+    expect(ws2.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 200 with zero delivered when no WS attached", async () => {
+    const { state } = createMockState([]);
+    const do_ = new McpSession(state, {});
+
+    const req = new Request("https://do.invalid/__push_event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event_type: "issues.opened" }),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      delivered?: number;
+      dead?: number;
+      total?: number;
+    };
+    expect(json.delivered).toBe(0);
+    expect(json.total).toBe(0);
+  });
+});
+
+// =============================================================================
 // Phase 7: handleBridge — frame round-trip
 // =============================================================================
 

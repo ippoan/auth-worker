@@ -110,7 +110,52 @@ export class McpSession implements DurableObject {
       return this.handleBridge(req);
     }
 
+    if (url.pathname === "/__push_event") {
+      return this.handlePushEvent(req);
+    }
+
     return new Response("Not Found", { status: 404 });
+  }
+
+  /**
+   * ADR-004: GitHub webhook 経由で届いた event を、現在 attach 中の全
+   * `client` WebSocket に broadcast する。subscription registry は持たず、
+   * binary 側 (`agent-mcp/src/relay.rs`) が `~/.cc-relay/watched-issues.txt`
+   * で filter する。
+   *
+   * Body は raw event JSON (`{v, event_type, delivery_id, owner, repo,
+   * issue_number, payload, received_at}`)。WS frame として
+   * `{kind:"event", v:1, ...}` の形に wrap してから送る (既存 `req`/`resp`
+   * と同じ envelope 系で binary 側 dispatcher の追加が match arm 1 個で済む)。
+   */
+  private async handlePushEvent(req: Request): Promise<Response> {
+    if (req.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+    let eventBody: Record<string, unknown>;
+    try {
+      eventBody = (await req.json()) as Record<string, unknown>;
+    } catch (e) {
+      return jsonResponse(400, { error: "invalid_json", detail: String(e) });
+    }
+    const wsList = this.state.getWebSockets(WS_TAG);
+    const framePayload = JSON.stringify({
+      kind: "event",
+      v: FRAME_VERSION,
+      ...eventBody,
+    });
+    let delivered = 0;
+    let dead = 0;
+    for (const ws of wsList) {
+      try {
+        ws.send(framePayload);
+        delivered += 1;
+      } catch {
+        // 死んでる WS は CF runtime が cleanup するまでスキップ
+        dead += 1;
+      }
+    }
+    return jsonResponse(200, { delivered, dead, total: wsList.length });
   }
 
   private handleConnect(req: Request): Response {
