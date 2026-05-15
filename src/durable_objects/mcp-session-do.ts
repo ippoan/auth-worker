@@ -228,15 +228,20 @@ export class McpSession implements DurableObject {
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
-    // 接続維持用 keepalive: 25s ごとに SSE comment を流す (Cloudflare の idle
-    // timeout 100s より短い)。SSE comment は `: <text>\n\n` 形式。timer は
-    // sessionId 経由で動的に channel を引いて write する (channel 自身は
-    // 後で作るので参照キャプチャできない)。
-    const keepalive = setInterval(() => {
-      const ch = this.sseChannels.get(sessionId);
-      if (ch) this.writeSseRaw(ch, ": keepalive\n\n");
-    }, SSE_KEEPALIVE_INTERVAL_MS);
-    const channel: SseChannel = { sessionId, writer, nextEventId: 0, keepalive };
+    // channel object を先に作って `keepalive` を後付け。`as SseChannel` cast
+    // で TS の non-optional 制約をパスし、`setInterval` callback が channel
+    // 自身を参照キャプチャできるようにする。`if (ch) ...` のような defensive
+    // branch は不要 — channel の cleanup は writeSseRaw の `.catch` 内で
+    // `clearInterval(channel.keepalive)` を呼ぶ事で timer 自体が停止する。
+    const channel = {
+      sessionId,
+      writer,
+      nextEventId: 0,
+    } as SseChannel;
+    channel.keepalive = setInterval(
+      () => this.writeSseRaw(channel, ": keepalive\n\n"),
+      SSE_KEEPALIVE_INTERVAL_MS,
+    );
     this.sseChannels.set(sessionId, channel);
 
     // 初回 hello (MCP 慣習に依存しない、診断 + 接続確認用)。
