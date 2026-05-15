@@ -1321,6 +1321,64 @@ describe("McpSession inline stub — ADR-006 server-side tools", () => {
     expect(Array.isArray(evs) ? evs.length : 0).toBe(0);
   });
 
+  // parseIssueKey は ternary が args.owner/repo/issue_number の型分岐を
+  // 持つ。`{ owner: 123 }` 等の non-string / non-number を渡して
+  // ternary の false 側を踏む。
+  it("subscribe handles non-string / non-number arg types (ternary false branch)", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const cases: Array<Record<string, unknown>> = [
+      { owner: 123, repo: "y", issue_number: 1 }, // owner not string
+      { owner: "x", repo: false, issue_number: 1 }, // repo not string
+      { owner: "x", repo: "y", issue_number: "1" }, // issue_number not number
+    ];
+    for (const args of cases) {
+      const r = await rpc(do_, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "subscribe_issue_activity", arguments: args },
+      });
+      expect((r.result as { isError: boolean }).isError).toBe(true);
+    }
+  });
+
+  // queueEventIfSubscribed の `!owner || !repo || num === null` 短絡分岐 — 各 disjunct で
+  // 独立に false が起きる経路をカバー。前テストは「全部欠落」(最初の項で短絡)
+  // しか踏んでいないので、中間 / 最後の disjunct を別ケースで起こす。
+  it("push_event with only `repo` missing or only `issue_number` missing skips queue", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    // owner OK, repo missing
+    const r1 = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "x",
+          owner: "ippoan",
+          issue_number: 46,
+          payload: {},
+        }),
+      }),
+    );
+    expect(((await r1.json()) as { queued?: boolean }).queued).toBe(false);
+    // owner OK, repo OK, issue_number missing
+    const r2 = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "x",
+          owner: "ippoan",
+          repo: "cc-relay",
+          payload: {},
+        }),
+      }),
+    );
+    expect(((await r2.json()) as { queued?: boolean }).queued).toBe(false);
+  });
+
   it("event queue drops oldest when overflowing MAX_QUEUED_EVENTS", async () => {
     const { state, storageMap } = createMockState();
     const do_ = new McpSession(state, {});
