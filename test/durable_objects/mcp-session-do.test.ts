@@ -1266,31 +1266,97 @@ describe("McpSession inline stub — ADR-006 server-side tools", () => {
     expect(getText(unsub2)).toBe("was not subscribed: ippoan/cc-relay#46");
   });
 
-  it("subscribe rejects invalid args", async () => {
+  it("subscribe rejects invalid args (empty owner, empty repo, non-int issue_number, zero)", async () => {
     const { state } = createMockState();
     const do_ = new McpSession(state, {});
-    const r = await rpc(do_, {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: {
-        name: "subscribe_issue_activity",
-        arguments: { owner: "", repo: "x", issue_number: 1 },
-      },
-    });
-    expect(
-      (r.result as { isError: boolean }).isError,
-    ).toBe(true);
-    const r2 = await rpc(do_, {
+    const cases: Array<Record<string, unknown>> = [
+      { owner: "", repo: "x", issue_number: 1 },
+      { owner: "x", repo: "", issue_number: 1 },
+      { owner: "x", repo: "y", issue_number: 0 },
+      { owner: "x", repo: "y", issue_number: 1.5 }, // non-integer
+      { owner: "x", repo: "y" }, // missing issue_number
+    ];
+    for (const args of cases) {
+      const r = await rpc(do_, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "subscribe_issue_activity", arguments: args },
+      });
+      expect((r.result as { isError: boolean }).isError).toBe(true);
+    }
+    // unsubscribe with invalid args also returns isError
+    const u = await rpc(do_, {
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
       params: {
-        name: "subscribe_issue_activity",
-        arguments: { owner: "x", repo: "y", issue_number: 0 },
+        name: "unsubscribe_issue_activity",
+        arguments: { owner: "", repo: "y", issue_number: 1 },
       },
     });
-    expect((r2.result as { isError: boolean }).isError).toBe(true);
+    expect((u.result as { isError: boolean }).isError).toBe(true);
+  });
+
+  it("push_event with missing owner/repo/issue_number does not queue", async () => {
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+    const partial = {
+      event_type: "issue_comment.created",
+      // owner/repo/issue_number 欠落
+      payload: {},
+    };
+    const r = await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(partial),
+      }),
+    );
+    expect(r.status).toBe(200);
+    const counts = (await r.json()) as { queued?: boolean };
+    expect(counts.queued).toBe(false);
+    // storage は events key を含まない (or empty array)
+    const evs = storageMap.get("events");
+    expect(Array.isArray(evs) ? evs.length : 0).toBe(0);
+  });
+
+  it("event queue drops oldest when overflowing MAX_QUEUED_EVENTS", async () => {
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+    // pre-seed storage with subs (= subscribe done) AND 500 events (= queue full).
+    await state.storage.put("subs", ["ippoan/cc-relay#46"]);
+    const seeded: Record<string, unknown>[] = [];
+    for (let i = 0; i < 500; i++) {
+      seeded.push({
+        event_type: "issue_comment.created",
+        delivery_id: `d-${i}`,
+        owner: "ippoan",
+        repo: "cc-relay",
+        issue_number: 46,
+        payload: {},
+      });
+    }
+    await state.storage.put("events", seeded);
+    // push one more — oldest (d-0) should drop.
+    await do_.fetch(
+      new Request("https://do.invalid/__push_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "issue_comment.created",
+          delivery_id: "d-500",
+          owner: "ippoan",
+          repo: "cc-relay",
+          issue_number: 46,
+          payload: {},
+        }),
+      }),
+    );
+    const after = storageMap.get("events") as Record<string, unknown>[];
+    expect(after.length).toBe(500);
+    expect(after[0]!.delivery_id).toBe("d-1");
+    expect(after[after.length - 1]!.delivery_id).toBe("d-500");
   });
 
   it("push_event queues event for subscribed issue + get_pending_events drains", async () => {
