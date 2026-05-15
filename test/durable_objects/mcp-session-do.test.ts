@@ -209,14 +209,286 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     restoreUUID();
   });
 
-  it("returns 503 when no active WebSocket", async () => {
+  // ADR-003: WS 未接続時に 503 を返さず inline stub MCP server で応答する。
+  // Anthropic Claude.ai connector が "Authorization failed" を誤表示する trap 回避。
+  it("inline stub: returns 200 + initialize result when no WS and method=initialize", async () => {
     const { state } = createMockState();
     const do_ = new McpSession(state, {});
-    const req = new Request("https://do.invalid/__bridge", { method: "POST" });
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18" },
+      }),
+    });
     const res = await do_.fetch(req);
-    expect(res.status).toBe(503);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe("no_active_relay_session");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      jsonrpc: string;
+      id: number;
+      result: {
+        protocolVersion: string;
+        capabilities: { tools: { listChanged: boolean } };
+        serverInfo: { name: string; version: string };
+      };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.id).toBe(1);
+    expect(body.result.protocolVersion).toBe("2025-06-18");
+    expect(body.result.capabilities.tools.listChanged).toBe(false);
+    expect(body.result.serverInfo.name).toBe("cc-relay-stub");
+  });
+
+  it("inline stub: initialize without protocolVersion in params falls back to default", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: { protocolVersion: string } };
+    expect(body.result.protocolVersion).toBe("2025-06-18");
+  });
+
+  it("inline stub: initialize with non-string protocolVersion falls back to default", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: 42 },
+      }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { result: { protocolVersion: string } };
+    expect(body.result.protocolVersion).toBe("2025-06-18");
+  });
+
+  it("inline stub: tools/list returns the cc_relay_ping placeholder tool", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { tools: { name: string; description: string }[] };
+    };
+    expect(body.result.tools).toHaveLength(1);
+    expect(body.result.tools[0]!.name).toBe("cc_relay_ping");
+  });
+
+  it("inline stub: tools/call cc_relay_ping returns pong", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "cc_relay_ping", arguments: {} },
+      }),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { content: { type: string; text: string }[]; isError: boolean };
+    };
+    expect(body.result.isError).toBe(false);
+    expect(body.result.content[0]!.text).toBe("pong");
+  });
+
+  it("inline stub: tools/call without params (params undefined) returns -32602 unknown tool", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call" }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as {
+      error: { code: number; message: string };
+    };
+    expect(body.error.code).toBe(-32602);
+    expect(body.error.message).toMatch(/Unknown tool/);
+  });
+
+  it("inline stub: tools/call with unknown tool name returns -32602", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: { name: "nonexistent" },
+      }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { error: { code: number } };
+    expect(body.error.code).toBe(-32602);
+  });
+
+  it("inline stub: ping returns empty result", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 6, method: "ping" }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { result: Record<string, unknown> };
+    expect(body.result).toEqual({});
+  });
+
+  it("inline stub: prompts/list returns empty array", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "prompts/list" }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { result: { prompts: unknown[] } };
+    expect(body.result.prompts).toEqual([]);
+  });
+
+  it("inline stub: resources/list returns empty array", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 8, method: "resources/list" }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { result: { resources: unknown[] } };
+    expect(body.result.resources).toEqual([]);
+  });
+
+  it("inline stub: notification (no id) returns 202 with no body", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(202);
+    expect(await res.text()).toBe("");
+  });
+
+  it("inline stub: notification with id=null also returns 202", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: null, method: "notifications/initialized" }),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(202);
+  });
+
+  it("inline stub: unknown method returns -32601", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "unknown/method" }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { error: { code: number; message: string } };
+    expect(body.error.code).toBe(-32601);
+    expect(body.error.message).toMatch(/Method not found/);
+  });
+
+  it("inline stub: missing method (treated as '') returns -32601", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 10 }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { error: { code: number } };
+    expect(body.error.code).toBe(-32601);
+  });
+
+  it("inline stub: malformed JSON body returns -32700 Parse error", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: "{not json",
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as {
+      jsonrpc: string;
+      id: null;
+      error: { code: number };
+    };
+    expect(body.error.code).toBe(-32700);
+    expect(body.id).toBeNull();
+  });
+
+  it("inline stub: array body (object branch true) → no id/method → 202 notification", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify([1, 2, 3]),
+    });
+    const res = await do_.fetch(req);
+    // Array は typeof "object" かつ非 null なので Invalid Request 分岐を抜ける。
+    // method / id とも欠けるので notification 扱い (202) になる。MCP 仕様上 batch は
+    // 未対応であり、Anthropic からも来ないので本動作で十分。
+    expect(res.status).toBe(202);
+  });
+
+  it("inline stub: JSON null body returns -32600 Invalid Request", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: "null",
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { error: { code: number } };
+    expect(body.error.code).toBe(-32600);
+  });
+
+  it("inline stub: JSON scalar body returns -32600 Invalid Request", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: "42",
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { error: { code: number } };
+    expect(body.error.code).toBe(-32600);
+  });
+
+  it("inline stub: non-string method (number) treated as '' → -32601", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 11, method: 123 }),
+    });
+    const res = await do_.fetch(req);
+    const body = (await res.json()) as { error: { code: number } };
+    expect(body.error.code).toBe(-32601);
   });
 
   it("sends Frame::Req with uuid + method + path '/' + filtered headers + base64 body", async () => {

@@ -1,11 +1,18 @@
 /**
- * MCP relay 用 Durable Object (issue #117 Phase 6 + #119 Phase 7).
+ * MCP relay 用 Durable Object (issue #117 Phase 6 + #119 Phase 7 + ADR-003).
  *
- * `github-mcp-server-rs` の `install-mcp.sh` が cloudflared Quick Tunnel を立てる
- * 代わりに、binary 側から `wss://mcp.ippoan.org/u/<github_login>/connect` へ
- * outbound WebSocket を張る。Claude Code Web からの
- * `POST https://mcp.ippoan.org/u/<github_login>/mcp` は同じ DO へルーティングされ、
- * 接続中の binary に WS frame として転送される。
+ * 二モード動作:
+ *
+ * 1. **Relay mode** (Phase 6/7): `github-mcp-server-rs` の `install-mcp.sh` が
+ *    `wss://mcp.ippoan.org/u/<github_login>/connect` へ outbound WebSocket を張る。
+ *    `POST https://mcp.ippoan.org/u/<github_login>/mcp` は同 DO へルーティングされ、
+ *    接続中の binary に WS frame として転送される。
+ *
+ * 2. **Stub MCP server mode** (ADR-003 fallback): WS 未接続時に 503 を返さず、
+ *    最低限の MCP JSON-RPC (initialize / tools/list / tools/call / 各 notification)
+ *    を inline で応答する。Anthropic Claude.ai / Claude Code Web connector が
+ *    OAuth 完走後に 200 を受け取れるようになり「Authorization with the MCP server
+ *    failed」trap を回避する。実 binary が後から接続したら自動で relay mode に切り替わる。
  *
  * 設計判断 (issue #117 plan + #119 plan):
  *
@@ -150,7 +157,11 @@ export class McpSession implements DurableObject {
         .join(",")}] pending=${this.pending.size}`,
     );
     if (active.length === 0) {
-      return jsonResponse(503, { error: "no_active_relay_session" });
+      // ADR-003: WS relay 未接続時は inline stub MCP server で応答する。
+      // 503 を返すと Anthropic 側 connector が "Authorization failed" を誤表示する
+      // ため、最低限の MCP JSON-RPC (initialize / tools/list / tools/call) は本 DO で
+      // 自前応答し、connector を「接続済み・stub tool 1 個」状態にする。
+      return handleInlineMcp(req);
     }
     const ws = active[0] as WebSocket;
 
@@ -296,6 +307,123 @@ function jsonResponse(status: number, body: unknown): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Inline stub MCP server (ADR-003)
+//
+// WS relay が未接続のときに本 DO 自身が最小限の MCP server として応答するための
+// JSON-RPC 2.0 ハンドラ群。Streamable HTTP transport の単純 request/response
+// 形態 (= POST 1 本に対して 200 + JSON-RPC body 1 本) のみ実装する。SSE / batch
+// は未対応 (Anthropic / Claude Code Web は単純応答も受け取れる)。
+//
+// tools には固定で `cc_relay_ping` を 1 個だけ載せる。空配列だと一部 client が
+// 「tool 無しのサーバー = 接続失敗」とみなすため、health-check 用の stub を 1 つ
+// 露出させて connector UI を「接続成功・1 tool」状態にする。
+// ────────────────────────────────────────────────────────────────────────────
+
+const STUB_PROTOCOL_VERSION = "2025-06-18";
+const STUB_SERVER_NAME = "cc-relay-stub";
+const STUB_SERVER_VERSION = "0.1.0";
+
+interface JsonRpcMessage {
+  jsonrpc?: unknown;
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+}
+
+async function handleInlineMcp(req: Request): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return jsonRpcResponse(null, {
+      error: { code: -32700, message: "Parse error" },
+    });
+  }
+  if (typeof body !== "object" || body === null) {
+    return jsonRpcResponse(null, {
+      error: { code: -32600, message: "Invalid Request" },
+    });
+  }
+  const msg = body as JsonRpcMessage;
+  const method = typeof msg.method === "string" ? msg.method : "";
+  const id = msg.id;
+
+  // JSON-RPC notification (id 不在) — Streamable HTTP §2.1.1: 202 Accepted, no body
+  if (id === undefined || id === null) {
+    return new Response(null, { status: 202 });
+  }
+
+  switch (method) {
+    case "initialize": {
+      const params = (msg.params ?? {}) as { protocolVersion?: unknown };
+      const proto =
+        typeof params.protocolVersion === "string"
+          ? params.protocolVersion
+          : STUB_PROTOCOL_VERSION;
+      return jsonRpcResponse(id, {
+        result: {
+          protocolVersion: proto,
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: STUB_SERVER_NAME, version: STUB_SERVER_VERSION },
+        },
+      });
+    }
+    case "tools/list":
+      return jsonRpcResponse(id, {
+        result: {
+          tools: [
+            {
+              name: "cc_relay_ping",
+              description:
+                "Health-check tool exposed by the cc-relay stub MCP server when no live relay binary is connected. Returns 'pong'.",
+              inputSchema: {
+                type: "object",
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+        },
+      });
+    case "tools/call": {
+      const params = (msg.params ?? {}) as { name?: unknown };
+      if (params.name === "cc_relay_ping") {
+        return jsonRpcResponse(id, {
+          result: {
+            content: [{ type: "text", text: "pong" }],
+            isError: false,
+          },
+        });
+      }
+      return jsonRpcResponse(id, {
+        error: { code: -32602, message: `Unknown tool: ${String(params.name)}` },
+      });
+    }
+    case "ping":
+      return jsonRpcResponse(id, { result: {} });
+    case "prompts/list":
+      return jsonRpcResponse(id, { result: { prompts: [] } });
+    case "resources/list":
+      return jsonRpcResponse(id, { result: { resources: [] } });
+    default:
+      return jsonRpcResponse(id, {
+        error: { code: -32601, message: `Method not found: ${method}` },
+      });
+  }
+}
+
+function jsonRpcResponse(
+  id: unknown,
+  body: { result: unknown } | { error: { code: number; message: string } },
+): Response {
+  return new Response(
+    JSON.stringify({ jsonrpc: "2.0", id, ...body }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
 }
 
 /** Workers runtime の `btoa` で ArrayBuffer → base64 standard alphabet。 */
