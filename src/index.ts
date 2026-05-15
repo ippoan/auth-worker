@@ -50,8 +50,11 @@ import { handleMcpRelayBridge } from "./handlers/mcp-relay-bridge";
 import { handleMcpRegister } from "./handlers/mcp-register";
 import { handleMcpAuthorize } from "./handlers/mcp-authorize";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
+import { handleGithubWebhook } from "./handlers/github-webhook";
+import { handleIssueRoomConnect } from "./handlers/issue-room-connect";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
+export { IssueRoomDO } from "./durable_objects/issue-room-do";
 
 export interface Env {
   GOOGLE_CLIENT_ID: string;
@@ -131,6 +134,14 @@ export interface Env {
    *  Claude Code Web からの bridge request を frame に変換して転送する。
    *  Phase 6 で binding 追加、Phase 7 で実 frame 変換を実装する (issue #117)。 */
   MCP_SESSION_DO?: DurableObjectNamespace;
+  /** ADR-004: GitHub issue 単位の WebSocket room 用 Durable Object Namespace
+   *  (`issue:<owner>/<repo>#<N>` ごとに 1 instance)。
+   *  subscription = WS connection 自体、storage は使わない。 */
+  ISSUE_ROOM_DO?: DurableObjectNamespace;
+  /** ADR-004: GitHub webhook の HMAC-SHA256 検証用共有 secret。public issue
+   *  前提なので authentication ではなく spam 対策。全 repo の webhook 設定で
+   *  同じ値を使う。 */
+  GITHUB_WEBHOOK_SECRET?: string;
 }
 
 function errorResponse(status: number, message: string): Response {
@@ -195,6 +206,19 @@ async function dispatchMcpRelay(
   }
   if (url.pathname === "/authorize" && request.method === "GET") {
     return handleMcpAuthorize(request, env);
+  }
+  // ADR-004 (cc-relay/ARCHITECTURE.md): GitHub issue webhook receiver +
+  // per-issue WebSocket room subscribe endpoint.
+  if (url.pathname === "/webhooks/github" && request.method === "POST") {
+    return handleGithubWebhook(request, env);
+  }
+  const issueRoomMatch =
+    /^\/issues\/([^/]+)\/([^/]+)\/(\d+)\/connect$/.exec(url.pathname);
+  if (issueRoomMatch && request.method === "GET") {
+    const owner = issueRoomMatch[1] as string;
+    const repo = issueRoomMatch[2] as string;
+    const issueNumberStr = issueRoomMatch[3] as string;
+    return handleIssueRoomConnect(request, env, owner, repo, issueNumberStr);
   }
   return errorResponse(404, "Not found");
 }
