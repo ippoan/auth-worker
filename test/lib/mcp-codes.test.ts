@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { generateDeviceCode, generateUserCode } from "../../src/lib/mcp-codes";
+import {
+  generateDeviceCode,
+  generatePairCode,
+  generateUserCode,
+} from "../../src/lib/mcp-codes";
 
 describe("generateUserCode", () => {
   it("returns XXXX-XXXX format from 20-consonant alphabet", () => {
@@ -33,5 +37,27 @@ describe("generateDeviceCode", () => {
     const codes = new Set<string>();
     for (let i = 0; i < 100; i++) codes.add(generateDeviceCode());
     expect(codes.size).toBe(100);
+  });
+});
+
+describe("generatePairCode (issue #144)", () => {
+  it("returns 40 base64url characters from 30-byte CSPRNG", () => {
+    const code = generatePairCode();
+    // 30 byte = 240 bit = base64url 40 chars (no padding)
+    expect(code).toMatch(/^[A-Za-z0-9_-]{40}$/);
+  });
+
+  it("never contains base64 '+' '/' '=' chars (URL-safe)", () => {
+    for (let i = 0; i < 50; i++) {
+      const code = generatePairCode();
+      expect(code).not.toMatch(/[+/=]/);
+    }
+  });
+
+  it("produces unique codes across 200 invocations (CSPRNG smoke test)", () => {
+    const codes = new Set<string>();
+    for (let i = 0; i < 200; i++) codes.add(generatePairCode());
+    // 2^240 entropy なので 200 件で衝突は事実上 0
+    expect(codes.size).toBe(200);
   });
 });

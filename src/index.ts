@@ -50,6 +50,9 @@ import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-br
 import { handleMcpRegister } from "./handlers/mcp-register";
 import { handleMcpAuthorize } from "./handlers/mcp-authorize";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
+import { handleMcpPairNew } from "./handlers/mcp-pair-new";
+import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
+import { handleMcpPairCallback } from "./handlers/mcp-pair-callback";
 import { handleGithubWebhook } from "./handlers/github-webhook";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
@@ -136,6 +139,10 @@ export interface Env {
    *  前提なので authentication ではなく spam 対策。全 repo の webhook 設定で
    *  同じ値を使う。 */
   GITHUB_WEBHOOK_SECRET?: string;
+  /** issue #144: 1-click pair flow 用の auth-worker ブラウザ session cookie 署名鍵。
+   *  既存 `MCP_JWT_SECRET` と分けるのは scope を局所化するため (pair session が
+   *  漏洩しても device-flow JWT には影響しない)。未設定 → /mcp/pair/* は 503。 */
+  SESSION_COOKIE_SECRET?: string;
 }
 
 function errorResponse(status: number, message: string): Response {
@@ -210,6 +217,12 @@ async function dispatchMcpRelay(
   if (url.pathname === "/authorize" && request.method === "GET") {
     return handleMcpAuthorize(request, env);
   }
+  // issue #144: 1-click pair の起点。binary が `POST /mcp/pair/new` を
+  // mcp(-staging).ippoan.org に叩いて pair_code + pair_url を取得する。
+  // 認証なしの匿名 endpoint だが rate-limit を入れる (mcp-pair-new.ts)。
+  if (url.pathname === "/mcp/pair/new" && request.method === "POST") {
+    return handleMcpPairNew(request, env);
+  }
   // ADR-004 (cc-relay/ARCHITECTURE.md): GitHub webhook を受け、既存
   // McpSession DO 経由で attached binary に broadcast する (multiplex)。
   if (url.pathname === "/webhooks/github" && request.method === "POST") {
@@ -234,6 +247,21 @@ export default {
       if (relay) return relay;
 
       if (request.method === "GET") {
+        // issue #144: 1-click pair の claim endpoint。`/mcp/pair/<code>` を
+        // ブラウザが踏むと cookie verify → KV approve → success HTML。
+        // cookie 不在なら GitHub OAuth に飛ばし、`/mcp/pair_callback` で
+        // cookie 確立後にこの URL に戻ってくる。
+        if (url.pathname.startsWith("/mcp/pair/")) {
+          const rest = url.pathname.slice("/mcp/pair/".length);
+          // `/mcp/pair/new` は POST 専用 (relay host にも置いた)。GET で来たら 405。
+          if (rest === "new") {
+            return errorResponse(405, "Method not allowed");
+          }
+          if (rest && !rest.includes("/")) {
+            return await handleMcpPairClaim(request, env, rest);
+          }
+          return errorResponse(404, "Not found");
+        }
         // Dynamic path: /join/:slug and /join/:slug/done
         if (url.pathname.startsWith("/join/")) {
           const parts = url.pathname.split("/");
@@ -314,6 +342,9 @@ export default {
           // MCP OAuth Provider — Authorization Code GitHub OAuth callback (Phase 5)
           case "/mcp/auth_callback":
             return await handleMcpAuthCallback(request, env);
+          // MCP OAuth Provider — 1-click pair GitHub OAuth callback (issue #144)
+          case "/mcp/pair_callback":
+            return await handleMcpPairCallback(request, env);
           default:
             return errorResponse(404, "Not found");
         }

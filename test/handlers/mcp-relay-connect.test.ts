@@ -30,8 +30,9 @@ class ResponseWithStatus extends OriginalResponse {
   ResponseWithStatus as unknown as typeof Response;
 
 import { handleMcpRelayConnect } from "../../src/handlers/mcp-relay-connect";
-import { createMockEnv } from "../helpers/mock-env";
+import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
 import { signMcpJwt } from "../../src/lib/mcp-jwt";
+import { PAIR_CODE_TTL_SEC, putPair, type PairRecord } from "../../src/lib/mcp-pair";
 import type { Env } from "../../src/index";
 
 const TEST_SECRET = "test-mcp-jwt-secret-32chars!!!!!!!";
@@ -256,5 +257,156 @@ describe("handleMcpRelayConnect — user-less mode (ADR-003)", () => {
       null,
     );
     expect(res.status).toBe(401);
+  });
+});
+
+// issue #144: WS upgrade で Bearer <pair_code> を受け取って KV approve 状態を
+// 確認できる path のテスト。
+describe("handleMcpRelayConnect — pair_code path (issue #144)", () => {
+  function envWithDOAndKv(
+    stubFetch?: (req: Request) => Promise<Response>,
+  ): {
+    env: Env;
+    kv: MockKV;
+    idFromNameCalls: string[];
+    fetchCalls: Request[];
+  } {
+    const { ns, idFromNameCalls, fetchCalls } = mockDONamespace(
+      stubFetch ?? (async () => new Response(null, { status: 101 })),
+    );
+    const kv = createMockKV() as MockKV;
+    const env = createMockEnv({
+      MCP_JWT_SECRET: TEST_SECRET,
+      MCP_SESSION_DO: ns,
+      MCP_OAUTH_KV: kv,
+    });
+    return { env, kv, idFromNameCalls, fetchCalls };
+  }
+
+  function pairRec(overrides: Partial<PairRecord> = {}): PairRecord {
+    const now = Date.now();
+    return {
+      pair_code: "PAIRCODE_x".padEnd(40, "x"),
+      claim_login: "alice",
+      binary_version: "v0.0.13",
+      created_at: now,
+      expires_at: now + PAIR_CODE_TTL_SEC * 1000,
+      status: "approved",
+      binding_jwt: "BINDING-JWT-VALUE",
+      ...overrides,
+    };
+  }
+
+  it("forwards approved pair_code as DO request with binding_jwt in Authorization", async () => {
+    const { env, kv, idFromNameCalls, fetchCalls } = envWithDOAndKv();
+    const rec = pairRec();
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${rec.pair_code}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(101);
+    expect(idFromNameCalls).toEqual(["alice"]);
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.headers.get("Authorization")).toBe("Bearer BINDING-JWT-VALUE");
+    // pair_code は使い捨てなので削除されている
+    expect(kv._data[`mcp/pair/${rec.pair_code}`]).toBeUndefined();
+  });
+
+  it("returns 401 + Pair-Status: pending when status=pending", async () => {
+    const { env, kv } = envWithDOAndKv();
+    const rec = pairRec({ status: "pending", binding_jwt: null });
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${rec.pair_code}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get("Pair-Status")).toBe("pending");
+    // WWW-Authenticate は付けない (device flow への fallback を防ぐ)
+    expect(res.headers.get("WWW-Authenticate")).toBeNull();
+    // pair_code は消されない (binary が retry できるよう保持)
+    expect(kv._data[`mcp/pair/${rec.pair_code}`]).toBeDefined();
+  });
+
+  it("returns 401 + WWW-Authenticate when pair_code not found", async () => {
+    const { env } = envWithDOAndKv();
+    const code = "no-such-code-".padEnd(40, "x");
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${code}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBeTruthy();
+    expect(res.headers.get("Pair-Status")).toBeNull();
+  });
+
+  it("returns 401 when approved pair_code has null binding_jwt (defensive)", async () => {
+    const { env } = envWithDOAndKv();
+    const rec = pairRec({ status: "approved", binding_jwt: null });
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${rec.pair_code}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBeTruthy();
+  });
+
+  it("returns 401 when token has invalid pair_code format (not base64url long enough)", async () => {
+    const { env } = envWithDOAndKv();
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: "Bearer short" }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 when pair claim_login does not match :user", async () => {
+    const { env } = envWithDOAndKv();
+    const rec = pairRec({ claim_login: "alice" });
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${rec.pair_code}` }),
+      env,
+      "bob",
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("user-less mode: uses pair.claim_login as DO key", async () => {
+    const { env, idFromNameCalls } = envWithDOAndKv();
+    const rec = pairRec({ claim_login: "yhonda-ohishi" });
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({
+        url: "https://mcp.test.example/connect",
+        upgrade: "websocket",
+        auth: `Bearer ${rec.pair_code}`,
+      }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(101);
+    expect(idFromNameCalls).toEqual(["yhonda-ohishi"]);
+  });
+
+  it("deletes pair_code even when DO returns non-101 (still single-use)", async () => {
+    const stubFetch = vi.fn(async () => new Response("nope", { status: 503 }));
+    const { env, kv } = envWithDOAndKv(stubFetch);
+    const rec = pairRec();
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${rec.pair_code}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(503);
+    expect(kv._data[`mcp/pair/${rec.pair_code}`]).toBeUndefined();
   });
 });
