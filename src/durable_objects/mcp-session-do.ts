@@ -341,16 +341,17 @@ export class McpSession implements DurableObject {
     //
     // hibernated WS は readyState OPEN を返す (CF 仕様) ので filter には残る。
     // fake mock (test) は readyState 未定義 → undefined !== 1 で除外される。
-    const open = active.filter((w) => {
+    const safeReadyState = (w: unknown): number | "throw" => {
       try {
-        return (w as WebSocket).readyState === WS_READY_STATE_OPEN;
+        return (w as WebSocket).readyState;
       } catch {
-        return false;
+        return "throw";
       }
-    });
+    };
+    const open = active.filter((w) => safeReadyState(w) === WS_READY_STATE_OPEN);
     console.log(
       `[mcp-relay] handleBridge: ws_count=${active.length} open=${open.length} states=[${active
-        .map((w) => String((w as WebSocket).readyState))
+        .map((w) => String(safeReadyState(w)))
         .join(",")}] pending=${this.pending.size}`,
     );
     if (open.length === 0) {
