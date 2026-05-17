@@ -43,6 +43,13 @@ export interface McpSessionEnv {
 /** `state.acceptWebSocket()` に渡す tag — `getWebSockets("client")` で参照する */
 const WS_TAG = "client";
 
+/**
+ * `WebSocket.readyState` の OPEN 値 (= 1)。`WebSocket.OPEN` static は Workers
+ * runtime の型定義に無いケースがあるので literal で持つ。spec:
+ * https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/readyState
+ */
+const WS_READY_STATE_OPEN = 1;
+
 /** Frame schema version (binary 側 #27 と一致させる)。 */
 const FRAME_VERSION = 1;
 
@@ -327,19 +334,28 @@ export class McpSession implements DurableObject {
 
   private async handleBridge(req: Request): Promise<Response> {
     const active = this.state.getWebSockets(WS_TAG);
-    // [tracer #123] stale WS race の症状特定用。
-    // `502 Can't call WebSocket send() after close()` が出る時は ws_count >= 1
-    // かつ states に CLOSING(2) / CLOSED(3) が混じっているはず。Hibernated WS の
-    // readyState が test 環境と本番で同じ値かも観測。確定後は削除予定。
-    // 実 WebSocket は readyState getter を持つので throw しない (fake mock は
-    // undefined → "undefined" 出力で OK)。
+    // [#123] stale WS race fix: binary が aggressive reconnect している隙間で
+    // auth-worker が古い (close 済) WS を `active[0]` として掴むと
+    // `ws.send()` が `Can't call WebSocket send() after close()` を投げ
+    // 502 relay_send_failed になる。readyState === OPEN (1) のものだけ採用する。
+    //
+    // hibernated WS は readyState OPEN を返す (CF 仕様) ので filter には残る。
+    // fake mock (test) は readyState 未定義 → undefined !== 1 で除外される。
+    const safeReadyState = (w: unknown): number | "throw" => {
+      try {
+        return (w as WebSocket).readyState;
+      } catch {
+        return "throw";
+      }
+    };
+    const open = active.filter((w) => safeReadyState(w) === WS_READY_STATE_OPEN);
     console.log(
-      `[mcp-relay] handleBridge: ws_count=${active.length} states=[${active
-        .map((w) => String((w as WebSocket).readyState))
+      `[mcp-relay] handleBridge: ws_count=${active.length} open=${open.length} states=[${active
+        .map((w) => String(safeReadyState(w)))
         .join(",")}] pending=${this.pending.size}`,
     );
-    if (active.length === 0) {
-      // ADR-003: WS relay 未接続時は inline stub MCP server で応答する。
+    if (open.length === 0) {
+      // ADR-003: WS relay 未接続 (or 全 stale) 時は inline stub MCP server で応答する。
       // 503 を返すと Anthropic 側 connector が "Authorization failed" を誤表示する
       // ため、最低限の MCP JSON-RPC (initialize / tools/list / tools/call) は本 DO で
       // 自前応答し、connector を「接続済み・stub tool 1 個」状態にする。
@@ -351,7 +367,10 @@ export class McpSession implements DurableObject {
       // webhook 受信 → polling drain」が完結する。
       return this.handleInlineMcp(req);
     }
-    const ws = active[0] as WebSocket;
+    // 複数 OPEN WS が並んだ場合は最新 (= 配列末尾) を優先。
+    // handleConnect は新規接続時に getWebSockets を見て古い WS を
+    // `close(1000, "replaced")` するので通常は 1 本のみ。
+    const ws = open[open.length - 1] as WebSocket;
 
     const id = crypto.randomUUID();
 

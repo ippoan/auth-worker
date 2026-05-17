@@ -42,13 +42,16 @@ interface FakeWebSocket {
   close: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
   __id: string;
+  /** WebSocket.readyState — DO は OPEN(1) のみ採用するので default は OPEN。 */
+  readyState: number;
 }
 
-function makeFakeWs(id: string): FakeWebSocket {
+function makeFakeWs(id: string, readyState: number = 1 /* OPEN */): FakeWebSocket {
   return {
     close: vi.fn(),
     send: vi.fn(),
     __id: id,
+    readyState,
   };
 }
 
@@ -1086,6 +1089,113 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     const ab = new ArrayBuffer(u8.byteLength);
     new Uint8Array(ab).set(u8);
     await do_.webSocketMessage(ws as unknown as WebSocket, ab);
+  });
+
+  // ---------------------------------------------------------------------------
+  // #123: stale (closed) WS race を弾く readyState filter
+  // ---------------------------------------------------------------------------
+
+  it("#123: stale WS (readyState=CLOSED) を skip して inline stub に流す", async () => {
+    // binary が aggressive reconnect している隙間で active[0] が CLOSED の状態。
+    // 旧コードは `ws.send()` で throw → 502 relay_send_failed を返していた。
+    // 新コードは readyState !== OPEN の WS を filter し、open=0 なら inline stub。
+    const stale = makeFakeWs("stale", 3 /* CLOSED */);
+    const { state } = createMockState([stale]);
+    const do_ = new McpSession(state, {});
+
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18" },
+      }),
+    });
+    const res = await do_.fetch(req);
+    // inline stub が応答するので 200 + cc-relay-stub serverInfo になる。
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { serverInfo: { name: string } };
+    };
+    expect(body.result.serverInfo.name).toBe("cc-relay-stub");
+    // stale WS には絶対に send しない (これが 502 を防ぐ核)
+    expect(stale.send).not.toHaveBeenCalled();
+  });
+
+  it("#123: mix of OPEN + CLOSED — OPEN だけ採用して bridge する", async () => {
+    setStubUUID("uuid-mix");
+    const stale = makeFakeWs("stale", 3 /* CLOSED */);
+    const fresh = makeFakeWs("fresh", 1 /* OPEN */);
+    // 配列順: [stale, fresh] — 旧コードは active[0] = stale を掴んで失敗していた。
+    const { state } = createMockState([stale, fresh]);
+    const do_ = new McpSession(state, {});
+    const sentP = whenSent(fresh);
+
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", { method: "POST", body: "x" }),
+    );
+    const sent = JSON.parse(await sentP);
+    expect(sent.id).toBe("uuid-mix");
+    // stale には触らない
+    expect(stale.send).not.toHaveBeenCalled();
+
+    await do_.webSocketMessage(
+      fresh as unknown as WebSocket,
+      JSON.stringify({ kind: "resp", v: 1, id: "uuid-mix", status: 200 }),
+    );
+    const res = await respPromise;
+    expect(res.status).toBe(200);
+  });
+
+  it("#123: multiple OPEN WS — 最新 (末尾) を採用", async () => {
+    setStubUUID("uuid-latest");
+    const older = makeFakeWs("older", 1 /* OPEN */);
+    const newer = makeFakeWs("newer", 1 /* OPEN */);
+    const { state } = createMockState([older, newer]);
+    const do_ = new McpSession(state, {});
+    const sentP = whenSent(newer);
+
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", { method: "POST", body: "x" }),
+    );
+    await sentP;
+    expect(newer.send).toHaveBeenCalled();
+    expect(older.send).not.toHaveBeenCalled();
+
+    await do_.webSocketMessage(
+      newer as unknown as WebSocket,
+      JSON.stringify({ kind: "resp", v: 1, id: "uuid-latest", status: 200 }),
+    );
+    await respPromise;
+  });
+
+  it("#123: readyState getter が throw する WS は除外する", async () => {
+    // hibernated WS の getter が稀に throw する可能性 (CF 仕様で未保証) への defensive。
+    const throwy = {
+      close: vi.fn(),
+      send: vi.fn(),
+      __id: "throwy",
+      get readyState(): number {
+        throw new Error("hibernated handle");
+      },
+    } as unknown as FakeWebSocket;
+    const { state } = createMockState([throwy]);
+    const do_ = new McpSession(state, {});
+
+    const req = new Request("https://do.invalid/__bridge", {
+      method: "POST",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      }),
+    });
+    const res = await do_.fetch(req);
+    // inline stub にフォールバック (throw した WS は OPEN とみなさない)
+    expect(res.status).toBe(200);
+    expect(throwy.send).not.toHaveBeenCalled();
   });
 });
 
