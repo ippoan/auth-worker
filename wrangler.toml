@@ -81,6 +81,15 @@ custom_domain = true
 #                             どちらも ippoan org 所有 OAuth App, scope は read:user + repo)
 # GITHUB_MCP_CLIENT_SECRET   (同上 Secret)
 # MCP_JWT_SECRET             (HS256 secret for MCP access tokens (JWT); 既存 JWT_SECRET と別管理)
+# SESSION_COOKIE_SECRET      (issue #144: 1-click pair flow の `mcp_pair_session` cookie 署名鍵。
+#                             MCP_JWT_SECRET と分けるのは pair session 漏洩を device-flow JWT から
+#                             隔離するため。**未設定だと /mcp/pair/* が 503 を返す** ので
+#                             github-mcp-server-rs#42 の 1-click pair flow が完全に止まる。
+#                             prod / staging で別値を発行する:
+#                               openssl rand -hex 32 | wrangler secret put SESSION_COOKIE_SECRET                  # prod (top-level config)
+#                               openssl rand -hex 32 | wrangler secret put SESSION_COOKIE_SECRET --env staging    # staging
+#                             ※ この repo の wrangler.toml は top-level = prod、`[env.staging]` のみ override。
+#                                `--env production` block は存在しないので `--env=production` は error になる)
 # INTERNAL_SHARED_SECRET     (Rust binary github-mcp-server-rs が /mcp/introspect 叩く際の Bearer)
 # GITHUB_MCP_USER_ALLOWLIST  (JSON array of github logins, e.g. ["yhonda-ohishi"]; fail-closed)
 # GITHUB_WEBHOOK_SECRET      (ADR-004: HMAC-SHA256 shared secret for `POST /webhooks/github`.
