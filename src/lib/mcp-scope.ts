@@ -2,8 +2,9 @@
  * MCP OAuth Provider — 抽象 MCP scope ⇄ GitHub OAuth scope の翻訳。
  *
  * `/mcp/device_authorization` `/mcp/authorize` で consumer から受け取る抽象 scope
- * (`mcp.read` / `mcp.write` / `offline_access`) を GitHub `/login/oauth/authorize`
- * の `scope` パラメータ (`read:user` / `read:user repo`) に翻訳する単一の map。
+ * (`mcp.read` / `mcp.write` / `mcp.admin` / `offline_access`) を GitHub
+ * `/login/oauth/authorize` の `scope` パラメータ (`read:user` / `read:user repo`) に
+ * 翻訳する単一の map。
  *
  * 下位互換: scope 省略 / unknown 値のみの場合は `mcp.read` に decay (issue #130)。
  * github-mcp-server-rs は scope 未指定で device_authorization を叩くため、従来の
@@ -18,6 +19,7 @@
 export const MCP_SCOPES_SUPPORTED = [
   "mcp.read",
   "mcp.write",
+  "mcp.admin",
   "offline_access",
 ] as const;
 
@@ -51,13 +53,21 @@ export function normalizeMcpScope(raw: string): string {
 /**
  * MCP scope set → GitHub OAuth scope 文字列。
  *
- * - `mcp.write` ∈ scopes → `"read:user repo"` (Issues r/w + private repo 含む完全アクセス)
- * - その他                  → `"read:user"`  (login 取得用最小権限)
+ * - `mcp.write` または `mcp.admin` ∈ scopes → `"read:user repo"`
+ * - その他                                   → `"read:user"`
  *
  * `read:user` は GitHub `/user` で `login` を取るのに必須なので常に含む。
  * `repo` scope は GitHub OAuth (classic) の粒度の制約上 Issues 単独 scope がない
  * ため private repo Issues 操作を許可する最小選択肢として採用 (issue #130 Q&A)。
+ *
+ * `mcp.admin` (branch protection 系) も classic OAuth 上では `repo` scope に含まれる
+ * ため `mcp.write` と同じ翻訳で十分。binary 側 (github-mcp-server-rs) の scope
+ * factory が tool surface を branch_protection 3 個だけに絞ることで、token が広い
+ * GitHub scope を持っても MCP tool 経由での副作用は最小化される。fine-grained
+ * `Administration:write` への移行は別議題。
  */
 export function mcpToGithubScope(scopes: ReadonlySet<string>): string {
-  return scopes.has("mcp.write") ? "read:user repo" : "read:user";
+  return scopes.has("mcp.write") || scopes.has("mcp.admin")
+    ? "read:user repo"
+    : "read:user";
 }
