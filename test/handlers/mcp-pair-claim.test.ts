@@ -189,14 +189,17 @@ describe("handleMcpPairClaim — success", () => {
     //   するので、ここでは getPair → 直後に手動で delete することで擬似的に再現する。
     // この test は実装の race window 取扱 (= updated null → 404 path) のみ確認。
     // approve 直前で消すために、kv.get を一時的に書き換える。
-    const realGet = kv.get.bind(kv);
+    // KVNamespace.get は overload なので Promise<string|null> 単一型に再代入できない。
+    // cast して race を模擬する。
+    const realGet = (kv.get as (k: string) => Promise<string | null>).bind(kv);
     let getCount = 0;
-    kv.get = async (key: string) => {
+    const stubGet = async (key: string): Promise<string | null> => {
       getCount++;
       // 1 回目 (handler 側 getPair) は record を返し、2 回目 (approvePair 側) は null
       if (key === "mcp/pair/PC1" && getCount === 2) return null;
       return realGet(key);
     };
+    (kv as unknown as { get: (k: string) => Promise<string | null> }).get = stubGet;
     const sess = await signPairSession("alice", SESSION_SECRET);
     const res = await handleMcpPairClaim(
       await reqWith({ cookie: `${PAIR_SESSION_COOKIE_NAME}=${sess}` }),
