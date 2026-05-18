@@ -28,6 +28,13 @@ class_name = "LineworksWebhookDO"
 name = "MCP_SESSION_DO"
 class_name = "McpSession"
 
+# Phase 1 admin auth (issue #42 follow-up) — GitHub App installation access
+# token cache。idFromName(installation_id) 単位で 1 instance、token は ~55min
+# memory + storage に保持する。
+[[durable_objects.bindings]]
+name = "INSTALLATION_TOKEN_DO"
+class_name = "InstallationTokenStore"
+
 # ADR-004 (cc-relay) — multiplex 修正版: 専用 DO は作らず、既存 McpSession
 # DO に /__push_event を追加して webhook を broadcast する。
 # (旧 IssueRoomDO は v3 migration で導入したが、本 PR で機能ごと撤去。
@@ -48,6 +55,10 @@ new_sqlite_classes = ["IssueRoomDO"]
 [[migrations]]
 tag = "v4-remove-issue-room"
 deleted_classes = ["IssueRoomDO"]
+
+[[migrations]]
+tag = "v5-installation-token"
+new_sqlite_classes = ["InstallationTokenStore"]
 
 [observability]
 enabled = true
@@ -83,6 +94,11 @@ custom_domain = true
 # GITHUB_MCP_USER_ALLOWLIST  (JSON array of github logins, e.g. ["yhonda-ohishi"]; fail-closed)
 # GITHUB_WEBHOOK_SECRET      (ADR-004: HMAC-SHA256 shared secret for `POST /webhooks/github`.
 #                             public issue 前提なので authn ではなく spam 対策、全 repo 共通値)
+# GITHUB_APP_ID              (Phase 1 admin auth: GitHub App numeric id, e.g. "123456")
+# GITHUB_APP_PRIVATE_KEY     (Phase 1 admin auth: PEM PKCS8 RSA private key, multiline secret)
+# GITHUB_APP_INSTALLATION_ID (Phase 1 admin auth: installation id under the target org, numeric)
+# MCP_ADMIN_ALLOWLIST        (Phase 1 admin auth: JSON array of github logins allowed to elevate;
+#                             missing / malformed → fail-closed)
 #
 # Allowlist (managed via `wrangler kv key put --remote --namespace-id=f13ecae4b69043819c09f606abb84797 <key>`):
 #   origins:prod    - production frontends
@@ -127,6 +143,10 @@ class_name = "LineworksWebhookDO"
 name = "MCP_SESSION_DO"
 class_name = "McpSession"
 
+[[env.staging.durable_objects.bindings]]
+name = "INSTALLATION_TOKEN_DO"
+class_name = "InstallationTokenStore"
+
 [[env.staging.migrations]]
 tag = "v1-lineworks-webhook"
 new_sqlite_classes = ["LineworksWebhookDO"]
@@ -142,3 +162,7 @@ new_sqlite_classes = ["IssueRoomDO"]
 [[env.staging.migrations]]
 tag = "v4-remove-issue-room"
 deleted_classes = ["IssueRoomDO"]
+
+[[env.staging.migrations]]
+tag = "v5-installation-token"
+new_sqlite_classes = ["InstallationTokenStore"]
