@@ -8,6 +8,8 @@
  * - cookie 有り + match → approve + 200 HTML
  * - 既に approved → 200 HTML (idempotent)
  * - approve race (approvePair が null) → 404
+ * - requested_scope が record にあれば binding_jwt.scope に焼かれる
+ * - requested_scope が record に無い (legacy) → "mcp.read mcp.write" に decay
  */
 
 import { describe, it, expect } from "vitest";
@@ -160,6 +162,7 @@ describe("handleMcpPairClaim — success", () => {
     );
     expect(payload).not.toBeNull();
     expect(payload?.github_login).toBe("alice");
+    // legacy record (requested_scope なし) → default
     expect(payload?.scope).toBe("mcp.read mcp.write");
   });
 
@@ -207,5 +210,74 @@ describe("handleMcpPairClaim — success", () => {
       "PC1",
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("handleMcpPairClaim — requested_scope plumbing", () => {
+  it("honors record.requested_scope=mcp.admin in binding_jwt.scope", async () => {
+    const { env, kv } = envWithKv();
+    await putPair(
+      env,
+      pairRec({ claim_login: "alice", requested_scope: "mcp.admin" }),
+    );
+    const sess = await signPairSession("alice", SESSION_SECRET);
+    const res = await handleMcpPairClaim(
+      await reqWith({ cookie: `${PAIR_SESSION_COOKIE_NAME}=${sess}` }),
+      env,
+      "PC1",
+    );
+    expect(res.status).toBe(200);
+    const updated = JSON.parse(kv._data["mcp/pair/PC1"]!) as PairRecord;
+    const payload = await verifyMcpJwt(
+      updated.binding_jwt!,
+      MCP_JWT_SECRET,
+      "github-mcp-server-rs",
+    );
+    expect(payload?.scope).toBe("mcp.admin");
+    // success HTML にも scope が表示される (運用デバッグ用)
+    const html = await res.text();
+    expect(html).toContain("mcp.admin");
+  });
+
+  it("honors record.requested_scope=mcp.read in binding_jwt.scope (read-only)", async () => {
+    const { env, kv } = envWithKv();
+    await putPair(
+      env,
+      pairRec({ claim_login: "alice", requested_scope: "mcp.read" }),
+    );
+    const sess = await signPairSession("alice", SESSION_SECRET);
+    const res = await handleMcpPairClaim(
+      await reqWith({ cookie: `${PAIR_SESSION_COOKIE_NAME}=${sess}` }),
+      env,
+      "PC1",
+    );
+    expect(res.status).toBe(200);
+    const updated = JSON.parse(kv._data["mcp/pair/PC1"]!) as PairRecord;
+    const payload = await verifyMcpJwt(
+      updated.binding_jwt!,
+      MCP_JWT_SECRET,
+      "github-mcp-server-rs",
+    );
+    expect(payload?.scope).toBe("mcp.read");
+  });
+
+  it("legacy record without requested_scope → defaults to 'mcp.read mcp.write'", async () => {
+    const { env, kv } = envWithKv();
+    // pairRec helper は requested_scope を set しない → legacy record 相当
+    await putPair(env, pairRec({ claim_login: "alice" }));
+    const sess = await signPairSession("alice", SESSION_SECRET);
+    const res = await handleMcpPairClaim(
+      await reqWith({ cookie: `${PAIR_SESSION_COOKIE_NAME}=${sess}` }),
+      env,
+      "PC1",
+    );
+    expect(res.status).toBe(200);
+    const updated = JSON.parse(kv._data["mcp/pair/PC1"]!) as PairRecord;
+    const payload = await verifyMcpJwt(
+      updated.binding_jwt!,
+      MCP_JWT_SECRET,
+      "github-mcp-server-rs",
+    );
+    expect(payload?.scope).toBe("mcp.read mcp.write");
   });
 });

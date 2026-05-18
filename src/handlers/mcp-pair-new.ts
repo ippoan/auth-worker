@@ -7,7 +7,8 @@
  * Request body (JSON):
  *   {
  *     "claim_login": "yhonda-ohishi",    // user 自身が公開する値 (cf. github username)
- *     "binary_version": "v0.0.13"        // optional, debug 用
+ *     "binary_version": "v0.0.13",       // optional, debug 用
+ *     "requested_scope": "mcp.admin"     // optional, default "mcp.read mcp.write"
  *   }
  *
  * Response (JSON):
@@ -16,6 +17,11 @@
  *     "pair_url": "https://auth.ippoan.org/mcp/pair/<pair_code>",
  *     "expires_in": 300
  *   }
+ *
+ * `requested_scope` は `normalizeMcpScope` で whitelist 通過 + canonical 順に
+ * 正規化されたうえで KV record に保存される。binding_jwt の `scope` claim はこの
+ * 値から焼かれる (`mcp-pair-claim.ts` で参照)。空文字や unknown のみの場合は
+ * "mcp.read" に decay する (parseMcpScope の既存挙動)。
  *
  * Rate-limit: 同一 source IP から 10/min (`cf-connecting-ip`)。bind 不在は許容。
  */
@@ -29,10 +35,14 @@ import {
   putPair,
   type PairRecord,
 } from "../lib/mcp-pair";
+import { normalizeMcpScope } from "../lib/mcp-scope";
+
+const DEFAULT_REQUESTED_SCOPE = "mcp.read mcp.write";
 
 interface PairNewRequest {
   claim_login?: unknown;
   binary_version?: unknown;
+  requested_scope?: unknown;
 }
 
 export async function handleMcpPairNew(
@@ -71,6 +81,11 @@ export async function handleMcpPairNew(
   const claim_login = body.claim_login;
   const binary_version =
     typeof body.binary_version === "string" ? body.binary_version : "unknown";
+  const requested_scope = normalizeMcpScope(
+    typeof body.requested_scope === "string" && body.requested_scope
+      ? body.requested_scope
+      : DEFAULT_REQUESTED_SCOPE,
+  );
 
   // ── rate limit ────────────────────────────────────────────────────────
   const ip = request.headers.get("cf-connecting-ip") ?? "anon";
@@ -93,6 +108,7 @@ export async function handleMcpPairNew(
     expires_at: now + PAIR_CODE_TTL_SEC * 1000,
     status: "pending",
     binding_jwt: null,
+    requested_scope,
   };
   await putPair(env, rec);
 

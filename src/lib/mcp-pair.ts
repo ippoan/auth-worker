@@ -29,6 +29,20 @@ export interface PairRecord {
   /** approve 後の MCP access JWT (aud=github-mcp-server-rs, ttl=24h)。
    *  WS upgrade で pair_code を受け取った時に内部的にこれへ置換する。 */
   binding_jwt: string | null;
+  /**
+   * binding_jwt に焼き込む MCP scope。pair_code 発行時にクライアントが
+   * `POST /mcp/pair/new` の `requested_scope` で要求した値を normalize した
+   * space-separated 文字列。
+   *
+   * legacy record (この field が無い) は `"mcp.read mcp.write"` 相当として扱う
+   * (backward compat — `mcp-pair-claim.ts` 側で `??` 補完)。
+   *
+   * 例:
+   *  - `"mcp.read mcp.write"` (default) — 既存 binary の挙動
+   *  - `"mcp.admin"`                   — branch protection 専用 token
+   *                                       (binary 側 factory が 3 tools のみ expose)
+   */
+  requested_scope?: string;
 }
 
 /** issue #144 spec: 5 min。binary 側 polling (2s 間隔 / 最大 5 min) と一致。 */

@@ -9,6 +9,8 @@
  *      - 不在 / expired → 404 HTML "code expired"
  *      - claim_login !== session.github_login → 403 HTML "user mismatch"
  *   3. binding_jwt を mint (`signMcpJwt`, aud=github-mcp-server-rs, ttl=24h)
+ *      - `scope` claim は record.requested_scope (legacy record は
+ *        `"mcp.read mcp.write"` に default)
  *   4. KV record を status="approved" + binding_jwt に更新
  *   5. 200 HTML "paired, you may close this window"
  *
@@ -33,6 +35,10 @@ import { generateOAuthState } from "../lib/security";
 const BINDING_JWT_TTL_SEC = 60 * 60 * 24;
 
 const MCP_AUD = "github-mcp-server-rs";
+
+/** legacy PairRecord (`requested_scope` 無し) を読んだ時の fallback。
+ *  PR #62 (auth-worker) 以前に putPair された record の挙動を維持する。 */
+const LEGACY_DEFAULT_SCOPE = "mcp.read mcp.write";
 
 function htmlResponse(html: string, status: number): Response {
   return new Response(html, {
@@ -118,6 +124,8 @@ export async function handleMcpPairClaim(
       "scope",
       // pair 用は scope = "" (login 取得のみ) で十分だが、device/auth flow と
       // 同じ scope を要求して GitHub 側 cookie session を再利用しやすくする。
+      // record.requested_scope が `mcp.admin` だけでも `mcpToGithubScope` が
+      // `repo` を返すため branch protection API も叩ける。
       mcpToGithubScope(parseMcpScope("mcp.read mcp.write")),
     );
     ghAuthorize.searchParams.set("state", state);
@@ -156,11 +164,12 @@ export async function handleMcpPairClaim(
   }
 
   // ── mint binding_jwt + approve ──────────────────────────────────────
+  const scope = rec.requested_scope ?? LEGACY_DEFAULT_SCOPE;
   const binding_jwt = await signMcpJwt(
     {
       sub: `github:${session.github_login}`,
       github_login: session.github_login,
-      scope: "mcp.read mcp.write",
+      scope,
       aud: MCP_AUD,
     },
     env.MCP_JWT_SECRET,
@@ -181,7 +190,7 @@ export async function handleMcpPairClaim(
     title: "Paired ✓",
     body: `<p>Signed in as <code>${escapeHtml(session.github_login)}</code>. The MCP relay will start within ~5 seconds.</p>
 <p>You may close this window.</p>
-<p class="muted">Cookie name: <code>${PAIR_SESSION_COOKIE_NAME}</code>. Session is valid for 30 minutes.</p>`,
+<p class="muted">Cookie name: <code>${PAIR_SESSION_COOKIE_NAME}</code>. Session is valid for 30 minutes. Scope: <code>${escapeHtml(scope)}</code>.</p>`,
     status: 200,
     color: "#15803d",
   });

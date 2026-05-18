@@ -146,6 +146,65 @@ describe("handleMcpPairNew — success path", () => {
   });
 });
 
+describe("handleMcpPairNew — requested_scope plumbing", () => {
+  it("defaults requested_scope to 'mcp.read mcp.write' when omitted", async () => {
+    const { env, kv } = envWithKv();
+    const res = await handleMcpPairNew(req({ body: { claim_login: "alice" } }), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pair_code: string };
+    const rec = JSON.parse(kv._data[`mcp/pair/${body.pair_code}`]!) as PairRecord;
+    expect(rec.requested_scope).toBe("mcp.read mcp.write");
+  });
+
+  it("persists requested_scope=mcp.admin verbatim (admin-only token)", async () => {
+    const { env, kv } = envWithKv();
+    const res = await handleMcpPairNew(
+      req({ body: { claim_login: "alice", requested_scope: "mcp.admin" } }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pair_code: string };
+    const rec = JSON.parse(kv._data[`mcp/pair/${body.pair_code}`]!) as PairRecord;
+    expect(rec.requested_scope).toBe("mcp.admin");
+  });
+
+  it("normalizes requested_scope to canonical MCP_SCOPES_SUPPORTED order", async () => {
+    const { env, kv } = envWithKv();
+    const res = await handleMcpPairNew(
+      req({ body: { claim_login: "alice", requested_scope: "mcp.admin mcp.write mcp.read" } }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pair_code: string };
+    const rec = JSON.parse(kv._data[`mcp/pair/${body.pair_code}`]!) as PairRecord;
+    expect(rec.requested_scope).toBe("mcp.read mcp.write mcp.admin");
+  });
+
+  it("unknown-only requested_scope decays to 'mcp.read' (RFC 6749 §3.3 ignore)", async () => {
+    const { env, kv } = envWithKv();
+    const res = await handleMcpPairNew(
+      req({ body: { claim_login: "alice", requested_scope: "garbage another" } }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pair_code: string };
+    const rec = JSON.parse(kv._data[`mcp/pair/${body.pair_code}`]!) as PairRecord;
+    expect(rec.requested_scope).toBe("mcp.read");
+  });
+
+  it("non-string requested_scope ignored, default applies", async () => {
+    const { env, kv } = envWithKv();
+    const res = await handleMcpPairNew(
+      req({ body: { claim_login: "alice", requested_scope: 42 } }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pair_code: string };
+    const rec = JSON.parse(kv._data[`mcp/pair/${body.pair_code}`]!) as PairRecord;
+    expect(rec.requested_scope).toBe("mcp.read mcp.write");
+  });
+});
+
 describe("handleMcpPairNew — rate limit", () => {
   it("429 after 10 requests in 1 minute from same IP", async () => {
     const { env } = envWithKv();
