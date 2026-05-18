@@ -8,10 +8,13 @@ import {
   handleMcpElevateStart,
   handleMcpElevateCallback,
 } from "../../src/handlers/mcp-elevate";
+import { decryptWithKey } from "../../src/lib/mcp-crypto";
+import { verifyMcpJwtSignatureOnly } from "../../src/lib/mcp-jwt";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 const ISSUER = "https://auth.test.example";
+const TEST_MCP_JWT_SECRET = "test-mcp-jwt-secret-32chars!";
 
 function envWithKv(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
   const kv = createMockKV() as MockKV;
@@ -381,6 +384,75 @@ describe("handleMcpElevateCallback", () => {
       expect(res.headers.get("Content-Type")).toContain("text/html");
       const body = await res.text();
       expect(body).toContain("Admin elevation granted");
+    });
+
+    it("stashes a fresh JWT pickup in KV when MCP_JWT_SECRET configured", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      const { env, kv } = envWithKv({
+        MCP_JWT_SECRET: TEST_MCP_JWT_SECRET,
+      });
+      const state = await seedState(env, kv);
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      expect(res.status).toBe(200);
+      // Pickup KV entry is present and encrypted (not raw JSON)
+      const ciphertext = kv._data["mcp_jwt_pickup:github:alice"];
+      expect(ciphertext).toBeDefined();
+      expect(ciphertext).not.toContain("access_token"); // encrypted, not plaintext
+      // Decrypt and verify shape
+      const plaintext = await decryptWithKey(ciphertext!, "test-sso-encryption-key");
+      const blob = JSON.parse(plaintext) as {
+        access_token: string;
+        refresh_token: string;
+        scope: string;
+        expires_in: number;
+      };
+      expect(blob.scope).toBe("mcp.read mcp.write");
+      expect(blob.expires_in).toBe(3600);
+      expect(blob.access_token).toMatch(/^[\w-]+\.[\w-]+\.[\w-]+$/); // JWT shape
+      expect(blob.refresh_token.length).toBeGreaterThan(40);
+      // The minted access_token has the correct sub / aud
+      const payload = await verifyMcpJwtSignatureOnly(
+        blob.access_token,
+        TEST_MCP_JWT_SECRET,
+      );
+      expect(payload).not.toBeNull();
+      expect(payload!.sub).toBe("github:alice");
+      expect(payload!.aud).toBe("github-mcp-server-rs");
+      expect(payload!.github_login).toBe("alice");
+      // TTL set
+      expect(kv._ttls["mcp_jwt_pickup:github:alice"]).toBe(3600);
+    });
+
+    it("does not block the elevate flow when MCP_JWT_SECRET missing (best-effort)", async () => {
+      // The existing success tests already exercise this path (no MCP_JWT_SECRET
+      // in default envWithKv). Pickup mint silently skips and elevation still
+      // returns 200/302 with the elevate flag set.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      const { env, kv } = envWithKv({ MCP_JWT_SECRET: undefined });
+      const state = await seedState(env, kv);
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      // Elevate succeeded
+      expect(res.status).toBe(200);
+      // Elevate flag is set
+      expect(kv._data["elevate:alice"]).toBeDefined();
+      // No pickup entry (mint silently skipped)
+      expect(kv._data["mcp_jwt_pickup:github:alice"]).toBeUndefined();
     });
   });
 });

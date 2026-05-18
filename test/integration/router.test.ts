@@ -153,6 +153,9 @@ vi.mock("../../src/handlers/mcp-token", () => ({
 vi.mock("../../src/handlers/mcp-introspect", () => ({
   handleMcpIntrospect: vi.fn(() => new Response("mcp-introspect")),
 }));
+vi.mock("../../src/handlers/mcp-jwt-pickup", () => ({
+  handleMcpJwtPickup: vi.fn(() => new Response("mcp-jwt-pickup")),
+}));
 vi.mock("../../src/handlers/mcp-tools", () => ({
   handleMcpTools: vi.fn(() => new Response("mcp-tools")),
 }));
@@ -340,6 +343,7 @@ describe("Router (index.ts)", () => {
     ["/device/proceed", "mcp-device-proceed"],
     ["/mcp/token", "mcp-token"],
     ["/mcp/introspect", "mcp-introspect"],
+    ["/mcp/jwt/pickup", "mcp-jwt-pickup"],
     ["/mcp/revoke", "mcp-revoke"],
     ["/mcp/tools", "mcp-tools"],
     ["/mcp/admin/exec", "mcp-admin-exec"],
