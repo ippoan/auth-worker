@@ -146,6 +146,10 @@ export class McpSession implements DurableObject {
       return this.handleConnectSse(req);
     }
 
+    if (url.pathname === "/__notify_elevate") {
+      return this.handleNotifyElevate(req);
+    }
+
     return new Response("Not Found", { status: 404 });
   }
 
@@ -329,6 +333,12 @@ export class McpSession implements DurableObject {
     const client = pair[0];
     const server = pair[1];
     this.state.acceptWebSocket(server, [WS_TAG]);
+    // issue #155: binary attach は inline stub 5 tools → 実 binary tool set への
+    // 境界。`listChanged: true` を advertise している前提で、現 SSE channel 全
+    // 部に `notifications/tools/list_changed` を push する。Claude Code Web は
+    // spec 通り自発的に `tools/list` を再 fetch するので、UI 側で切断→再接続が
+    // 不要になる。
+    this.broadcastToolsListChanged();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -463,6 +473,11 @@ export class McpSession implements DurableObject {
       // back-pipe してきた MCP `notifications/message`。`body` は JSON-RPC 2.0
       // notification (method = "notifications/message" etc) の object そのまま。
       // attached SSE channel 全部に fan-out する。
+      //
+      // issue #155: binary が `notifications/tools/list_changed` を能動的に
+      // back-pipe してきた場合も同経路で素直に流す (body は既に JSON-RPC
+      // notification の shape)。method 別の特別扱いはしない — Claude Code
+      // Web 側で method を見て `tools/list` を fetch するだけ。
       const body = f["body"];
       if (typeof body !== "object" || body === null) return;
       const wire = JSON.stringify(body);
@@ -501,6 +516,13 @@ export class McpSession implements DurableObject {
       `[mcp-relay] webSocketClose code=${code} reason=${JSON.stringify(reason)} wasClean=${wasClean} remaining=${remaining} pending=${this.pending.size}`,
     );
     this.rejectAllPending("relay_session_closed");
+    // issue #155: 全 binary detach 完了 = inline stub 5 tools に巻き戻る境界。
+    // `replaced` (handleConnect race で新 WS が attach 直後の旧 WS close) では
+    // remaining > 0 になるので broadcast しない (新 WS の handleConnect 側で既に
+    // 発火している)。
+    if (remaining === 0) {
+      this.broadcastToolsListChanged();
+    }
   }
 
   async webSocketError(_ws: WebSocket, err: unknown): Promise<void> {
@@ -511,6 +533,14 @@ export class McpSession implements DurableObject {
       `[mcp-relay] webSocketError err=${String(err)} pending=${this.pending.size}`,
     );
     this.rejectAllPending("relay_session_error");
+    // issue #155: error → close も detach 経路。webSocketClose 側でも broadcast
+    // するが、error だけで close callback が来ない実装もある (CF runtime の
+    // 状態次第) ので、ここでも remaining==0 なら発火する。重複しても client は
+    // 同じ refresh を 2 回するだけで害は無い。
+    const remaining = this.state.getWebSockets(WS_TAG).length;
+    if (remaining === 0) {
+      this.broadcastToolsListChanged();
+    }
   }
 
   private rejectAllPending(reason: string): void {
@@ -582,7 +612,11 @@ export class McpSession implements DurableObject {
         return jsonRpcResponse(id, {
           result: {
             protocolVersion: proto,
-            capabilities: { tools: { listChanged: false } },
+            // issue #155: advertise `listChanged: true` so Claude Code Web
+            // re-fetches `tools/list` on `notifications/tools/list_changed`.
+            // The DO emits that notification at binary attach/detach and on
+            // `/__notify_elevate` (elevate-callback boundary).
+            capabilities: { tools: { listChanged: true } },
             serverInfo: { name: STUB_SERVER_NAME, version: STUB_SERVER_VERSION },
             instructions: STUB_SERVER_INSTRUCTIONS,
           },
@@ -725,7 +759,143 @@ export class McpSession implements DurableObject {
     const v = await this.state.storage.get<Record<string, unknown>[]>("events");
     return Array.isArray(v) ? v.slice() : [];
   }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // issue #155: tool list hot-reload broadcast
+  //
+  // Claude Code Web 等の MCP client は initialize 時に advertise した
+  // `tools.listChanged: true` を見て、`notifications/tools/list_changed` を
+  // 受け取ったら自発的に `tools/list` を再 fetch する。本 DO はその境界で
+  // SSE channel 全部に notification を push する:
+  //
+  //   - binary attach (handleConnect)            → stub 5 → 実 binary tool set
+  //   - binary detach (webSocketClose/Error)     → 実 binary tool set → stub 5
+  //   - `/__notify_elevate` (elevate complete)   → admin tool が呼べる状態へ
+  //   - alarm() (elevate TTL expire)             → admin tool 再要件
+  //
+  // SSE channel が 0 本の時 (= client がまだ繋いでいない / hibernated) は
+  // no-op。次に client が SSE を貼った時に `tools/list` を素直に fetch する
+  // ので、broadcast 漏れによる stale 化は起きない。
+  // ────────────────────────────────────────────────────────────────────────
+
+  /** SSE channel 全部に notification を 1 件 push する共通 helper。 */
+  private broadcastNotification(method: string, params?: unknown): void {
+    if (this.sseChannels.size === 0) return;
+    const wire = params === undefined
+      ? JSON.stringify({ jsonrpc: "2.0", method })
+      : sseFormatNotification(method, params);
+    for (const ch of this.sseChannels.values()) {
+      this.writeSse(ch, wire);
+    }
+  }
+
+  /** `notifications/tools/list_changed` を broadcast する shortcut。 */
+  private broadcastToolsListChanged(): void {
+    this.broadcastNotification("notifications/tools/list_changed");
+  }
+
+  /**
+   * `/__notify_elevate` — worker (`mcp-elevate.ts`) からの elevate 完了/期限切れ
+   * RPC。body は `{event: "complete", ttl_sec: number}` または `{event: "expired"}`。
+   *
+   * complete:
+   *   - tool schema を admin 抜きで evaluate していた client が refresh できるよう
+   *     `notifications/tools/list_changed` を broadcast
+   *   - UI フィードバック用に `notifications/message` (level=info) を broadcast
+   *   - `setAlarm(now + ttl_sec * 1000)` で TTL 切れの自動通知を予約
+   *
+   * expired:
+   *   - 上と同じ 2 種 notification (msg 文面のみ別)
+   *   - alarm 予約はしない (caller が呼んだ意図 = 既に切れた境界)
+   *
+   * 認証は無し: DO RPC は internal-only (worker からのみ呼ばれる) で外部公開は無い。
+   */
+  private async handleNotifyElevate(req: Request): Promise<Response> {
+    if (req.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+    let body: { event?: unknown; ttl_sec?: unknown };
+    try {
+      body = (await req.json()) as { event?: unknown; ttl_sec?: unknown };
+    } catch (e) {
+      return jsonResponse(400, { error: "invalid_json", detail: String(e) });
+    }
+    const event = typeof body.event === "string" ? body.event : "";
+    if (event === "complete") {
+      const ttl =
+        typeof body.ttl_sec === "number" && Number.isFinite(body.ttl_sec) && body.ttl_sec > 0
+          ? Math.floor(body.ttl_sec)
+          : DEFAULT_ELEVATE_TTL_SEC;
+      this.broadcastToolsListChanged();
+      this.broadcastNotification("notifications/message", {
+        level: "info",
+        logger: "mcp/elevate",
+        data: {
+          event: "elevate_complete",
+          message: `Admin elevation active for ${Math.floor(ttl / 60)}m`,
+          ttl_sec: ttl,
+        },
+      });
+      // TTL 切れの自動通知を予約。setAlarm は単一 slot (上書き) なので、
+      // 同 DO で再 elevate しても素直に時刻が更新される。
+      await this.state.storage.put("elevate_alarm_kind", "expired");
+      await this.state.storage.setAlarm(Date.now() + ttl * 1000);
+      return jsonResponse(200, {
+        broadcasted: true,
+        sse_total: this.sseChannels.size,
+        alarm_at: Date.now() + ttl * 1000,
+      });
+    }
+    if (event === "expired") {
+      this.broadcastToolsListChanged();
+      this.broadcastNotification("notifications/message", {
+        level: "info",
+        logger: "mcp/elevate",
+        data: {
+          event: "elevate_expired",
+          message: "Admin elevation expired",
+        },
+      });
+      return jsonResponse(200, {
+        broadcasted: true,
+        sse_total: this.sseChannels.size,
+      });
+    }
+    return jsonResponse(400, { error: "unknown_event", detail: event });
+  }
+
+  /**
+   * DO alarm — issue #155: elevate TTL 切れ。
+   *
+   * `__notify_elevate {event: "complete"}` で setAlarm された時刻に発火し、
+   * `notifications/message` + `notifications/tools/list_changed` を broadcast
+   * する。storage の `elevate_alarm_kind` で kind を読み、未知/欠落なら no-op
+   * (将来別用途の alarm を足した時にも safe に共存できるよう用心)。
+   */
+  async alarm(): Promise<void> {
+    const kind = await this.state.storage.get<string>("elevate_alarm_kind");
+    if (kind !== "expired") {
+      // 未知の alarm — kind 不明なので no-op。storage は clear して再発火を避ける。
+      await this.state.storage.delete("elevate_alarm_kind");
+      return;
+    }
+    await this.state.storage.delete("elevate_alarm_kind");
+    this.broadcastToolsListChanged();
+    this.broadcastNotification("notifications/message", {
+      level: "info",
+      logger: "mcp/elevate",
+      data: {
+        event: "elevate_expired",
+        message: "Admin elevation expired",
+      },
+    });
+  }
 }
+
+/** elevate TTL のフォールバック (`__notify_elevate` body に ttl_sec が無い時)。
+ *  実際の worker 側 (`mcp-elevate.ts`) は常に ttl_sec=900 (15min) を渡すので、
+ *  この default が走るのは test path / 互換性 fallback の時のみ。 */
+const DEFAULT_ELEVATE_TTL_SEC = 900;
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {

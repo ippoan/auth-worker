@@ -381,7 +381,11 @@ function dispatchInitialize(id: string | number | null): JsonRpcResponse {
     protocolVersion: MCP_PROTOCOL_VERSION,
     serverInfo: { name: MCP_SERVER_NAME, version: "1.0.0" },
     capabilities: {
-      tools: { listChanged: false },
+      // issue #155: advertise `listChanged: true` so clients (Claude Code Web
+      // etc.) re-fetch `tools/list` on `notifications/tools/list_changed`.
+      // The relay DO emits that notification at binary attach/detach and on
+      // `/mcp/elevate_callback` completion (admin tool gating boundary).
+      tools: { listChanged: true },
     },
   });
 }

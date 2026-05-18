@@ -48,6 +48,36 @@ const ELEVATE_STATE_TTL_SEC = 600;
 const ELEVATE_FLAG_TTL_SEC = 900;
 
 /**
+ * issue #155: notify the per-user `McpSession` DO that an elevate completed.
+ * The DO broadcasts `notifications/tools/list_changed` + `notifications/message`
+ * (level=info) to all attached SSE channels, and schedules an alarm at
+ * `now + ttl_sec` to broadcast an `elevate_expired` notification when the
+ * 15min window closes.
+ *
+ * Best-effort: failure must not break the elevate flow (KV flag is already
+ * set by this point). MCP_SESSION_DO is optional in env — tests / dev envs
+ * that don't bind it gracefully skip the notify step.
+ */
+async function notifyMcpSessionElevateComplete(
+  env: Env,
+  login: string,
+): Promise<void> {
+  if (!env.MCP_SESSION_DO) return;
+  const id = env.MCP_SESSION_DO.idFromName(login);
+  const stub = env.MCP_SESSION_DO.get(id);
+  const res = await stub.fetch(
+    new Request("https://do.invalid/__notify_elevate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: "complete", ttl_sec: ELEVATE_FLAG_TTL_SEC }),
+    }),
+  );
+  if (!res.ok) {
+    throw new Error(`DO __notify_elevate returned ${res.status}`);
+  }
+}
+
+/**
  * `/mcp/jwt/pickup` 用に stash する access_token / refresh_token の TTL。
  *
  * binary が elevate 直後に拾うことを想定するため access_token TTL (1h) と
@@ -321,6 +351,15 @@ export async function handleMcpElevateCallback(
   // own. Pickup is a fallback recovery path, not a hard dependency.
   await mintJwtPickup(env, login).catch((e) => {
     console.warn("mcp-elevate: pickup mint failed (best-effort):", e);
+  });
+
+  // issue #155: notify the McpSession DO so any attached SSE channel
+  // (= Claude Code Web) receives `notifications/message` + tools list
+  // refresh immediately, instead of polling 403 until the next manual
+  // retry. Best-effort — flow does not fail if MCP_SESSION_DO is unbound
+  // (e.g. tests that don't exercise the relay path).
+  await notifyMcpSessionElevateComplete(env, login).catch((e) => {
+    console.warn("mcp-elevate: DO notify failed (best-effort):", e);
   });
 
   if (parsedState.return_to) {

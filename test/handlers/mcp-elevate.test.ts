@@ -454,5 +454,88 @@ describe("handleMcpElevateCallback", () => {
       // No pickup entry (mint silently skipped)
       expect(kv._data["mcp_jwt_pickup:github:alice"]).toBeUndefined();
     });
+
+    // issue #155 (comment): /mcp/elevate_callback should notify the per-user
+    // McpSession DO so any attached SSE client (= Claude Code Web) receives
+    // a refresh notification immediately instead of guessing whether
+    // elevation took effect.
+    it("calls McpSession DO __notify_elevate with event=complete on success", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      const doFetchCalls: { url: string; method?: string; body?: string }[] = [];
+      const stub = {
+        fetch: async (req: Request) => {
+          doFetchCalls.push({
+            url: req.url,
+            method: req.method,
+            body: await req.text(),
+          });
+          return new Response(JSON.stringify({ broadcasted: true }), { status: 200 });
+        },
+      } as unknown as DurableObjectStub;
+      const ns = {
+        idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+        get: () => stub,
+      } as unknown as DurableObjectNamespace;
+      const { env, kv } = envWithKv({ MCP_SESSION_DO: ns });
+      const state = await seedState(env, kv);
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(doFetchCalls).toHaveLength(1);
+      expect(doFetchCalls[0]!.url).toContain("/__notify_elevate");
+      expect(doFetchCalls[0]!.method).toBe("POST");
+      const body = JSON.parse(doFetchCalls[0]!.body!);
+      expect(body.event).toBe("complete");
+      expect(body.ttl_sec).toBe(900);
+    });
+
+    it("does not block the elevate flow when MCP_SESSION_DO is unbound", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      const { env, kv } = envWithKv({ MCP_SESSION_DO: undefined });
+      const state = await seedState(env, kv);
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(kv._data["elevate:alice"]).toBeDefined();
+    });
+
+    it("does not block the elevate flow when DO __notify_elevate returns non-OK", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      const stub = {
+        fetch: async () =>
+          new Response(JSON.stringify({ error: "boom" }), { status: 500 }),
+      } as unknown as DurableObjectStub;
+      const ns = {
+        idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+        get: () => stub,
+      } as unknown as DurableObjectNamespace;
+      const { env, kv } = envWithKv({ MCP_SESSION_DO: ns });
+      const state = await seedState(env, kv);
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(kv._data["elevate:alice"]).toBeDefined();
+    });
   });
 });

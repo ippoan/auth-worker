@@ -70,12 +70,16 @@ function createMockState(initial: FakeWebSocket[] = []): {
   current: FakeWebSocket[];
   acceptCalls: { ws: WebSocket; tags: string[] | undefined }[];
   storageMap: Map<string, unknown>;
+  alarmCalls: number[];
 } {
   const current: FakeWebSocket[] = [...initial];
   const acceptCalls: { ws: WebSocket; tags: string[] | undefined }[] = [];
   // ADR-006: in-memory storage mock. DO `state.storage.get/put` を `Map` で擬装。
   // 実 DO storage は `Promise<T|undefined>` を返すので async を真似る。
+  // issue #155: `setAlarm` も追加 — elevate TTL 切れ alarm の予約を test で
+  // 観測できるよう、呼び出された timestamp を `alarmCalls` に push する。
   const storageMap = new Map<string, unknown>();
+  const alarmCalls: number[] = [];
   const storage = {
     get: async <T>(key: string) => storageMap.get(key) as T | undefined,
     put: async (key: string, value: unknown) => {
@@ -83,6 +87,9 @@ function createMockState(initial: FakeWebSocket[] = []): {
     },
     delete: async (key: string) => {
       storageMap.delete(key);
+    },
+    setAlarm: async (timestampMs: number) => {
+      alarmCalls.push(timestampMs);
     },
   };
   const state = {
@@ -93,7 +100,7 @@ function createMockState(initial: FakeWebSocket[] = []): {
     },
     storage,
   } as unknown as DurableObjectState;
-  return { state, current, acceptCalls, storageMap };
+  return { state, current, acceptCalls, storageMap, alarmCalls };
 }
 
 // import after the polyfills
@@ -559,7 +566,9 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     expect(body.jsonrpc).toBe("2.0");
     expect(body.id).toBe(1);
     expect(body.result.protocolVersion).toBe("2025-06-18");
-    expect(body.result.capabilities.tools.listChanged).toBe(false);
+    // issue #155: stub advertises listChanged=true so Claude Code Web re-fetches
+    // tools/list when the binary attaches / detaches / elevate completes.
+    expect(body.result.capabilities.tools.listChanged).toBe(true);
     expect(body.result.serverInfo.name).toBe("cc-relay-stub");
   });
 
@@ -1632,6 +1641,367 @@ describe("McpSession lifecycle hooks (no pending requests)", () => {
     const do_ = new McpSession(state, {});
     const ws = makeFakeWs("ws") as unknown as WebSocket;
     await expect(do_.webSocketError(ws, new Error("oops"))).resolves.toBeUndefined();
+  });
+});
+
+// =============================================================================
+// issue #155: tools/list hot-reload broadcast + /__notify_elevate + alarm
+// =============================================================================
+
+/**
+ * SSE body から「`needle` を含む `data:` 行」が現れるまで読み続けるヘルパ。
+ * polyfill 都合で stream の chunk flush は微妙に async なので、最大
+ * `timeoutMs` だけ待つ。本テストでは broadcastNotification 直後の write が
+ * 観測できれば十分なので 500ms は余裕。
+ */
+async function readSseUntil(
+  body: ReadableStream<Uint8Array>,
+  needle: string,
+  timeoutMs = 500,
+): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const start = Date.now();
+  let acc = "";
+  try {
+    while (Date.now() - start < timeoutMs) {
+      const readP = reader.read();
+      const timeoutP = new Promise<{ value?: Uint8Array; done: true }>((r) =>
+        setTimeout(() => r({ done: true }), 50),
+      );
+      const { value, done } = await Promise.race([readP, timeoutP]);
+      if (done) {
+        if (acc.includes(needle)) return acc;
+        continue;
+      }
+      if (value) acc += decoder.decode(value, { stream: true });
+      if (acc.includes(needle)) return acc;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return acc;
+}
+
+describe("McpSession.handleConnect — broadcast tools/list_changed on binary attach (issue #155)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  it("emits notifications/tools/list_changed to attached SSE channels when a binary attaches", async () => {
+    setStubUUID("sse-attach-1");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    const connectRes = await do_.fetch(
+      new Request("https://do.invalid/__connect", {
+        method: "GET",
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    expect(connectRes.status).toBe(101);
+
+    const body = await readSseUntil(sseRes.body!, "tools/list_changed");
+    expect(body).toContain("notifications/tools/list_changed");
+  });
+
+  it("does not throw when no SSE channels are attached at binary attach", async () => {
+    const { state, acceptCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+    const connectRes = await do_.fetch(
+      new Request("https://do.invalid/__connect", {
+        method: "GET",
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    expect(connectRes.status).toBe(101);
+    expect(acceptCalls).toHaveLength(1);
+  });
+});
+
+describe("McpSession.webSocketClose/Error — broadcast tools/list_changed on binary detach (issue #155)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  it("emits notifications/tools/list_changed when last binary WS closes (remaining == 0)", async () => {
+    setStubUUID("sse-detach-1");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    // 起動時 SSE hello (notifications/message) を読み流す。続けて detach
+    // 通知を観測する。
+    const ws = makeFakeWs("only");
+    await do_.webSocketClose(ws as unknown as WebSocket, 1006, "abnormal", false);
+
+    const body = await readSseUntil(sseRes.body!, "tools/list_changed");
+    expect(body).toContain("notifications/tools/list_changed");
+  });
+
+  it("does NOT broadcast on close when a replacement WS is already attached (remaining > 0)", async () => {
+    setStubUUID("sse-replaced-1");
+    const replacement = makeFakeWs("new");
+    const { state } = createMockState([replacement]);
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    const oldWs = makeFakeWs("old");
+    await do_.webSocketClose(
+      oldWs as unknown as WebSocket,
+      1000,
+      "replaced",
+      true,
+    );
+
+    // 短い時間で `tools/list_changed` が現れないことを確認 (broadcast されない)。
+    const body = await readSseUntil(sseRes.body!, "tools/list_changed", 100);
+    expect(body).not.toContain("notifications/tools/list_changed");
+  });
+
+  it("emits notifications/tools/list_changed on webSocketError (remaining == 0)", async () => {
+    setStubUUID("sse-err-1");
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    const ws = makeFakeWs("err");
+    await do_.webSocketError(ws as unknown as WebSocket, new Error("boom"));
+
+    const body = await readSseUntil(sseRes.body!, "tools/list_changed");
+    expect(body).toContain("notifications/tools/list_changed");
+  });
+});
+
+describe("McpSession.fetch — /__notify_elevate (issue #155 comment)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  it("returns 405 when method is not POST", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__notify_elevate", { method: "GET" });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(405);
+  });
+
+  it("returns 400 when body is invalid JSON", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__notify_elevate", {
+      method: "POST",
+      body: "not json",
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for an unknown event", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__notify_elevate", {
+      method: "POST",
+      body: JSON.stringify({ event: "unknown_thing" }),
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(400);
+  });
+
+  it("on event=complete: broadcasts tools/list_changed + notifications/message + sets alarm + stores alarm kind", async () => {
+    setStubUUID("sse-elev-1");
+    const { state, storageMap, alarmCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    const nowBefore = Date.now();
+    const notifyRes = await do_.fetch(
+      new Request("https://do.invalid/__notify_elevate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "complete", ttl_sec: 900 }),
+      }),
+    );
+    expect(notifyRes.status).toBe(200);
+    const notifyJson = (await notifyRes.json()) as {
+      broadcasted?: boolean;
+      sse_total?: number;
+      alarm_at?: number;
+    };
+    expect(notifyJson.broadcasted).toBe(true);
+    expect(notifyJson.sse_total).toBe(1);
+
+    // alarm が予約された
+    expect(alarmCalls).toHaveLength(1);
+    expect(alarmCalls[0]).toBeGreaterThanOrEqual(nowBefore + 900_000 - 1000);
+
+    // storage kind が保存された
+    expect(storageMap.get("elevate_alarm_kind")).toBe("expired");
+
+    // SSE body に両 notification が現れる
+    const body = await readSseUntil(sseRes.body!, "elevate_complete", 700);
+    expect(body).toContain("notifications/tools/list_changed");
+    expect(body).toContain("notifications/message");
+    expect(body).toContain("Admin elevation active for 15m");
+  });
+
+  it("on event=complete without ttl_sec: defaults to 900s", async () => {
+    setStubUUID("sse-elev-2");
+    const { state, alarmCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+    await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    const nowBefore = Date.now();
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__notify_elevate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "complete" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(alarmCalls).toHaveLength(1);
+    expect(alarmCalls[0]).toBeGreaterThanOrEqual(nowBefore + 900_000 - 1000);
+  });
+
+  it("on event=complete with non-positive ttl_sec: falls back to default", async () => {
+    const { state, alarmCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+    const nowBefore = Date.now();
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__notify_elevate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "complete", ttl_sec: 0 }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(alarmCalls).toHaveLength(1);
+    expect(alarmCalls[0]).toBeGreaterThanOrEqual(nowBefore + 900_000 - 1000);
+  });
+
+  it("on event=expired: broadcasts both notifications, does NOT set alarm", async () => {
+    setStubUUID("sse-elev-3");
+    const { state, alarmCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__notify_elevate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "expired" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(alarmCalls).toHaveLength(0);
+
+    const body = await readSseUntil(sseRes.body!, "elevate_expired", 700);
+    expect(body).toContain("notifications/tools/list_changed");
+    expect(body).toContain("Admin elevation expired");
+  });
+
+  it("complete with zero SSE channels still returns 200 and sets alarm (broadcast no-op)", async () => {
+    const { state, alarmCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__notify_elevate", {
+        method: "POST",
+        body: JSON.stringify({ event: "complete", ttl_sec: 60 }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { sse_total?: number };
+    expect(json.sse_total).toBe(0);
+    expect(alarmCalls).toHaveLength(1);
+  });
+});
+
+describe("McpSession.alarm — elevate TTL expiration (issue #155)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  it("fires elevate_expired notifications and clears storage kind", async () => {
+    setStubUUID("sse-alarm-1");
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+    storageMap.set("elevate_alarm_kind", "expired");
+
+    await do_.alarm();
+
+    expect(storageMap.has("elevate_alarm_kind")).toBe(false);
+
+    const body = await readSseUntil(sseRes.body!, "elevate_expired", 700);
+    expect(body).toContain("notifications/tools/list_changed");
+    expect(body).toContain("Admin elevation expired");
+  });
+
+  it("is a no-op when storage kind is missing", async () => {
+    setStubUUID("sse-alarm-2");
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    await do_.alarm();
+
+    // no broadcast — only the initial `sse_connected` hello is on the wire.
+    const body = await readSseUntil(sseRes.body!, "elevate_expired", 100);
+    expect(body).not.toContain("elevate_expired");
+    expect(storageMap.has("elevate_alarm_kind")).toBe(false);
+  });
+
+  it("is a no-op when storage kind is unknown (clears the kind)", async () => {
+    const { state, storageMap } = createMockState();
+    const do_ = new McpSession(state, {});
+    storageMap.set("elevate_alarm_kind", "future_unknown_alarm");
+    await do_.alarm();
+    expect(storageMap.has("elevate_alarm_kind")).toBe(false);
   });
 });
 
