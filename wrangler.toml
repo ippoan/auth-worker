@@ -83,8 +83,6 @@ custom_domain = true
 # GITHUB_MCP_USER_ALLOWLIST  (JSON array of github logins, e.g. ["yhonda-ohishi"]; fail-closed)
 # GITHUB_WEBHOOK_SECRET      (ADR-004: HMAC-SHA256 shared secret for `POST /webhooks/github`.
 #                             public issue 前提なので authn ではなく spam 対策、全 repo 共通値)
-# MCP_ADMIN_ALLOWLIST        (Phase 1 admin auth: JSON array of github logins allowed to elevate;
-#                             missing / malformed → fail-closed)
 #
 # Allowlist (managed via `wrangler kv key put --remote --namespace-id=f13ecae4b69043819c09f606abb84797 <key>`):
 #   origins:prod    - production frontends

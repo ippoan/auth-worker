@@ -20,7 +20,7 @@ function envWithKv(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
     AUTH_WORKER_ORIGIN: ISSUER,
     GITHUB_MCP_CLIENT_ID: "Iv1.test",
     GITHUB_MCP_CLIENT_SECRET: "ghs_test",
-    MCP_ADMIN_ALLOWLIST: '["alice"]',
+    GITHUB_MCP_USER_ALLOWLIST: '["alice"]',
     ...overrides,
   });
   return { env, kv };
@@ -302,7 +302,7 @@ describe("handleMcpElevateCallback", () => {
           .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
           .mockResolvedValueOnce(jsonResp({ login })),
       );
-      const { env, kv } = envWithKv({ MCP_ADMIN_ALLOWLIST: allowlist });
+      const { env, kv } = envWithKv({ GITHUB_MCP_USER_ALLOWLIST: allowlist });
       const state = "S-" + Math.random().toString(36).slice(2);
       await kv.put(`elevate_state:${state}`, JSON.stringify({ return_to: "", created_at: 0 }), { expirationTtl: 600 });
       return await handleMcpElevateCallback(
@@ -311,7 +311,7 @@ describe("handleMcpElevateCallback", () => {
       );
     }
 
-    it("403 admin_allowlist_unset when MCP_ADMIN_ALLOWLIST missing", async () => {
+    it("403 admin_allowlist_unset when GITHUB_MCP_USER_ALLOWLIST missing", async () => {
       const res = await expectDeny(undefined, "alice");
       expect(res.status).toBe(403);
       expect(await res.text()).toContain("admin_allowlist_unset");

@@ -15,7 +15,7 @@
  *   - GET /mcp/elevate?return_to=<url> → random state nonce 採番 + KV 保存 →
  *     GitHub OAuth authorize に 302
  *   - GET /mcp/elevate_callback?code&state → state verify (one-shot) → GitHub
- *     code 交換 → /user で login 取得 → MCP_ADMIN_ALLOWLIST check →
+ *     code 交換 → /user で login 取得 → GITHUB_MCP_USER_ALLOWLIST check →
  *     `elevate:<login>` を 15min TTL で KV set → return_to に 302 (or success
  *     HTML)
  *
@@ -23,7 +23,9 @@
  *   - state は 32-byte random nonce + KV 保管 (HMAC-signed self-contained
  *     state ではなく KV-backed nonce にしている理由: state revocation / replay
  *     の防御を KV TTL + delete-after-read で素直に実現できるため)。
- *   - `MCP_ADMIN_ALLOWLIST` missing → fail-closed (403). `not in array` も 403。
+ *   - `GITHUB_MCP_USER_ALLOWLIST` missing → fail-closed (403). `not in array` も 403。
+ *     既存の MCP server allowlist secret を再利用 — admin と regular MCP 使用は
+ *     elevate flow の browser OAuth confirmation で区別する。
  *   - `return_to` は `https:` URL のみ受理 (空文字は許容)。
  */
 
@@ -237,7 +239,7 @@ export async function handleMcpElevateCallback(
   }
 
   // ACL — fail-closed when allowlist env unset or malformed.
-  const allowlist = parseAllowlist(env.MCP_ADMIN_ALLOWLIST);
+  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
   if (allowlist === null) {
     return errorResponse(403, "admin_allowlist_unset");
   }

@@ -147,9 +147,6 @@ export interface Env {
    *  既存 `MCP_JWT_SECRET` と分けるのは scope を局所化するため (pair session が
    *  漏洩しても device-flow JWT には影響しない)。未設定 → /mcp/pair/* は 503。 */
   SESSION_COOKIE_SECRET?: string;
-  /** Phase 1 admin auth: JSON array of github logins allowed to elevate.
-   *  `["yhonda-ohishi"]` 等。missing / malformed → fail-closed (admin 不可)。 */
-  MCP_ADMIN_ALLOWLIST?: string;
 }
 
 function errorResponse(status: number, message: string): Response {
