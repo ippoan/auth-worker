@@ -76,7 +76,9 @@ custom_domain = true
 #                       bypass_emails is a global dev-bypass list (typically staging only);
 #                       apps partitions tenants per redirect-origin within the same org;
 #                       opt-in: origins not in apps pass; fail-open on parse error)
-# GITHUB_MCP_CLIENT_ID       (MCP OAuth Provider 用 GitHub OAuth App の Client ID; staging/prod 別 App)
+# GITHUB_MCP_CLIENT_ID       (MCP OAuth Provider 用 GitHub OAuth App の Client ID; staging/prod 別 App.
+#                             staging = "ippoan MCP (staging)" / prod = "ippoan MCP (production)" 想定。
+#                             どちらも ippoan org 所有 OAuth App, scope は read:user + repo)
 # GITHUB_MCP_CLIENT_SECRET   (同上 Secret)
 # MCP_JWT_SECRET             (HS256 secret for MCP access tokens (JWT); 既存 JWT_SECRET と別管理)
 # INTERNAL_SHARED_SECRET     (Rust binary github-mcp-server-rs が /mcp/introspect 叩く際の Bearer)

@@ -56,6 +56,8 @@ import { handleMcpPairCallback } from "./handlers/mcp-pair-callback";
 import { handleMcpTools } from "./handlers/mcp-tools";
 import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
+import { handleMcpElevateStart, handleMcpElevateCallback } from "./handlers/mcp-elevate";
+import { handleMcpAdminExec } from "./handlers/mcp-admin-exec";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
 
@@ -352,6 +354,12 @@ export default {
           // MCP OAuth Provider — 1-click pair GitHub OAuth callback (issue #144)
           case "/mcp/pair_callback":
             return await handleMcpPairCallback(request, env);
+          // Phase 1 admin auth (issue #42 follow-up) — browser elevate start
+          case "/mcp/elevate":
+            return await handleMcpElevateStart(request, env);
+          // Phase 1 admin auth — browser elevate GitHub OAuth callback
+          case "/mcp/elevate_callback":
+            return await handleMcpElevateCallback(request, env);
           default:
             return errorResponse(404, "Not found");
         }
@@ -454,6 +462,11 @@ export default {
           // 同じ handler は dispatchMcpRelay (mcp.ippoan.org host) 経由でも到達可能。
           case "/mcp/tools":
             return await handleMcpTools(request, env);
+          // Phase 1 admin auth (issue #42 follow-up) — binary-facing admin proxy。
+          // MCP JWT + KV elevate flag で gate して GitHub App installation token
+          // 経由で branch protection 系を実行する。
+          case "/mcp/admin/exec":
+            return await handleMcpAdminExec(request, env);
           default:
             return errorResponse(404, "Not found");
         }
