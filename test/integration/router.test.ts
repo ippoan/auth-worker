@@ -176,6 +176,19 @@ vi.mock("../../src/handlers/mcp-relay-bridge", () => ({
 vi.mock("../../src/handlers/github-webhook", () => ({
   handleGithubWebhook: vi.fn(() => new Response("github-webhook")),
 }));
+// issue #144: 1-click pair endpoints (consumer side: github-mcp-server-rs#42)。
+// integration test では routing 経路だけ検証すればよく、本物の KV / OAuth は不要。
+vi.mock("../../src/handlers/mcp-pair-new", () => ({
+  handleMcpPairNew: vi.fn(() => new Response("mcp-pair-new")),
+}));
+vi.mock("../../src/handlers/mcp-pair-claim", () => ({
+  handleMcpPairClaim: vi.fn((_req, _env, code: string) =>
+    new Response(`mcp-pair-claim:${code}`),
+  ),
+}));
+vi.mock("../../src/handlers/mcp-pair-callback", () => ({
+  handleMcpPairCallback: vi.fn(() => new Response("mcp-pair-callback")),
+}));
 // Stub the DurableObject exports so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
@@ -445,6 +458,43 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://mcp.ippoan.org/login");
     const res = await worker.fetch(req, env);
     expect(res.status).toBe(404);
+  });
+
+  // --- issue #144: 1-click pair routes ---
+  it("POST mcp.* /mcp/pair/new → mcp-pair-new", async () => {
+    const req = new Request("https://mcp.ippoan.org/mcp/pair/new", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-new");
+  });
+
+  it("GET auth.* /mcp/pair/<code> → mcp-pair-claim:<code>", async () => {
+    const req = new Request("https://auth.test.example/mcp/pair/ABC123");
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-claim:ABC123");
+  });
+
+  it("GET auth.* /mcp/pair/new → 405 (POST-only, do not route to claim handler)", async () => {
+    const req = new Request("https://auth.test.example/mcp/pair/new");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(405);
+  });
+
+  it("GET auth.* /mcp/pair/ (empty code) → 404", async () => {
+    const req = new Request("https://auth.test.example/mcp/pair/");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET auth.* /mcp/pair/<code>/extra → 404 (only one segment after /mcp/pair/)", async () => {
+    const req = new Request("https://auth.test.example/mcp/pair/abc/extra");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET auth.* /mcp/pair_callback → mcp-pair-callback", async () => {
+    const req = new Request("https://auth.test.example/mcp/pair_callback?code=x&state=y");
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-callback");
   });
 
   // --- 404 / 405 ---

@@ -152,6 +152,27 @@ branches = true
 path = "src/handlers/mcp-relay-bridge.ts"
 branches = true
 
+# issue #144: 1-click pair flow (auth-worker side of github-mcp-server-rs#42)
+[[files]]
+path = "src/lib/mcp-pair.ts"
+branches = true
+
+[[files]]
+path = "src/lib/mcp-session.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-pair-new.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-pair-claim.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-pair-callback.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]

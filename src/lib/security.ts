@@ -46,6 +46,8 @@ export async function verifyOAuthState(
   device_code?: string;
   /** Phase 5 (MCP OAuth): /authorize → GitHub redirect の state に埋める auth request id (KV `auth:request:<id>` の参照) */
   auth_request_id?: string;
+  /** issue #144 (MCP OAuth 1-click pair): /mcp/pair/<code> → GitHub redirect の state に埋める pair_code */
+  pair_code?: string;
 } | null> {
   const dotIndex = state.indexOf(".");
   if (dotIndex === -1) return null;
@@ -67,6 +69,7 @@ export async function verifyOAuthState(
       idp_hint?: string;
       device_code?: string;
       auth_request_id?: string;
+      pair_code?: string;
     };
   } catch {
     return null;

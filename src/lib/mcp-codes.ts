@@ -34,3 +34,18 @@ export function generateDeviceCode(): string {
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+/**
+ * 1-click pair code (issue #144)。
+ * 30 byte (240 bit) ランダムを base64url で 40 文字に固定。URL-safe で
+ * `https://auth.ippoan.org/mcp/pair/<code>` の path segment として使う。
+ * device_code (hex 64) と長さ・charset が異なるので KV key prefix
+ * (`mcp/pair/` vs `device_code:`) と組み合わせて衝突なく管理できる。
+ */
+export function generatePairCode(): string {
+  const bytes = new Uint8Array(30);
+  crypto.getRandomValues(bytes);
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i] as number);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
