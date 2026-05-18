@@ -31,3 +31,14 @@ auth-client は `.vue` ソースファイルをそのまま ship する（ビル
 | alc-app | StagingFooter, AuthToolbar, VersionBadge, useAuth |
 | nuxt-trouble | StagingFooter |
 | nuxt-pwa-carins | AuthToolbar, useAuth |
+
+## MCP OAuth Provider
+
+### scope の取扱
+
+| scope | 公開区分 | 取得経路 |
+|---|---|---|
+| `mcp.read` / `mcp.write` / `offline_access` | **public** (AS metadata の `scopes_supported` で advertise) | DCR + `/mcp/authorize?scope=...`、device flow、pair flow |
+| `mcp.admin` | **internal only** (`scopes_supported` に**意図的に出さない**) | `/mcp/elevate` 経由の browser 昇格フローでのみ付与 (#149) |
+
+`auth.ippoan.org/.well-known/oauth-authorization-server` の `scopes_supported` に `mcp.admin` が無いのは仕様。client が `authorize?scope=mcp.admin` を要求できる public scope ではなく、server-side 昇格でだけ付く internal scope のため、advertise しないのが正。`mcp-as-metadata.ts` を編集する時に「`mcp.admin` が漏れている」と勘違いして足さないこと。
