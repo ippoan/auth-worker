@@ -195,6 +195,14 @@ vi.mock("../../src/handlers/mcp-pair-claim", () => ({
 vi.mock("../../src/handlers/mcp-pair-callback", () => ({
   handleMcpPairCallback: vi.fn(() => new Response("mcp-pair-callback")),
 }));
+// Phase 1 admin auth (issue #42 follow-up): browser elevate + admin-exec proxy。
+vi.mock("../../src/handlers/mcp-elevate", () => ({
+  handleMcpElevateStart: vi.fn(() => new Response("mcp-elevate-start")),
+  handleMcpElevateCallback: vi.fn(() => new Response("mcp-elevate-callback")),
+}));
+vi.mock("../../src/handlers/mcp-admin-exec", () => ({
+  handleMcpAdminExec: vi.fn(() => new Response("mcp-admin-exec")),
+}));
 // Stub the DurableObject exports so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
@@ -259,6 +267,9 @@ describe("Router (index.ts)", () => {
     ["/mcp/device_callback?code=abc&state=xyz", "mcp-device-callback"],
     ["/mcp/authorize?response_type=code&client_id=x", "mcp-authorize"],
     ["/mcp/auth_callback?code=ghc&state=xyz", "mcp-auth-callback"],
+    ["/mcp/elevate", "mcp-elevate-start"],
+    ["/mcp/elevate?return_to=https%3A%2F%2Fclient.example", "mcp-elevate-start"],
+    ["/mcp/elevate_callback?code=ghc&state=xyz", "mcp-elevate-callback"],
   ];
 
   it("GET /api/health → health proxy", async () => {
@@ -331,6 +342,7 @@ describe("Router (index.ts)", () => {
     ["/mcp/introspect", "mcp-introspect"],
     ["/mcp/revoke", "mcp-revoke"],
     ["/mcp/tools", "mcp-tools"],
+    ["/mcp/admin/exec", "mcp-admin-exec"],
   ];
 
   for (const [path, expected] of postRoutes) {
