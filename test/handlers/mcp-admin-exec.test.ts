@@ -1,44 +1,21 @@
 /**
  * `handleMcpAdminExec` (Phase 1 admin auth) — `POST /mcp/admin/exec` テスト。
- * MCP JWT は実 sign し、`INSTALLATION_TOKEN_DO` は test 用 stub で差し替え、
- * GitHub REST は `globalThis.fetch` を vi.stubGlobal で差し替える。
+ * MCP JWT は実 sign し、ユーザーの GitHub OAuth token は `encryptWithKey` で
+ * 実 KV 形式 (`github_token:{sub}`) に seed する。GitHub REST は
+ * `globalThis.fetch` を vi.stubGlobal で差し替える。
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleMcpAdminExec } from "../../src/handlers/mcp-admin-exec";
 import { signMcpJwt } from "../../src/lib/mcp-jwt";
+import { encryptWithKey } from "../../src/lib/mcp-crypto";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 const ISSUER = "https://auth.test.example";
 const MCP_JWT_SECRET = "test-mcp-jwt-secret-32chars!";
-const INSTALLATION_ID = "111222";
-
-interface DoStubOptions {
-  status?: number;
-  body?: unknown;
-  throwOnFetch?: Error;
-}
-
-function makeInstallationDo(opts: DoStubOptions = {}): DurableObjectNamespace {
-  const status = opts.status ?? 200;
-  const body = opts.body ?? { token: "ghs_installation_test", expires_at_epoch_sec: 9_999_999_999 };
-  const stub = {
-    fetch: async (_url: string) => {
-      if (opts.throwOnFetch) throw opts.throwOnFetch;
-      return new Response(JSON.stringify(body), {
-        status,
-        headers: { "Content-Type": "application/json" },
-      });
-    },
-  };
-  return {
-    idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
-    idFromString: (s: string) => ({ name: s }) as unknown as DurableObjectId,
-    newUniqueId: () => ({ name: "unique" }) as unknown as DurableObjectId,
-    get: () => stub as unknown as DurableObjectStub,
-  } as unknown as DurableObjectNamespace;
-}
+const SSO_KEY = "test-sso-encryption-key";
+const USER_GH_TOKEN = "gho_user_test_token";
 
 function envWithKv(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
   const kv = createMockKV() as MockKV;
@@ -46,8 +23,7 @@ function envWithKv(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
     MCP_OAUTH_KV: kv,
     AUTH_WORKER_ORIGIN: ISSUER,
     MCP_JWT_SECRET,
-    INSTALLATION_TOKEN_DO: makeInstallationDo(),
-    GITHUB_APP_INSTALLATION_ID: INSTALLATION_ID,
+    SSO_ENCRYPTION_KEY: SSO_KEY,
     ...overrides,
   });
   return { env, kv };
@@ -73,6 +49,15 @@ async function seedElevate(kv: MockKV, login: string, opts: { expired?: boolean 
   );
 }
 
+async function seedGithubToken(
+  kv: MockKV,
+  login: string,
+  token: string = USER_GH_TOKEN,
+): Promise<void> {
+  const encrypted = await encryptWithKey(token, SSO_KEY);
+  await kv.put(`github_token:github:${login}`, encrypted);
+}
+
 function makeRequest(body: unknown, opts: { auth?: string; rawAuth?: string } = {}): Request {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (opts.rawAuth !== undefined) headers["Authorization"] = opts.rawAuth;
@@ -95,13 +80,10 @@ describe("handleMcpAdminExec — env guards", () => {
     const res = await handleMcpAdminExec(makeRequest({}), env);
     expect(res.status).toBe(503);
   });
-  it("503 when INSTALLATION_TOKEN_DO missing", async () => {
-    const { env } = envWithKv({ INSTALLATION_TOKEN_DO: undefined });
-    const res = await handleMcpAdminExec(makeRequest({}), env);
-    expect(res.status).toBe(503);
-  });
-  it("503 when GITHUB_APP_INSTALLATION_ID missing", async () => {
-    const { env } = envWithKv({ GITHUB_APP_INSTALLATION_ID: undefined });
+  it("503 when SSO_ENCRYPTION_KEY missing", async () => {
+    // createMockEnv defaults SSO_ENCRYPTION_KEY so override via cast.
+    const { env } = envWithKv();
+    (env as { SSO_ENCRYPTION_KEY?: string }).SSO_ENCRYPTION_KEY = undefined;
     const res = await handleMcpAdminExec(makeRequest({}), env);
     expect(res.status).toBe(503);
   });
@@ -160,6 +142,7 @@ describe("handleMcpAdminExec — request validation", () => {
   async function withElevated(): Promise<{ env: Env; kv: MockKV; jwt: string }> {
     const { env, kv } = envWithKv();
     await seedElevate(kv, "alice");
+    await seedGithubToken(kv, "alice");
     const jwt = await makeJwt("alice");
     return { env, kv, jwt };
   }
@@ -227,52 +210,47 @@ describe("handleMcpAdminExec — request validation", () => {
   });
 });
 
-describe("handleMcpAdminExec — DO and GitHub dispatch", () => {
+describe("handleMcpAdminExec — GitHub token lookup and dispatch", () => {
   let originalFetch: typeof globalThis.fetch;
   beforeEach(() => { originalFetch = globalThis.fetch; });
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  async function withElevated(do_?: DurableObjectNamespace): Promise<{ env: Env; jwt: string }> {
-    const kv = createMockKV() as MockKV;
-    const env = createMockEnv({
-      MCP_OAUTH_KV: kv,
-      AUTH_WORKER_ORIGIN: ISSUER,
-      MCP_JWT_SECRET,
-      INSTALLATION_TOKEN_DO: do_ ?? makeInstallationDo(),
-      GITHUB_APP_INSTALLATION_ID: INSTALLATION_ID,
-    });
+  async function withElevated(
+    opts: { seedToken?: boolean; corruptToken?: boolean } = { seedToken: true },
+  ): Promise<{ env: Env; jwt: string; kv: MockKV }> {
+    const { env, kv } = envWithKv();
     await seedElevate(kv, "alice");
+    if (opts.corruptToken) {
+      // KV に置くが復号できない値にする (base64 だが GCM tag mismatch)。
+      await kv.put("github_token:github:alice", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==");
+    } else if (opts.seedToken !== false) {
+      await seedGithubToken(kv, "alice");
+    }
     const jwt = await makeJwt("alice");
-    return { env, jwt };
+    return { env, jwt, kv };
   }
 
-  it("502 when DO returns non-OK", async () => {
-    const { env, jwt } = await withElevated(makeInstallationDo({ status: 503, body: { error: "down" } }));
+  it("502 github_token_unavailable when KV has no github_token for sub", async () => {
+    const { env, jwt } = await withElevated({ seedToken: false });
     const res = await handleMcpAdminExec(
       makeRequest({ tool: "get_branch_protection", args: { owner: "ippoan", repo: "r", branch: "main" } }, { auth: jwt }),
       env,
     );
     expect(res.status).toBe(502);
     const body = await res.json() as { ok: boolean; error: string };
-    expect(body.error).toBe("installation_token_failed");
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe("github_token_unavailable");
   });
 
-  it("502 when DO returns 200 but no token field", async () => {
-    const { env, jwt } = await withElevated(makeInstallationDo({ status: 200, body: { expires_at_epoch_sec: 1 } }));
+  it("502 github_token_unavailable when stored ciphertext is corrupt", async () => {
+    const { env, jwt } = await withElevated({ corruptToken: true });
     const res = await handleMcpAdminExec(
       makeRequest({ tool: "get_branch_protection", args: { owner: "ippoan", repo: "r", branch: "main" } }, { auth: jwt }),
       env,
     );
     expect(res.status).toBe(502);
-  });
-
-  it("502 when DO fetch throws", async () => {
-    const { env, jwt } = await withElevated(makeInstallationDo({ throwOnFetch: new Error("do-down") }));
-    const res = await handleMcpAdminExec(
-      makeRequest({ tool: "get_branch_protection", args: { owner: "ippoan", repo: "r", branch: "main" } }, { auth: jwt }),
-      env,
-    );
-    expect(res.status).toBe(502);
+    const body = await res.json() as { ok: boolean; error: string };
+    expect(body.error).toBe("github_token_unavailable");
   });
 
   it("200 ok with parsed result on successful set_branch_protection", async () => {
@@ -282,7 +260,7 @@ describe("handleMcpAdminExec — DO and GitHub dispatch", () => {
         expect(url).toBe("https://api.github.com/repos/ippoan/r/branches/main/protection");
         expect(init?.method).toBe("PUT");
         const headers = init?.headers as Record<string, string>;
-        expect(headers["Authorization"]).toBe("Bearer ghs_installation_test");
+        expect(headers["Authorization"]).toBe(`Bearer ${USER_GH_TOKEN}`);
         expect(headers["Accept"]).toBe("application/vnd.github+json");
         expect(headers["User-Agent"]).toBe("ippoan-auth-worker");
         expect(headers["X-GitHub-Api-Version"]).toBe("2022-11-28");
@@ -320,8 +298,6 @@ describe("handleMcpAdminExec — DO and GitHub dispatch", () => {
       "fetch",
       vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
         expect(init?.method).toBe("DELETE");
-        // 200 + empty body instead of 204; undici Response constructor rejects
-        // 204 because the spec requires no body for 1xx/204/304.
         return new Response("", { status: 200 });
       }),
     );
