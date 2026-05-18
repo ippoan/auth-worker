@@ -153,6 +153,12 @@ vi.mock("../../src/handlers/mcp-token", () => ({
 vi.mock("../../src/handlers/mcp-introspect", () => ({
   handleMcpIntrospect: vi.fn(() => new Response("mcp-introspect")),
 }));
+vi.mock("../../src/handlers/mcp-tools", () => ({
+  handleMcpTools: vi.fn(() => new Response("mcp-tools")),
+}));
+vi.mock("../../src/handlers/mcp-revoke", () => ({
+  handleMcpRevoke: vi.fn(() => new Response("mcp-revoke")),
+}));
 // ADR-003: handler signature now accepts `string | null`. The mock tags the
 // user-less variant as `(jwt)` so the dispatch tests can tell the two
 // callsites apart.
@@ -323,6 +329,8 @@ describe("Router (index.ts)", () => {
     ["/device/proceed", "mcp-device-proceed"],
     ["/mcp/token", "mcp-token"],
     ["/mcp/introspect", "mcp-introspect"],
+    ["/mcp/revoke", "mcp-revoke"],
+    ["/mcp/tools", "mcp-tools"],
   ];
 
   for (const [path, expected] of postRoutes) {
@@ -465,6 +473,13 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://mcp.ippoan.org/mcp/pair/new", { method: "POST" });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("mcp-pair-new");
+  });
+
+  // --- issue #145: native MCP tools (also routed on the relay host) ---
+  it("POST mcp.* /mcp/tools → mcp-tools (native mode via relay host)", async () => {
+    const req = new Request("https://mcp.ippoan.org/mcp/tools", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-tools");
   });
 
   it("GET auth.* /mcp/pair/<code> → mcp-pair-claim:<code>", async () => {

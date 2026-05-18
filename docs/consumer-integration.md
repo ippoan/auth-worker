@@ -205,10 +205,84 @@ curl -s -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/ippoan/cc-relay/issues | jq '.[0].number'
 ```
 
-## 6. 関連 issue
+## 6. Native MCP tools (issue #145)
+
+`POST /mcp/tools` は **auth-worker 内で GitHub API を proxy する native MCP server endpoint**。
+binary (`github-mcp-server-rs`) を介さず Claude.ai / Claude Code Web から直接叩ける。
+
+### Request
+
+```
+POST /mcp/tools HTTP/1.1
+Authorization: Bearer <MCP_JWT>
+Content-Type: application/json
+
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }
+```
+
+Bearer JWT は `/mcp/introspect` mode 1 と同一形式。`aud` は `github-mcp-server-rs`
+(device/pair flow) または MCP relay origin (`https://mcp.ippoan.org` 等、
+Authorization Code + RFC 8707 Resource Indicator flow) の双方を受け入れる。
+
+### Supported JSON-RPC methods
+
+| method | 用途 | 必要 scope |
+|---|---|---|
+| `initialize` | server info / capabilities | (auth のみ) |
+| `ping` | keepalive | (auth のみ) |
+| `tools/list` | scope に応じて見える tool 一覧 | `mcp.read` |
+| `tools/call` | tool 実行 | tool 毎 |
+
+### Built-in GitHub proxy tools
+
+| tool | scope | api.github.com path |
+|---|---|---|
+| `github_get_authenticated_user` | `mcp.read` | `GET /user` |
+| `github_get_repo` | `mcp.read` | `GET /repos/{owner}/{repo}` |
+| `github_list_issues` | `mcp.read` | `GET /repos/{owner}/{repo}/issues` |
+| `github_list_pull_requests` | `mcp.read` | `GET /repos/{owner}/{repo}/pulls` |
+| `github_create_issue` | `mcp.write` | `POST /repos/{owner}/{repo}/issues` |
+
+`tools/list` は呼び出し JWT の scope (`mcp.read` / `mcp.write`) に応じて
+visible tools を絞り込む。scope 不足の `tools/call` は JSON-RPC `error.code = -32000`
+を返す (insufficient scope)。
+
+### バッチ
+
+JSON-RPC 2.0 §6 に従い array body を受け付ける (per-item dispatch)。
+
+### Error model
+
+| 状況 | HTTP | JSON-RPC `error.code` |
+|---|---|---|
+| Bearer missing / 検証失敗 | 401 | (なし、`WWW-Authenticate` 付き) |
+| `github_token:{sub}` 不在 | 403 | (なし、`no_github_token`) |
+| parse error | 200 | -32700 |
+| invalid request | 200 | -32600 |
+| method not found / unknown tool | 200 | -32601 |
+| insufficient scope | 200 | -32000 |
+| GitHub 4xx/5xx | 200 | (`result.isError = true`, message に status を埋める) |
+
+## 7. Token revocation (issue #145, RFC 7009)
+
+```
+POST /mcp/revoke HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+token=<jwt-or-refresh-token>&token_type_hint=access_token
+```
+
+- `refresh_token`: KV `refresh:{sha256(token)}` を delete
+- `access_token` (JWT): 対応する `github_token:{sub}` を delete することで
+  以後 `/mcp/introspect` も `/mcp/tools` も失敗するように停止
+- token_type_hint が間違っていても両方試す (RFC 7009 §2.1)
+- 常に 200 (RFC 7009 §2.2)。token 不在でも error は返さない。
+
+## 8. 関連 issue
 
 - Epic: [#91](https://github.com/ippoan/auth-worker/issues/91)
 - Phase 5 (DCR + auth code + PKCE): [#128](https://github.com/ippoan/auth-worker/issues/128)
 - Phase 6/7 (MCP relay): [#117](https://github.com/ippoan/auth-worker/issues/117) / [#119](https://github.com/ippoan/auth-worker/issues/119)
 - cc-relay 統合 tracking: [#130](https://github.com/ippoan/auth-worker/issues/130)
 - cc-relay 側 親 issue: [ippoan/cc-relay#33](https://github.com/ippoan/cc-relay/issues/33)
+- MCP OAuth bridge + Device Flow 廃止: [#145](https://github.com/ippoan/auth-worker/issues/145)

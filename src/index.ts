@@ -53,6 +53,8 @@ import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
 import { handleMcpPairCallback } from "./handlers/mcp-pair-callback";
+import { handleMcpTools } from "./handlers/mcp-tools";
+import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
@@ -227,6 +229,11 @@ async function dispatchMcpRelay(
   // McpSession DO 経由で attached binary に broadcast する (multiplex)。
   if (url.pathname === "/webhooks/github" && request.method === "POST") {
     return handleGithubWebhook(request, env);
+  }
+  // issue #145: native MCP JSON-RPC endpoint (GitHub API proxy tools).
+  // relay host 経由でも叩けるようにここでも受ける (binary 不要の "native mode")。
+  if (url.pathname === "/mcp/tools" && request.method === "POST") {
+    return handleMcpTools(request, env);
   }
   return errorResponse(404, "Not found");
 }
@@ -439,6 +446,14 @@ export default {
           // MCP OAuth Provider — Token Introspection (Phase 5, RFC 7662 + GitHub token 返却)
           case "/mcp/introspect":
             return await handleMcpIntrospect(request, env);
+          // MCP OAuth Provider — Token Revocation (RFC 7009, issue #145)
+          case "/mcp/revoke":
+            return await handleMcpRevoke(request, env);
+          // MCP OAuth Provider — Native MCP JSON-RPC tools (issue #145)
+          // auth host 上でも受けることで binary なしで MCP server として機能する。
+          // 同じ handler は dispatchMcpRelay (mcp.ippoan.org host) 経由でも到達可能。
+          case "/mcp/tools":
+            return await handleMcpTools(request, env);
           default:
             return errorResponse(404, "Not found");
         }
