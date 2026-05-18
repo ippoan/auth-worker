@@ -3,13 +3,17 @@
  *
  * binary (github-mcp-server-rs) からのみ叩かれる。MCP JWT による user 認証 +
  * KV elevate flag による 2nd factor (browser-confirmed within 15min) で gate
- * したうえで、GitHub App installation token を使った branch protection 系の
- * REST 操作を実行する。
+ * したうえで、ユーザーが pair flow 時に KV に保存した GitHub OAuth token
+ * (`github_token:{sub}`) を復号して branch protection 系の REST 操作を実行する。
  *
- * Why this design (vs returning admin-scoped GitHub token to binary):
- *   - admin GitHub token を binary が持つと「漏洩した PAT が直接 GitHub への
- *     admin write 権限を持つ」状態になる。
- *   - 本 proxy 経由なら admin token は Cloudflare 側に閉じ、binary はせいぜい
+ * Why use the user's stored OAuth token instead of a GitHub App installation token:
+ *   - GitHub App の `Administration:write` permission は本来必要な
+ *     branch protection write に加えて `delete_repo` まで内包しており、
+ *     scope として広すぎる (repo 全削除権限を proxy が持ってしまう)。
+ *   - ユーザーが既に保有する `repo` OAuth scope は branch protection write
+ *     には十分で、かつ `delete_repo` を含まない (narrower)。proxy が誤って
+ *     repo 削除を発火することを構造的に防ぐ。
+ *   - 本 proxy 経由なら token は Cloudflare 側に閉じ、binary はせいぜい
  *     `elevate` 中の MCP JWT (15min window) しか持たないので影響を局所化できる。
  *
  * Tool allowlist は branch protection 系の 3 つに絞る (initial Phase 1 scope)。
@@ -19,6 +23,7 @@
 import type { Env } from "../index";
 import { verifyMcpJwt } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
+import { decryptWithKey } from "../lib/mcp-crypto";
 
 const MCP_AUD_LEGACY = "github-mcp-server-rs";
 const GITHUB_API = "https://api.github.com";
@@ -84,8 +89,7 @@ export async function handleMcpAdminExec(
   if (
     !env.MCP_OAUTH_KV ||
     !env.MCP_JWT_SECRET ||
-    !env.INSTALLATION_TOKEN_DO ||
-    !env.GITHUB_APP_INSTALLATION_ID ||
+    !env.SSO_ENCRYPTION_KEY ||
     !env.AUTH_WORKER_ORIGIN
   ) {
     return jsonResponse(
@@ -168,30 +172,30 @@ export async function handleMcpAdminExec(
     return jsonResponse({ ok: false, error: "forbidden_owner" }, 400);
   }
 
-  // installation token 取得 (DO 経由 cache)
-  let installationToken: string;
-  try {
-    const doId = env.INSTALLATION_TOKEN_DO.idFromName(env.GITHUB_APP_INSTALLATION_ID);
-    const doStub = env.INSTALLATION_TOKEN_DO.get(doId);
-    const tokResp = await doStub.fetch("https://do.internal/get");
-    if (!tokResp.ok) {
-      const txt = await tokResp.text();
-      return jsonResponse(
-        { ok: false, error: "installation_token_failed", status: tokResp.status, body: txt },
-        502,
-      );
-    }
-    const tokJson = (await tokResp.json()) as { token?: string };
-    if (!tokJson.token) {
-      return jsonResponse(
-        { ok: false, error: "installation_token_failed", status: 502, body: "no token in DO response" },
-        502,
-      );
-    }
-    installationToken = tokJson.token;
-  } catch (e) {
+  // KV に保存済みのユーザー GitHub OAuth token (repo scope) を復号して使う。
+  // Administration:write を持つ GitHub App token と違って delete_repo を含まない
+  // ため、proxy 経由で repo 全削除が誤って走ることを構造的に防げる。
+  const encrypted = await env.MCP_OAUTH_KV.get(`github_token:${payload.sub}`);
+  if (!encrypted) {
     return jsonResponse(
-      { ok: false, error: "installation_token_failed", status: 502, body: e instanceof Error ? e.message : String(e) },
+      {
+        ok: false,
+        error: "github_token_unavailable",
+        details: "Stored GitHub OAuth token not found. Re-run the MCP pair flow to refresh.",
+      },
+      502,
+    );
+  }
+  let userGithubToken: string;
+  try {
+    userGithubToken = await decryptWithKey(encrypted, env.SSO_ENCRYPTION_KEY);
+  } catch {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "github_token_unavailable",
+        details: "Failed to decrypt stored GitHub OAuth token. Re-run the MCP pair flow.",
+      },
       502,
     );
   }
@@ -202,7 +206,7 @@ export async function handleMcpAdminExec(
   const branchEsc = encodeURIComponent(args.branch);
   const path = `/repos/${ownerEsc}/${repoEsc}/branches/${branchEsc}/protection`;
   const ghHeaders: Record<string, string> = {
-    Authorization: `Bearer ${installationToken}`,
+    Authorization: `Bearer ${userGithubToken}`,
     Accept: "application/vnd.github+json",
     "User-Agent": GITHUB_UA,
     "X-GitHub-Api-Version": "2022-11-28",

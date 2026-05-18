@@ -60,7 +60,6 @@ import { handleMcpElevateStart, handleMcpElevateCallback } from "./handlers/mcp-
 import { handleMcpAdminExec } from "./handlers/mcp-admin-exec";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
-export { InstallationTokenStore } from "./durable_objects/installation-token-do";
 
 export interface Env {
   GOOGLE_CLIENT_ID: string;
@@ -148,21 +147,9 @@ export interface Env {
    *  既存 `MCP_JWT_SECRET` と分けるのは scope を局所化するため (pair session が
    *  漏洩しても device-flow JWT には影響しない)。未設定 → /mcp/pair/* は 503。 */
   SESSION_COOKIE_SECRET?: string;
-  /** Phase 1 admin auth (issue #42): GitHub App credentials for admin proxy.
-   *  installation token を `InstallationTokenStore` DO で cache し、
-   *  `/mcp/admin/exec` 経由で branch protection 系 write を実行する。
-   *  3 つ全て setting されない限り `/mcp/admin/exec` は 503。 */
-  GITHUB_APP_ID?: string;
-  /** PEM PKCS8 RSA private key. wrangler secret では literal `\n` のまま入れる
-   *  と `pemToCryptoKey` が strip するので問題なし。 */
-  GITHUB_APP_PRIVATE_KEY?: string;
-  GITHUB_APP_INSTALLATION_ID?: string;
   /** Phase 1 admin auth: JSON array of github logins allowed to elevate.
    *  `["yhonda-ohishi"]` 等。missing / malformed → fail-closed (admin 不可)。 */
   MCP_ADMIN_ALLOWLIST?: string;
-  /** Phase 1 admin auth: `InstallationTokenStore` DO Namespace。
-   *  `idFromName(installation_id)` で 1 installation = 1 instance。 */
-  INSTALLATION_TOKEN_DO?: DurableObjectNamespace;
 }
 
 function errorResponse(status: number, message: string): Response {
