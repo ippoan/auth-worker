@@ -45,6 +45,7 @@ import { handleMcpDeviceProceed } from "./handlers/mcp-device-proceed";
 import { handleMcpDeviceCallback } from "./handlers/mcp-device-callback";
 import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
+import { handleMcpJwtPickup } from "./handlers/mcp-jwt-pickup";
 import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
 import { handleMcpRegister } from "./handlers/mcp-register";
@@ -454,6 +455,11 @@ export default {
           // MCP OAuth Provider — Token Introspection (Phase 5, RFC 7662 + GitHub token 返却)
           case "/mcp/introspect":
             return await handleMcpIntrospect(request, env);
+          // MCP OAuth Provider — Binary recovery pickup for elevated JWTs.
+          // `/mcp/elevate` 完了時に mint された fresh pair を、binary が
+          // (signature-only verified) JWT で 1 回だけ取りに来る用。
+          case "/mcp/jwt/pickup":
+            return await handleMcpJwtPickup(request, env);
           // MCP OAuth Provider — Token Revocation (RFC 7009, issue #145)
           case "/mcp/revoke":
             return await handleMcpRevoke(request, env);

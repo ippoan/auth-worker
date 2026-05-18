@@ -30,7 +30,10 @@
  */
 
 import type { Env } from "../index";
+import { encryptWithKey } from "../lib/mcp-crypto";
 import { errorResponse, jsonResponse } from "../lib/errors";
+import { signMcpJwt } from "../lib/mcp-jwt";
+import { issueRefreshToken } from "../lib/mcp-refresh";
 
 /** Browser からの elevate 開始時に KV に保存する state entry。 */
 interface ElevateState {
@@ -43,6 +46,59 @@ const ELEVATE_STATE_TTL_SEC = 600;
 
 /** Elevation flag TTL — admin window。15 min は user 1 task 分を想定。 */
 const ELEVATE_FLAG_TTL_SEC = 900;
+
+/**
+ * `/mcp/jwt/pickup` 用に stash する access_token / refresh_token の TTL。
+ *
+ * binary が elevate 直後に拾うことを想定するため access_token TTL (1h) と
+ * 揃える。pickup KV entry 自体は `handleMcpJwtPickup` が 1 回読んだら delete
+ * する (one-shot) ので、これは「上限の生存期間」の意味。
+ */
+const PICKUP_TTL_SEC = 3600;
+
+/**
+ * JWT pickup pair に焼く `scope` / `aud`。device-flow / pair-flow が発行する
+ * binary 向け JWT と同じ shape にする (binary は `aud="github-mcp-server-rs"`
+ * を期待する)。
+ */
+const PICKUP_SCOPE = "mcp.read mcp.write";
+const PICKUP_AUD = "github-mcp-server-rs";
+
+/**
+ * Mint a fresh (access_token, refresh_token) pair for `login` and stash the
+ * encrypted blob at `mcp_jwt_pickup:github:<login>` for `/mcp/jwt/pickup` to
+ * serve to the binary.
+ *
+ * Throws if `MCP_JWT_SECRET` or `SSO_ENCRYPTION_KEY` are unbound — caller
+ * (`handleMcpElevateCallback`) catches and logs (best-effort).
+ */
+async function mintJwtPickup(env: Env, login: string): Promise<void> {
+  if (!env.MCP_OAUTH_KV) throw new Error("MCP_OAUTH_KV not bound");
+  if (!env.MCP_JWT_SECRET) throw new Error("MCP_JWT_SECRET not bound");
+  if (!env.SSO_ENCRYPTION_KEY) throw new Error("SSO_ENCRYPTION_KEY not bound");
+  const sub = `github:${login}`;
+  const accessToken = await signMcpJwt(
+    { sub, github_login: login, scope: PICKUP_SCOPE, aud: PICKUP_AUD },
+    env.MCP_JWT_SECRET,
+    PICKUP_TTL_SEC,
+  );
+  const refreshToken = await issueRefreshToken(env, {
+    sub,
+    scope: PICKUP_SCOPE,
+    github_login: login,
+    aud: PICKUP_AUD,
+  });
+  const blob = JSON.stringify({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    scope: PICKUP_SCOPE,
+    expires_in: PICKUP_TTL_SEC,
+  });
+  const ciphertext = await encryptWithKey(blob, env.SSO_ENCRYPTION_KEY);
+  await env.MCP_OAUTH_KV.put(`mcp_jwt_pickup:${sub}`, ciphertext, {
+    expirationTtl: PICKUP_TTL_SEC,
+  });
+}
 
 function htmlResponse(html: string, status = 200): Response {
   return new Response(html, {
@@ -253,6 +309,19 @@ export async function handleMcpElevateCallback(
     JSON.stringify({ elevated_at: now, expires_at: now + ELEVATE_FLAG_TTL_SEC }),
     { expirationTtl: ELEVATE_FLAG_TTL_SEC },
   );
+
+  // Best-effort: mint a fresh (access_token, refresh_token) pair for the
+  // binary to pick up via `/mcp/jwt/pickup`. The binary's own JWT may have
+  // expired in the long-running relay session; the user just did the
+  // browser elevate so this is the natural moment to extend their session.
+  //
+  // Failure modes (env missing / KV transient error) do NOT block the
+  // elevate flow — the elevation flag is still valid and admin tools can
+  // still succeed if the binary's local refresh_token grant works on its
+  // own. Pickup is a fallback recovery path, not a hard dependency.
+  await mintJwtPickup(env, login).catch((e) => {
+    console.warn("mcp-elevate: pickup mint failed (best-effort):", e);
+  });
 
   if (parsedState.return_to) {
     return new Response(null, {

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { signMcpJwt, verifyMcpJwt } from "../../src/lib/mcp-jwt";
+import {
+  signMcpJwt,
+  verifyMcpJwt,
+  verifyMcpJwtSignatureOnly,
+} from "../../src/lib/mcp-jwt";
 
 const SECRET = "test-mcp-jwt-secret-32chars!";
 const AUD = "github-mcp-server-rs";
@@ -163,5 +167,116 @@ describe("mcp-jwt", () => {
     for (let i = 0; i < sig.length; i++) bin += String.fromCharCode(sig[i]!);
     const sigB64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     expect(await verifyMcpJwt(`${header}.${payload}.${sigB64}`, SECRET, AUD)).toBeNull();
+  });
+
+  // ─── verifyMcpJwtSignatureOnly — signature-only verifier for /mcp/jwt/pickup ───
+
+  it("signatureOnly accepts a token whose exp is in the past", async () => {
+    const token = await signMcpJwt(
+      { sub: "github:carol", github_login: "carol", scope: "mcp.read", aud: AUD },
+      SECRET,
+      -3600, // expired 1h ago
+    );
+    expect(await verifyMcpJwt(token, SECRET, AUD)).toBeNull(); // exp check fails
+    const payload = await verifyMcpJwtSignatureOnly(token, SECRET);
+    expect(payload).not.toBeNull();
+    expect(payload!.sub).toBe("github:carol");
+    expect(payload!.github_login).toBe("carol");
+  });
+
+  it("signatureOnly still rejects wrong signature", async () => {
+    const token = await signMcpJwt(
+      { sub: "x", github_login: "x", scope: "", aud: AUD },
+      SECRET,
+      3600,
+    );
+    expect(await verifyMcpJwtSignatureOnly(token, "wrong-secret")).toBeNull();
+  });
+
+  it("signatureOnly returns null when secret is empty", async () => {
+    expect(await verifyMcpJwtSignatureOnly("a.b.c", "")).toBeNull();
+  });
+
+  it("signatureOnly returns null for malformed token shape", async () => {
+    expect(await verifyMcpJwtSignatureOnly("not.a.valid.jwt", SECRET)).toBeNull();
+    expect(await verifyMcpJwtSignatureOnly("only-one", SECRET)).toBeNull();
+  });
+
+  it("signatureOnly rejects HS512 header (alg pinning)", async () => {
+    const header = btoa(JSON.stringify({ alg: "HS512", typ: "JWT" }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const payload = btoa(JSON.stringify({ sub: "x", aud: AUD, exp: 9999999999, iat: 0 }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    expect(
+      await verifyMcpJwtSignatureOnly(`${header}.${payload}.sig`, SECRET),
+    ).toBeNull();
+  });
+
+  it("signatureOnly returns null when header is not JSON", async () => {
+    expect(await verifyMcpJwtSignatureOnly("notjson.bbb.ccc", SECRET)).toBeNull();
+  });
+
+  it("signatureOnly returns null when payload is not JSON", async () => {
+    const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const garbage = "notjsongarbage";
+    const enc = new TextEncoder();
+    const k = await crypto.subtle.importKey("raw", enc.encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(`${header}.${garbage}`)));
+    let bin = "";
+    for (let i = 0; i < sig.length; i++) bin += String.fromCharCode(sig[i]!);
+    const sigB64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    expect(
+      await verifyMcpJwtSignatureOnly(`${header}.${garbage}.${sigB64}`, SECRET),
+    ).toBeNull();
+  });
+
+  it("signatureOnly rejects payload with missing/non-string sub", async () => {
+    // sign a payload with sub:42 (number) so it parses but fails sub validation
+    const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const payload = btoa(JSON.stringify({ sub: 42, aud: AUD, exp: 9999999999, iat: 0 }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const enc = new TextEncoder();
+    const k = await crypto.subtle.importKey("raw", enc.encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(`${header}.${payload}`)));
+    let bin = "";
+    for (let i = 0; i < sig.length; i++) bin += String.fromCharCode(sig[i]!);
+    const sigB64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    expect(
+      await verifyMcpJwtSignatureOnly(`${header}.${payload}.${sigB64}`, SECRET),
+    ).toBeNull();
+  });
+
+  it("signatureOnly rejects payload with empty sub", async () => {
+    const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const payload = btoa(JSON.stringify({ sub: "", aud: AUD, exp: 9999999999, iat: 0 }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const enc = new TextEncoder();
+    const k = await crypto.subtle.importKey("raw", enc.encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(`${header}.${payload}`)));
+    let bin = "";
+    for (let i = 0; i < sig.length; i++) bin += String.fromCharCode(sig[i]!);
+    const sigB64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    expect(
+      await verifyMcpJwtSignatureOnly(`${header}.${payload}.${sigB64}`, SECRET),
+    ).toBeNull();
+  });
+
+  it("signatureOnly rejects payload with non-number exp", async () => {
+    const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const payload = btoa(JSON.stringify({ sub: "x", aud: AUD, exp: "not-a-number" }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const enc = new TextEncoder();
+    const k = await crypto.subtle.importKey("raw", enc.encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(`${header}.${payload}`)));
+    let bin = "";
+    for (let i = 0; i < sig.length; i++) bin += String.fromCharCode(sig[i]!);
+    const sigB64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    expect(
+      await verifyMcpJwtSignatureOnly(`${header}.${payload}.${sigB64}`, SECRET),
+    ).toBeNull();
   });
 });

@@ -60,6 +60,35 @@ export async function verifyMcpJwt(
   secret: string,
   expectedAud: string | readonly string[] | ((aud: string) => boolean),
 ): Promise<McpJwtPayload | null> {
+  const base = await verifyMcpJwtSignatureOnly(token, secret);
+  if (!base) return null;
+  if (base.exp <= Math.floor(Date.now() / 1000)) return null;
+  if (typeof expectedAud === "function") {
+    if (!expectedAud(base.aud)) return null;
+  } else {
+    const allowed =
+      typeof expectedAud === "string" ? [expectedAud] : expectedAud;
+    if (!allowed.includes(base.aud)) return null;
+  }
+  return base;
+}
+
+/**
+ * Verify HS256 JWT signature + schema (`alg`, claim shape) but **skip** `exp`
+ * and `aud` checks. Used by `/mcp/jwt/pickup`: the binary may present an
+ * expired-but-genuine JWT to recover a freshly minted pair that the user's
+ * `/mcp/elevate` flow just stashed in KV. The KV entry itself is bound to
+ * `payload.sub` and is one-shot, so accepting an expired signature here does
+ * not widen the trust surface beyond "this caller once held a valid token
+ * signed by `MCP_JWT_SECRET`".
+ *
+ * 不正 (alg mismatch / signature 不一致 / parse error) → null。`exp` / `aud` の
+ * 値はそのまま返るので caller 側でログに使ってよい。
+ */
+export async function verifyMcpJwtSignatureOnly(
+  token: string,
+  secret: string,
+): Promise<McpJwtPayload | null> {
   if (!secret) return null;
   const parts = token.split(".");
   if (parts.length !== 3) return null;
@@ -85,14 +114,7 @@ export async function verifyMcpJwt(
     return null;
   }
   if (typeof payload.exp !== "number") return null;
-  if (payload.exp <= Math.floor(Date.now() / 1000)) return null;
-  if (typeof expectedAud === "function") {
-    if (!expectedAud(payload.aud)) return null;
-  } else {
-    const allowed =
-      typeof expectedAud === "string" ? [expectedAud] : expectedAud;
-    if (!allowed.includes(payload.aud)) return null;
-  }
+  if (typeof payload.sub !== "string" || !payload.sub) return null;
   return payload;
 }
 
