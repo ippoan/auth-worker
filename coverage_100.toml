@@ -173,6 +173,11 @@ branches = true
 path = "src/handlers/mcp-pair-callback.ts"
 branches = true
 
+# issue #157 Phase B: 30-day refresh_token grant
+[[files]]
+path = "src/handlers/mcp-pair-grant.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]

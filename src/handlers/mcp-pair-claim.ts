@@ -1,5 +1,6 @@
 /**
- * `GET /mcp/pair/<pair_code>` (issue #144) — ブラウザが踏む 1-click pair 完了 URL。
+ * `GET /mcp/pair/<pair_code>` (issue #144 + issue #157) — ブラウザが踏む
+ * 1-click pair 完了 URL + 30 日 refresh_token mint。
  *
  * Flow:
  *   1. cookie `mcp_pair_session` を verify
@@ -11,8 +12,12 @@
  *   3. binding_jwt を mint (`signMcpJwt`, aud=github-mcp-server-rs, ttl=24h)
  *      - `scope` claim は record.requested_scope (legacy record は
  *        `"mcp.read mcp.write"` に default)
- *   4. KV record を status="approved" + binding_jwt に更新
- *   5. 200 HTML "paired, you may close this window"
+ *   4. issue #157: opaque refresh_token (32 byte base64url) を mint し、
+ *      `mcp/pair_refresh/<sha256(token)>` に 30 日 TTL で保存。
+ *      pair record にも `refresh_token` + `refresh_token_expires_at` を焼き込み、
+ *      WS upgrade で `Pair-Refresh-Token` header に乗せて binary に渡す。
+ *   5. KV record を status="approved" + binding_jwt (+ refresh_token) に更新
+ *   6. 200 HTML "paired, you may close this window"
  *
  * binary 側 WS upgrade (`/u/<login>/connect`) は `Authorization: Bearer <pair_code>`
  * を受け取り、KV を引いて status="approved" を確認したら binding_jwt に内部置換して
@@ -21,7 +26,15 @@
 
 import type { Env } from "../index";
 import { signMcpJwt } from "../lib/mcp-jwt";
-import { approvePair, getPair } from "../lib/mcp-pair";
+import {
+  PAIR_REFRESH_TTL_SEC,
+  approvePair,
+  generatePairRefreshToken,
+  getPair,
+  hashRefreshToken,
+  putPairRefresh,
+  type PairRefreshRecord,
+} from "../lib/mcp-pair";
 import { mcpToGithubScope, parseMcpScope } from "../lib/mcp-scope";
 import {
   PAIR_SESSION_COOKIE_NAME,
@@ -175,9 +188,30 @@ export async function handleMcpPairClaim(
     env.MCP_JWT_SECRET,
     BINDING_JWT_TTL_SEC,
   );
-  const approved = await approvePair(env, pair_code, binding_jwt);
+
+  // ── issue #157: 30 日 refresh_token を mint。pair record に焼き込んでおき
+  //    WS upgrade で binary に渡す。本体は別 key (sha256 lookup) に保管。 ──
+  const refreshToken = generatePairRefreshToken();
+  const refreshHash = await hashRefreshToken(refreshToken);
+  const now = Date.now();
+  const refreshExpiresAt = now + PAIR_REFRESH_TTL_SEC * 1000;
+  const refreshRec: PairRefreshRecord = {
+    github_login: session.github_login,
+    requested_scope: scope,
+    created_at: now,
+    expires_at: refreshExpiresAt,
+    last_used_at: null,
+    revoked: false,
+  };
+  await putPairRefresh(env, refreshHash, refreshRec);
+
+  const approved = await approvePair(env, pair_code, binding_jwt, {
+    token: refreshToken,
+    expires_at: refreshExpiresAt,
+  });
   if (!approved) {
-    // race: TTL 切れがちょうど発生した
+    // race: TTL 切れがちょうど発生した。refresh record は KV に残るが、binary
+    // 側に token は渡らないので参照不能 (= dangling だが 30 日で消える、害なし)。
     return page({
       title: "Pair code expired",
       body: "<p>This pair link expired while approving. Please retry from the binary.</p>",

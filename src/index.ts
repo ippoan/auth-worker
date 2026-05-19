@@ -54,6 +54,7 @@ import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
 import { handleMcpPairCallback } from "./handlers/mcp-pair-callback";
+import { handleMcpPairGrant } from "./handlers/mcp-pair-grant";
 import { handleMcpTools } from "./handlers/mcp-tools";
 import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
@@ -227,6 +228,14 @@ async function dispatchMcpRelay(
   // 認証なしの匿名 endpoint だが rate-limit を入れる (mcp-pair-new.ts)。
   if (url.pathname === "/mcp/pair/new" && request.method === "POST") {
     return handleMcpPairNew(request, env);
+  }
+  // issue #157 Phase B: refresh_token → binding_jwt 交換 endpoint。
+  // pair_url を browser で踏まずに次回 container を bootstrap するための path。
+  // Authorization: Bearer <refresh_token>。relay host 経由 (binary 側) と
+  // AS host 経由 (debug / curl) の両方で叩けるよう、auth-worker 側 POST
+  // dispatcher にも下で同 case を入れる。
+  if (url.pathname === "/mcp/pair/grant" && request.method === "POST") {
+    return handleMcpPairGrant(request, env);
   }
   // ADR-004 (cc-relay/ARCHITECTURE.md): GitHub webhook を受け、既存
   // McpSession DO 経由で attached binary に broadcast する (multiplex)。
@@ -463,6 +472,10 @@ export default {
           // MCP OAuth Provider — Token Revocation (RFC 7009, issue #145)
           case "/mcp/revoke":
             return await handleMcpRevoke(request, env);
+          // issue #157 Phase B: refresh_token → binding_jwt 交換 endpoint
+          // (debug / curl 用に auth host にも置く。binary は通常 relay host 経由)。
+          case "/mcp/pair/grant":
+            return await handleMcpPairGrant(request, env);
           // MCP OAuth Provider — Native MCP JSON-RPC tools (issue #145)
           // auth host 上でも受けることで binary なしで MCP server として機能する。
           // 同じ handler は dispatchMcpRelay (mcp.ippoan.org host) 経由でも到達可能。

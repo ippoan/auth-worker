@@ -25,7 +25,11 @@
 import type { Env } from "../index";
 import { verifyMcpJwt } from "../lib/mcp-jwt";
 import { wwwAuthenticateValue } from "../lib/mcp-origins";
-import { deletePair, getPair } from "../lib/mcp-pair";
+import {
+  PAIR_REFRESH_TTL_SEC,
+  deletePair,
+  getPair,
+} from "../lib/mcp-pair";
 
 /** Phase 3 `/mcp/token` で発行される JWT の aud と一致させる (Rust binary 名)。 */
 const MCP_AUD = "github-mcp-server-rs";
@@ -58,6 +62,10 @@ interface ResolvedAuth {
   github_login: string;
   /** WS upgrade 成功後に消す pair_code (JWT path では undefined)。 */
   pair_code_to_invalidate?: string;
+  /** issue #157: 101 response の `Pair-Refresh-Token` header に乗せる
+   *  30 日 opaque token。pair_code 経路で approve 時に mint された場合のみ存在。
+   *  JWT path や pre-#157 record (refresh_token 未 mint) では undefined。 */
+  refresh_token?: string;
 }
 
 /**
@@ -102,6 +110,7 @@ async function resolveAuth(
       forward_token: rec.binding_jwt,
       github_login: rec.claim_login,
       pair_code_to_invalidate: token,
+      refresh_token: rec.refresh_token,
     },
   };
 }
@@ -161,6 +170,31 @@ export async function handleMcpRelayConnect(
   // 新しい pair_code を取り直す前提。
   if (auth.pair_code_to_invalidate) {
     await deletePair(env, auth.pair_code_to_invalidate);
+  }
+
+  // issue #157 Phase A: WS upgrade 成立時に refresh_token を 101 response header
+  // で binary に渡す。Phase B (consumer #57) で binary 側がここから読み取り、
+  // 次回 container 起動時の `POST /mcp/pair/grant` 用に保存する。
+  //
+  // Cloudflare Response の `webSocket` プロパティは 101 を返す DO stub から
+  // bubble up してくる非標準フィールド。新 Response を作る際は明示的に
+  // 受け渡さないと WS upgrade が破綻するので注意 (test では polyfill で
+  // status だけ持つので headers のみ確認する)。
+  if (auth.refresh_token && res.status === 101) {
+    const headers = new Headers(res.headers);
+    headers.set("Pair-Refresh-Token", auth.refresh_token);
+    headers.set("Pair-Refresh-Expires-In", String(PAIR_REFRESH_TTL_SEC));
+    // `webSocket` は CF Workers 固有の非標準フィールド。常に渡しておく
+    // (DO 側で undefined になることは 101 path では無いはずだが、undefined は
+    // 標準 Response 構築で単に無視されるので無害)。条件分岐を入れない方が
+    // coverage / 読みやすさで素直。
+    const init = {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+      webSocket: (res as Response & { webSocket?: WebSocket }).webSocket,
+    } as ResponseInit;
+    return new Response(res.body, init);
   }
 
   return res;

@@ -409,4 +409,59 @@ describe("handleMcpRelayConnect — pair_code path (issue #144)", () => {
     expect(res.status).toBe(503);
     expect(kv._data[`mcp/pair/${rec.pair_code}`]).toBeUndefined();
   });
+
+  // issue #157 Phase A: 101 response に Pair-Refresh-Token header を載せる
+  it("attaches Pair-Refresh-Token + Pair-Refresh-Expires-In on 101 when pair has refresh_token", async () => {
+    const { env } = envWithDOAndKv();
+    const rec = pairRec({ refresh_token: "RT-opaque-43chars", refresh_token_expires_at: Date.now() + 1_000_000 });
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${rec.pair_code}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(101);
+    expect(res.headers.get("Pair-Refresh-Token")).toBe("RT-opaque-43chars");
+    expect(res.headers.get("Pair-Refresh-Expires-In")).toBe(String(30 * 24 * 60 * 60));
+  });
+
+
+  it("does NOT attach Pair-Refresh-Token when DO returns non-101 even if pair has refresh_token", async () => {
+    const stubFetch = vi.fn(async () => new Response("err", { status: 503 }));
+    const { env } = envWithDOAndKv(stubFetch);
+    const rec = pairRec({ refresh_token: "RT", refresh_token_expires_at: Date.now() + 1_000_000 });
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${rec.pair_code}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Pair-Refresh-Token")).toBeNull();
+  });
+
+  it("does NOT attach header for JWT path (no refresh_token in JWT auth)", async () => {
+    const { env } = envWithDOAndKv();
+    const jwt = await validJwt("alice");
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${jwt}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(101);
+    expect(res.headers.get("Pair-Refresh-Token")).toBeNull();
+  });
+
+  it("does NOT attach header when pair has no refresh_token (legacy/pre-#157)", async () => {
+    const { env } = envWithDOAndKv();
+    const rec = pairRec(); // refresh_token undefined
+    await putPair(env, rec);
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${rec.pair_code}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(101);
+    expect(res.headers.get("Pair-Refresh-Token")).toBeNull();
+  });
 });
