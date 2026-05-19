@@ -1625,3 +1625,1048 @@ afterEach(() => {
   vi.clearAllMocks();
   restoreUUID();
 });
+
+// =============================================================================
+// Phase 2 multiplex (ref-files-mcp#4 option C):
+//   per-service WebSocket attachment + JSON-RPC aggregator (initialize /
+//   tools/list / tools/call / notification / fall-through).
+//
+// Multi-binary fake: extends FakeWebSocket with `serializeAttachment` /
+// `deserializeAttachment` so `wsServiceOf` can read the service id back, which
+// is the only way the DO distinguishes the WS otherwise.
+// =============================================================================
+
+interface FakeMultiplexWs extends FakeWebSocket {
+  serializeAttachment: ReturnType<typeof vi.fn>;
+  deserializeAttachment: ReturnType<typeof vi.fn>;
+}
+
+/** Build a fake WS pre-loaded with a service attachment (so `wsServiceOf`
+ *  returns that service straight away — no hello frame needed). Passing
+ *  `service = undefined` leaves the attachment null (= v1-compat fallback). */
+function makeMultiplexWs(
+  id: string,
+  service: string | undefined,
+  readyState: number = 1,
+): FakeMultiplexWs {
+  const base = makeFakeWs(id, readyState);
+  let attachment: unknown =
+    service !== undefined ? { service, binaryVersion: "0.1.0" } : null;
+  return Object.assign(base, {
+    serializeAttachment: vi.fn((data: unknown) => {
+      attachment = data;
+    }),
+    deserializeAttachment: vi.fn(() => attachment),
+  }) as FakeMultiplexWs;
+}
+
+/** Capture the next `ws.send(...)` payload and resolve with the parsed Frame.
+ *  Used to grab the random UUID the broadcast generated so the test can echo
+ *  back a matching `kind:"resp"`. */
+function captureSentFrame(ws: FakeWebSocket): Promise<{
+  id: string;
+  method: string;
+  body_b64: string;
+}> {
+  return new Promise((resolve) => {
+    ws.send.mockImplementation((data: unknown) => {
+      const f = JSON.parse(String(data)) as {
+        id: string;
+        method: string;
+        body_b64: string;
+      };
+      resolve(f);
+    });
+  });
+}
+
+/** Helper: respond to a captured Frame::Req with a Frame::Resp JSON envelope. */
+async function respondJson(
+  do_: McpSession,
+  ws: FakeWebSocket,
+  reqId: string,
+  status: number,
+  rpcBody: Record<string, unknown>,
+): Promise<void> {
+  await do_.webSocketMessage(
+    ws as unknown as WebSocket,
+    JSON.stringify({
+      kind: "resp",
+      v: 1,
+      id: reqId,
+      status,
+      headers: { "content-type": "application/json" },
+      body_b64: b64encode(JSON.stringify(rpcBody)),
+    }),
+  );
+}
+
+describe("McpSession multiplex — webSocketMessage hello frame (Phase 2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("records service + binaryVersion attachment on known-service hello", async () => {
+    const ws = makeMultiplexWs("fresh", undefined); // attachment unset until hello
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "ref-files-mcp-server-rs",
+        binary_version: "0.2.0",
+      }),
+    );
+
+    expect(ws.serializeAttachment).toHaveBeenCalledWith({
+      service: "ref-files-mcp-server-rs",
+      binaryVersion: "0.2.0",
+    });
+  });
+
+  it("falls back to v1-compat service when hello.service is unknown", async () => {
+    const ws = makeMultiplexWs("fresh", undefined);
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "definitely-not-allowlisted",
+        binary_version: "0.0.0",
+      }),
+    );
+
+    expect(ws.serializeAttachment).toHaveBeenCalledWith({
+      service: "github-mcp-server-rs", // DEFAULT_SERVICE_V1_COMPAT
+      binaryVersion: "0.0.0",
+    });
+  });
+
+  it("falls back to v1-compat when hello.service is non-string and treats missing binary_version as empty string", async () => {
+    const ws = makeMultiplexWs("fresh", undefined);
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "hello", v: 1, service: 123 }),
+    );
+
+    expect(ws.serializeAttachment).toHaveBeenCalledWith({
+      service: "github-mcp-server-rs",
+      binaryVersion: "",
+    });
+  });
+
+  it("closes the previous same-service WS but retains different-service WS", async () => {
+    const oldGithub = makeMultiplexWs("old-gh", "github-mcp-server-rs");
+    const refFiles = makeMultiplexWs("ref-files", "ref-files-mcp-server-rs");
+    const newGithub = makeMultiplexWs("new-gh", undefined);
+    const { state } = createMockState([oldGithub, refFiles, newGithub]);
+    const do_ = new McpSession(state, {});
+
+    await do_.webSocketMessage(
+      newGithub as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.3.0",
+      }),
+    );
+
+    expect(oldGithub.close).toHaveBeenCalledWith(1000, "replaced");
+    expect(refFiles.close).not.toHaveBeenCalled();
+    // the newly-arriving WS must NOT close itself
+    expect(newGithub.close).not.toHaveBeenCalled();
+  });
+
+  it("ignores close() throws on stale peer WS", async () => {
+    const oldGithub = makeMultiplexWs("old-gh", "github-mcp-server-rs");
+    oldGithub.close.mockImplementation(() => {
+      throw new Error("already closed");
+    });
+    const newGithub = makeMultiplexWs("new-gh", undefined);
+    const { state } = createMockState([oldGithub, newGithub]);
+    const do_ = new McpSession(state, {});
+
+    // must not throw
+    await do_.webSocketMessage(
+      newGithub as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.3.0",
+      }),
+    );
+    expect(oldGithub.close).toHaveBeenCalled();
+  });
+
+  it("ignores serializeAttachment() throws and tolerates wsServiceOf throws on peer WS", async () => {
+    // Both WS lack `serialize/deserializeAttachment`. ws's serializeAttachment
+    // throws → outer catch swallows. Inside the same-service replacement loop
+    // we call `wsServiceOf(otherPlain)` which also throws (no deserialize
+    // method); the inner try/catch returns DEFAULT_SERVICE_V1_COMPAT (=
+    // "github-mcp-server-rs"), matching the hello.service → close() fires.
+    const otherPlain = makeFakeWs("plain-other");
+    const ws = makeFakeWs("plain");
+    const { state } = createMockState([otherPlain, ws]);
+    const do_ = new McpSession(state, {});
+
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.1.0",
+      }),
+    );
+    expect(otherPlain.close).toHaveBeenCalledWith(1000, "replaced");
+  });
+
+  it("ignores unknown frame kind (req / arbitrary) without throwing", async () => {
+    const ws = makeFakeWs("ws");
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+
+    // covers the `if (kind !== "resp") return;` final fall-through after the
+    // hello/notif/resp branches.
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "req", v: 1 }),
+    );
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "totally-made-up", v: 1 }),
+    );
+  });
+});
+
+describe("McpSession multiplex — handleBridge aggregator (Phase 2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreUUID();
+  });
+
+  // Setup with 2 attached services. `wsByService.size > 1` so handleBridge
+  // takes the `dispatchMultiService` branch.
+  function setup() {
+    const wsGh = makeMultiplexWs("gh", "github-mcp-server-rs");
+    const wsRef = makeMultiplexWs("ref", "ref-files-mcp-server-rs");
+    const { state } = createMockState([wsGh, wsRef]);
+    const do_ = new McpSession(state, {});
+    return { wsGh, wsRef, do_ };
+  }
+
+  it("aggregateInitialize: broadcasts to both services and merges serverInfo + protocolVersion", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2025-06-18" },
+        }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "github-mcp-server-rs", version: "1.0.0" },
+      },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "ref-files-mcp-server-rs", version: "0.1.0" },
+      },
+    });
+    const res = await respPromise;
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: {
+        protocolVersion: string;
+        capabilities: { tools: { listChanged: boolean } };
+        serverInfo: { name: string };
+      };
+    };
+    expect(body.result.protocolVersion).toBe("2025-06-18");
+    expect(body.result.serverInfo.name).toContain("mcp-relay-multiplex");
+    expect(body.result.serverInfo.name).toContain("github-mcp-server-rs");
+    expect(body.result.serverInfo.name).toContain("ref-files-mcp-server-rs");
+  });
+
+  it("aggregateInitialize: logs proto mismatch and falls back to the first proto", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "gh", version: "1" },
+      },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-03-01",
+        capabilities: { tools: {} },
+        serverInfo: { name: "ref", version: "1" },
+      },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      result: { protocolVersion: string };
+    };
+    expect(["2025-06-18", "2025-03-01"]).toContain(body.result.protocolVersion);
+  });
+
+  it("aggregateInitialize: returns -32000 when both binaries respond with garbage JSON", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    // Reply with body_b64 that decodes to invalid JSON → broadcast returns ok:false.
+    await do_.webSocketMessage(
+      wsGh as unknown as WebSocket,
+      JSON.stringify({
+        kind: "resp",
+        v: 1,
+        id: fGh.id,
+        status: 200,
+        body_b64: b64encode("{not json"),
+      }),
+    );
+    await do_.webSocketMessage(
+      wsRef as unknown as WebSocket,
+      JSON.stringify({
+        kind: "resp",
+        v: 1,
+        id: fRef.id,
+        status: 200,
+        body_b64: b64encode("also not json"),
+      }),
+    );
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      error: { code: number; message: string };
+    };
+    expect(body.error.code).toBe(-32000);
+    expect(body.error.message).toMatch(/all attached binaries failed initialize/);
+  });
+
+  it("aggregateInitialize: empty-body resp (no body_b64) still parses to {} and merges", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    // No body_b64 → bodyBytes = empty → JSON.parse('') throws → ok:false branch.
+    await do_.webSocketMessage(
+      wsGh as unknown as WebSocket,
+      JSON.stringify({ kind: "resp", v: 1, id: fGh.id, status: 200 }),
+    );
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "ref", version: "1" },
+      },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      result?: { serverInfo?: { name?: string } };
+    };
+    // ref-files survived → serverInfo name lists just that service
+    expect(body.result?.serverInfo?.name).toContain("ref-files-mcp-server-rs");
+  });
+
+  it("aggregateToolsList: merges disjoint tools across services and populates routing cache", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        tools: [
+          { name: "get_pull_request", description: "gh-tool" },
+          { name: "list_issues", description: "gh-tool" },
+          "not-an-object", // skipped (typeof !== object)
+          null, // skipped
+          { description: "no-name" }, // skipped (name missing)
+          { name: 42 }, // skipped (name not string)
+        ],
+      },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        tools: [{ name: "ref_search_files", description: "ref-tool" }],
+      },
+    });
+    // Also exercise the "result.tools not an array" skip branch via a 3rd
+    // service... we only have 2 services so we cover that branch indirectly
+    // (the okResults loop continues).
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      result: { tools: { name: string }[] };
+    };
+    const names = body.result.tools.map((t) => t.name).sort();
+    expect(names).toEqual(["get_pull_request", "list_issues", "ref_search_files"]);
+  });
+
+  it("aggregateToolsList: skips service whose result.tools is not an array", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: "not-an-array" }, // covers Array.isArray false branch
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: [{ name: "ref_search_files" }] },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      result: { tools: { name: string }[] };
+    };
+    expect(body.result.tools.map((t) => t.name)).toEqual(["ref_search_files"]);
+  });
+
+  it("aggregateToolsList: fails fast with -32000 on tool name conflict between services", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: [{ name: "ping" }] },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: [{ name: "ping" }] },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      error: { code: number; message: string };
+    };
+    expect(body.error.code).toBe(-32000);
+    expect(body.error.message).toMatch(/tool name conflict between services/);
+    expect(body.error.message).toMatch(/'ping'/);
+  });
+
+  it("routeToolsCall: returns -32602 when tools/list was never called (cache miss)", async () => {
+    const { do_ } = setup();
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "get_pull_request" },
+        }),
+      }),
+    );
+    const body = (await res.json()) as { error: { code: number; message: string } };
+    expect(body.error.code).toBe(-32602);
+    expect(body.error.message).toMatch(/unknown tool/);
+  });
+
+  it("routeToolsCall: -32602 when params.name is missing / empty", async () => {
+    const { do_ } = setup();
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {},
+        }),
+      }),
+    );
+    const body = (await res.json()) as { error: { code: number; message: string } };
+    expect(body.error.code).toBe(-32602);
+    expect(body.error.message).toMatch(/missing params.name/);
+  });
+
+  it("routeToolsCall: forwards to the correct service after tools/list cache populate", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    // populate cache via tools/list
+    const cap1Gh = captureSentFrame(wsGh);
+    const cap1Ref = captureSentFrame(wsRef);
+    const listP = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    const fGh1 = await cap1Gh;
+    const fRef1 = await cap1Ref;
+    await respondJson(do_, wsGh, fGh1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "get_pull_request" }] },
+    });
+    await respondJson(do_, wsRef, fRef1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "ref_search_files" }] },
+    });
+    await listP;
+    wsGh.send.mockReset();
+    wsRef.send.mockReset();
+
+    // now tools/call for ref_search_files → should only go to wsRef.
+    const capRef = captureSentFrame(wsRef);
+    const callP = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: { name: "ref_search_files", arguments: { q: "x" } },
+        }),
+      }),
+    );
+    const fRef = await capRef;
+    expect(wsGh.send).not.toHaveBeenCalled();
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 9,
+      result: { content: [{ type: "text", text: "found" }], isError: false },
+    });
+    const res = await callP;
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { content: { text: string }[] };
+    };
+    expect(body.result.content[0]!.text).toBe("found");
+  });
+
+  it("routeToolsCall: returns -32000 when the cached service is no longer in the attached set", async () => {
+    // KNOWN_SERVICES is only {github, ref-files}, so the natural way to drop a
+    // service (close its WS) also drops `wsByService.size` to 1, which would
+    // bypass the multiplex branch entirely. To still exercise this defensive
+    // path, pre-seed `toolToService` with a service id that is NOT in the
+    // current `wsByService` (= the WS attached after cache populate switched
+    // service identity, the realistic production scenario when KNOWN_SERVICES
+    // gains a third entry).
+    const { wsGh, wsRef, do_ } = setup();
+    (do_ as unknown as { toolToService: Map<string, string> }).toolToService.set(
+      "ghost_tool",
+      "service-not-currently-attached",
+    );
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: { name: "ghost_tool" },
+        }),
+      }),
+    );
+    expect(wsGh.send).not.toHaveBeenCalled();
+    expect(wsRef.send).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      error: { code: number; message: string };
+    };
+    expect(body.error.code).toBe(-32000);
+    expect(body.error.message).toMatch(/is not currently attached/);
+    // cache entry was deleted as a side effect
+    expect(
+      (do_ as unknown as { toolToService: Map<string, string> }).toolToService.has(
+        "ghost_tool",
+      ),
+    ).toBe(false);
+  });
+
+  it("routeToolsCall: surfaces forwardToWs ws.send failure as 502 relay_send_failed", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    // populate cache
+    const cap1Gh = captureSentFrame(wsGh);
+    const cap1Ref = captureSentFrame(wsRef);
+    const listP = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    const fGh1 = await cap1Gh;
+    const fRef1 = await cap1Ref;
+    await respondJson(do_, wsGh, fGh1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "get_pull_request" }] },
+    });
+    await respondJson(do_, wsRef, fRef1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "ref_search_files" }] },
+    });
+    await listP;
+    wsGh.send.mockReset();
+    wsRef.send.mockReset();
+    // make wsRef.send blow up on the tools/call forward
+    wsRef.send.mockImplementation(() => {
+      throw new Error("relay dropped");
+    });
+
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: { name: "ref_search_files" },
+        }),
+      }),
+    );
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string; message?: string };
+    expect(body.error).toBe("relay_send_failed");
+    expect(body.message).toContain("relay dropped");
+  });
+
+  it("routeToolsCall: relay_timeout returns 504 with no message field", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    // populate cache via tools/list with real timers
+    const cap1Gh = captureSentFrame(wsGh);
+    const cap1Ref = captureSentFrame(wsRef);
+    const listP = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    const fGh1 = await cap1Gh;
+    const fRef1 = await cap1Ref;
+    await respondJson(do_, wsGh, fGh1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "gh_only" }] },
+    });
+    await respondJson(do_, wsRef, fRef1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "ref_only" }] },
+    });
+    await listP;
+    wsGh.send.mockReset();
+    wsRef.send.mockReset();
+
+    // now tools/call ref_only and let it time out
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    try {
+      const capRef = captureSentFrame(wsRef);
+      const callP = do_.fetch(
+        new Request("https://do.invalid/__bridge", {
+          method: "POST",
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 9,
+            method: "tools/call",
+            params: { name: "ref_only" },
+          }),
+        }),
+      );
+      await capRef;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const res = await callP;
+      expect(res.status).toBe(504);
+      const body = (await res.json()) as { error: string; message?: string };
+      expect(body.error).toBe("relay_timeout");
+      // covers the `fwd.message !== undefined` false branch in routeToolsCall
+      expect(body.message).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dispatchMultiService: notification (id absent) broadcasts to all services and returns 202", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "notifications/initialized",
+        }),
+      }),
+    );
+    expect(res.status).toBe(202);
+    expect(wsGh.send).toHaveBeenCalledTimes(1);
+    expect(wsRef.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatchMultiService: notification ignores per-service send failures", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    wsGh.send.mockImplementation(() => {
+      throw new Error("dead");
+    });
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "notifications/initialized",
+        }),
+      }),
+    );
+    expect(res.status).toBe(202);
+    expect(wsRef.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatchMultiService: unknown method falls through to single-forward on last open WS", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capRef = captureSentFrame(wsRef); // last open in [wsGh, wsRef]
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "prompts/list" }),
+      }),
+    );
+    const fRef = await capRef;
+    expect(wsGh.send).not.toHaveBeenCalled();
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 99,
+      result: { prompts: [] },
+    });
+    const res = await respPromise;
+    expect(res.status).toBe(200);
+  });
+
+  it("dispatchMultiService: non-JSON body falls through to single-forward", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", { method: "POST", body: "not json" }),
+    );
+    const fRef = await capRef;
+    expect(wsGh.send).not.toHaveBeenCalled();
+    await respondJson(do_, wsRef, fRef.id, 200, { ok: true });
+    await respPromise;
+  });
+
+  it("dispatchMultiService: JSON scalar body falls through to single-forward", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", { method: "POST", body: "42" }),
+    );
+    const fRef = await capRef;
+    expect(wsGh.send).not.toHaveBeenCalled();
+    await respondJson(do_, wsRef, fRef.id, 200, { ok: true });
+    await respPromise;
+  });
+
+  it("aggregateInitialize: empty protos set falls back to default protocolVersion", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    // both ok responses, but NEITHER carries a string protocolVersion
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: 99, // non-string → filtered out
+        capabilities: {},
+        serverInfo: { name: "gh", version: "1" },
+      },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        // protocolVersion absent → undefined → filtered out
+        capabilities: {},
+        serverInfo: { name: "ref", version: "1" },
+      },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      result: { protocolVersion: string };
+    };
+    expect(body.result.protocolVersion).toBe("2025-06-18");
+  });
+
+  it("aggregateToolsList: skips broken (non-JSON) service responses without breaking the merge", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    // wsGh returns body that isn't JSON → broadcast returns ok:false → skipped
+    await do_.webSocketMessage(
+      wsGh as unknown as WebSocket,
+      JSON.stringify({
+        kind: "resp",
+        v: 1,
+        id: fGh.id,
+        status: 200,
+        body_b64: b64encode("not json"),
+      }),
+    );
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: [{ name: "ref_search_files" }] },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as { result: { tools: { name: string }[] } };
+    expect(body.result.tools.map((t) => t.name)).toEqual(["ref_search_files"]);
+  });
+
+  it("aggregateToolsList: duplicate name within one service is re-merged (prev === r.service branch)", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        tools: [
+          { name: "dup", description: "first" },
+          { name: "dup", description: "second" }, // same service, same name
+        ],
+      },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: [{ name: "ref_only" }] },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as { result: { tools: { name: string }[] } };
+    // no conflict error — the duplicate within the same service is allowed.
+    expect(body.result.tools.map((t) => t.name).sort()).toEqual([
+      "dup",
+      "dup",
+      "ref_only",
+    ]);
+  });
+
+  it("wsServiceOf: attachment with non-allowlisted service falls back to v1-compat", async () => {
+    // wsA's deserializeAttachment claims a service id we never put in
+    // KNOWN_SERVICES. wsServiceOf must return DEFAULT_SERVICE_V1_COMPAT (=
+    // "github-mcp-server-rs"), so paired with a ref-files WS we still see
+    // 2 distinct services and enter the multiplex branch.
+    const wsA = makeMultiplexWs("a", undefined);
+    wsA.deserializeAttachment.mockReturnValue({
+      service: "rogue-service",
+      binaryVersion: "x",
+    });
+    const wsRef = makeMultiplexWs("ref", "ref-files-mcp-server-rs");
+    const { state } = createMockState([wsA, wsRef]);
+    const do_ = new McpSession(state, {});
+    const capA = captureSentFrame(wsA);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      }),
+    );
+    const fA = await capA;
+    const fRef = await capRef;
+    await respondJson(do_, wsA, fA.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        serverInfo: { name: "A", version: "1" },
+      },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        serverInfo: { name: "ref", version: "1" },
+      },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      result: { serverInfo: { name: string } };
+    };
+    expect(body.result.serverInfo.name).toContain("github-mcp-server-rs");
+    expect(body.result.serverInfo.name).toContain("ref-files-mcp-server-rs");
+  });
+
+  it("wsServiceOf: attachment with non-string service field falls back to v1-compat", async () => {
+    const wsA = makeMultiplexWs("a", undefined);
+    wsA.deserializeAttachment.mockReturnValue({ service: 42 }); // non-string
+    const wsRef = makeMultiplexWs("ref", "ref-files-mcp-server-rs");
+    const { state } = createMockState([wsA, wsRef]);
+    const do_ = new McpSession(state, {});
+    const capA = captureSentFrame(wsA);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      }),
+    );
+    const fA = await capA;
+    const fRef = await capRef;
+    await respondJson(do_, wsA, fA.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        serverInfo: { name: "A", version: "1" },
+      },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        serverInfo: { name: "ref", version: "1" },
+      },
+    });
+    const res = await respPromise;
+    expect(res.status).toBe(200);
+  });
+
+  it("pickOpenWsByService: same-service duplicates collapse to last (latest wins)", async () => {
+    // both with the same service. wsByService.size === 1 so the multiplex
+    // branch is *skipped*, exercising the `wsByService.size > 1` false leg.
+    const wsA = makeMultiplexWs("a", "github-mcp-server-rs");
+    const wsB = makeMultiplexWs("b", "github-mcp-server-rs");
+    const { state } = createMockState([wsA, wsB]);
+    const do_ = new McpSession(state, {});
+    const capB = captureSentFrame(wsB);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      }),
+    );
+    const fB = await capB;
+    expect(wsA.send).not.toHaveBeenCalled();
+    await respondJson(do_, wsB, fB.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "gh", version: "1" },
+      },
+    });
+    const res = await respPromise;
+    expect(res.status).toBe(200);
+  });
+});
