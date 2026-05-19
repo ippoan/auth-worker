@@ -14,7 +14,10 @@
 
 import type { Env } from "../index";
 import { decryptWithKey } from "./mcp-crypto";
-import type { BranchProtectionPayload } from "./branch-protection-presets";
+import type {
+  BranchProtectionPayload,
+  ProjectType,
+} from "./branch-protection-presets";
 
 const GITHUB_API = "https://api.github.com";
 const GITHUB_UA = "ippoan-auth-worker";
@@ -352,6 +355,92 @@ export async function patchRepoSettings(
   return { ok: resp.ok, status: resp.status, body: await readBody(resp) };
 }
 
+/**
+ * Detect whether a repo is a Cloudflare Worker (`frontend-ci.yml` consumer),
+ * a Rust crate (`rust-ci.yml` consumer), or neither.
+ *
+ * Source of truth, in order:
+ *   1. `.github/workflows/ci.yml` — most consumers use exactly that path and
+ *      its body references the shared workflow:
+ *         uses: ippoan/ci-workflows/.github/workflows/frontend-ci.yml@main
+ *         uses: ippoan/ci-workflows/.github/workflows/rust-ci.yml@main
+ *      A simple substring match is robust here — `.yml@` is unique enough
+ *      and immune to indentation / quoting differences.
+ *   2. `Cargo.toml` at the repo root — definitive for Rust crates that
+ *      either pre-date the reusable workflow or use a custom CI shell.
+ *
+ * Returns `"unknown"` when neither file lookup succeeds. The dashboard
+ * then surfaces every preset with a hint instead of locking the operator
+ * out — the worst case is they pick the wrong one and the apply call
+ * fails on the GitHub side with a structured error they can act on.
+ *
+ * One bounded HTTP cost per repo: at most two GETs (ci.yml + Cargo.toml
+ * fallback), both 404-fast when missing. Each call short-circuits on
+ * any 5xx so transient GitHub errors don't blow up the dashboard page.
+ */
+export async function detectProjectType(
+  token: string,
+  owner: string,
+  repo: string,
+): Promise<ProjectType> {
+  const ci = await fetchTextFile(
+    token,
+    owner,
+    repo,
+    ".github/workflows/ci.yml",
+  );
+  if (ci) {
+    if (ci.includes("ci-workflows/.github/workflows/frontend-ci.yml")) {
+      return "worker";
+    }
+    if (ci.includes("ci-workflows/.github/workflows/rust-ci.yml")) {
+      return "rust";
+    }
+  }
+  // Cargo.toml at the repo root is conclusive for Rust crates even when the
+  // workflow file is missing / custom.
+  const cargo = await fetchTextFile(token, owner, repo, "Cargo.toml");
+  if (cargo) return "rust";
+  return "unknown";
+}
+
+/**
+ * `GET /repos/:o/:r/contents/:path` returning raw text body. 404 → null
+ * (file absent), 5xx → null (treated as "unknown" by the caller —
+ * dashboard failure-mode is better than blocking the whole page on one
+ * flaky API call). Decodes base64 in-process because the Workers runtime
+ * has no way to set the `Accept: application/vnd.github.raw` header
+ * reliably through cached fetches in every environment.
+ */
+async function fetchTextFile(
+  token: string,
+  owner: string,
+  repo: string,
+  path: string,
+): Promise<string | null> {
+  const url =
+    `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}` +
+    `/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
+  let resp: Response;
+  try {
+    resp = await fetch(url, { headers: ghHeaders(token) });
+  } catch {
+    return null;
+  }
+  if (resp.status === 404) return null;
+  if (!resp.ok) return null;
+  const body = (await resp.json()) as {
+    content?: string;
+    encoding?: string;
+  };
+  if (!body.content || body.encoding !== "base64") return null;
+  try {
+    return atob(body.content.replace(/\n/g, ""));
+  } catch {
+    return null;
+  }
+}
+
 export interface RepoSummary {
   owner: string;
   name: string;
@@ -438,6 +527,9 @@ export interface RepoProtectionRow {
    *  when the `GET /repos/:o/:r` probe failed — the UI shows a neutral
    *  state then. */
   repo_settings: RepoSettings | null;
+  /** Detected project type (`worker` / `rust` / `unknown`). The dashboard
+   *  uses this to show only the matching preset's Apply button. */
+  project_type: ProjectType;
 }
 
 /**
@@ -452,10 +544,11 @@ export async function fetchProtectionRows(
 ): Promise<RepoProtectionRow[]> {
   return Promise.all(
     repos.map(async (r): Promise<RepoProtectionRow> => {
-      const [classicRes, ruleset, settings] = await Promise.all([
+      const [classicRes, ruleset, settings, projectType] = await Promise.all([
         getBranchProtection(token, r.owner, r.name, r.default_branch),
         getBranchRulesetRules(token, r.owner, r.name, r.default_branch),
         getRepoSettings(token, r.owner, r.name),
+        detectProjectType(token, r.owner, r.name),
       ]);
 
       // Parse classic protection into the same shape as the ruleset side.
@@ -524,6 +617,7 @@ export async function fetchProtectionRows(
         ruleset_rule_types: ruleset.rule_types,
         protection_status: classicRes.status,
         repo_settings: settings,
+        project_type: projectType,
       };
     }),
   );

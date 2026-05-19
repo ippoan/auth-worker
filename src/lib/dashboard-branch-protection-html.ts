@@ -34,6 +34,7 @@ export function renderBranchProtectionPage(opts: {
     label: p.label,
     description: p.description,
     required_checks: p.required_checks,
+    project_type: p.project_type,
   }));
   return `<!doctype html>
 <html lang="en">
@@ -204,8 +205,18 @@ export function renderBranchProtectionPage(opts: {
         }
       }
 
-      var actions = presets.map(function (p) {
-        return '<button class="primary" data-action="apply" data-owner="' + escapeHtml(row.owner)
+      // Pick presets that match this repo's detected project_type. Unknown
+      // → show everything so the operator is never locked out. Matching
+      // preset rendered as primary; fallback (unknown) as plain so the
+      // operator notices something's off.
+      var rowType = row.project_type || "unknown";
+      var matchedPresets = rowType === "unknown"
+        ? presets
+        : presets.filter(function (p) { return p.project_type === rowType; });
+      var presetsToShow = matchedPresets.length > 0 ? matchedPresets : presets;
+      var actions = presetsToShow.map(function (p) {
+        var btnClass = rowType === "unknown" ? "" : "primary";
+        return '<button class="' + btnClass + '" data-action="apply" data-owner="' + escapeHtml(row.owner)
           + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
           + '" data-preset="' + escapeHtml(p.id) + '" title="' + escapeHtml(p.description) + '">'
           + escapeHtml(p.label) + '</button>';
@@ -215,6 +226,19 @@ export function renderBranchProtectionPage(opts: {
           + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
           + '">Remove</button>';
       }
+      // Project-type badge surfaces the auto-detection so the operator can
+      // sanity-check why a particular preset is offered. The unknown state
+      // is also exposed (amber) so a missing/odd ci.yml is visible rather
+      // than silently degrading to "show everything".
+      var typeBadge;
+      if (rowType === "worker") {
+        typeBadge = '<span class="badge-ok" title="Detected from .github/workflows/ci.yml (frontend-ci.yml)">worker</span>';
+      } else if (rowType === "rust") {
+        typeBadge = '<span class="badge-ok" title="Detected from .github/workflows/ci.yml (rust-ci.yml) or Cargo.toml">rust</span>';
+      } else {
+        typeBadge = '<span class="branch-warn" title="No ci.yml referencing ippoan/ci-workflows reusable; showing every preset as a fallback.">unknown type</span>';
+      }
+      actions = typeBadge + '<div style="margin-top:.25rem;">' + actions + '</div>';
       // Repos whose GitHub-declared default branch is anything other than
       // main/master are almost always misconfigured (typical cause: a
       // claude/ccoW session pushed the first commit to a feature branch

@@ -459,7 +459,24 @@ describe("fetchProtectionRows", () => {
    * `{ classic?: Response, ruleset?: Response }`; missing entries default
    * to 404 (= no classic protection) and `[]` (= no ruleset rules).
    */
-  function stubFetch(perRepo: Record<string, { classic?: Response; ruleset?: Response; rulesetsList?: Response; settings?: Response }>): void {
+  function stubFetch(perRepo: Record<string, {
+    classic?: Response;
+    ruleset?: Response;
+    rulesetsList?: Response;
+    settings?: Response;
+    /** Body of `.github/workflows/ci.yml` (base64-encoded automatically). */
+    ciYml?: string | null;
+    /** Body of `Cargo.toml` (base64-encoded automatically). */
+    cargoToml?: string | null;
+  }>): void {
+    const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
+    const contentsRespFor = (body: string | null | undefined): Response => {
+      if (body == null) return new Response("", { status: 404 });
+      return new Response(
+        JSON.stringify({ encoding: "base64", content: b64(body) }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation(async (url: string) => {
@@ -478,6 +495,12 @@ describe("fetchProtectionRows", () => {
               status: 200,
               headers: { "Content-Type": "application/json" },
             });
+          }
+          if (url.includes(`/repos/ippoan/${key}/contents/.github/workflows/ci.yml`)) {
+            return contentsRespFor(plan.ciYml ?? null);
+          }
+          if (url.includes(`/repos/ippoan/${key}/contents/Cargo.toml`)) {
+            return contentsRespFor(plan.cargoToml ?? null);
           }
           if (url.endsWith(`/repos/ippoan/${key}`)) {
             return plan.settings ?? new Response(
@@ -642,5 +665,65 @@ describe("fetchProtectionRows", () => {
     ]);
     expect(rows[0]?.protected).toBe(false);
     expect(rows[0]?.protection_source).toBe("none");
+  });
+
+  it("populates project_type=worker when ci.yml references frontend-ci.yml", async () => {
+    stubFetch({
+      a: {
+        ciYml:
+          "jobs:\n  ci:\n    uses: ippoan/ci-workflows/.github/workflows/frontend-ci.yml@main\n",
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "a", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("worker");
+  });
+
+  it("populates project_type=rust when ci.yml references rust-ci.yml", async () => {
+    stubFetch({
+      b: {
+        ciYml:
+          "jobs:\n  ci:\n    uses: ippoan/ci-workflows/.github/workflows/rust-ci.yml@main\n",
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "b", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("rust");
+  });
+
+  it("falls back to Cargo.toml when ci.yml is missing", async () => {
+    stubFetch({
+      c: {
+        // ciYml unset → 404
+        cargoToml: "[package]\nname = \"foo\"\n",
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "c", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("rust");
+  });
+
+  it("returns project_type=unknown when neither marker file exists", async () => {
+    stubFetch({ d: {} });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "d", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("unknown");
+  });
+
+  it("returns project_type=unknown when ci.yml uses an unrelated workflow", async () => {
+    stubFetch({
+      e: {
+        ciYml: "jobs:\n  test:\n    runs-on: ubuntu-latest\n",
+        // no Cargo.toml either
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "e", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("unknown");
   });
 });

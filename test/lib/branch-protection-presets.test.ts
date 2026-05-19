@@ -39,6 +39,10 @@ describe("PRESETS — ippoan-rust-default", () => {
     expect(rsc!.strict).toBe(true);
     expect(rsc!.contexts).toEqual(p.required_checks);
   });
+
+  it("project_type is 'rust' (drives dashboard auto-pick)", () => {
+    expect(p.project_type).toBe("rust");
+  });
 });
 
 describe("PRESETS — ippoan-worker-default", () => {
@@ -60,6 +64,10 @@ describe("PRESETS — ippoan-worker-default", () => {
     expect(p.payload.allow_deletions).toBe(false);
     expect(p.payload.enforce_admins).toBe(true);
     expect(p.payload.required_pull_request_reviews).toBeNull();
+  });
+
+  it("project_type is 'worker' (drives dashboard auto-pick)", () => {
+    expect(p.project_type).toBe("worker");
   });
 });
 

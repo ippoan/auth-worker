@@ -37,6 +37,15 @@
 
 export type PresetId = "ippoan-rust-default" | "ippoan-worker-default";
 
+/**
+ * Project type a preset applies to. The dashboard auto-detects each repo's
+ * type (via `detectProjectType` in `branch-protection-github.ts`) and shows
+ * only the matching preset, so a Rust repo never sees the worker preset and
+ * vice versa. `"unknown"` repos are shown every preset with a hint instead
+ * of being silently locked out.
+ */
+export type ProjectType = "worker" | "rust" | "unknown";
+
 export interface BranchProtectionPayload {
   required_status_checks: {
     strict: boolean;
@@ -60,6 +69,8 @@ export interface PresetDefinition {
   description: string;
   required_checks: string[];
   payload: BranchProtectionPayload;
+  /** Project type this preset targets — used by the dashboard to filter. */
+  project_type: ProjectType;
 }
 
 const IPPOAN_RUST_DEFAULT_CHECKS = [
@@ -81,6 +92,7 @@ export const PRESETS: Record<PresetId, PresetDefinition> = {
     description:
       "Rust CI 4 jobs (rustfmt / clippy / cargo test / cargo build --release) required. No force push, no branch deletion, approval=0, admins cannot bypass.",
     required_checks: IPPOAN_RUST_DEFAULT_CHECKS,
+    project_type: "rust",
     payload: {
       required_status_checks: {
         strict: true,
@@ -101,6 +113,7 @@ export const PRESETS: Record<PresetId, PresetDefinition> = {
     description:
       "Cloudflare Workers CI (wrangler test + typecheck) required. No force push, no branch deletion, approval=0, admins cannot bypass.",
     required_checks: IPPOAN_WORKER_DEFAULT_CHECKS,
+    project_type: "worker",
     payload: {
       required_status_checks: {
         strict: true,
