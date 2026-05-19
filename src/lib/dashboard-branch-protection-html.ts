@@ -81,6 +81,7 @@ export function renderBranchProtectionPage(opts: {
       <th>Repo</th>
       <th>Default branch</th>
       <th>Protected</th>
+      <th>Source</th>
       <th>Force push</th>
       <th>Deletion</th>
       <th>Required checks</th>
@@ -88,7 +89,7 @@ export function renderBranchProtectionPage(opts: {
     </tr>
   </thead>
   <tbody>
-    <tr><td colspan="7" class="empty">Loading…</td></tr>
+    <tr><td colspan="8" class="empty">Loading…</td></tr>
   </tbody>
 </table>
 <script id="presets" type="application/json">${JSON.stringify(presetMeta)}</script>
@@ -116,7 +117,7 @@ export function renderBranchProtectionPage(opts: {
   }
 
   function loadRepos() {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
     fetch("/api/dashboard/repos", { credentials: "same-origin", headers: { "X-CSRF": CSRF } })
       .then(function (r) {
         if (r.status === 401 || r.status === 403) { handleAuthFailure(); return null; }
@@ -126,7 +127,7 @@ export function renderBranchProtectionPage(opts: {
         if (!resp) return;
         if (resp.status !== 200) {
           setStatus("Failed to load repos: " + (resp.body && resp.body.error || resp.status), "error");
-          tbody.innerHTML = '<tr><td colspan="7" class="empty">Failed to load.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" class="empty">Failed to load.</td></tr>';
           return;
         }
         renderRows(resp.body.repos || []);
@@ -138,7 +139,7 @@ export function renderBranchProtectionPage(opts: {
 
   function renderRows(rows) {
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">No repos found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No repos found.</td></tr>';
       return;
     }
     var html = "";
@@ -148,6 +149,19 @@ export function renderBranchProtectionPage(opts: {
       var checksHtml = (row.required_checks || []).map(function (c) {
         return '<div>' + escapeHtml(c) + '</div>';
       }).join("") || '<span class="empty">none</span>';
+      var source = row.protection_source || (isProtected ? "classic" : "none");
+      var sourceLabel;
+      if (source === "none") {
+        sourceLabel = '<span class="empty">—</span>';
+      } else if (source === "both") {
+        sourceLabel = '<span class="badge-ok">classic + ruleset</span>';
+      } else if (source === "ruleset") {
+        var ruleHint = (row.ruleset_rule_types || []).join(", ");
+        sourceLabel = '<span class="badge-ok">ruleset</span>'
+          + (ruleHint ? ' <span class="checks">(' + escapeHtml(ruleHint) + ')</span>' : '');
+      } else {
+        sourceLabel = '<span class="badge-ok">classic</span>';
+      }
       var actions = presets.map(function (p) {
         return '<button class="primary" data-action="apply" data-owner="' + escapeHtml(row.owner)
           + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
@@ -163,6 +177,7 @@ export function renderBranchProtectionPage(opts: {
         + '<td>' + escapeHtml(row.owner) + '/' + escapeHtml(row.name) + '</td>'
         + '<td><code>' + escapeHtml(row.default_branch) + '</code></td>'
         + '<td>' + (isProtected ? '<span class="badge-ok">&#x2705;</span>' : '<span class="badge-bad">&#x274C; unprotected</span>') + '</td>'
+        + '<td>' + sourceLabel + '</td>'
         + '<td>' + (row.allow_force_pushes ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>') + '</td>'
         + '<td>' + (row.allow_deletions ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>') + '</td>'
         + '<td class="checks">' + checksHtml + '</td>'

@@ -138,6 +138,13 @@ describe("GET /api/dashboard/repos — happy path + cache", () => {
       if (url.includes("/repos/ippoan/r1/branches/main/protection")) {
         return new Response("", { status: 404 });
       }
+      if (url.includes("/repos/ippoan/r1/rules/branches/main")) {
+        // No ruleset rules in this fixture → unprotected (source=none).
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       throw new Error("unexpected url: " + url);
     });
     vi.stubGlobal("fetch", fetchSpy);
@@ -152,6 +159,56 @@ describe("GET /api/dashboard/repos — happy path + cache", () => {
       name: "r1",
       protected: false,
       protection_status: 404,
+    });
+  });
+
+  it("Phase 2: ruleset-only repo shows protected via ruleset (issue #159 follow-up)", async () => {
+    const { env, kv } = envWithKv();
+    await seedElevate(kv, "alice");
+    await seedToken(kv, "alice");
+
+    const fetchSpy = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            { owner: { login: "ippoan" }, name: "rs", default_branch: "main" },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.includes("/repos/ippoan/rs/branches/main/protection")) {
+        // No classic protection — would have shown ❌ in Phase 1.
+        return new Response("", { status: 404 });
+      }
+      if (url.includes("/repos/ippoan/rs/rules/branches/main")) {
+        return new Response(
+          JSON.stringify([
+            { type: "non_fast_forward" },
+            { type: "deletion" },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error("unexpected url: " + url);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const req = await authedRequest({ login: "alice", path: "/api/dashboard/repos" });
+    const res = await handleApiDashboardListRepos(req, env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      repos: Array<{
+        protected: boolean;
+        protection_source: string;
+        allow_force_pushes: boolean;
+        allow_deletions: boolean;
+      }>;
+    };
+    expect(body.repos[0]).toMatchObject({
+      protected: true,
+      protection_source: "ruleset",
+      allow_force_pushes: false,
+      allow_deletions: false,
     });
   });
 
