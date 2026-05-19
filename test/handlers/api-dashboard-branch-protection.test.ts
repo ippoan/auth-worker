@@ -145,6 +145,13 @@ describe("GET /api/dashboard/repos — happy path + cache", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
+      if (url.endsWith("/repos/ippoan/r1/rulesets")) {
+        // No repo-level rulesets either → no evaluate-mode fallback.
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       throw new Error("unexpected url: " + url);
     });
     vi.stubGlobal("fetch", fetchSpy);
@@ -188,6 +195,12 @@ describe("GET /api/dashboard/repos — happy path + cache", () => {
           ]),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
+      }
+      if (url.endsWith("/repos/ippoan/rs/rulesets")) {
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
       throw new Error("unexpected url: " + url);
     });

@@ -142,14 +142,61 @@ interface GithubBranchRule {
   };
 }
 
+/**
+ * Probe a branch for ruleset protection. Two endpoints in series:
+ *
+ *   1. `/repos/:o/:r/rules/branches/:b` — the "effective rules" endpoint.
+ *      Returns flattened rules from every **active** ruleset whose target
+ *      pattern matches the branch. Rulesets in `evaluate` / `disabled`
+ *      enforcement modes are NOT returned (per GitHub docs).
+ *   2. `/repos/:o/:r/rulesets` — the list of rulesets attached at the repo
+ *      level. Used to surface evaluate-mode rulesets and to give an honest
+ *      "we saw a ruleset but it isn't enforcing on this branch" state when
+ *      (1) is empty. Org-level rulesets do NOT appear here; they would
+ *      need `/orgs/:o/rulesets` which requires `admin:org` scope.
+ *
+ * Each call's HTTP status + result count is logged so a misconfiguration
+ * (403 on either endpoint, evaluate-mode ruleset, target-branch mismatch)
+ * can be diagnosed from Cloudflare logs without changing code.
+ */
+interface GithubRepoRuleset {
+  id?: number;
+  enforcement?: string;
+  conditions?: {
+    ref_name?: {
+      include?: string[];
+      exclude?: string[];
+    };
+  };
+}
+
+function refMatchesBranch(
+  conditions: GithubRepoRuleset["conditions"],
+  branch: string,
+  defaultBranch: string,
+): boolean {
+  const refName = conditions?.ref_name;
+  if (!refName) return true; // missing conditions ≈ "applies to all"
+  const include = refName.include ?? [];
+  const exclude = refName.exclude ?? [];
+  const branchRef = `refs/heads/${branch}`;
+  const defaultRef = `refs/heads/${defaultBranch}`;
+  const matchesPattern = (p: string): boolean => {
+    if (p === "~ALL") return true;
+    if (p === "~DEFAULT_BRANCH") return branch === defaultBranch;
+    return p === branch || p === branchRef || p === defaultRef;
+  };
+  if (exclude.some(matchesPattern)) return false;
+  if (include.length === 0) return true;
+  return include.some(matchesPattern);
+}
+
 export async function getBranchRulesetRules(
   token: string,
   owner: string,
   repo: string,
   branch: string,
 ): Promise<RulesetProtection> {
-  const url = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rules/branches/${encodeURIComponent(branch)}`;
-  const resp = await fetch(url, { headers: ghHeaders(token) });
   const empty: RulesetProtection = {
     active: false,
     required_checks: [],
@@ -157,29 +204,95 @@ export async function getBranchRulesetRules(
     blocks_deletion: false,
     rule_types: [],
   };
-  if (!resp.ok) return empty;
-  const body = (await resp.json()) as unknown;
-  if (!Array.isArray(body) || body.length === 0) return empty;
+
+  // Endpoint 1: effective rules for the branch (active rulesets only).
+  const rulesUrl = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rules/branches/${encodeURIComponent(branch)}`;
+  const rulesResp = await fetch(rulesUrl, { headers: ghHeaders(token) });
   const types = new Set<string>();
   const checks = new Set<string>();
   let blocksForce = false;
   let blocksDelete = false;
-  for (const rule of body as GithubBranchRule[]) {
-    if (typeof rule?.type !== "string") continue;
-    types.add(rule.type);
-    if (rule.type === "non_fast_forward") blocksForce = true;
-    if (rule.type === "deletion") blocksDelete = true;
-    if (rule.type === "required_status_checks" && rule.parameters) {
-      const arr = rule.parameters.required_status_checks;
-      if (Array.isArray(arr)) {
-        for (const c of arr) {
-          if (typeof c?.context === "string" && c.context) checks.add(c.context);
+  let ruleCount = 0;
+  if (rulesResp.ok) {
+    const body = (await rulesResp.json()) as unknown;
+    if (Array.isArray(body)) {
+      ruleCount = body.length;
+      for (const rule of body as GithubBranchRule[]) {
+        if (typeof rule?.type !== "string") continue;
+        types.add(rule.type);
+        if (rule.type === "non_fast_forward") blocksForce = true;
+        if (rule.type === "deletion") blocksDelete = true;
+        if (rule.type === "required_status_checks" && rule.parameters) {
+          const arr = rule.parameters.required_status_checks;
+          if (Array.isArray(arr)) {
+            for (const c of arr) {
+              if (typeof c?.context === "string" && c.context) checks.add(c.context);
+            }
+          }
         }
       }
     }
   }
+
+  // Endpoint 2: list of repo-level rulesets (used as a fallback for the
+  // "evaluate mode" / "rule exists but doesn't match this branch" case).
+  // Only count the ones whose conditions would match this branch — a repo
+  // can have stale rulesets targeting other branches.
+  let rulesetsFound = 0;
+  let evaluateModeFound = false;
+  try {
+    const listResp = await fetch(
+      `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rulesets`,
+      { headers: ghHeaders(token) },
+    );
+    if (listResp.ok) {
+      const body = (await listResp.json()) as unknown;
+      if (Array.isArray(body)) {
+        rulesetsFound = body.length;
+        for (const rs of body as GithubRepoRuleset[]) {
+          if (refMatchesBranch(rs.conditions, branch, branch)) {
+            if (rs.enforcement === "evaluate") evaluateModeFound = true;
+          }
+        }
+      }
+    } else {
+      console.warn(JSON.stringify({
+        event: "ruleset_list_probe_failed",
+        owner, repo, branch,
+        status: listResp.status,
+      }));
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({
+      event: "ruleset_list_probe_error",
+      owner, repo, branch,
+      error: e instanceof Error ? e.message : String(e),
+    }));
+  }
+
+  console.log(JSON.stringify({
+    event: "ruleset_probe",
+    owner, repo, branch,
+    rules_status: rulesResp.status,
+    rules_count: ruleCount,
+    rule_types: [...types],
+    repo_rulesets_count: rulesetsFound,
+    evaluate_mode_found: evaluateModeFound,
+  }));
+
+  // "active" if real enforcing rules were returned. Evaluate-mode rulesets
+  // are surfaced via `rule_types` containing the synthetic marker
+  // `evaluate-mode` so the UI can render an amber hint without claiming
+  // the branch is actually protected.
+  const realActive = types.size > 0;
+  if (!realActive && evaluateModeFound) {
+    return {
+      ...empty,
+      rule_types: ["evaluate-mode"],
+    };
+  }
   return {
-    active: types.size > 0,
+    active: realActive,
     required_checks: [...checks].sort(),
     blocks_force_push: blocksForce,
     blocks_deletion: blocksDelete,
