@@ -192,6 +192,94 @@ describe("listOwnedRepos", () => {
   });
 });
 
+describe("getRepoSettings", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it("returns null when /repos/:o/:r is non-2xx", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(new Response("nope", { status: 404 })),
+    );
+    const { getRepoSettings } = await import("../../src/lib/branch-protection-github");
+    const out = await getRepoSettings(TOKEN, "ippoan", "r");
+    expect(out).toBeNull();
+  });
+
+  it("coerces missing/falsy flags to false (not undefined)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const { getRepoSettings } = await import("../../src/lib/branch-protection-github");
+    const out = await getRepoSettings(TOKEN, "ippoan", "r");
+    expect(out).toEqual({ allow_auto_merge: false, delete_branch_on_merge: false });
+  });
+
+  it("returns both flags true on the happy path", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(JSON.stringify({ allow_auto_merge: true, delete_branch_on_merge: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const { getRepoSettings } = await import("../../src/lib/branch-protection-github");
+    const out = await getRepoSettings(TOKEN, "ippoan", "r");
+    expect(out).toEqual({ allow_auto_merge: true, delete_branch_on_merge: true });
+  });
+});
+
+describe("patchRepoSettings", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it("sends PATCH with the supplied settings and parses the body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        expect(url).toBe("https://api.github.com/repos/ippoan/r");
+        expect(init?.method).toBe("PATCH");
+        expect(JSON.parse(init!.body as string)).toEqual({
+          allow_auto_merge: true,
+          delete_branch_on_merge: true,
+        });
+        return new Response(
+          JSON.stringify({ allow_auto_merge: true, delete_branch_on_merge: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+    const { patchRepoSettings } = await import("../../src/lib/branch-protection-github");
+    const res = await patchRepoSettings(TOKEN, "ippoan", "r", {
+      allow_auto_merge: true,
+      delete_branch_on_merge: true,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe(200);
+  });
+
+  it("returns ok:false with status when GitHub rejects (e.g. 403)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(new Response("forbidden", { status: 403 })),
+    );
+    const { patchRepoSettings } = await import("../../src/lib/branch-protection-github");
+    const res = await patchRepoSettings(TOKEN, "ippoan", "r", { allow_auto_merge: true });
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("getBranchRulesetRules", () => {
   let originalFetch: typeof globalThis.fetch;
   beforeEach(() => { originalFetch = globalThis.fetch; });
@@ -371,7 +459,7 @@ describe("fetchProtectionRows", () => {
    * `{ classic?: Response, ruleset?: Response }`; missing entries default
    * to 404 (= no classic protection) and `[]` (= no ruleset rules).
    */
-  function stubFetch(perRepo: Record<string, { classic?: Response; ruleset?: Response; rulesetsList?: Response }>): void {
+  function stubFetch(perRepo: Record<string, { classic?: Response; ruleset?: Response; rulesetsList?: Response; settings?: Response }>): void {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation(async (url: string) => {
@@ -391,6 +479,12 @@ describe("fetchProtectionRows", () => {
               headers: { "Content-Type": "application/json" },
             });
           }
+          if (url.endsWith(`/repos/ippoan/${key}`)) {
+            return plan.settings ?? new Response(
+              JSON.stringify({ allow_auto_merge: true, delete_branch_on_merge: true }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
         }
         throw new Error("unexpected url: " + url);
       }),
@@ -408,7 +502,38 @@ describe("fetchProtectionRows", () => {
       protection_status: 404,
       required_checks: [],
       ruleset_rule_types: [],
+      repo_settings: { allow_auto_merge: true, delete_branch_on_merge: true },
     });
+  });
+
+  it("surfaces repo_settings flags off when GitHub returns them as false", async () => {
+    stubFetch({
+      a: {
+        settings: new Response(
+          JSON.stringify({ allow_auto_merge: false, delete_branch_on_merge: false }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "a", default_branch: "main" },
+    ]);
+    expect(rows[0]?.repo_settings).toEqual({
+      allow_auto_merge: false,
+      delete_branch_on_merge: false,
+    });
+  });
+
+  it("sets repo_settings to null when the repo metadata probe fails", async () => {
+    stubFetch({
+      a: {
+        settings: new Response("nope", { status: 404 }),
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "a", default_branch: "main" },
+    ]);
+    expect(rows[0]?.repo_settings).toBeNull();
   });
 
   it("merges classic + ruleset on the same repo (source=both, union of checks)", async () => {

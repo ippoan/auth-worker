@@ -300,6 +300,58 @@ export async function getBranchRulesetRules(
   };
 }
 
+/**
+ * Repo-level merge settings the dashboard surfaces alongside branch
+ * protection. These come from `GET /repos/:o/:r` (not the minimal
+ * `/user/repos` response, which omits them) so we pay one extra round-trip
+ * per repo. The CI's branch-protection check (`ci-workflows/.github/
+ * workflows/frontend-ci.yml`) already enforces both of these to be `true`,
+ * so a repo with either flag off blocks `gh pr merge --auto`.
+ */
+export interface RepoSettings {
+  allow_auto_merge: boolean;
+  delete_branch_on_merge: boolean;
+}
+
+export async function getRepoSettings(
+  token: string,
+  owner: string,
+  repo: string,
+): Promise<RepoSettings | null> {
+  const resp = await fetch(
+    `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    { headers: ghHeaders(token) },
+  );
+  if (!resp.ok) return null;
+  const body = (await resp.json()) as Record<string, unknown>;
+  return {
+    allow_auto_merge: Boolean(body["allow_auto_merge"]),
+    delete_branch_on_merge: Boolean(body["delete_branch_on_merge"]),
+  };
+}
+
+/**
+ * `PATCH /repos/:o/:r` with both merge-flow flags set to `true`. Returns
+ * the resulting settings on success, or null on failure (caller surfaces
+ * a JSON error). Other repo fields are untouched.
+ */
+export async function patchRepoSettings(
+  token: string,
+  owner: string,
+  repo: string,
+  settings: Partial<RepoSettings>,
+): Promise<ProtectionResult> {
+  const resp = await fetch(
+    `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    {
+      method: "PATCH",
+      headers: { ...ghHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    },
+  );
+  return { ok: resp.ok, status: resp.status, body: await readBody(resp) };
+}
+
 export interface RepoSummary {
   owner: string;
   name: string;
@@ -382,6 +434,10 @@ export interface RepoProtectionRow {
   /** Classic protection HTTP status (404 → no classic rule, 200 →
    *  classic active, その他 → 表示用に保持して UI 側で warn する)。 */
   protection_status: number;
+  /** Repo-level merge settings (auto-merge + delete on merge). `null`
+   *  when the `GET /repos/:o/:r` probe failed — the UI shows a neutral
+   *  state then. */
+  repo_settings: RepoSettings | null;
 }
 
 /**
@@ -396,9 +452,10 @@ export async function fetchProtectionRows(
 ): Promise<RepoProtectionRow[]> {
   return Promise.all(
     repos.map(async (r): Promise<RepoProtectionRow> => {
-      const [classicRes, ruleset] = await Promise.all([
+      const [classicRes, ruleset, settings] = await Promise.all([
         getBranchProtection(token, r.owner, r.name, r.default_branch),
         getBranchRulesetRules(token, r.owner, r.name, r.default_branch),
+        getRepoSettings(token, r.owner, r.name),
       ]);
 
       // Parse classic protection into the same shape as the ruleset side.
@@ -466,6 +523,7 @@ export async function fetchProtectionRows(
         required_checks: [...checks].sort(),
         ruleset_rule_types: ruleset.rule_types,
         protection_status: classicRes.status,
+        repo_settings: settings,
       };
     }),
   );

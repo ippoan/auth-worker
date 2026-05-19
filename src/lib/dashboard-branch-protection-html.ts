@@ -95,11 +95,12 @@ export function renderBranchProtectionPage(opts: {
       <th>Force push</th>
       <th>Deletion</th>
       <th>Required checks</th>
+      <th>Repo settings</th>
       <th>Actions</th>
     </tr>
   </thead>
   <tbody>
-    <tr><td colspan="8" class="empty">Loading…</td></tr>
+    <tr><td colspan="9" class="empty">Loading…</td></tr>
   </tbody>
 </table>
 <script id="presets" type="application/json">${JSON.stringify(presetMeta)}</script>
@@ -127,7 +128,7 @@ export function renderBranchProtectionPage(opts: {
   }
 
   function loadRepos() {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">Loading…</td></tr>';
     fetch("/api/dashboard/repos", { credentials: "same-origin", headers: { "X-CSRF": CSRF } })
       .then(function (r) {
         if (r.status === 401 || r.status === 403) { handleAuthFailure(); return null; }
@@ -137,7 +138,7 @@ export function renderBranchProtectionPage(opts: {
         if (!resp) return;
         if (resp.status !== 200) {
           setStatus("Failed to load repos: " + (resp.body && resp.body.error || resp.status), "error");
-          tbody.innerHTML = '<tr><td colspan="8" class="empty">Failed to load.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="9" class="empty">Failed to load.</td></tr>';
           return;
         }
         renderRows(resp.body.repos || []);
@@ -149,7 +150,7 @@ export function renderBranchProtectionPage(opts: {
 
   function renderRows(rows) {
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">No repos found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="empty">No repos found.</td></tr>';
       return;
     }
     var html = "";
@@ -179,6 +180,30 @@ export function renderBranchProtectionPage(opts: {
       } else {
         sourceLabel = '<span class="badge-ok">classic</span>';
       }
+      // Repo settings (allow_auto_merge + delete_branch_on_merge). CI's
+      // branch-protection check requires both to be ON; either OFF blocks
+      // gh pr merge --auto. Show inline badges + a one-click fix button.
+      var settings = row.repo_settings;
+      var settingsCell;
+      if (!settings) {
+        settingsCell = '<span class="empty">(unknown)</span>';
+      } else {
+        var amBadge = settings.allow_auto_merge
+          ? '<span class="badge-ok">auto-merge</span>'
+          : '<span class="branch-warn">auto-merge off</span>';
+        var dbBadge = settings.delete_branch_on_merge
+          ? '<span class="badge-ok">delete-on-merge</span>'
+          : '<span class="branch-warn">delete-on-merge off</span>';
+        settingsCell = amBadge + ' ' + dbBadge;
+        if (!settings.allow_auto_merge || !settings.delete_branch_on_merge) {
+          settingsCell += '<div style="margin-top:.35rem;"><button data-action="fix-settings"'
+            + ' data-owner="' + escapeHtml(row.owner) + '"'
+            + ' data-repo="' + escapeHtml(row.name) + '"'
+            + ' title="Turn on Allow auto-merge + Delete branch on merge in repo Settings">'
+            + 'Fix repo settings</button></div>';
+        }
+      }
+
       var actions = presets.map(function (p) {
         return '<button class="primary" data-action="apply" data-owner="' + escapeHtml(row.owner)
           + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
@@ -209,6 +234,7 @@ export function renderBranchProtectionPage(opts: {
         + '<td>' + (!isProtected ? '<span class="badge-warn">allowed</span>' : (row.allow_force_pushes ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>')) + '</td>'
         + '<td>' + (!isProtected ? '<span class="badge-warn">allowed</span>' : (row.allow_deletions ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>')) + '</td>'
         + '<td class="checks">' + checksHtml + '</td>'
+        + '<td>' + settingsCell + '</td>'
         + '<td><div class="actions">' + actions + '</div></td>'
         + '</tr>';
     });
@@ -240,6 +266,31 @@ export function renderBranchProtectionPage(opts: {
           if (!resp) return;
           if (resp.status === 200 && resp.body.ok) {
             setStatus("Applied " + preset + " to " + owner + "/" + repo + ".", "success");
+            loadRepos();
+          } else {
+            setStatus("Failed: " + JSON.stringify(resp.body), "error");
+          }
+        })
+        .catch(function (e) { setStatus("Network error: " + e.message, "error"); })
+        .then(function () { btn.disabled = false; });
+    } else if (action === "fix-settings") {
+      if (!confirm("Enable Allow auto-merge + Delete branch on merge on " + owner + "/" + repo + "?")) return;
+      btn.disabled = true;
+      setStatus("Fixing repo settings on " + owner + "/" + repo + "…", "");
+      fetch("/api/dashboard/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/fix-settings", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF": CSRF },
+        body: "{}",
+      })
+        .then(function (r) {
+          if (r.status === 401 || r.status === 403) { handleAuthFailure(); return null; }
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        })
+        .then(function (resp) {
+          if (!resp) return;
+          if (resp.status === 200 && resp.body.ok) {
+            setStatus("Repo settings fixed on " + owner + "/" + repo + ".", "success");
             loadRepos();
           } else {
             setStatus("Failed: " + JSON.stringify(resp.body), "error");
