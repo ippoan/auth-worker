@@ -40,8 +40,30 @@ export interface McpSessionEnv {
   MCP_JWT_SECRET?: string;
 }
 
-/** `state.acceptWebSocket()` に渡す tag — `getWebSockets("client")` で参照する */
+/** `state.acceptWebSocket()` に渡す tag — `getWebSockets("client")` で参照する。
+ *
+ *  Phase 2 multiplex (issue ref-files-mcp#4 option C): 同 DO に複数 binary が
+ *  attach できる。tag は `"client"` のまま (Hibernatable WS API は accept 時
+ *  にしか tag を渡せないが、binary を区別する `service` は Hello frame で
+ *  後送されるため accept 時点では未知)。service による振り分けは
+ *  `ws.serializeAttachment({service})` を Hello 受信時に書き、
+ *  `wsServiceOf(ws)` で読む。v1 sender (service 未送出) は
+ *  `DEFAULT_SERVICE_V1_COMPAT` ("github-mcp-server-rs") に fallback する。 */
 const WS_TAG = "client";
+
+/** Phase 2: v1 sender (Hello frame に `service` を載せない旧 binary) の
+ *  service id 既定値。binary 側 `mcp-relay::relay::frame::default_service_v1_compat`
+ *  と一致させる。 */
+const DEFAULT_SERVICE_V1_COMPAT = "github-mcp-server-rs";
+
+/** 既知 service の allowlist。Hello frame で未知 service を送ってきた binary は
+ *  attachment 書き込みを silent reject (= v1 fallback `"github-mcp-server-rs"` で
+ *  扱う)。新 service を足すときはここに追加し、`MCP_JWT_AUDIENCE_ALLOWLIST`
+ *  env と揃える。 */
+const KNOWN_SERVICES: ReadonlySet<string> = new Set([
+  "github-mcp-server-rs",
+  "ref-files-mcp-server-rs",
+]);
 
 /**
  * `WebSocket.readyState` の OPEN 値 (= 1)。`WebSocket.OPEN` static は Workers
@@ -121,6 +143,11 @@ export class McpSession implements DurableObject {
    *  Streamable HTTP stream)。`/__push_event` と binary 側からの
    *  `kind:"notif"` frame を fan-out する。Hibernation 跨ぎでは保持されない。 */
   private sseChannels: Map<string, SseChannel> = new Map();
+  /** Phase 2 multiplex: tool 名 → service id の cache。`tools/list` 集約時に
+   *  populate し、`tools/call` 時に lookup する。in-memory only (hibernation で
+   *  消える)。lost 時は次回 `tools/list` で再構築されるため retry されれば回復する。
+   *  tool 名衝突は fail-fast (`tools/list` aggregator が error を返す)。 */
+  private toolToService: Map<string, string> = new Map();
 
   constructor(state: DurableObjectState, env: McpSessionEnv) {
     this.state = state;
@@ -307,29 +334,81 @@ export class McpSession implements DurableObject {
       return new Response("Expected websocket", { status: 426 });
     }
 
-    // 同時 1 本のみ: 既存 WS があれば close してから新規 accept。
+    // Phase 2 multiplex (option C): 既存 WS は service が同一 (= 旧 connection
+    // の置換) のものだけ close する。異 service の binary は維持して
+    // 1 DO 内に N services を共存させる。service が未確定 (Hello 前) の
+    // attachment は v1 compat default 扱いになる。
+    // 注: accept 時点では新 connection の service も未知 (Hello は accept 後)。
+    // 既存 v1 全部を一旦保持し、Hello 到着時に同 service の旧 WS を close する
+    // (`reconcileServiceAttachment`)。
     const existing = this.state.getWebSockets(WS_TAG);
-    if (existing.length > 0) {
-      // [tracer #123] handleConnect race 仮説の検証用。新 upgrade で既存 WS を
-      // close するパスが頻発するなら、CF keepalive 等が新 connect を発火させて
-      // いる疑い。確定後は削除予定。
-      console.log(
-        `[mcp-relay] handleConnect: replacing ${existing.length} existing WS (suspect handleConnect race)`,
-      );
-    }
-    for (const old of existing) {
-      try {
-        old.close(1000, "replaced");
-      } catch {
-        // 既に閉じてる/エラー時は無視 — Phase 6 と同じ振る舞い
-      }
-    }
+    console.log(
+      `[mcp-relay] handleConnect: existing_ws=${existing.length} (multiplex retains across services until hello)`,
+    );
 
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.state.acceptWebSocket(server, [WS_TAG]);
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** Phase 2 multiplex helper: open な WS list から service id 別に最新の
+   *  1 本を pick して返す。同 service 内では「末尾 = 最新」採用 (handleConnect
+   *  と同じ慣習)。 */
+  private pickOpenWsByService(open: WebSocket[]): Map<string, WebSocket> {
+    const byService = new Map<string, WebSocket>();
+    for (const w of open) {
+      byService.set(wsServiceOf(w), w);
+    }
+    return byService;
+  }
+
+  /** Phase 2 multiplex: 1 本の WS に Frame::Req を投げて Resp を await する。
+   *  既存 handleBridge を 1-binary でも N-binary でも使えるように切り出し。 */
+  private async forwardToWs(
+    ws: WebSocket,
+    method: string,
+    reqHeaders: Record<string, string>,
+    bodyBuf: ArrayBuffer,
+  ): Promise<
+    | { ok: true; resp: RespFrame }
+    | { ok: false; status: number; error: string; message?: string }
+  > {
+    const id = crypto.randomUUID();
+    const reqFrame = {
+      kind: "req",
+      v: FRAME_VERSION,
+      id,
+      method,
+      path: "/",
+      headers: reqHeaders,
+      body_b64: arrayBufferToBase64(bodyBuf),
+    };
+    try {
+      ws.send(JSON.stringify(reqFrame));
+    } catch (e) {
+      return {
+        ok: false,
+        status: 502,
+        error: "relay_send_failed",
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
+    const respPromise = new Promise<RespFrame>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error("relay_timeout"));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timer });
+    });
+    try {
+      const resp = await respPromise;
+      return { ok: true, resp };
+    } catch (e) {
+      const msg = (e as Error).message;
+      return { ok: false, status: msg === "relay_timeout" ? 504 : 502, error: msg };
+    }
   }
 
   private async handleBridge(req: Request): Promise<Response> {
@@ -367,14 +446,9 @@ export class McpSession implements DurableObject {
       // webhook 受信 → polling drain」が完結する。
       return this.handleInlineMcp(req);
     }
-    // 複数 OPEN WS が並んだ場合は最新 (= 配列末尾) を優先。
-    // handleConnect は新規接続時に getWebSockets を見て古い WS を
-    // `close(1000, "replaced")` するので通常は 1 本のみ。
-    const ws = open[open.length - 1] as WebSocket;
 
-    const id = crypto.randomUUID();
-
-    // body / headers を取り出して Frame::Req に詰める
+    // body / headers を取り出して Frame::Req に詰める。aggregator 経路と
+    // 単発 forward 経路で共有する。
     const bodyBuf = await req.arrayBuffer();
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => {
@@ -384,70 +458,246 @@ export class McpSession implements DurableObject {
       headers[lk] = v;
     });
 
-    const reqFrame = {
-      kind: "req",
-      v: FRAME_VERSION,
-      id,
-      method: req.method,
-      // binary 側 bridge.rs は StreamableHttpService を直接呼ぶので path は "/" 固定
-      path: "/",
-      headers,
-      body_b64: arrayBufferToBase64(bodyBuf),
-    };
+    // Phase 2 multiplex: service 別の WS 集合を取る。1 service なら従来通り
+    // 単発 forward で完了 (既存 v1 binary の挙動を保つ)。2+ service ある時
+    // だけ JSON-RPC body を見て initialize / tools/list / tools/call を分岐。
+    const wsByService = this.pickOpenWsByService(open);
+    if (wsByService.size > 1) {
+      const aggResp = await this.dispatchMultiService(wsByService, headers, bodyBuf);
+      if (aggResp) return aggResp;
+      // dispatchMultiService が null を返した → 集約対象外 method。
+      // 既定の最終 WS forward に fall through する (= 1 service 経路と同じ)。
+    }
 
-    // WS send が即時失敗 (ws closed, etc) なら 502。pending 登録前に試す
-    // ことで失敗時の cleanup 分岐 (`if (p)`) を不要にする。
+    // 単発 forward: 最新 WS (= open 配列末尾) を 1 本だけ使う。
+    const ws = open[open.length - 1] as WebSocket;
+    const fwd = await this.forwardToWs(ws, req.method, headers, bodyBuf);
+    if (!fwd.ok) {
+      const body: { error: string; message?: string } = { error: fwd.error };
+      if (fwd.message !== undefined) body.message = fwd.message;
+      return jsonResponse(fwd.status, body);
+    }
+    return buildResponseFromRespFrame(fwd.resp);
+  }
+
+  /** Phase 2 multiplex: JSON-RPC body を見て初期化系メソッドを全 service に
+   *  分配・集約する。集約しない method (notification / 未知 / 単発) は
+   *  `null` を返して caller の単発 forward に委ねる。 */
+  private async dispatchMultiService(
+    wsByService: Map<string, WebSocket>,
+    headers: Record<string, string>,
+    bodyBuf: ArrayBuffer,
+  ): Promise<Response | null> {
+    let parsed: unknown;
     try {
-      ws.send(JSON.stringify(reqFrame));
-    } catch (e) {
-      return jsonResponse(502, {
-        error: "relay_send_failed",
-        message: e instanceof Error ? e.message : String(e),
+      parsed = JSON.parse(new TextDecoder().decode(bodyBuf));
+    } catch {
+      return null; // JSON-RPC でない POST は単発 forward
+    }
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const msg = parsed as JsonRpcMessage;
+    const method = typeof msg.method === "string" ? msg.method : "";
+    const reqId = msg.id;
+
+    // notification (id 無し) は broadcast して 202。
+    if (reqId === undefined || reqId === null) {
+      for (const ws of wsByService.values()) {
+        try {
+          ws.send(JSON.stringify({
+            kind: "req",
+            v: FRAME_VERSION,
+            id: crypto.randomUUID(),
+            method: "POST",
+            path: "/",
+            headers,
+            body_b64: arrayBufferToBase64(bodyBuf),
+          }));
+        } catch { /* ignore individual failure */ }
+      }
+      return new Response(null, { status: 202 });
+    }
+
+    switch (method) {
+      case "initialize":
+        return this.aggregateInitialize(wsByService, headers, bodyBuf, reqId);
+      case "tools/list":
+        return this.aggregateToolsList(wsByService, headers, bodyBuf, reqId);
+      case "tools/call":
+        return this.routeToolsCall(wsByService, headers, bodyBuf, msg, reqId);
+      default:
+        // prompts/list, resources/list, ping 等 — どの binary も同じく返すので
+        // 単発 forward (caller) に任せる。
+        return null;
+    }
+  }
+
+  /** `initialize`: 全 service に投げ、capabilities.tools を union、serverInfo は
+   *  service 列を join した composite で返す。 */
+  private async aggregateInitialize(
+    wsByService: Map<string, WebSocket>,
+    headers: Record<string, string>,
+    bodyBuf: ArrayBuffer,
+    reqId: unknown,
+  ): Promise<Response> {
+    const results = await this.broadcast(wsByService, headers, bodyBuf);
+    const okResults = results.filter((r) => r.ok) as Array<{
+      ok: true;
+      service: string;
+      body: Record<string, unknown>;
+    }>;
+    if (okResults.length === 0) {
+      return jsonRpcResponse(reqId, {
+        error: { code: -32000, message: "all attached binaries failed initialize" },
       });
     }
-
-    // send 成功後に pending を登録。Workers DO は single-threaded で
-    // webSocketMessage と handleBridge は interleave しないので、ここで race は無い。
-    const respPromise = new Promise<RespFrame>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error("relay_timeout"));
-      }, REQUEST_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer });
-    });
-
-    let respFrame: RespFrame;
-    try {
-      respFrame = await respPromise;
-    } catch (e) {
-      // reject は常に new Error(...) なので safely cast
-      const msg = (e as Error).message;
-      const status = msg === "relay_timeout" ? 504 : 502;
-      return jsonResponse(status, { error: msg });
+    // protocolVersion: 全 binary 同一前提 (Phase 2 spec の制約)。差があれば
+    // 先頭の値を採用 + warning log。
+    const protos = new Set(
+      okResults
+        .map((r) => (r.body.result as { protocolVersion?: unknown } | undefined)?.protocolVersion)
+        .filter((p) => typeof p === "string"),
+    );
+    if (protos.size > 1) {
+      console.log(`[mcp-relay] aggregate initialize: proto mismatch ${[...protos].join(",")}`);
     }
-
-    // Frame::Resp → http::Response 組み立て
-    const respHeaders = new Headers();
-    if (respFrame.headers) {
-      for (const [k, v] of Object.entries(respFrame.headers)) {
-        try {
-          respHeaders.set(k, String(v));
-        } catch {
-          // 不正 header は黙って drop (Workers Response は厳しめ)
-        }
-      }
-    }
-    const body = respFrame.body_b64
-      ? base64ToArrayBuffer(respFrame.body_b64)
-      : null;
-    return new Response(body, {
-      status: respFrame.status,
-      headers: respHeaders,
+    const proto = [...protos][0] ?? "2025-06-18";
+    return jsonRpcResponse(reqId, {
+      result: {
+        protocolVersion: proto,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: {
+          name: `mcp-relay-multiplex(${okResults.map((r) => r.service).join(",")})`,
+          version: "0.1.0",
+        },
+      },
     });
   }
 
+  /** `tools/list`: 全 service の tools を merge。tool 名衝突は fail-fast
+   *  (Phase 2 spec: prefix 化は別 issue)。merge 成功時は `toolToService` cache
+   *  を populate して後続の `tools/call` の routing に使う。 */
+  private async aggregateToolsList(
+    wsByService: Map<string, WebSocket>,
+    headers: Record<string, string>,
+    bodyBuf: ArrayBuffer,
+    reqId: unknown,
+  ): Promise<Response> {
+    const results = await this.broadcast(wsByService, headers, bodyBuf);
+    const merged: Array<Record<string, unknown>> = [];
+    const seen = new Map<string, string>(); // tool name → service
+    for (const r of results) {
+      if (!r.ok) continue;
+      const tools = (r.body.result as { tools?: unknown } | undefined)?.tools;
+      if (!Array.isArray(tools)) continue;
+      for (const t of tools) {
+        if (typeof t !== "object" || t === null) continue;
+        const name = (t as { name?: unknown }).name;
+        if (typeof name !== "string") continue;
+        const prev = seen.get(name);
+        if (prev && prev !== r.service) {
+          return jsonRpcResponse(reqId, {
+            error: {
+              code: -32000,
+              message: `tool name conflict between services: '${name}' (${prev} vs ${r.service})`,
+            },
+          });
+        }
+        seen.set(name, r.service);
+        merged.push(t as Record<string, unknown>);
+      }
+    }
+    // cache 更新
+    this.toolToService.clear();
+    for (const [name, svc] of seen) this.toolToService.set(name, svc);
+    return jsonRpcResponse(reqId, { result: { tools: merged } });
+  }
+
+  /** `tools/call`: tool 名から所属 service を引いて該当 WS のみに forward。
+   *  cache miss なら fail (caller は tools/list を再実行する想定)。 */
+  private async routeToolsCall(
+    wsByService: Map<string, WebSocket>,
+    headers: Record<string, string>,
+    bodyBuf: ArrayBuffer,
+    msg: JsonRpcMessage,
+    reqId: unknown,
+  ): Promise<Response> {
+    const params = (msg.params ?? {}) as { name?: unknown };
+    const toolName = typeof params.name === "string" ? params.name : "";
+    if (!toolName) {
+      return jsonRpcResponse(reqId, {
+        error: { code: -32602, message: "tools/call missing params.name" },
+      });
+    }
+    const service = this.toolToService.get(toolName);
+    if (!service) {
+      return jsonRpcResponse(reqId, {
+        error: {
+          code: -32602,
+          message: `unknown tool '${toolName}' — call tools/list to refresh routing cache`,
+        },
+      });
+    }
+    const ws = wsByService.get(service);
+    if (!ws) {
+      // service の WS が落ちた直後など
+      this.toolToService.delete(toolName);
+      return jsonRpcResponse(reqId, {
+        error: {
+          code: -32000,
+          message: `tool '${toolName}' service '${service}' is not currently attached`,
+        },
+      });
+    }
+    const fwd = await this.forwardToWs(ws, "POST", headers, bodyBuf);
+    if (!fwd.ok) {
+      const body: { error: string; message?: string } = { error: fwd.error };
+      if (fwd.message !== undefined) body.message = fwd.message;
+      return jsonResponse(fwd.status, body);
+    }
+    return buildResponseFromRespFrame(fwd.resp);
+  }
+
+  /** 全 service WS に同じ body を投げ、各 service の JSON-RPC response body を
+   *  並列収集する。1 binary でも fail しても他は止めない。 */
+  private async broadcast(
+    wsByService: Map<string, WebSocket>,
+    headers: Record<string, string>,
+    bodyBuf: ArrayBuffer,
+  ): Promise<Array<
+    | { ok: true; service: string; body: Record<string, unknown> }
+    | { ok: false; service: string; error: string }
+  >> {
+    const tasks: Array<Promise<
+      | { ok: true; service: string; body: Record<string, unknown> }
+      | { ok: false; service: string; error: string }
+    >> = [];
+    for (const [service, ws] of wsByService) {
+      tasks.push((async () => {
+        const fwd = await this.forwardToWs(ws, "POST", headers, bodyBuf);
+        if (!fwd.ok) return { ok: false as const, service, error: fwd.error };
+        const bodyBytes = fwd.resp.body_b64
+          ? base64ToArrayBuffer(fwd.resp.body_b64)
+          : new ArrayBuffer(0);
+        try {
+          const parsed = JSON.parse(new TextDecoder().decode(bodyBytes)) as Record<
+            string,
+            unknown
+          >;
+          return { ok: true as const, service, body: parsed };
+        } catch (e) {
+          return {
+            ok: false as const,
+            service,
+            error: `bad json from ${service}: ${e instanceof Error ? e.message : String(e)}`,
+          };
+        }
+      })());
+    }
+    return Promise.all(tasks);
+  }
+
   /** binary 側からの Frame 受信 — Resp を pending Promise に resolve する。 */
-  async webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const text = typeof message === "string" ? message : new TextDecoder().decode(message);
     let parsed: unknown;
     try {
@@ -458,6 +708,38 @@ export class McpSession implements DurableObject {
     if (typeof parsed !== "object" || parsed === null) return;
     const f = parsed as Record<string, unknown>;
     const kind = f["kind"];
+    // Phase 2 multiplex: Hello frame の `service` field を attachment に記録。
+    // 旧 v1 sender (service field 無し) は DEFAULT_SERVICE_V1_COMPAT 扱いで
+    // attachment を書き、handleBridge の routing が常に attachment 参照で済むようにする。
+    if (kind === "hello") {
+      const rawService = f["service"];
+      const service =
+        typeof rawService === "string" && KNOWN_SERVICES.has(rawService)
+          ? rawService
+          : DEFAULT_SERVICE_V1_COMPAT;
+      const binaryVersion =
+        typeof f["binary_version"] === "string" ? (f["binary_version"] as string) : "";
+      try {
+        ws.serializeAttachment({ service, binaryVersion });
+      } catch {
+        // mock WS (test) は serializeAttachment 未定義 — skip
+      }
+      // 同 service の旧 WS は close (置換)。異 service は維持 (multiplex)。
+      for (const other of this.state.getWebSockets(WS_TAG)) {
+        if ((other as unknown) === (ws as unknown)) continue;
+        if (wsServiceOf(other as WebSocket) === service) {
+          try {
+            (other as WebSocket).close(1000, "replaced");
+          } catch {
+            // 既 close は無視
+          }
+        }
+      }
+      console.log(
+        `[mcp-relay] hello: service=${service} binary_version=${binaryVersion}`,
+      );
+      return;
+    }
     if (kind === "notif") {
       // ADR-004 Phase D: binary 側 (`agent-mcp/src/relay.rs`) が event 受信時に
       // back-pipe してきた MCP `notifications/message`。`body` は JSON-RPC 2.0
@@ -472,7 +754,7 @@ export class McpSession implements DurableObject {
       return;
     }
     if (kind !== "resp") {
-      // hello / req / unknown は auth-worker 側では何もしない
+      // req / unknown は auth-worker 側では何もしない (hello は上で処理済み)
       return;
     }
     const id = f["id"];
@@ -725,6 +1007,37 @@ export class McpSession implements DurableObject {
     const v = await this.state.storage.get<Record<string, unknown>[]>("events");
     return Array.isArray(v) ? v.slice() : [];
   }
+}
+
+/** Phase 2 multiplex: WS attachment から service id を読む。`Hello` frame
+ *  到着前 (まだ attachment 未書込) or mock WS では DEFAULT_SERVICE_V1_COMPAT
+ *  に fallback する。binary 側の `default_service_v1_compat()` と一致。 */
+function wsServiceOf(ws: WebSocket): string {
+  try {
+    const att = ws.deserializeAttachment() as { service?: unknown } | null;
+    if (att && typeof att.service === "string" && KNOWN_SERVICES.has(att.service)) {
+      return att.service;
+    }
+  } catch {
+    // 未定義 / 未書込 → fallback
+  }
+  return DEFAULT_SERVICE_V1_COMPAT;
+}
+
+/** Phase 2 helper: RespFrame → http::Response 組み立て。invalid header は drop。 */
+function buildResponseFromRespFrame(respFrame: RespFrame): Response {
+  const respHeaders = new Headers();
+  if (respFrame.headers) {
+    for (const [k, v] of Object.entries(respFrame.headers)) {
+      try {
+        respHeaders.set(k, String(v));
+      } catch {
+        // 不正 header は黙って drop (Workers Response は厳しめ)
+      }
+    }
+  }
+  const body = respFrame.body_b64 ? base64ToArrayBuffer(respFrame.body_b64) : null;
+  return new Response(body, { status: respFrame.status, headers: respHeaders });
 }
 
 function jsonResponse(status: number, body: unknown): Response {

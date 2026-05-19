@@ -26,14 +26,29 @@ import { mcpRelayOrigin, wwwAuthenticateValue } from "../lib/mcp-origins";
 
 /**
  * 受け入れる JWT の `aud` claim:
- *  - legacy `"github-mcp-server-rs"` — Rust binary (`github-mcp-server-rs`) が
- *    device flow で得たトークン (Phase 3 互換)。
+ *  - allowlist (default: `["github-mcp-server-rs"]`、env `MCP_JWT_AUDIENCE_ALLOWLIST`
+ *    で拡張可) — 各 Rust binary が device flow で得たトークン。Phase 2 multiplex
+ *    (ref-files-mcp#4 option C) で複数 binary が共存するため、staging/prod 双方の
+ *    env で `["github-mcp-server-rs","ref-files-mcp-server-rs"]` を設定する。
  *  - `mcpRelayOrigin(env)` (例 `https://mcp-staging.ippoan.org`) — Authorization
  *    Code grant + RFC 8707 Resource Indicator で browser MCP client (Anthropic
  *    Claude.ai 等) 向けに発行したトークン。MCP Authorization spec 2025-06-18
  *    が要求する audience binding の対象。
  */
-const MCP_AUD_LEGACY = "github-mcp-server-rs";
+const MCP_AUD_LEGACY_DEFAULT = "github-mcp-server-rs";
+
+/** env の `MCP_JWT_AUDIENCE_ALLOWLIST` を解析。形式: comma-separated string。
+ *  未設定 / 空文字列なら `[MCP_AUD_LEGACY_DEFAULT]` を返す (= Phase 1 互換)。 */
+function legacyAudienceAllowlist(env: Env): Set<string> {
+  const raw =
+    (env as unknown as { MCP_JWT_AUDIENCE_ALLOWLIST?: string }).MCP_JWT_AUDIENCE_ALLOWLIST ?? "";
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return new Set([MCP_AUD_LEGACY_DEFAULT]);
+  return new Set(parts);
+}
 
 /**
  * 401 応答用 helper (Phase 4 / issue #126)。
@@ -124,8 +139,9 @@ async function authenticateMcpRelay(
     return { kind: "error", response: unauthorizedResponse(env, "Unauthorized") };
   }
   const relayOrigin = mcpRelayOrigin(env);
+  const audAllowlist = legacyAudienceAllowlist(env);
   const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, (aud) => {
-    if (aud === MCP_AUD_LEGACY) return true;
+    if (audAllowlist.has(aud)) return true;
     try {
       return new URL(aud).origin === relayOrigin;
     } catch {
