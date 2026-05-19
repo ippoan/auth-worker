@@ -192,56 +192,230 @@ describe("listOwnedRepos", () => {
   });
 });
 
+describe("getBranchRulesetRules", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it("returns empty struct when GitHub responds non-2xx", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(new Response("nope", { status: 403 })),
+    );
+    const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
+    const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
+    expect(out).toEqual({
+      active: false,
+      required_checks: [],
+      blocks_force_push: false,
+      blocks_deletion: false,
+      rule_types: [],
+    });
+  });
+
+  it("returns empty struct on empty array (no ruleset rules apply)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
+    const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
+    expect(out.active).toBe(false);
+  });
+
+  it("aggregates rule types, required_status_checks contexts, and block flags", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            { type: "non_fast_forward" },
+            { type: "deletion" },
+            {
+              type: "required_status_checks",
+              parameters: {
+                required_status_checks: [
+                  { context: "ci / b" },
+                  { context: "ci / a" },
+                ],
+              },
+            },
+            // Duplicate ruleset entries (different ruleset_id) — should de-dup
+            { type: "required_status_checks", parameters: { required_status_checks: [{ context: "ci / a" }] } },
+            // Malformed entries should be skipped, not crash
+            { /* no type */ },
+            { type: "required_status_checks", parameters: { required_status_checks: "not-array" } },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
+    const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
+    expect(out.active).toBe(true);
+    expect(out.required_checks).toEqual(["ci / a", "ci / b"]);
+    expect(out.blocks_force_push).toBe(true);
+    expect(out.blocks_deletion).toBe(true);
+    expect(out.rule_types.sort()).toEqual([
+      "deletion",
+      "non_fast_forward",
+      "required_status_checks",
+    ]);
+  });
+});
+
 describe("fetchProtectionRows", () => {
   let originalFetch: typeof globalThis.fetch;
   beforeEach(() => { originalFetch = globalThis.fetch; });
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  it("marks 404 as unprotected, parses contexts on 200", async () => {
-    const calls: string[] = [];
+  /**
+   * Route the classic `/protection` + ruleset `/rules/branches/` endpoints
+   * to per-repo response handlers. Each handler returns
+   * `{ classic?: Response, ruleset?: Response }`; missing entries default
+   * to 404 (= no classic protection) and `[]` (= no ruleset rules).
+   */
+  function stubFetch(perRepo: Record<string, { classic?: Response; ruleset?: Response }>): void {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation(async (url: string) => {
-        calls.push(url);
-        if (url.includes("/a/")) return new Response("", { status: 404 });
-        return new Response(
+        for (const [key, plan] of Object.entries(perRepo)) {
+          if (url.includes(`/repos/ippoan/${key}/branches/`)) {
+            return plan.classic ?? new Response("", { status: 404 });
+          }
+          if (url.includes(`/repos/ippoan/${key}/rules/branches/`)) {
+            return plan.ruleset ?? new Response("[]", {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        throw new Error("unexpected url: " + url);
+      }),
+    );
+  }
+
+  it("marks classic 404 + no rulesets as unprotected (source=none)", async () => {
+    stubFetch({ a: {} });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "a", default_branch: "main" },
+    ]);
+    expect(rows[0]).toMatchObject({
+      protected: false,
+      protection_source: "none",
+      protection_status: 404,
+      required_checks: [],
+      ruleset_rule_types: [],
+    });
+  });
+
+  it("merges classic + ruleset on the same repo (source=both, union of checks)", async () => {
+    stubFetch({
+      b: {
+        classic: new Response(
           JSON.stringify({
-            required_status_checks: { contexts: ["ci / x", "ci / y"], strict: true },
+            required_status_checks: { contexts: ["ci / classic-only", "ci / both"], strict: true },
             allow_force_pushes: { enabled: false },
             allow_deletions: { enabled: true },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }),
-    );
+        ),
+        ruleset: new Response(
+          JSON.stringify([
+            { type: "non_fast_forward" },
+            {
+              type: "required_status_checks",
+              parameters: {
+                required_status_checks: [
+                  { context: "ci / ruleset-only" },
+                  { context: "ci / both" },
+                ],
+              },
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      },
+    });
     const rows = await fetchProtectionRows(TOKEN, [
-      { owner: "ippoan", name: "a", default_branch: "main" },
       { owner: "ippoan", name: "b", default_branch: "main" },
     ]);
     expect(rows[0]).toMatchObject({
-      owner: "ippoan",
-      name: "a",
-      protected: false,
-      protection_status: 404,
-    });
-    expect(rows[1]).toMatchObject({
-      owner: "ippoan",
-      name: "b",
       protected: true,
-      required_checks: ["ci / x", "ci / y"],
+      protection_source: "both",
+      required_checks: ["ci / both", "ci / classic-only", "ci / ruleset-only"],
+      // classic says force_push allowed=false, ruleset adds non_fast_forward
+      // → effectively blocked.
       allow_force_pushes: false,
+      // classic says deletion allowed=true, ruleset does NOT block deletion
+      // → still allowed.
       allow_deletions: true,
+      ruleset_rule_types: ["non_fast_forward", "required_status_checks"],
     });
   });
 
-  it("falls back gracefully when the response body is non-object", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("\"weird\"", { status: 200 })),
-    );
+  it("ruleset-only protection (classic 404) — source=ruleset, .protected stays true", async () => {
+    stubFetch({
+      c: {
+        ruleset: new Response(
+          JSON.stringify([
+            { type: "non_fast_forward" },
+            { type: "deletion" },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "c", default_branch: "main" },
+    ]);
+    expect(rows[0]).toMatchObject({
+      protected: true,
+      protection_source: "ruleset",
+      allow_force_pushes: false,
+      allow_deletions: false,
+      required_checks: [],
+      ruleset_rule_types: ["deletion", "non_fast_forward"],
+    });
+  });
+
+  it("classic-only protection (no ruleset rules) — source=classic", async () => {
+    stubFetch({
+      d: {
+        classic: new Response(
+          JSON.stringify({
+            required_status_checks: { contexts: ["ci / x"], strict: true },
+            allow_force_pushes: { enabled: false },
+            allow_deletions: { enabled: false },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "d", default_branch: "main" },
+    ]);
+    expect(rows[0]).toMatchObject({
+      protected: true,
+      protection_source: "classic",
+      required_checks: ["ci / x"],
+      allow_force_pushes: false,
+      allow_deletions: false,
+    });
+  });
+
+  it("falls back gracefully when classic body is non-object and no rulesets", async () => {
+    stubFetch({
+      a: {
+        classic: new Response("\"weird\"", { status: 200 }),
+      },
+    });
     const rows = await fetchProtectionRows(TOKEN, [
       { owner: "ippoan", name: "a", default_branch: "main" },
     ]);
     expect(rows[0]?.protected).toBe(false);
+    expect(rows[0]?.protection_source).toBe("none");
   });
 });

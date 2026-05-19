@@ -108,6 +108,85 @@ export async function deleteBranchProtection(
   return { ok: resp.ok, status: resp.status, body: await readBody(resp) };
 }
 
+/**
+ * Effective ruleset rules for a branch (Phase 2 / issue #159 follow-up).
+ *
+ * GitHub `/repos/:o/:r/rules/branches/:b` returns the *aggregated* list of
+ * rules from every active ruleset whose include/exclude targets cover this
+ * branch. We collapse the array into a small struct the dashboard can
+ * display alongside classic protection.
+ *
+ * The `branch.protected` boolean returned by the Branches API only reflects
+ * **classic** branch protection — a repo protected exclusively through a
+ * Ruleset will have `branch.protected = false` despite enforcement being
+ * active. Surfacing both sources avoids the false-negative described in
+ * issue #159's "out of scope: classic vs rulesets" note.
+ */
+export interface RulesetProtection {
+  /** True if at least one ruleset rule applies to the branch. */
+  active: boolean;
+  /** required_status_checks contexts pulled from ruleset parameters. */
+  required_checks: string[];
+  /** True if a `non_fast_forward` rule applies (force push is blocked). */
+  blocks_force_push: boolean;
+  /** True if a `deletion` rule applies (branch deletion is blocked). */
+  blocks_deletion: boolean;
+  /** Raw list of rule `type` strings for visibility in the UI. */
+  rule_types: string[];
+}
+
+interface GithubBranchRule {
+  type?: string;
+  parameters?: {
+    required_status_checks?: Array<{ context?: string }>;
+  };
+}
+
+export async function getBranchRulesetRules(
+  token: string,
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<RulesetProtection> {
+  const url = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rules/branches/${encodeURIComponent(branch)}`;
+  const resp = await fetch(url, { headers: ghHeaders(token) });
+  const empty: RulesetProtection = {
+    active: false,
+    required_checks: [],
+    blocks_force_push: false,
+    blocks_deletion: false,
+    rule_types: [],
+  };
+  if (!resp.ok) return empty;
+  const body = (await resp.json()) as unknown;
+  if (!Array.isArray(body) || body.length === 0) return empty;
+  const types = new Set<string>();
+  const checks = new Set<string>();
+  let blocksForce = false;
+  let blocksDelete = false;
+  for (const rule of body as GithubBranchRule[]) {
+    if (typeof rule?.type !== "string") continue;
+    types.add(rule.type);
+    if (rule.type === "non_fast_forward") blocksForce = true;
+    if (rule.type === "deletion") blocksDelete = true;
+    if (rule.type === "required_status_checks" && rule.parameters) {
+      const arr = rule.parameters.required_status_checks;
+      if (Array.isArray(arr)) {
+        for (const c of arr) {
+          if (typeof c?.context === "string" && c.context) checks.add(c.context);
+        }
+      }
+    }
+  }
+  return {
+    active: types.size > 0,
+    required_checks: [...checks].sort(),
+    blocks_force_push: blocksForce,
+    blocks_deletion: blocksDelete,
+    rule_types: [...types].sort(),
+  };
+}
+
 export interface RepoSummary {
   owner: string;
   name: string;
@@ -162,25 +241,41 @@ export async function listOwnedRepos(
 }
 
 /**
- * Summary the dashboard renders per repo. `protection` is the raw GitHub
- * protection record (or null if unprotected / 404).
+ * Summary the dashboard renders per repo. Merges classic branch protection
+ * with effective ruleset rules so a repo protected exclusively via Rulesets
+ * (where `.protected` is `false`) is still shown as protected.
+ *
+ * - `protected` is true if **either** classic protection OR an active
+ *   ruleset rule applies.
+ * - `protection_source` tells the UI which side(s) are contributing —
+ *   `none` highlights repos that need attention (issue #159 motivation).
+ * - `allow_force_pushes` / `allow_deletions` are true only when **no**
+ *   source blocks the action (classic side = `enabled=true` OR no classic
+ *   protection, and no `non_fast_forward` / `deletion` ruleset rule).
+ * - `required_checks` is the **union** of classic + ruleset contexts.
  */
 export interface RepoProtectionRow {
   owner: string;
   name: string;
   default_branch: string;
   protected: boolean;
+  protection_source: "classic" | "ruleset" | "both" | "none";
   allow_force_pushes: boolean;
   allow_deletions: boolean;
   required_checks: string[];
-  /** `protection` 取得時の HTTP status (404 → unprotected, 200 → protected,
-   *  その他 → 表示用に保持して UI 側で warn する)。 */
+  /** Rule `type` strings from active rulesets (e.g. `non_fast_forward`,
+   *  `required_status_checks`). Empty when no ruleset applies. */
+  ruleset_rule_types: string[];
+  /** Classic protection HTTP status (404 → no classic rule, 200 →
+   *  classic active, その他 → 表示用に保持して UI 側で warn する)。 */
   protection_status: number;
 }
 
 /**
- * Fetch `getBranchProtection` for every repo in parallel and shape it into
- * dashboard rows. 404 → unprotected (UI で ❌ 強調表示)。
+ * Fetch classic protection + effective ruleset rules for every repo in
+ * parallel and shape it into dashboard rows. Repos with neither source
+ * surface as `protected: false` + `protection_source: "none"` (the ❌
+ * highlight case issue #159 wants visible).
  */
 export async function fetchProtectionRows(
   token: string,
@@ -188,44 +283,76 @@ export async function fetchProtectionRows(
 ): Promise<RepoProtectionRow[]> {
   return Promise.all(
     repos.map(async (r): Promise<RepoProtectionRow> => {
-      const res = await getBranchProtection(token, r.owner, r.name, r.default_branch);
-      const base: RepoProtectionRow = {
+      const [classicRes, ruleset] = await Promise.all([
+        getBranchProtection(token, r.owner, r.name, r.default_branch),
+        getBranchRulesetRules(token, r.owner, r.name, r.default_branch),
+      ]);
+
+      // Parse classic protection into the same shape as the ruleset side.
+      let classicActive = false;
+      let classicForcePushAllowed = false;
+      let classicDeletionAllowed = false;
+      let classicChecks: string[] = [];
+      if (
+        classicRes.ok &&
+        typeof classicRes.body === "object" &&
+        classicRes.body !== null
+      ) {
+        classicActive = true;
+        const body = classicRes.body as Record<string, unknown>;
+        const required = body["required_status_checks"];
+        if (required && typeof required === "object") {
+          const contexts = (required as { contexts?: unknown }).contexts;
+          if (Array.isArray(contexts)) {
+            classicChecks = contexts.filter((c): c is string => typeof c === "string");
+          }
+        }
+        const forcePushes = body["allow_force_pushes"];
+        const deletions = body["allow_deletions"];
+        classicForcePushAllowed =
+          typeof forcePushes === "object" && forcePushes !== null
+            ? Boolean((forcePushes as { enabled?: unknown }).enabled)
+            : false;
+        classicDeletionAllowed =
+          typeof deletions === "object" && deletions !== null
+            ? Boolean((deletions as { enabled?: unknown }).enabled)
+            : false;
+      }
+
+      const protectedByEither = classicActive || ruleset.active;
+      const source: RepoProtectionRow["protection_source"] = classicActive && ruleset.active
+        ? "both"
+        : classicActive
+          ? "classic"
+          : ruleset.active
+            ? "ruleset"
+            : "none";
+
+      // Action is allowed only when **no** source blocks it. Classic side
+      // contributes "allowed" only when active + .enabled=true; ruleset
+      // side contributes "blocked" when the rule is present.
+      const forcePushAllowed = classicActive
+        ? classicForcePushAllowed && !ruleset.blocks_force_push
+        : !ruleset.blocks_force_push;
+      const deletionAllowed = classicActive
+        ? classicDeletionAllowed && !ruleset.blocks_deletion
+        : !ruleset.blocks_deletion;
+
+      // Union of required_checks contexts, de-duplicated, sorted for
+      // stable UI ordering.
+      const checks = new Set<string>([...classicChecks, ...ruleset.required_checks]);
+
+      return {
         owner: r.owner,
         name: r.name,
         default_branch: r.default_branch,
-        protected: false,
-        allow_force_pushes: false,
-        allow_deletions: false,
-        required_checks: [],
-        protection_status: res.status,
-      };
-      if (res.status === 404) return base;
-      if (!res.ok || typeof res.body !== "object" || res.body === null) {
-        return base;
-      }
-      const body = res.body as Record<string, unknown>;
-      const required = body["required_status_checks"];
-      let checks: string[] = [];
-      if (required && typeof required === "object") {
-        const contexts = (required as { contexts?: unknown }).contexts;
-        if (Array.isArray(contexts)) {
-          checks = contexts.filter((c): c is string => typeof c === "string");
-        }
-      }
-      const forcePushes = body["allow_force_pushes"];
-      const deletions = body["allow_deletions"];
-      return {
-        ...base,
-        protected: true,
-        allow_force_pushes:
-          typeof forcePushes === "object" && forcePushes !== null
-            ? Boolean((forcePushes as { enabled?: unknown }).enabled)
-            : false,
-        allow_deletions:
-          typeof deletions === "object" && deletions !== null
-            ? Boolean((deletions as { enabled?: unknown }).enabled)
-            : false,
-        required_checks: checks,
+        protected: protectedByEither,
+        protection_source: source,
+        allow_force_pushes: protectedByEither ? forcePushAllowed : false,
+        allow_deletions: protectedByEither ? deletionAllowed : false,
+        required_checks: [...checks].sort(),
+        ruleset_rule_types: ruleset.rule_types,
+        protection_status: classicRes.status,
       };
     }),
   );
