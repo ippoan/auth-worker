@@ -2641,6 +2641,123 @@ describe("McpSession multiplex — handleBridge aggregator (Phase 2)", () => {
     expect(res.status).toBe(200);
   });
 
+  it("dispatchMultiService: non-string `method` field is coerced to '' → falls through to single forward", async () => {
+    // covers the `typeof msg.method === "string" ? msg.method : ""` false branch
+    const { wsGh, wsRef, do_ } = setup();
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: 42 }),
+      }),
+    );
+    const fRef = await capRef;
+    expect(wsGh.send).not.toHaveBeenCalled();
+    await respondJson(do_, wsRef, fRef.id, 200, { ok: true });
+    await respPromise;
+  });
+
+  it("routeToolsCall: missing `params` field (msg.params undefined) returns -32602 missing params.name", async () => {
+    // covers the `(msg.params ?? {})` nullish-coalesce activation
+    const { do_ } = setup();
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call" }),
+      }),
+    );
+    const body = (await res.json()) as { error: { code: number; message: string } };
+    expect(body.error.code).toBe(-32602);
+    expect(body.error.message).toMatch(/missing params.name/);
+  });
+
+  it("broadcast: drops services whose ws.send throws (forwardToWs returns ok:false)", async () => {
+    // covers `if (!fwd.ok) return { ok: false, ... };` inside broadcast IIFE
+    const { wsGh, wsRef, do_ } = setup();
+    wsGh.send.mockImplementation(() => {
+      throw new Error("dead-on-write");
+    });
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      }),
+    );
+    const fRef = await capRef;
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        serverInfo: { name: "ref", version: "1" },
+      },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as {
+      result: { serverInfo: { name: string } };
+    };
+    // wsGh was filtered via the `!fwd.ok` branch; only ref-files survived
+    expect(body.result.serverInfo.name).toContain("ref-files-mcp-server-rs");
+    expect(body.result.serverInfo.name).not.toContain("github-mcp-server-rs");
+  });
+
+  it("broadcast: handles non-Error throws from JSON.parse (String(e) ternary branch)", async () => {
+    // JSON.parse only ever throws SyntaxError in practice, but the source
+    // ternary `e instanceof Error ? e.message : String(e)` covers a non-Error
+    // throw for safety. Force that path by stubbing JSON.parse to throw a
+    // string literal when it sees a specific marker text we hand-craft as the
+    // service's response body.
+    const realParse = JSON.parse.bind(JSON);
+    const spy = vi.spyOn(JSON, "parse").mockImplementation((text: string) => {
+      if (text === "trigger_non_error_throw") {
+        // intentional non-Error throw
+        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        throw "non-error-marker";
+      }
+      return realParse(text);
+    });
+    try {
+      const { wsGh, wsRef, do_ } = setup();
+      const capGh = captureSentFrame(wsGh);
+      const capRef = captureSentFrame(wsRef);
+      const respPromise = do_.fetch(
+        new Request("https://do.invalid/__bridge", {
+          method: "POST",
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+        }),
+      );
+      const fGh = await capGh;
+      const fRef = await capRef;
+      // wsGh: body decodes to the marker → JSON.parse throws non-Error
+      await do_.webSocketMessage(
+        wsGh as unknown as WebSocket,
+        JSON.stringify({
+          kind: "resp",
+          v: 1,
+          id: fGh.id,
+          status: 200,
+          body_b64: b64encode("trigger_non_error_throw"),
+        }),
+      );
+      // wsRef: legitimate response so the aggregator still returns success
+      await respondJson(do_, wsRef, fRef.id, 200, {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          serverInfo: { name: "ref", version: "1" },
+        },
+      });
+      const res = await respPromise;
+      expect(res.status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("pickOpenWsByService: same-service duplicates collapse to last (latest wins)", async () => {
     // both with the same service. wsByService.size === 1 so the multiplex
     // branch is *skipped*, exercising the `wsByService.size > 1` false leg.
