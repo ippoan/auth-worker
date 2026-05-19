@@ -223,6 +223,10 @@ vi.mock("../../src/handlers/api-dashboard-branch-protection", () => ({
     (_req, _env, owner: string, repo: string) =>
       new Response(`api-dashboard-remove:${owner}/${repo}`),
   ),
+  handleApiDashboardFixRepoSettings: vi.fn(
+    (_req, _env, owner: string, repo: string) =>
+      new Response(`api-dashboard-fix-settings:${owner}/${repo}`),
+  ),
 }));
 // Stub the DurableObject exports so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
@@ -596,6 +600,15 @@ describe("Router (index.ts)", () => {
     );
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("api-dashboard-apply:ippoan/r1");
+  });
+
+  it("POST /api/dashboard/repos/:owner/:repo/fix-settings → api-dashboard-fix-settings:<o>/<r>", async () => {
+    const req = new Request(
+      "https://auth.test.example/api/dashboard/repos/ippoan/r1/fix-settings",
+      { method: "POST" },
+    );
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("api-dashboard-fix-settings:ippoan/r1");
   });
 
   it("DELETE /api/dashboard/repos/:owner/:repo/protection → api-dashboard-remove:<o>/<r>", async () => {

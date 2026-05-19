@@ -12,6 +12,7 @@ import {
   handleApiDashboardApplyProtection,
   handleApiDashboardListRepos,
   handleApiDashboardRemoveProtection,
+  handleApiDashboardFixRepoSettings,
 } from "../../src/handlers/api-dashboard-branch-protection";
 import { encryptWithKey } from "../../src/lib/mcp-crypto";
 import { signPairSession } from "../../src/lib/mcp-session";
@@ -152,6 +153,12 @@ describe("GET /api/dashboard/repos — happy path + cache", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
+      if (url.endsWith("/repos/ippoan/r1")) {
+        return new Response(
+          JSON.stringify({ allow_auto_merge: true, delete_branch_on_merge: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
       throw new Error("unexpected url: " + url);
     });
     vi.stubGlobal("fetch", fetchSpy);
@@ -201,6 +208,12 @@ describe("GET /api/dashboard/repos — happy path + cache", () => {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
+      }
+      if (url.endsWith("/repos/ippoan/rs")) {
+        return new Response(
+          JSON.stringify({ allow_auto_merge: true, delete_branch_on_merge: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
       }
       throw new Error("unexpected url: " + url);
     });
@@ -524,5 +537,104 @@ describe("DELETE /api/dashboard/repos/:o/:r/protection", () => {
     });
     const res = await handleApiDashboardRemoveProtection(req, env, "ippoan", "r1");
     expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /api/dashboard/repos/:o/:r/fix-settings", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    _clearReposCache();
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it("400 forbidden_owner for non-allowlisted owner", async () => {
+    const { env } = envWithKv();
+    const req = new Request(
+      `${ISSUER}/api/dashboard/repos/stranger/x/fix-settings`,
+      { method: "POST" },
+    );
+    const res = await handleApiDashboardFixRepoSettings(req, env, "stranger", "x");
+    expect(res.status).toBe(400);
+  });
+
+  it("403 csrf_mismatch when X-CSRF missing", async () => {
+    const { env, kv } = envWithKv();
+    await seedElevate(kv, "alice");
+    await seedToken(kv, "alice");
+    const req = await authedRequest({
+      login: "alice",
+      path: "/api/dashboard/repos/ippoan/r1/fix-settings",
+      method: "POST",
+    });
+    const res = await handleApiDashboardFixRepoSettings(req, env, "ippoan", "r1");
+    expect(res.status).toBe(403);
+  });
+
+  it("200 ok: sends PATCH /repos/:o/:r with both flags true", async () => {
+    const { env, kv } = envWithKv();
+    await seedElevate(kv, "alice");
+    await seedToken(kv, "alice");
+
+    const seen: Array<{ url: string; method: string; body?: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        seen.push({
+          url,
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(init.body as string) : undefined,
+        });
+        return new Response(
+          JSON.stringify({ allow_auto_merge: true, delete_branch_on_merge: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    const req = await authedRequest({
+      login: "alice",
+      path: "/api/dashboard/repos/ippoan/r1/fix-settings",
+      method: "POST",
+      csrf: true,
+    });
+    const res = await handleApiDashboardFixRepoSettings(req, env, "ippoan", "r1");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean };
+    expect(body.ok).toBe(true);
+    expect(seen[0]?.method).toBe("PATCH");
+    expect(seen[0]?.url).toBe("https://api.github.com/repos/ippoan/r1");
+    expect(seen[0]?.body).toEqual({
+      allow_auto_merge: true,
+      delete_branch_on_merge: true,
+    });
+  });
+
+  it("502 github_api_error when PATCH fails", async () => {
+    const { env, kv } = envWithKv();
+    await seedElevate(kv, "alice");
+    await seedToken(kv, "alice");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: "Resource not accessible" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const req = await authedRequest({
+      login: "alice",
+      path: "/api/dashboard/repos/ippoan/r1/fix-settings",
+      method: "POST",
+      csrf: true,
+    });
+    const res = await handleApiDashboardFixRepoSettings(req, env, "ippoan", "r1");
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: string; status: number };
+    expect(body.error).toBe("github_api_error");
+    expect(body.status).toBe(403);
   });
 });

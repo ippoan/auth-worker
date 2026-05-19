@@ -65,6 +65,7 @@ import {
   handleApiDashboardListRepos,
   handleApiDashboardApplyProtection,
   handleApiDashboardRemoveProtection,
+  handleApiDashboardFixRepoSettings,
 } from "./handlers/api-dashboard-branch-protection";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
@@ -401,6 +402,16 @@ export default {
           );
           if (m && m[1] && m[2]) {
             return await handleApiDashboardApplyProtection(request, env, m[1], m[2]);
+          }
+        }
+        // issue #159 Phase 2 follow-up: turn on allow_auto_merge +
+        // delete_branch_on_merge — POST /api/dashboard/repos/:o/:r/fix-settings
+        {
+          const m = /^\/api\/dashboard\/repos\/([^/]+)\/([^/]+)\/fix-settings$/.exec(
+            url.pathname,
+          );
+          if (m && m[1] && m[2]) {
+            return await handleApiDashboardFixRepoSettings(request, env, m[1], m[2]);
           }
         }
         // Dynamic path: /lineworks/webhook/:bot_id (LINE WORKS callback)

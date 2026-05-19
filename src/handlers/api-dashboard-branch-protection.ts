@@ -33,6 +33,7 @@ import {
   fetchProtectionRows,
   listOwnedRepos,
   loadGithubToken,
+  patchRepoSettings,
   setBranchProtection,
 } from "../lib/branch-protection-github";
 
@@ -332,4 +333,46 @@ export async function handleApiDashboardRemoveProtection(
   }
   REPOS_CACHE.delete(ctx.login);
   return jsonResponse({ ok: true, branch: defaultBranch }, 200);
+}
+
+/**
+ * `POST /api/dashboard/repos/:owner/:repo/fix-settings` — turn on the two
+ * repo-level merge flags the CI's branch-protection job requires
+ * (`allow_auto_merge` + `delete_branch_on_merge`). Both are off by default
+ * on freshly created repos, which blocks `gh pr merge --auto` entirely.
+ *
+ * Body: `{}` (no parameters — this endpoint is a "fix to known-good" shortcut).
+ * Other repo fields are untouched.
+ */
+export async function handleApiDashboardFixRepoSettings(
+  request: Request,
+  env: Env,
+  owner: string,
+  repo: string,
+): Promise<Response> {
+  if (!(ALLOWED_DASHBOARD_OWNERS as readonly string[]).includes(owner)) {
+    return jsonResponse({ ok: false, error: "forbidden_owner" }, 400);
+  }
+  const ctx = await gateAndLoadToken(request, env, { requireCsrf: true });
+  if (ctx instanceof Response) return ctx;
+
+  const res = await patchRepoSettings(ctx.token, owner, repo, {
+    allow_auto_merge: true,
+    delete_branch_on_merge: true,
+  });
+  console.log(JSON.stringify({
+    event: "dashboard_fix_repo_settings",
+    login: ctx.login,
+    owner,
+    repo,
+    github_status: res.status,
+  }));
+  if (!res.ok) {
+    return jsonResponse(
+      { ok: false, error: "github_api_error", status: res.status, body: res.body },
+      502,
+    );
+  }
+  REPOS_CACHE.delete(ctx.login);
+  return jsonResponse({ ok: true, result: res.body }, 200);
 }
