@@ -50,6 +50,16 @@ export function renderBranchProtectionPage(opts: {
   th { background: #f9fafb; font-weight: 600; }
   tr.unprotected { background: #fef2f2; }
   tr.unprotected td:first-child { border-left: 4px solid #dc2626; }
+  .branch-warn {
+    color: #b45309;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: .85em;
+    padding: .1rem .35rem;
+    border-radius: .25rem;
+    background: #fef3c7;
+    display: inline-block;
+  }
+  .branch-warn::before { content: "\\26A0\\FE0F  "; }
   .badge-ok { color: #15803d; font-weight: 600; }
   .badge-bad { color: #dc2626; font-weight: 600; }
   .badge-warn { color: #b45309; font-weight: 600; }
@@ -180,9 +190,20 @@ export function renderBranchProtectionPage(opts: {
           + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
           + '">Remove</button>';
       }
+      // Repos whose GitHub-declared default branch is anything other than
+      // main/master are almost always misconfigured (typical cause: a
+      // claude/ccoW session pushed the first commit to a feature branch
+      // and GitHub adopted that as the default because main did not yet
+      // exist). Surface a warning so the operator can fix it via repo
+      // Settings → Branches before applying any protection preset.
+      var STANDARD_DEFAULTS = ["main", "master"];
+      var isSuspiciousDefault = STANDARD_DEFAULTS.indexOf(row.default_branch) === -1;
+      var branchCell = isSuspiciousDefault
+        ? '<span class="branch-warn" title="Unusual default branch — set Settings → Branches → Default to main on GitHub before applying a preset.">' + escapeHtml(row.default_branch) + '</span>'
+        : '<code>' + escapeHtml(row.default_branch) + '</code>';
       html += '<tr class="' + rowClass + '">'
         + '<td>' + escapeHtml(row.owner) + '/' + escapeHtml(row.name) + '</td>'
-        + '<td><code>' + escapeHtml(row.default_branch) + '</code></td>'
+        + '<td>' + branchCell + '</td>'
         + '<td>' + (isProtected ? '<span class="badge-ok">&#x2705;</span>' : '<span class="badge-bad">&#x274C; unprotected</span>') + '</td>'
         + '<td>' + sourceLabel + '</td>'
         + '<td>' + (!isProtected ? '<span class="badge-warn">allowed</span>' : (row.allow_force_pushes ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>')) + '</td>'
