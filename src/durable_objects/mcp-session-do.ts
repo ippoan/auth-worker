@@ -371,7 +371,10 @@ export class McpSession implements DurableObject {
     method: string,
     reqHeaders: Record<string, string>,
     bodyBuf: ArrayBuffer,
-  ): Promise<{ ok: true; resp: RespFrame } | { ok: false; status: number; error: string }> {
+  ): Promise<
+    | { ok: true; resp: RespFrame }
+    | { ok: false; status: number; error: string; message?: string }
+  > {
     const id = crypto.randomUUID();
     const reqFrame = {
       kind: "req",
@@ -388,7 +391,8 @@ export class McpSession implements DurableObject {
       return {
         ok: false,
         status: 502,
-        error: `relay_send_failed: ${e instanceof Error ? e.message : String(e)}`,
+        error: "relay_send_failed",
+        message: e instanceof Error ? e.message : String(e),
       };
     }
     const respPromise = new Promise<RespFrame>((resolve, reject) => {
@@ -469,7 +473,9 @@ export class McpSession implements DurableObject {
     const ws = open[open.length - 1] as WebSocket;
     const fwd = await this.forwardToWs(ws, req.method, headers, bodyBuf);
     if (!fwd.ok) {
-      return jsonResponse(fwd.status, { error: fwd.error });
+      const body: { error: string; message?: string } = { error: fwd.error };
+      if (fwd.message !== undefined) body.message = fwd.message;
+      return jsonResponse(fwd.status, body);
     }
     return buildResponseFromRespFrame(fwd.resp);
   }
@@ -644,7 +650,9 @@ export class McpSession implements DurableObject {
     }
     const fwd = await this.forwardToWs(ws, "POST", headers, bodyBuf);
     if (!fwd.ok) {
-      return jsonResponse(fwd.status, { error: fwd.error });
+      const body: { error: string; message?: string } = { error: fwd.error };
+      if (fwd.message !== undefined) body.message = fwd.message;
+      return jsonResponse(fwd.status, body);
     }
     return buildResponseFromRespFrame(fwd.resp);
   }
