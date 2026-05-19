@@ -44,8 +44,15 @@ describe("PRESETS — ippoan-rust-default", () => {
 describe("PRESETS — ippoan-worker-default", () => {
   const p = PRESETS["ippoan-worker-default"];
 
-  it("required_checks lists the wrangler CI jobs", () => {
-    expect(p.required_checks).toEqual(["ci / test", "ci / typecheck"]);
+  it("required_checks lists the frontend-ci.yml jobs (Type Check + Vitest + Coverage)", () => {
+    // These match the real `name:` fields in
+    // ippoan/ci-workflows/.github/workflows/frontend-ci.yml prefixed by the
+    // caller's job id `ci`. Mismatched names here would silently block all
+    // PRs on every consumer repo, so the test pins the exact strings.
+    expect(p.required_checks).toEqual([
+      "ci / Type Check",
+      "ci / Vitest + Coverage",
+    ]);
   });
 
   it("shares the same safety knobs as the rust preset", () => {

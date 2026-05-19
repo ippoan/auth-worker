@@ -25,10 +25,14 @@
  *     - conversation resolution は CI 系 preset では false にする (auto-merge を
  *       潰すため)。
  *   - `ippoan-worker-default`:
- *     - Cloudflare Workers 系 (wrangler test + typecheck) の 2 job。job 名は
- *       `ci-workflows/.github/workflows/worker-ci.yml` から取った "ci / test" /
- *       "ci / typecheck" を採用。job 名が動いたらここを更新する (test で固定値
- *       を assert している)。
+ *     - Cloudflare Workers 系 (Vitest + tsc typecheck) の 2 job。実 job 名は
+ *       `ci-workflows/.github/workflows/frontend-ci.yml` の `name:` フィールド
+ *       (それぞれ `Vitest + Coverage` / `Type Check`) を caller の job id `ci`
+ *       で prefix した `ci / Vitest + Coverage` / `ci / Type Check`。staging で
+ *       初版 (`ci / test` / `ci / typecheck`) を required にしてしまい全 PR が
+ *       silent block された事故に対応して実態名に揃えた (drift 検出は別系統で
+ *       `ci-workflows/branch-protection-drift-check.yml` が拾う)。
+ *     - 残りの safety knob (force push / 削除 / approval / bypass) は rust と同じ。
  */
 
 export type PresetId = "ippoan-rust-default" | "ippoan-worker-default";
@@ -66,8 +70,8 @@ const IPPOAN_RUST_DEFAULT_CHECKS = [
 ];
 
 const IPPOAN_WORKER_DEFAULT_CHECKS = [
-  "ci / test",
-  "ci / typecheck",
+  "ci / Type Check",
+  "ci / Vitest + Coverage",
 ];
 
 export const PRESETS: Record<PresetId, PresetDefinition> = {
