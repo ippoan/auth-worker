@@ -150,13 +150,20 @@ export function renderBranchProtectionPage(opts: {
         return '<div>' + escapeHtml(c) + '</div>';
       }).join("") || '<span class="empty">none</span>';
       var source = row.protection_source || (isProtected ? "classic" : "none");
+      var ruleTypes = row.ruleset_rule_types || [];
+      var isEvaluateOnly = source === "none"
+        && ruleTypes.length === 1
+        && ruleTypes[0] === "evaluate-mode";
       var sourceLabel;
-      if (source === "none") {
+      if (isEvaluateOnly) {
+        sourceLabel = '<span class="badge-warn">ruleset (evaluate)</span>'
+          + ' <span class="checks">(dry-run, not enforced)</span>';
+      } else if (source === "none") {
         sourceLabel = '<span class="empty">—</span>';
       } else if (source === "both") {
         sourceLabel = '<span class="badge-ok">classic + ruleset</span>';
       } else if (source === "ruleset") {
-        var ruleHint = (row.ruleset_rule_types || []).join(", ");
+        var ruleHint = ruleTypes.join(", ");
         sourceLabel = '<span class="badge-ok">ruleset</span>'
           + (ruleHint ? ' <span class="checks">(' + escapeHtml(ruleHint) + ')</span>' : '');
       } else {
@@ -178,8 +185,8 @@ export function renderBranchProtectionPage(opts: {
         + '<td><code>' + escapeHtml(row.default_branch) + '</code></td>'
         + '<td>' + (isProtected ? '<span class="badge-ok">&#x2705;</span>' : '<span class="badge-bad">&#x274C; unprotected</span>') + '</td>'
         + '<td>' + sourceLabel + '</td>'
-        + '<td>' + (row.allow_force_pushes ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>') + '</td>'
-        + '<td>' + (row.allow_deletions ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>') + '</td>'
+        + '<td>' + (!isProtected ? '<span class="badge-warn">allowed</span>' : (row.allow_force_pushes ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>')) + '</td>'
+        + '<td>' + (!isProtected ? '<span class="badge-warn">allowed</span>' : (row.allow_deletions ? '<span class="badge-warn">allowed</span>' : '<span class="badge-ok">blocked</span>')) + '</td>'
         + '<td class="checks">' + checksHtml + '</td>'
         + '<td><div class="actions">' + actions + '</div></td>'
         + '</tr>';

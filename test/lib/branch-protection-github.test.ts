@@ -197,11 +197,39 @@ describe("getBranchRulesetRules", () => {
   beforeEach(() => { originalFetch = globalThis.fetch; });
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  it("returns empty struct when GitHub responds non-2xx", async () => {
+  /**
+   * Stub the two endpoints that getBranchRulesetRules now hits in series.
+   * Per-call response defaults: rules endpoint → 200 [], list endpoint → 200 [].
+   */
+  function stubProbe(opts: {
+    rules?: Response;
+    rulesets?: Response;
+  } = {}): void {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("nope", { status: 403 })),
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes("/rules/branches/")) {
+          return opts.rules ?? new Response("[]", {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.endsWith("/rulesets")) {
+          return opts.rulesets ?? new Response("[]", {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error("unexpected url: " + url);
+      }),
     );
+  }
+
+  it("returns empty struct when both endpoints respond non-2xx", async () => {
+    stubProbe({
+      rules: new Response("nope", { status: 403 }),
+      rulesets: new Response("nope", { status: 403 }),
+    });
     const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
     const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
     expect(out).toEqual({
@@ -214,44 +242,110 @@ describe("getBranchRulesetRules", () => {
   });
 
   it("returns empty struct on empty array (no ruleset rules apply)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }),
-      ),
-    );
+    stubProbe();
     const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
     const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
     expect(out.active).toBe(false);
   });
 
-  it("aggregates rule types, required_status_checks contexts, and block flags", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response(
-          JSON.stringify([
-            { type: "non_fast_forward" },
-            { type: "deletion" },
-            {
-              type: "required_status_checks",
-              parameters: {
-                required_status_checks: [
-                  { context: "ci / b" },
-                  { context: "ci / a" },
-                ],
-              },
-            },
-            // Duplicate ruleset entries (different ruleset_id) — should de-dup
-            { type: "required_status_checks", parameters: { required_status_checks: [{ context: "ci / a" }] } },
-            // Malformed entries should be skipped, not crash
-            { /* no type */ },
-            { type: "required_status_checks", parameters: { required_status_checks: "not-array" } },
-          ]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
+  it("surfaces evaluate-mode rulesets via synthetic rule_types[] marker", async () => {
+    stubProbe({
+      rulesets: new Response(
+        JSON.stringify([
+          {
+            id: 1,
+            enforcement: "evaluate",
+            conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
       ),
-    );
+    });
+    const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
+    const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
+    expect(out.active).toBe(false);
+    expect(out.rule_types).toEqual(["evaluate-mode"]);
+  });
+
+  it("does not surface evaluate-mode when conditions target a different branch", async () => {
+    stubProbe({
+      rulesets: new Response(
+        JSON.stringify([
+          {
+            id: 1,
+            enforcement: "evaluate",
+            conditions: { ref_name: { include: ["refs/heads/release"], exclude: [] } },
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
+    const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
+    expect(out.active).toBe(false);
+    expect(out.rule_types).toEqual([]);
+  });
+
+  it("does not surface evaluate-mode when an exclude rule excludes the branch", async () => {
+    stubProbe({
+      rulesets: new Response(
+        JSON.stringify([
+          {
+            id: 1,
+            enforcement: "evaluate",
+            conditions: { ref_name: { include: ["~ALL"], exclude: ["refs/heads/main"] } },
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
+    const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
+    expect(out.rule_types).toEqual([]);
+  });
+
+  it("active rules win over evaluate-mode fallback (real enforcement detected)", async () => {
+    stubProbe({
+      rules: new Response(
+        JSON.stringify([{ type: "non_fast_forward" }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+      rulesets: new Response(
+        JSON.stringify([{ id: 9, enforcement: "evaluate", conditions: {} }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
+    const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
+    expect(out.active).toBe(true);
+    expect(out.blocks_force_push).toBe(true);
+    expect(out.rule_types).toEqual(["non_fast_forward"]);
+  });
+
+  it("aggregates rule types, required_status_checks contexts, and block flags", async () => {
+    stubProbe({
+      rules: new Response(
+        JSON.stringify([
+          { type: "non_fast_forward" },
+          { type: "deletion" },
+          {
+            type: "required_status_checks",
+            parameters: {
+              required_status_checks: [
+                { context: "ci / b" },
+                { context: "ci / a" },
+              ],
+            },
+          },
+          // Duplicate ruleset entries (different ruleset_id) — should de-dup
+          { type: "required_status_checks", parameters: { required_status_checks: [{ context: "ci / a" }] } },
+          // Malformed entries should be skipped, not crash
+          { /* no type */ },
+          { type: "required_status_checks", parameters: { required_status_checks: "not-array" } },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
     const { getBranchRulesetRules } = await import("../../src/lib/branch-protection-github");
     const out = await getBranchRulesetRules(TOKEN, "ippoan", "r", "main");
     expect(out.active).toBe(true);
@@ -277,7 +371,7 @@ describe("fetchProtectionRows", () => {
    * `{ classic?: Response, ruleset?: Response }`; missing entries default
    * to 404 (= no classic protection) and `[]` (= no ruleset rules).
    */
-  function stubFetch(perRepo: Record<string, { classic?: Response; ruleset?: Response }>): void {
+  function stubFetch(perRepo: Record<string, { classic?: Response; ruleset?: Response; rulesetsList?: Response }>): void {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation(async (url: string) => {
@@ -287,6 +381,12 @@ describe("fetchProtectionRows", () => {
           }
           if (url.includes(`/repos/ippoan/${key}/rules/branches/`)) {
             return plan.ruleset ?? new Response("[]", {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          if (url.endsWith(`/repos/ippoan/${key}/rulesets`)) {
+            return plan.rulesetsList ?? new Response("[]", {
               status: 200,
               headers: { "Content-Type": "application/json" },
             });
