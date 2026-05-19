@@ -209,6 +209,21 @@ vi.mock("../../src/handlers/mcp-elevate", () => ({
 vi.mock("../../src/handlers/mcp-admin-exec", () => ({
   handleMcpAdminExec: vi.fn(() => new Response("mcp-admin-exec")),
 }));
+// issue #159 Phase 1: branch-protection dashboard + API.
+vi.mock("../../src/handlers/dashboard-branch-protection", () => ({
+  handleDashboardBranchProtection: vi.fn(() => new Response("dashboard-branch-protection")),
+}));
+vi.mock("../../src/handlers/api-dashboard-branch-protection", () => ({
+  handleApiDashboardListRepos: vi.fn(() => new Response("api-dashboard-list")),
+  handleApiDashboardApplyProtection: vi.fn(
+    (_req, _env, owner: string, repo: string) =>
+      new Response(`api-dashboard-apply:${owner}/${repo}`),
+  ),
+  handleApiDashboardRemoveProtection: vi.fn(
+    (_req, _env, owner: string, repo: string) =>
+      new Response(`api-dashboard-remove:${owner}/${repo}`),
+  ),
+}));
 // Stub the DurableObject exports so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
@@ -276,6 +291,9 @@ describe("Router (index.ts)", () => {
     ["/mcp/elevate", "mcp-elevate-start"],
     ["/mcp/elevate?return_to=https%3A%2F%2Fclient.example", "mcp-elevate-start"],
     ["/mcp/elevate_callback?code=ghc&state=xyz", "mcp-elevate-callback"],
+    // issue #159 Phase 1: branch-protection dashboard.
+    ["/dashboard/branch-protection", "dashboard-branch-protection"],
+    ["/api/dashboard/repos", "api-dashboard-list"],
   ];
 
   it("GET /api/health → health proxy", async () => {
@@ -566,6 +584,39 @@ describe("Router (index.ts)", () => {
 
   it("PUT returns 405", async () => {
     const req = new Request("https://auth.test.example/api/health", { method: "PUT" });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(405);
+  });
+
+  // --- issue #159 Phase 1: dashboard dynamic routes ---
+  it("POST /api/dashboard/repos/:owner/:repo/protection → api-dashboard-apply:<o>/<r>", async () => {
+    const req = new Request(
+      "https://auth.test.example/api/dashboard/repos/ippoan/r1/protection",
+      { method: "POST" },
+    );
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("api-dashboard-apply:ippoan/r1");
+  });
+
+  it("DELETE /api/dashboard/repos/:owner/:repo/protection → api-dashboard-remove:<o>/<r>", async () => {
+    const req = new Request(
+      "https://auth.test.example/api/dashboard/repos/ippoan/r1/protection",
+      { method: "DELETE" },
+    );
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("api-dashboard-remove:ippoan/r1");
+  });
+
+  it("DELETE non-dashboard path returns 404", async () => {
+    const req = new Request("https://auth.test.example/something/else", { method: "DELETE" });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /api/dashboard/repos/:owner/:repo/protection returns 405 (POST/DELETE only)", async () => {
+    const req = new Request(
+      "https://auth.test.example/api/dashboard/repos/ippoan/r1/protection",
+    );
     const res = await worker.fetch(req, env);
     expect(res.status).toBe(405);
   });
