@@ -345,6 +345,113 @@ describe("handleMcpRelayBridge — RFC 8707 audience (URL origin match)", () => 
   });
 });
 
+// Phase 2 (ippoan/ref-files-mcp-server-rs#4): `MCP_JWT_AUDIENCE_ALLOWLIST` env
+// で legacy aud を拡張するパスのテスト。default (env 未設定) は他 test 群が
+// AUD = "github-mcp-server-rs" で行っているので、ここでは
+//   - 明示空文字列 → default fallback
+//   - 単一 aud (env で別名指定)
+//   - comma-separated 複数 aud
+// の 3 ケースを足して legacyAudienceAllowlist() の全 branch を覆う。
+describe("handleMcpRelayBridge — MCP_JWT_AUDIENCE_ALLOWLIST env", () => {
+  it("falls back to default legacy aud when env is empty string", async () => {
+    const { ns } = mockDONamespace(async () => new Response("ok", { status: 200 }));
+    const env = createMockEnv({
+      MCP_JWT_SECRET: TEST_SECRET,
+      MCP_SESSION_DO: ns,
+      // empty string → split[''] → filtered out → default legacy
+      MCP_JWT_AUDIENCE_ALLOWLIST: "",
+    } as unknown as Partial<Env>);
+    const jwt = await signMcpJwt(
+      { sub: "github:alice", github_login: "alice", scope: "mcp.read", aud: AUD },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/u/alice/mcp", auth: `Bearer ${jwt}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts JWT whose aud matches a single env-listed value (overriding default)", async () => {
+    const { ns } = mockDONamespace(async () => new Response("ok", { status: 200 }));
+    const env = createMockEnv({
+      MCP_JWT_SECRET: TEST_SECRET,
+      MCP_SESSION_DO: ns,
+      // default "github-mcp-server-rs" は外し、ref-files-mcp-server-rs のみ受ける
+      MCP_JWT_AUDIENCE_ALLOWLIST: "ref-files-mcp-server-rs",
+    } as unknown as Partial<Env>);
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "ref-files-mcp-server-rs",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/u/alice/mcp", auth: `Bearer ${jwt}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts JWT whose aud matches one entry of a comma-separated env list", async () => {
+    const { ns } = mockDONamespace(async () => new Response("ok", { status: 200 }));
+    const env = createMockEnv({
+      MCP_JWT_SECRET: TEST_SECRET,
+      MCP_SESSION_DO: ns,
+      // Phase 2 multiplex の本番想定値
+      MCP_JWT_AUDIENCE_ALLOWLIST: " github-mcp-server-rs , ref-files-mcp-server-rs ",
+    } as unknown as Partial<Env>);
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "ref-files-mcp-server-rs",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/u/alice/mcp", auth: `Bearer ${jwt}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects JWT whose aud is not in the comma-separated env allowlist", async () => {
+    const { ns } = mockDONamespace(async () => new Response("ok", { status: 200 }));
+    const env = createMockEnv({
+      MCP_JWT_SECRET: TEST_SECRET,
+      MCP_SESSION_DO: ns,
+      MCP_JWT_AUDIENCE_ALLOWLIST: "github-mcp-server-rs,ref-files-mcp-server-rs",
+    } as unknown as Partial<Env>);
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "unknown-binary",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/u/alice/mcp", auth: `Bearer ${jwt}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
 // ADR-004 Phase D: `handleMcpRelaySse` (`GET /mcp` → SSE stream)。
 // JWT 検証は POST と同じロジックを共有しているので、ここは SSE 固有の
 // route (= DO `/__connect_sse` への forward) と `Mcp-Session-Id` header
