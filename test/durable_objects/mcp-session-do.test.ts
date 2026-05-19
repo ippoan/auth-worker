@@ -172,7 +172,10 @@ describe("McpSession.fetch — /__connect", () => {
     expect(acceptCalls[0]?.tags).toEqual(["client"]);
   });
 
-  it("closes existing WS with code 1000 'replaced' before accepting the new one", async () => {
+  // Phase 2 multiplex (ref-files-mcp#4): handleConnect は existing WS を
+  // 即時 close しなくなった (service が accept 時点では未知のため)。同 service
+  // の close は webSocketMessage の hello frame 受信時に行う (下の hello テスト群)。
+  it("retains existing WS across services and accepts the new one without closing", async () => {
     const old = makeFakeWs("old");
     const { state, acceptCalls } = createMockState([old]);
     const do_ = new McpSession(state, {});
@@ -182,24 +185,7 @@ describe("McpSession.fetch — /__connect", () => {
     });
     const res = await do_.fetch(req);
     expect(res.status).toBe(101);
-    expect(old.close).toHaveBeenCalledWith(1000, "replaced");
-    expect(acceptCalls).toHaveLength(1);
-  });
-
-  it("swallows errors from old.close() and still accepts the new WS", async () => {
-    const old = makeFakeWs("old");
-    old.close.mockImplementation(() => {
-      throw new Error("already closed");
-    });
-    const { state, acceptCalls } = createMockState([old]);
-    const do_ = new McpSession(state, {});
-    const req = new Request("https://do.invalid/__connect", {
-      method: "GET",
-      headers: { Upgrade: "websocket" },
-    });
-    const res = await do_.fetch(req);
-    expect(res.status).toBe(101);
-    expect(old.close).toHaveBeenCalled();
+    expect(old.close).not.toHaveBeenCalled();
     expect(acceptCalls).toHaveLength(1);
   });
 });
