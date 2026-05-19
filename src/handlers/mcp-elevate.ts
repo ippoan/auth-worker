@@ -34,6 +34,7 @@ import { encryptWithKey } from "../lib/mcp-crypto";
 import { errorResponse, jsonResponse } from "../lib/errors";
 import { signMcpJwt } from "../lib/mcp-jwt";
 import { issueRefreshToken } from "../lib/mcp-refresh";
+import { buildSetCookie, signPairSession } from "../lib/mcp-session";
 
 /** Browser からの elevate 開始時に KV に保存する state entry。 */
 interface ElevateState {
@@ -323,15 +324,39 @@ export async function handleMcpElevateCallback(
     console.warn("mcp-elevate: pickup mint failed (best-effort):", e);
   });
 
+  // issue #159 Phase 1: also mint a `mcp_pair_session` cookie so that the
+  // user's browser is authenticated to `/dashboard/branch-protection` and its
+  // `/api/dashboard/repos*` endpoints. The cookie has a 30-min TTL (defined
+  // in `mcp-session.ts`), which outlasts the 15-min elevate flag — that is
+  // intentional: the cookie just identifies the browser, while the elevate
+  // flag is the actual admin window enforced server-side on every request.
+  //
+  // Best-effort: when `SESSION_COOKIE_SECRET` is unset, the dashboard cannot
+  // work anyway (its handler also requires the same secret), so falling back
+  // to a no-cookie response is consistent with that 503.
+  const responseHeaders: Record<string, string> = { "Cache-Control": "no-store" };
+  if (env.SESSION_COOKIE_SECRET) {
+    try {
+      const cookieValue = await signPairSession(login, env.SESSION_COOKIE_SECRET);
+      responseHeaders["Set-Cookie"] = buildSetCookie(cookieValue);
+    } catch (e) {
+      console.warn("mcp-elevate: session cookie sign failed (best-effort):", e);
+    }
+  }
+
   if (parsedState.return_to) {
+    responseHeaders["Location"] = parsedState.return_to;
     return new Response(null, {
       status: 302,
-      headers: { Location: parsedState.return_to, "Cache-Control": "no-store" },
+      headers: responseHeaders,
     });
   }
   const html = `<!doctype html><html><head><meta charset="utf-8">
 <title>Admin elevation granted</title>
 <style>body{font-family:system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem;color:#1f2937;}h1{color:#047857;}</style>
 </head><body><h1>Admin elevation granted</h1><p>Admin elevation granted for 15 minutes. You can close this tab.</p></body></html>`;
-  return htmlResponse(html, 200);
+  return new Response(html, {
+    status: 200,
+    headers: { ...responseHeaders, "Content-Type": "text/html; charset=utf-8" },
+  });
 }

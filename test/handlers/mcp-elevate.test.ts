@@ -431,6 +431,47 @@ describe("handleMcpElevateCallback", () => {
       expect(kv._ttls["mcp_jwt_pickup:github:alice"]).toBe(3600);
     });
 
+    it("sets the mcp_pair_session cookie when SESSION_COOKIE_SECRET is configured (issue #159)", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      const { env, kv } = envWithKv({
+        SESSION_COOKIE_SECRET: "test-session-cookie-secret-32!!!",
+      });
+      const state = await seedState(env, kv, { return_to: "https://app.example/back" });
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      expect(res.status).toBe(302);
+      const setCookie = res.headers.get("Set-Cookie");
+      expect(setCookie).not.toBeNull();
+      expect(setCookie!).toMatch(/^mcp_pair_session=/);
+      expect(setCookie!).toContain("HttpOnly");
+      expect(setCookie!).toContain("Secure");
+    });
+
+    it("omits Set-Cookie when SESSION_COOKIE_SECRET is unset (issue #159, best-effort)", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      // envWithKv default leaves SESSION_COOKIE_SECRET unset.
+      const { env, kv } = envWithKv();
+      const state = await seedState(env, kv);
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+    });
+
     it("does not block the elevate flow when MCP_JWT_SECRET missing (best-effort)", async () => {
       // The existing success tests already exercise this path (no MCP_JWT_SECRET
       // in default envWithKv). Pickup mint silently skips and elevation still

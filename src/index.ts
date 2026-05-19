@@ -60,6 +60,12 @@ import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
 import { handleMcpElevateStart, handleMcpElevateCallback } from "./handlers/mcp-elevate";
 import { handleMcpAdminExec } from "./handlers/mcp-admin-exec";
+import { handleDashboardBranchProtection } from "./handlers/dashboard-branch-protection";
+import {
+  handleApiDashboardListRepos,
+  handleApiDashboardApplyProtection,
+  handleApiDashboardRemoveProtection,
+} from "./handlers/api-dashboard-branch-protection";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
 
@@ -370,12 +376,33 @@ export default {
           // Phase 1 admin auth — browser elevate GitHub OAuth callback
           case "/mcp/elevate_callback":
             return await handleMcpElevateCallback(request, env);
-          default:
+          // issue #159 Phase 1: branch-protection dashboard.
+          case "/dashboard/branch-protection":
+            return await handleDashboardBranchProtection(request, env);
+          case "/api/dashboard/repos":
+            return await handleApiDashboardListRepos(request, env);
+          default: {
+            // issue #159 Phase 1: API path `/api/dashboard/repos/:owner/:repo/protection`
+            // は default 句で dynamic match する。GET は未対応 (Phase 1 では POST/DELETE のみ)。
+            if (url.pathname.startsWith("/api/dashboard/repos/")) {
+              return errorResponse(405, "Method not allowed");
+            }
             return errorResponse(404, "Not found");
+          }
         }
       }
 
       if (request.method === "POST") {
+        // issue #159 Phase 1: dashboard preset apply — POST
+        // /api/dashboard/repos/:owner/:repo/protection
+        {
+          const m = /^\/api\/dashboard\/repos\/([^/]+)\/([^/]+)\/protection$/.exec(
+            url.pathname,
+          );
+          if (m && m[1] && m[2]) {
+            return await handleApiDashboardApplyProtection(request, env, m[1], m[2]);
+          }
+        }
         // Dynamic path: /lineworks/webhook/:bot_id (LINE WORKS callback)
         if (url.pathname.startsWith("/lineworks/webhook/")) {
           const botId = url.pathname.slice("/lineworks/webhook/".length);
@@ -494,6 +521,18 @@ export default {
       // CORS preflight
       if (request.method === "OPTIONS") {
         return corsPreflight();
+      }
+
+      // issue #159 Phase 1: dashboard preset remove — DELETE
+      // /api/dashboard/repos/:owner/:repo/protection
+      if (request.method === "DELETE") {
+        const m = /^\/api\/dashboard\/repos\/([^/]+)\/([^/]+)\/protection$/.exec(
+          url.pathname,
+        );
+        if (m && m[1] && m[2]) {
+          return await handleApiDashboardRemoveProtection(request, env, m[1], m[2]);
+        }
+        return errorResponse(404, "Not found");
       }
 
       return errorResponse(405, "Method not allowed");
