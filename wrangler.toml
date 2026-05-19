@@ -12,6 +12,14 @@ WORKER_ENV = "prod"
 # we only integrate with e-Gov's sbx environment.
 EGOV_AUTH_BASE = "https://account2.sbx.e-gov.go.jp/auth"
 EGOV_CLIENT_ID = "K26XGOmbDusxfKsp"
+# Phase 2 multiplex (issue #169): JWT `aud` claim allowlist for the
+# mcp-relay-bridge handler. Plain `[vars]` rather than a secret because the
+# value is just public binary names (no credential content) — declaring it
+# here makes the staging/prod allowlist auditable in source control and
+# eliminates the per-environment `wrangler secret put` step. Default
+# fallback in the handler is `["github-mcp-server-rs"]` (Phase 1 compat),
+# extended here to also accept ref-files-mcp-server-rs.
+MCP_JWT_AUDIENCE_ALLOWLIST = "github-mcp-server-rs,ref-files-mcp-server-rs"
 
 [[kv_namespaces]]
 binding = "AUTH_CONFIG"
@@ -120,6 +128,9 @@ ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "staging"
 EGOV_AUTH_BASE = "https://account2.sbx.e-gov.go.jp/auth"
 EGOV_CLIENT_ID = "K26XGOmbDusxfKsp"
+# See top-level [vars] for rationale. Same value on staging + prod per
+# `src/handlers/mcp-relay-bridge.ts` header comment (Phase 2 design).
+MCP_JWT_AUDIENCE_ALLOWLIST = "github-mcp-server-rs,ref-files-mcp-server-rs"
 
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
