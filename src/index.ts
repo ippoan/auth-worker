@@ -56,6 +56,8 @@ import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
 import { handleMcpPairCallback } from "./handlers/mcp-pair-callback";
 import { handleMcpPairGrant } from "./handlers/mcp-pair-grant";
 import { handleMcpPairGrantViaGithub } from "./handlers/mcp-pair-grant-via-github";
+import { handleMcpPairGrantViaOat } from "./handlers/mcp-pair-grant-via-oat";
+import { handleMcpPairRegisterViaGithubComment } from "./handlers/mcp-pair-register-via-github-comment";
 import { handleMcpTools } from "./handlers/mcp-tools";
 import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
@@ -250,6 +252,19 @@ async function dispatchMcpRelay(
   // browser cookie も pre-staged env も無い環境で bootstrap するための path。
   if (url.pathname === "/mcp/pair/grant-via-github" && request.method === "POST") {
     return handleMcpPairGrantViaGithub(request, env);
+  }
+  // issue ippoan/auth-worker#174: Anthropic OAT を identity proof として受け取り、
+  // OAT_hash → github_login mapping を引いて binding_jwt を mint する。
+  // 引けなかったら 404 + register_endpoint hint で setup フローへ誘導。
+  if (url.pathname === "/mcp/pair/grant-via-oat" && request.method === "POST") {
+    return handleMcpPairGrantViaOat(request, env);
+  }
+  // issue ippoan/auth-worker#174: GitHub issue comment の `comment.user.login` を
+  // root-of-trust に OAT_hash → github_login mapping を KV に書く endpoint。
+  // CCoW container 内 Claude が `mcp__github__add_issue_comment` で初回 1 回だけ
+  // 叩く想定。
+  if (url.pathname === "/mcp/pair/register-via-github-comment" && request.method === "POST") {
+    return handleMcpPairRegisterViaGithubComment(request, env);
   }
   // ADR-004 (cc-relay/ARCHITECTURE.md): GitHub webhook を受け、既存
   // McpSession DO 経由で attached binary に broadcast する (multiplex)。
@@ -525,6 +540,14 @@ export default {
           // (debug / curl 用に auth host にも置く。binary は relay host 経由)。
           case "/mcp/pair/grant-via-github":
             return await handleMcpPairGrantViaGithub(request, env);
+          // issue ippoan/auth-worker#174: Anthropic OAT → binding_jwt (KV-bound)
+          // (debug / curl 用に auth host にも置く。binary は relay host 経由)。
+          case "/mcp/pair/grant-via-oat":
+            return await handleMcpPairGrantViaOat(request, env);
+          // issue ippoan/auth-worker#174: register OAT_hash → github_login via
+          // GitHub issue-comment identity proof (debug / curl 用 dual placement)。
+          case "/mcp/pair/register-via-github-comment":
+            return await handleMcpPairRegisterViaGithubComment(request, env);
           // MCP OAuth Provider — Native MCP JSON-RPC tools (issue #145)
           // auth host 上でも受けることで binary なしで MCP server として機能する。
           // 同じ handler は dispatchMcpRelay (mcp.ippoan.org host) 経由でも到達可能。
