@@ -1,6 +1,6 @@
 /**
  * `handleMcpPairGrantViaOat` — `POST /mcp/pair/grant-via-oat` テスト
- * (issue ippoan/auth-worker#174)。
+ * (issues ippoan/auth-worker#174, #176)。
  *
  * - env / KV guard (503)
  * - Authorization header parsing (400)
@@ -13,6 +13,8 @@
  * - OAT not bound in KV → 404 with register_endpoint
  * - happy path: binding_jwt mint、JWT round-trip、mcp_url、aud / scope echo
  * - audience override: ref-files-mcp-server-rs
+ * - #176 org_uuid lookup primary path, lazy migration from oat_hash
+ * - #176 header missing or malformed: graceful fallback to oat_hash
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -22,6 +24,7 @@ import {
   OAT_BINDING_TTL_SEC,
   hashOat,
   putOatBinding,
+  putOrgBinding,
 } from "../../src/lib/mcp-oat-binding";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
@@ -29,6 +32,8 @@ import type { Env } from "../../src/index";
 const ISSUER = "https://auth-staging.test.example";
 const MCP_JWT_SECRET = "test-mcp-jwt-secret-32chars!!!!!";
 const OAT = "sk-ant-oat01-test-token-xxxxxxxxxxxxxxxxxxxx";
+const ORG_UUID = "bbe9480d-6a09-4689-92d2-7197609417fe";
+const OTHER_ORG_UUID = "11111111-2222-3333-4444-555555555555";
 
 function envWith(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
   const kv = createMockKV() as MockKV;
@@ -58,21 +63,33 @@ function buildReq(opts: {
   });
 }
 
-function mockAnthropic(status = 200): void {
+/**
+ * Mock Anthropic `/v1/models` response. `orgUuid` controls the
+ * `anthropic-organization-id` header that the real server attaches server-side.
+ * `null` simulates the edge case (header missing) → handler should fall back
+ * to oat_hash-only lookup.
+ */
+function mockAnthropic(opts: { status?: number; orgUuid?: string | null } = {}): void {
+  const status = opts.status ?? 200;
+  const orgUuid = opts.orgUuid === undefined ? ORG_UUID : opts.orgUuid;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url === "https://api.anthropic.com/v1/models") {
+        const headers: Record<string, string> = {
+          "content-type": "application/json",
+        };
+        if (orgUuid !== null) headers["anthropic-organization-id"] = orgUuid;
         if (status >= 200 && status < 300) {
           return new Response(JSON.stringify({ data: [{ id: "claude" }] }), {
             status,
-            headers: { "content-type": "application/json" },
+            headers,
           });
         }
         return new Response(JSON.stringify({ error: { message: "fail" } }), {
           status,
-          headers: { "content-type": "application/json" },
+          headers,
         });
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -285,7 +302,7 @@ describe("handleMcpPairGrantViaOat — forbidden scope", () => {
 
 describe("handleMcpPairGrantViaOat — OAT validity check", () => {
   it("401 when Anthropic API returns 401", async () => {
-    mockAnthropic(401);
+    mockAnthropic({ status: 401 });
     const { env } = envWith();
     await bindAlice(env);
     const res = await handleMcpPairGrantViaOat(
@@ -298,7 +315,7 @@ describe("handleMcpPairGrantViaOat — OAT validity check", () => {
   });
 
   it("401 when Anthropic API returns 403", async () => {
-    mockAnthropic(403);
+    mockAnthropic({ status: 403 });
     const { env } = envWith();
     await bindAlice(env);
     const res = await handleMcpPairGrantViaOat(
@@ -309,7 +326,7 @@ describe("handleMcpPairGrantViaOat — OAT validity check", () => {
   });
 
   it("502 when Anthropic API returns 5xx", async () => {
-    mockAnthropic(503);
+    mockAnthropic({ status: 503 });
     const { env } = envWith();
     await bindAlice(env);
     const res = await handleMcpPairGrantViaOat(
@@ -442,5 +459,185 @@ describe("handleMcpPairGrantViaOat — rate limit", () => {
     expect(res.status).toBe(429);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("rate_limited");
+  });
+});
+
+// ── #176 org_uuid primary lookup path ────────────────────────────────────
+
+async function bindAliceByOrg(env: Env): Promise<void> {
+  const now = Date.now();
+  await putOrgBinding(env, ORG_UUID, {
+    github_login: "alice",
+    bound_at: now,
+    expires_at: now + OAT_BINDING_TTL_SEC * 1000,
+  });
+}
+
+describe("handleMcpPairGrantViaOat — #176 org_uuid lookup", () => {
+  it("200 via org_uuid primary key when only org_uuid binding exists", async () => {
+    mockAnthropic();
+    const { env, kv } = envWith();
+    await bindAliceByOrg(env);
+    // No oat_hash binding written — must hit via org_uuid header from /v1/models
+    const oatHash = await hashOat(OAT);
+    expect(kv._data[`oat_hash:${oatHash}`]).toBeUndefined();
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      github_login: string;
+      org_uuid: string;
+    };
+    expect(body.github_login).toBe("alice");
+    expect(body.org_uuid).toBe(ORG_UUID);
+  });
+
+  it("org_uuid binding takes precedence over oat_hash binding", async () => {
+    mockAnthropic();
+    const { env } = envWith();
+    // org_uuid → alice, oat_hash → bob (= conflict, org_uuid wins per #176)
+    await bindAliceByOrg(env);
+    const oatHash = await hashOat(OAT);
+    const now = Date.now();
+    await putOatBinding(env, oatHash, {
+      github_login: "bob",
+      bound_at: now,
+      expires_at: now + OAT_BINDING_TTL_SEC * 1000,
+    });
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { github_login: string };
+    expect(body.github_login).toBe("alice");
+  });
+
+  it("lazy migration: oat_hash hit writes through to org_uuid", async () => {
+    mockAnthropic();
+    const { env, kv } = envWith();
+    await bindAlice(env);
+    // Sanity: no pre-existing org_uuid binding
+    expect(kv._data[`org_uuid:${ORG_UUID}`]).toBeUndefined();
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { github_login: string; org_uuid: string };
+    expect(body.github_login).toBe("alice");
+    expect(body.org_uuid).toBe(ORG_UUID);
+    // Post-call: org_uuid binding now exists (write-through migration)
+    expect(kv._data[`org_uuid:${ORG_UUID}`]).toBeDefined();
+    const migrated = JSON.parse(kv._data[`org_uuid:${ORG_UUID}`] as string) as {
+      github_login: string;
+    };
+    expect(migrated.github_login).toBe("alice");
+  });
+
+  it("404 when neither org_uuid nor oat_hash binding exists", async () => {
+    mockAnthropic();
+    const { env } = envWith();
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("falls back to oat_hash when anthropic-organization-id header is missing", async () => {
+    // Edge case: Anthropic API returns 200 but no org_uuid header (= legacy
+    // tier or unexpected). Handler should not crash, just skip org_uuid lookup.
+    mockAnthropic({ orgUuid: null });
+    const { env } = envWith();
+    await bindAlice(env);
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { github_login: string; org_uuid: string | null };
+    expect(body.github_login).toBe("alice");
+    expect(body.org_uuid).toBeNull();
+  });
+
+  it("falls back to oat_hash when org_uuid header is malformed", async () => {
+    // header value is not a UUID — extractOrgUuidFromResponse returns null,
+    // handler should still resolve via oat_hash without crashing.
+    mockAnthropic({ orgUuid: "not-a-uuid" });
+    const { env } = envWith();
+    await bindAlice(env);
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { org_uuid: string | null };
+    expect(body.org_uuid).toBeNull();
+  });
+
+  it("no lazy migration write-through when org_uuid header missing", async () => {
+    mockAnthropic({ orgUuid: null });
+    const { env, kv } = envWith();
+    await bindAlice(env);
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    // No org_uuid write-through (header was absent)
+    expect(kv._data[`org_uuid:${ORG_UUID}`]).toBeUndefined();
+  });
+
+  it("different OAT hash but same org_uuid (= post-rotation OAT) still hits binding", async () => {
+    // Simulates container reclaim with rotated OAT: new sha256(OAT') ≠ old hash,
+    // but org_uuid is stable since user account is the same.
+    mockAnthropic();
+    const { env } = envWith();
+    await bindAliceByOrg(env);
+    // Try with a NEW OAT (different hash than what we'd bind with)
+    const rotatedOat = "sk-ant-oat01-rotated-token-yyyyyyyyyyyyyyyyy";
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${rotatedOat}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { github_login: string };
+    expect(body.github_login).toBe("alice");
+  });
+
+  it("response shape includes org_uuid for happy path", async () => {
+    mockAnthropic();
+    const { env } = envWith();
+    await bindAliceByOrg(env);
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.org_uuid).toBe(ORG_UUID);
+    expect(body.binding_jwt).toMatch(/^[\w-]+\.[\w-]+\.[\w-]+$/);
+    expect(body.github_login).toBe("alice");
+  });
+
+  it("different org_uuid → no cross-org binding bleed (404)", async () => {
+    // Alice is bound to OTHER_ORG_UUID, but Anthropic returns ORG_UUID
+    // (= attacker's account). Must not hit Alice's binding.
+    mockAnthropic({ orgUuid: ORG_UUID });
+    const { env } = envWith();
+    const now = Date.now();
+    await putOrgBinding(env, OTHER_ORG_UUID, {
+      github_login: "alice",
+      bound_at: now,
+      expires_at: now + OAT_BINDING_TTL_SEC * 1000,
+    });
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(404);
   });
 });

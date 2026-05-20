@@ -1,16 +1,28 @@
 /**
  * `POST /mcp/pair/grant-via-oat` — Anthropic OAT を identity proof として
- * binding_jwt を 1 発で mint する endpoint (issue ippoan/auth-worker#174)。
+ * binding_jwt を 1 発で mint する endpoint
+ * (issues ippoan/auth-worker#174, #176)。
  *
  * CCoW container 内には GitHub credential も browser cookie も存在せず、
  * Anthropic OAT (`sk-ant-oat01-...`、`/home/claude/.claude/remote/.oauth_token`)
- * だけが install-mcp-relay hook 段階で参照可能。OAT 自体は Anthropic identity
- * endpoint で 403 reject されるため、OAT alone では login を引けない。
+ * だけが install-mcp-relay hook 段階で参照可能。OAT 自体は `/v1/organizations/me`
+ * 等の identity endpoint で 403 reject されるが、`/v1/models` の response
+ * header に `anthropic-organization-id` が server-side で attach される
+ * (= env spoofing 不可、account-stable な UUID)。
  *
- * 設計: 別経路 (`POST /mcp/pair/register-via-github-comment`) で OAT_hash →
- * github_login 対応を KV に bind しておけば、本 endpoint は OAT を hash して
- * lookup するだけで silent に binding_jwt を返せる。bootstrap の唯一の click は
- * register endpoint を 1 回叩く初回のみ (= GitHub issue comment の投稿)。
+ * 設計:
+ *   - 別経路 (`POST /mcp/pair/register-via-github-comment`) で
+ *     `org_uuid → github_login` 対応を KV に bind しておく
+ *   - 本 endpoint は OAT を Anthropic API で verify する fetch から org_uuid
+ *     header を抽出 → `org_uuid:<uuid>` を lookup
+ *   - 移行期間として `oat_hash:<sha256(oat)>` も fallback lookup、hit したら
+ *     同時に `org_uuid:<uuid>` に write-through (= lazy migration)
+ *
+ * #174 path との違い (#176):
+ *   - container reclaim で OAT が rotate しても org_uuid は account-stable な
+ *     ので KV bind が継続有効 (= true silent bootstrap が成立)
+ *   - bootstrap の唯一の click は register endpoint を 1 回叩く初回のみ、
+ *     その後の全 fresh container は org_uuid lookup で即 200
  *
  * Auth model:
  *   Headers:
@@ -28,6 +40,7 @@
  *     binding_jwt:   "<24h MCP JWT>",
  *     mcp_url:       "https://mcp(-staging).ippoan.org/u/<login>/mcp",
  *     github_login:  "<verified login bound to OAT>",
+ *     org_uuid:      "<anthropic-organization-id>" | null,
  *     aud:           "<echo>",
  *     scope:         "<echo>",
  *     expires_in:    86400
@@ -35,24 +48,33 @@
  *   400 → invalid_request   (Authorization 欠落 / body JSON 不正)
  *   401 → invalid_token     (Anthropic API が OAT を reject)
  *   403 → forbidden_scope   (mcp.admin / aud allowlist 外)
- *   404 → not_bound         (oat_hash:* が KV に無い → register 必要)
+ *   404 → not_bound         (org_uuid / oat_hash 共に KV に無い → register 必要)
  *   429 → rate_limited      (10/min per OAT_hash)
  *   502 → upstream_error    (api.anthropic.com 5xx / network)
  *   503 → server_error      (env / KV 未設定)
  *
  * Security:
- *   - OAT 自体は KV に保存しない (hash のみ key として使う、leak 耐性)。
+ *   - OAT 自体は KV に保存しない (hash / org_uuid のみ key として使う)。
  *   - `mcp.admin` scope は本 path で発行**しない** (`/mcp/elevate` 経由のみ)。
  *   - rate limit は OAT_hash で per-token bucketing。`/mcp/pair/grant-via-github`
  *     と同じ `checkAndBumpGrantRateLimit` を sha256 衝突無視で共用する。
  *   - OAT validity check を Anthropic API (`/v1/models`) に渡し、revoked OAT で
- *     stale binding を引かれて binding_jwt を盗まれる経路を塞ぐ。
+ *     stale binding を引かれて binding_jwt を盗まれる経路を塞ぐ。同 fetch から
+ *     `anthropic-organization-id` header を抽出して org_uuid を取得。
  */
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
 import { signMcpJwt } from "../lib/mcp-jwt";
-import { getOatBinding, hashOat } from "../lib/mcp-oat-binding";
+import {
+  extractOrgUuidFromResponse,
+  getOatBinding,
+  getOrgBinding,
+  hashOat,
+  OAT_BINDING_TTL_SEC,
+  putOrgBinding,
+  type OatBindingRecord,
+} from "../lib/mcp-oat-binding";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 import { checkAndBumpGrantRateLimit } from "../lib/mcp-pair";
 
@@ -177,7 +199,8 @@ export async function handleMcpPairGrantViaOat(
     );
   }
 
-  // ── verify OAT against Anthropic API (revoked / forged OAT を弾く) ──
+  // ── verify OAT against Anthropic API + extract org_uuid header (#176) ──
+  let orgUuid: string | null = null;
   try {
     const res = await fetch("https://api.anthropic.com/v1/models", {
       headers: {
@@ -204,6 +227,9 @@ export async function handleMcpPairGrantViaOat(
         502,
       );
     }
+    // Anthropic server-side で OAT に紐付く org_uuid が attach される。
+    // header 欠落時 (= edge case) は legacy oat_hash path のみで lookup。
+    orgUuid = extractOrgUuidFromResponse(res);
   } catch (e) {
     return jsonResponse(
       {
@@ -214,8 +240,17 @@ export async function handleMcpPairGrantViaOat(
     );
   }
 
-  // ── lookup binding ───────────────────────────────────────────────────
-  const binding = await getOatBinding(env, oatHash);
+  // ── lookup binding: org_uuid (#176 primary) → oat_hash (#174 fallback) ──
+  let binding: OatBindingRecord | null = null;
+  let hitVia: "org_uuid" | "oat_hash" | null = null;
+  if (orgUuid) {
+    binding = await getOrgBinding(env, orgUuid);
+    if (binding) hitVia = "org_uuid";
+  }
+  if (!binding) {
+    binding = await getOatBinding(env, oatHash);
+    if (binding) hitVia = "oat_hash";
+  }
   if (!binding) {
     return jsonResponse(
       {
@@ -226,6 +261,23 @@ export async function handleMcpPairGrantViaOat(
       },
       404,
     );
+  }
+
+  // Lazy migration: legacy oat_hash hit + new org_uuid available → write-through
+  // to org_uuid:<uuid> so the next fresh container (with rotated OAT but stable
+  // org_uuid) hits the new primary key path. Failure here is non-fatal (network
+  // / KV write race など) — binding_jwt 発行は既に決定済み。
+  if (hitVia === "oat_hash" && orgUuid) {
+    const now = Date.now();
+    try {
+      await putOrgBinding(env, orgUuid, {
+        github_login: binding.github_login,
+        bound_at: binding.bound_at,
+        expires_at: now + OAT_BINDING_TTL_SEC * 1000,
+      });
+    } catch {
+      // ignore — caller can retry, lazy migration is best-effort
+    }
   }
 
   // ── mint binding_jwt ────────────────────────────────────────────────
@@ -246,6 +298,7 @@ export async function handleMcpPairGrantViaOat(
     binding_jwt: bindingJwt,
     mcp_url: mcpUrl,
     github_login: binding.github_login,
+    org_uuid: orgUuid,
     aud: requestedAud,
     scope: requestedScope,
     expires_in: BINDING_JWT_TTL_SEC,
