@@ -611,9 +611,12 @@ export class McpSession implements DurableObject {
         );
         return this.handleInlineMcpFromBody(bodyBuf);
       }
-      const body: { error: string; message?: string } = { error: fwd.error };
-      if (fwd.message !== undefined) body.message = fwd.message;
-      return jsonResponse(fwd.status, body);
+      // issue #178: relay_send_failed / relay_timeout は上の stub fallback で
+      // 吸収されるので、 ここに来るのは relay_session_closed / relay_session_error。
+      // forwardToWs はこれら error では message field を立てない (undefined) ため、
+      // body.message は JSON.stringify が undefined を omit する仕様に頼って
+      // 条件分岐無しで埋める。
+      return jsonResponse(fwd.status, { error: fwd.error, message: fwd.message });
     }
     return buildResponseFromRespFrame(fwd.resp);
   }

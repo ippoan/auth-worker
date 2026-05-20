@@ -3246,3 +3246,202 @@ describe("McpSession recovery — CCoW reuse-DO scenario (issue #178)", () => {
     expect(staleWs.send).toHaveBeenCalledTimes(1);
   });
 });
+
+// ===========================================================================
+// issue #178 coverage carve-out: keepalive 周りの edge branch を網羅
+// (scheduleKeepalive の re-entry / alarm() の deserialize throw / stub fallback
+//  の parse error path)
+// ===========================================================================
+
+describe("McpSession keepalive — edge branches (issue #178 coverage)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("scheduleKeepalive: returns early without overwriting an already-pending alarm", async () => {
+    // 1 回目 handleConnect で alarm が set される。
+    // 2 回目 handleConnect は getAlarm() で pending(>Date.now()) を見つけて
+    // 早期 return する (= alarmCalls 件数が 1 のまま増えない)。
+    const { state, alarmCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+    await do_.fetch(
+      new Request("https://do.invalid/__connect", {
+        method: "GET",
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(alarmCalls.length).toBe(1);
+    // 2 回目: scheduleKeepalive が pending を検出 → 早期 return
+    await do_.fetch(
+      new Request("https://do.invalid/__connect", {
+        method: "GET",
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    await new Promise((r) => setImmediate(r));
+    // alarm は上書きされず 1 件のまま
+    expect(alarmCalls.length).toBe(1);
+  });
+
+  it("alarm(): deserializeAttachment throw on a WS is treated as att=null and skipped", async () => {
+    // makeFakeWs (= deserializeAttachment 未定義) を使うと deserializeAttachment
+    // 呼び出しで TypeError → catch → att = null → keepaliveSupported false 扱いで skip
+    const plain = makeFakeWs("plain", 1 /* OPEN */);
+    const { state } = createMockState([plain]);
+    const do_ = new McpSession(state, {});
+    // alarm が throw せず通って ping は送られない
+    await expect(do_.alarm()).resolves.toBeUndefined();
+    expect(plain.send).not.toHaveBeenCalled();
+  });
+
+  it("alarm(): hasKeepalive self-schedule path tolerates deserializeAttachment throw", async () => {
+    // hasKeepalive 判定の some() 内 try/catch — deserializeAttachment が throw
+    // しても catch → return false で skip される。 ws 全部が throw する WS
+    // しか居ない場合は self-schedule しない。
+    const plain1 = makeFakeWs("p1", 1 /* OPEN */);
+    const plain2 = makeFakeWs("p2", 1 /* OPEN */);
+    const { state, alarmCalls } = createMockState([plain1, plain2]);
+    const do_ = new McpSession(state, {});
+    await do_.alarm();
+    // どの WS も keepaliveSupported=true な attachment を持たない → self-schedule なし
+    expect(alarmCalls.length).toBe(0);
+  });
+
+  it("handleBridge stub fallback: timeout with invalid JSON body returns parse error", async () => {
+    // relay_send_failed が起きるが body が JSON でなければ handleInlineMcpFromBody
+    // の catch 経路で `-32700 Parse error` を返す。
+    setStubUUID("uuid-bad-json");
+    const ws = makeFakeWs("active");
+    ws.send.mockImplementation(() => {
+      throw new Error("send-broken");
+    });
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: "not-json", // raw bytes — JSON.parse will throw
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      error: { code: number; message: string };
+    };
+    expect(body.error.code).toBe(-32700);
+    expect(body.error.message).toBe("Parse error");
+    expect(ws.close).toHaveBeenCalledWith(1011, "stale_relay_send_failed");
+  });
+
+  it("scheduleKeepalive: storage without setAlarm function is silently skipped", async () => {
+    // storage.setAlarm が無い → 早期 return (= 463 の if true branch)
+    const { state } = createMockState();
+    // mutate storage to remove setAlarm
+    const stripped = state.storage as unknown as { setAlarm?: unknown };
+    delete stripped.setAlarm;
+    const do_ = new McpSession(state, {});
+    // handleConnect 内 scheduleKeepalive が早期 return しても throw しない
+    await expect(
+      do_.fetch(
+        new Request("https://do.invalid/__connect", {
+          method: "GET",
+          headers: { Upgrade: "websocket" },
+        }),
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it("scheduleKeepalive: storage without getAlarm uses null (no overwrite check)", async () => {
+    // getAlarm が無い → ternary の false branch (= null を resolve して then 経由)
+    const { state, alarmCalls } = createMockState();
+    const stripped = state.storage as unknown as { getAlarm?: unknown };
+    delete stripped.getAlarm;
+    const do_ = new McpSession(state, {});
+    await do_.fetch(
+      new Request("https://do.invalid/__connect", {
+        method: "GET",
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    // microtask flush
+    await new Promise((r) => setImmediate(r));
+    // setAlarm は呼ばれる (getAlarm 無いので pending check は null 扱い)
+    expect(alarmCalls.length).toBe(1);
+  });
+
+  it("alarm(): null attachment via deserialize returns null is treated as not keepalive-supported", async () => {
+    // deserializeAttachment が null を返す ws — `?? null` の null 側 branch
+    const ws = makeMultiplexWs("ws", undefined);
+    // serialize 無で deserialize は null を返す状態のまま alarm() を呼ぶ
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    await do_.alarm();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it("alarm(): pong frame on WS with null attachment merges over {} default", async () => {
+    // pong 受信時に deserializeAttachment が null を返すケース — `?? {}` 分岐
+    const ws = makeMultiplexWs("ws", undefined); // attachment=null
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "pong", v: 1, id: "x" }),
+    );
+    // serializeAttachment が呼ばれて missedPings:0, lastPongAt が set される
+    expect(ws.serializeAttachment).toHaveBeenCalled();
+    const att = (ws.serializeAttachment.mock.calls[0] as unknown as [
+      Record<string, unknown>,
+    ])[0];
+    expect(att.missedPings).toBe(0);
+    expect(typeof att.lastPongAt).toBe("number");
+  });
+
+  it("alarm(): skips closed (readyState !== OPEN) WS without throwing", async () => {
+    // alarm() の line 1018 stale skip branch
+    const closed = makeMultiplexWs("closed", "github-mcp-server-rs", 3 /* CLOSED */);
+    const { state } = createMockState([closed]);
+    const do_ = new McpSession(state, {});
+    await do_.alarm();
+    expect(closed.send).not.toHaveBeenCalled();
+  });
+
+  it("alarm(): attachment without missedPings / lastPongAt fields uses defaults", async () => {
+    // missedPings が number でない / lastPongAt が number でない attachment は
+    // それぞれ 0 / now にフォールバック (1030 / 1036 の ternary false branch)。
+    const ws = makeMultiplexWs("ws", undefined);
+    // 直接 attachment を keepaliveSupported のみ持つ shape にする
+    (ws.serializeAttachment as unknown as (d: unknown) => void)({
+      service: "github-mcp-server-rs",
+      keepaliveSupported: true,
+      // missedPings / lastPongAt 不在
+    });
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    ws.send.mockClear();
+    await do_.alarm();
+    // ping は送られる (= 1030/1036 の default に倒れて newMissed=0 → send)
+    expect(ws.send).toHaveBeenCalled();
+  });
+
+  it("alarm(): self-schedule skipped when storage.setAlarm gone (line 1091 false branch)", async () => {
+    // keepalive 対応 WS が居る → hasKeepalive=true、 だが storage.setAlarm が
+    // 削除された state で alarm() を呼ぶ → 自己 schedule の if は false 分岐。
+    const ws = makeMultiplexWs("ws", "github-mcp-server-rs");
+    (ws.serializeAttachment as unknown as (d: unknown) => void)({
+      service: "github-mcp-server-rs",
+      keepaliveSupported: true,
+      missedPings: 0,
+      lastPongAt: Date.now(),
+    });
+    const { state, alarmCalls } = createMockState([ws]);
+    const stripped = state.storage as unknown as { setAlarm?: unknown };
+    delete stripped.setAlarm;
+    const do_ = new McpSession(state, {});
+    await do_.alarm();
+    // setAlarm 削除済なので alarmCalls は増えない
+    expect(alarmCalls.length).toBe(0);
+    // 既存 ping は send される
+    expect(ws.send).toHaveBeenCalled();
+  });
+});
