@@ -3050,8 +3050,10 @@ describe("McpSession keepalive — alarm()-based ping/pong (issue #178)", () => 
         keepalive_supported: true,
       }),
     );
-    // 直接 attachment を弄って missedPings=1 にする (alarm 1 回挟んだ状態の simulate)
-    ws.serializeAttachment({
+    // 直接 attachment を弄って missedPings=1 にする (alarm 1 回挟んだ状態の simulate)。
+    // `vi.fn(...)` Mock を直接 call すると TS 推論が new vs call の union で揺れて
+    // TS2348 になるので、 cast 経由で invoke する。
+    (ws.serializeAttachment as unknown as (d: unknown) => void)({
       service: "github-mcp-server-rs",
       binaryVersion: "0.3.0",
       keepaliveSupported: true,
@@ -3087,7 +3089,7 @@ describe("McpSession keepalive — alarm()-based ping/pong (issue #178)", () => 
       }),
     );
     // lastPongAt をかなり過去にして missedPings=1 にする
-    ws.serializeAttachment({
+    (ws.serializeAttachment as unknown as (d: unknown) => void)({
       service: "github-mcp-server-rs",
       binaryVersion: "0.3.0",
       keepaliveSupported: true,
