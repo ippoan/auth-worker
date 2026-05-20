@@ -75,8 +75,34 @@ const WS_READY_STATE_OPEN = 1;
 /** Frame schema version (binary 側 #27 と一致させる)。 */
 const FRAME_VERSION = 1;
 
-/** 1 request あたりの WS frame round-trip timeout (ms)。 */
-const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * 1 request あたりの WS frame round-trip timeout (ms)。
+ *
+ * issue #178: 30s → 10s に短縮。 stale WS (前 session で死んだ binary)
+ * 検出時間を短くする事で「最初の 1-2 call が 502/hang」から「最初の 1 call で
+ * 即 stub fallback」に挙動を切り替える。 timeout 時は当該 WS を close し、
+ * 以降の request は inline stub server で応答する。
+ */
+const REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * issue #178 (a): WS application-level ping/pong による stale 検出。
+ *
+ * Cloudflare Workers DO は WebSocket Hibernation API しか提供せず、
+ * RFC6455 control frame Ping/Pong は API exposed していないため、
+ * application-level frame (`{kind: "ping"}` / `{kind: "pong"}`) を独自に
+ * 走らせる。 alarm() ハンドラで定期 ping、N 連続 pong 未着で WS close。
+ *
+ * 旧 binary との後方互換: binary 側 Hello frame に `keepalive_supported: true`
+ * が載っていれば DO が ping を送る。 v1 sender (= 旧 binary) には ping を
+ * 送らない (deny_unknown_fields の parse error で binary が落ちないとはいえ、
+ * 無駄 traffic は避ける)。
+ */
+const KEEPALIVE_PING_INTERVAL_MS = 30_000;
+/** 1 ping の pong 応答 grace。 これを越えると `failedPings` を 1 増やす。 */
+const KEEPALIVE_PONG_TIMEOUT_MS = 8_000;
+/** 連続 N 回 pong 未着で WS を close + state reset。 */
+const KEEPALIVE_MAX_MISSED_PINGS = 2;
 
 /** SSE channel の memory 上での registry entry。Workers DO は hibernation
  *  すると memory が消えるので、SSE は live container 限定 (Claude.ai は
@@ -382,16 +408,73 @@ export class McpSession implements DurableObject {
     // 注: accept 時点では新 connection の service も未知 (Hello は accept 後)。
     // 既存 v1 全部を一旦保持し、Hello 到着時に同 service の旧 WS を close する
     // (`reconcileServiceAttachment`)。
+    //
+    // issue #178 (b): accept 時点で readyState !== OPEN の stale WS は即時
+    // close + cleanup する (= takeover の前段)。 前 session の WS が hibernation
+    // から復活せず CLOSING/CLOSED で残っていると、handleBridge の readyState
+    // filter は弾けても CF runtime 側 list には残り続けるため、明示的に閉じる。
     const existing = this.state.getWebSockets(WS_TAG);
+    const staleClosed = this.evictStaleSockets(existing);
     console.log(
-      `[mcp-relay] handleConnect: existing_ws=${existing.length} (multiplex retains across services until hello)`,
+      `[mcp-relay] handleConnect: existing_ws=${existing.length} stale_evicted=${staleClosed} (multiplex retains across services until hello)`,
     );
 
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.state.acceptWebSocket(server, [WS_TAG]);
+    // issue #178 (a): alarm-based keepalive を起動 (既存 alarm が pending なら
+    // CF runtime が new alarm を上書きするので無害)。 binary が Hello で
+    // keepalive_supported=true を載せたら次の alarm tick から ping が飛ぶ。
+    this.scheduleKeepalive();
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * issue #178 (b): readyState !== OPEN の WS を close + cleanup する。
+   * 戻り値は close した WS の数 (log 用)。
+   *
+   * `safeReadyState` は handleBridge と同じく throw 耐性を持つ (mock WS や
+   * 既 close 状態で readyState getter が throw するケース)。
+   */
+  private evictStaleSockets(wsList: WebSocket[]): number {
+    let evicted = 0;
+    for (const w of wsList) {
+      const state = safeReadyState(w);
+      if (state === WS_READY_STATE_OPEN) continue;
+      try {
+        (w as WebSocket).close(1000, "stale_on_connect");
+      } catch {
+        // 既 close / mock は無視
+      }
+      evicted += 1;
+    }
+    return evicted;
+  }
+
+  /** issue #178 (a): alarm() による keepalive 周期実行を schedule する。
+   *  CF runtime は同時に 1 alarm しか保持しないため、複数回呼んでも上書き。 */
+  private scheduleKeepalive(): void {
+    const storage = this.state.storage as unknown as {
+      setAlarm?: (when: number) => Promise<void> | void;
+      getAlarm?: () => Promise<number | null>;
+    };
+    // setAlarm/getAlarm が無い test 環境ではスキップ。
+    if (typeof storage.setAlarm !== "function") return;
+    void Promise.resolve(
+      typeof storage.getAlarm === "function" ? storage.getAlarm() : null,
+    )
+      .then((pending) => {
+        if (typeof pending === "number" && pending > Date.now()) {
+          // 既に直近の alarm が pending — 上書き不要
+          return undefined;
+        }
+        return storage.setAlarm!(Date.now() + KEEPALIVE_PING_INTERVAL_MS);
+      })
+      .catch(() => {
+        // alarm 設定失敗は keepalive を止めるだけで挙動 fatal ではない (request
+        // 単位の timeout が 10s なので最悪 stub fallback で復旧する)
+      });
   }
 
   /** Phase 2 multiplex helper: open な WS list から service id 別に最新の
@@ -461,13 +544,6 @@ export class McpSession implements DurableObject {
     //
     // hibernated WS は readyState OPEN を返す (CF 仕様) ので filter には残る。
     // fake mock (test) は readyState 未定義 → undefined !== 1 で除外される。
-    const safeReadyState = (w: unknown): number | "throw" => {
-      try {
-        return (w as WebSocket).readyState;
-      } catch {
-        return "throw";
-      }
-    };
     const open = active.filter((w) => safeReadyState(w) === WS_READY_STATE_OPEN);
     console.log(
       `[mcp-relay] handleBridge: ws_count=${active.length} open=${open.length} states=[${active
@@ -485,6 +561,10 @@ export class McpSession implements DurableObject {
       // storage に持つ (`subs` set + `events` FIFO)。CCoW のように binary を
       // 動かせない環境でも、`POST /mcp` 経由でこの 4 tool だけで「subscribe →
       // webhook 受信 → polling drain」が完結する。
+      //
+      // issue #178: stale WS (closed but not yet GC'd) も close しておく。
+      // alarm() / handleConnect で evict 済のはずだが、defensive に。
+      this.evictStaleSockets(active);
       return this.handleInlineMcp(req);
     }
 
@@ -514,9 +594,29 @@ export class McpSession implements DurableObject {
     const ws = open[open.length - 1] as WebSocket;
     const fwd = await this.forwardToWs(ws, req.method, headers, bodyBuf);
     if (!fwd.ok) {
-      const body: { error: string; message?: string } = { error: fwd.error };
-      if (fwd.message !== undefined) body.message = fwd.message;
-      return jsonResponse(fwd.status, body);
+      // issue #178 (c): relay_timeout / relay_send_failed は「WS は OPEN 扱い
+      // だが binary が応答できない (= silently dead)」サイン。 1 回これらに
+      // 当たった WS は stale 確定として close した上で、 当該 request を
+      // inline stub server で fallback 応答する。 caller (Claude.ai connector)
+      // から見ると「最初の call はやや遅いが 200 が返る、次の call からは
+      // 即 stub 応答」となり、 stale DO 当たり時の UX が 502/504 → 200 に。
+      if (fwd.error === "relay_timeout" || fwd.error === "relay_send_failed") {
+        try {
+          ws.close(1011, `stale_${fwd.error}`);
+        } catch {
+          // 既 close は無視
+        }
+        console.log(
+          `[mcp-relay] handleBridge: stale WS closed (${fwd.error}), falling back to inline stub`,
+        );
+        return this.handleInlineMcpFromBody(bodyBuf);
+      }
+      // issue #178: relay_send_failed / relay_timeout は上の stub fallback で
+      // 吸収されるので、 ここに来るのは relay_session_closed / relay_session_error。
+      // forwardToWs はこれら error では message field を立てない (undefined) ため、
+      // body.message は JSON.stringify が undefined を omit する仕様に頼って
+      // 条件分岐無しで埋める。
+      return jsonResponse(fwd.status, { error: fwd.error, message: fwd.message });
     }
     return buildResponseFromRespFrame(fwd.resp);
   }
@@ -761,8 +861,21 @@ export class McpSession implements DurableObject {
           : DEFAULT_SERVICE_V1_COMPAT;
       const binaryVersion =
         typeof f["binary_version"] === "string" ? (f["binary_version"] as string) : "";
+      // issue #178 (a): binary が application-level ping/pong に対応していれば
+      // Hello frame に `keepalive_supported: true` を載せる契約。 旧 binary
+      // (deny_unknown_fields の serde で parse error になる) は ping を受け取れ
+      // ないので opt-in にする。
+      const keepaliveSupported = f["keepalive_supported"] === true;
       try {
-        ws.serializeAttachment({ service, binaryVersion });
+        ws.serializeAttachment({
+          service,
+          binaryVersion,
+          keepaliveSupported,
+          // ping 状態は alarm handler 内で更新する。 mock WS は attachment が
+          // 取れないので keepalive を skip するだけ。
+          missedPings: 0,
+          lastPongAt: Date.now(),
+        });
       } catch {
         // mock WS (test) は serializeAttachment 未定義 — skip
       }
@@ -778,12 +891,35 @@ export class McpSession implements DurableObject {
         }
       }
       console.log(
-        `[mcp-relay] hello: service=${service} binary_version=${binaryVersion}`,
+        `[mcp-relay] hello: service=${service} binary_version=${binaryVersion} keepalive=${keepaliveSupported}`,
       );
       // issue #155: binary が attach した直後に tools/list_changed を broadcast。
       // 直前まで stub (inline MCP) tools を見ていた client は、この notification を
       // 受けて tools/list を再 fetch → full tool set に切り替わる。
       this.broadcastToolsListChanged();
+      // issue #178 (a): keepalive 対応 binary が初接続なら alarm を schedule。
+      // handleConnect 経路でも schedule しているが、 hello が来てから schedule
+      // する事で「対応 binary 接続中」だけ alarm を回す最小化が可能。
+      if (keepaliveSupported) {
+        this.scheduleKeepalive();
+      }
+      return;
+    }
+    // issue #178 (a): binary からの pong 受信 — attachment の lastPongAt を更新し
+    // missedPings を 0 に reset。 ping id 自体は使わない (1 binary に対し
+    // 1 outstanding ping の単純運用)。
+    if (kind === "pong") {
+      try {
+        const cur =
+          (ws.deserializeAttachment() as Record<string, unknown> | null) ?? {};
+        ws.serializeAttachment({
+          ...cur,
+          missedPings: 0,
+          lastPongAt: Date.now(),
+        });
+      } catch {
+        // mock WS は ignore
+      }
       return;
     }
     if (kind === "notif") {
@@ -859,6 +995,112 @@ export class McpSession implements DurableObject {
     this.pending.clear();
   }
 
+  /**
+   * issue #178 (a): keepalive alarm。 CF runtime が
+   * `state.storage.setAlarm()` 経由で起こす。 attached WS 全部に ping frame を
+   * 送り、 前回の ping に pong が返ってきていない (missedPings 増加中) WS は
+   * `MAX_MISSED_PINGS` 到達で close + state reset する。 close した WS は次の
+   * handleBridge で stub fallback 経路に流れる。
+   *
+   * - keepalive 未対応 binary (Hello で keepalive_supported=true が無い) には
+   *   ping を送らない。 missedPings カウントもしない。
+   * - 全 WS が無くなったら alarm を schedule しない (= 自動停止)。
+   */
+  async alarm(): Promise<void> {
+    const wsList = this.state.getWebSockets(WS_TAG);
+    if (wsList.length === 0) {
+      // 1 つも attach してない → alarm を継続する意味が無い。 次に handleConnect
+      // が来た時に scheduleKeepalive() で起こし直す。
+      return;
+    }
+    const now = Date.now();
+    let pingsSent = 0;
+    let closed = 0;
+    for (const w of wsList) {
+      const ws = w as WebSocket;
+      if (safeReadyState(ws) !== WS_READY_STATE_OPEN) continue;
+      let att: Record<string, unknown> | null = null;
+      try {
+        att = (ws.deserializeAttachment() as Record<string, unknown> | null) ?? null;
+      } catch {
+        att = null;
+      }
+      if (!att || att.keepaliveSupported !== true) {
+        // 旧 binary or mock WS — ping 出さない
+        continue;
+      }
+      const missed =
+        typeof att.missedPings === "number" ? (att.missedPings as number) : 0;
+      // 前回 ping から pong timeout 内に応答が無ければ missedPings を +1。
+      // 「直前 alarm tick で ping を送って KEEPALIVE_PONG_TIMEOUT_MS 経った時点
+      // で pong が来ていない」を 1 不着とカウント。 lastPongAt が KEEPALIVE_
+      // PING_INTERVAL_MS+timeout 以上前なら fail と判定。
+      const lastPongAt =
+        typeof att.lastPongAt === "number" ? (att.lastPongAt as number) : now;
+      const sinceLastPong = now - lastPongAt;
+      const newMissed =
+        sinceLastPong > KEEPALIVE_PONG_TIMEOUT_MS ? missed + 1 : 0;
+      if (newMissed >= KEEPALIVE_MAX_MISSED_PINGS) {
+        // N 連続 pong 未着 — stale 確定で close
+        try {
+          ws.close(1011, "keepalive_timeout");
+        } catch {
+          /* 既 close は無視 */
+        }
+        closed += 1;
+        console.log(
+          `[mcp-relay] alarm: closing stale WS (missedPings=${newMissed} sinceLastPong=${sinceLastPong}ms)`,
+        );
+        continue;
+      }
+      // 新 missedPings を attachment に書き戻して ping を送る。
+      try {
+        ws.serializeAttachment({ ...att, missedPings: newMissed });
+      } catch {
+        /* mock WS: ignore */
+      }
+      try {
+        ws.send(
+          JSON.stringify({
+            kind: "ping",
+            v: FRAME_VERSION,
+            id: crypto.randomUUID(),
+          }),
+        );
+        pingsSent += 1;
+      } catch {
+        // send 失敗 → 次 tick で missedPings が伸びて close される
+      }
+    }
+    console.log(
+      `[mcp-relay] alarm: pings_sent=${pingsSent} closed_stale=${closed} ws_total=${wsList.length}`,
+    );
+    // まだ active WS が残っていれば次の tick も schedule。 keepalive 対応 binary
+    // が 1 つも無ければ self-schedule を停止して storage コストを抑える。
+    const hasKeepalive = wsList.some((w) => {
+      try {
+        const a = (w as WebSocket).deserializeAttachment() as
+          | Record<string, unknown>
+          | null;
+        return a?.keepaliveSupported === true;
+      } catch {
+        return false;
+      }
+    });
+    if (hasKeepalive) {
+      const storage = this.state.storage as unknown as {
+        setAlarm?: (when: number) => Promise<void> | void;
+      };
+      if (typeof storage.setAlarm === "function") {
+        try {
+          await storage.setAlarm(Date.now() + KEEPALIVE_PING_INTERVAL_MS);
+        } catch {
+          /* schedule 失敗は次 connect 時に立て直す */
+        }
+      }
+    }
+  }
+
   // ────────────────────────────────────────────────────────────────────────
   // ADR-006: server-side subscription / event queue tools (`POST /mcp` only)
   //
@@ -895,6 +1137,30 @@ export class McpSession implements DurableObject {
         error: { code: -32700, message: "Parse error" },
       });
     }
+    return this.dispatchInlineMcp(body);
+  }
+
+  /**
+   * issue #178 (c): handleBridge の timeout fallback 経路から呼ぶ stub 入口。
+   * `bodyBuf` は既に `req.arrayBuffer()` で consume 済 (forwardToWs 前に取得)
+   * の生 byte。 ここから JSON parse して既存 stub と同じ dispatch ロジックに
+   * 流す。 parse 失敗時の挙動も handleInlineMcp と揃える。
+   */
+  private async handleInlineMcpFromBody(bodyBuf: ArrayBuffer): Promise<Response> {
+    let body: unknown;
+    try {
+      body = JSON.parse(new TextDecoder().decode(bodyBuf));
+    } catch {
+      return jsonRpcResponse(null, {
+        error: { code: -32700, message: "Parse error" },
+      });
+    }
+    return this.dispatchInlineMcp(body);
+  }
+
+  /** Inline stub JSON-RPC dispatcher。 handleInlineMcp / handleInlineMcpFromBody
+   *  の共通化部 (parse 済 body を受け取って switch する)。 */
+  private async dispatchInlineMcp(body: unknown): Promise<Response> {
     if (typeof body !== "object" || body === null) {
       return jsonRpcResponse(null, {
         error: { code: -32600, message: "Invalid Request" },
@@ -1064,6 +1330,19 @@ export class McpSession implements DurableObject {
   private async loadEvents(): Promise<Record<string, unknown>[]> {
     const v = await this.state.storage.get<Record<string, unknown>[]>("events");
     return Array.isArray(v) ? v.slice() : [];
+  }
+}
+
+/** issue #123 / issue #178: WebSocket.readyState を throw 耐性付きで取る helper。
+ *  - hibernated WS → CF runtime は OPEN(1) を返す
+ *  - 既 close WS → CLOSING(2) or CLOSED(3)
+ *  - getter が throw する mock や破損 WS → "throw" を返す
+ *  呼び出し側は number === WS_READY_STATE_OPEN (1) かを判定する。 */
+function safeReadyState(w: unknown): number | "throw" {
+  try {
+    return (w as WebSocket).readyState;
+  } catch {
+    return "throw";
   }
 }
 
