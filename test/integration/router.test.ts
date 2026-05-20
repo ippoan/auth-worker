@@ -206,6 +206,15 @@ vi.mock("../../src/handlers/mcp-pair-grant-via-github", () => ({
     () => new Response("mcp-pair-grant-via-github"),
   ),
 }));
+// issue ippoan/auth-worker#174: OAT identity binding endpoints。
+vi.mock("../../src/handlers/mcp-pair-grant-via-oat", () => ({
+  handleMcpPairGrantViaOat: vi.fn(() => new Response("mcp-pair-grant-via-oat")),
+}));
+vi.mock("../../src/handlers/mcp-pair-register-via-github-comment", () => ({
+  handleMcpPairRegisterViaGithubComment: vi.fn(
+    () => new Response("mcp-pair-register-via-github-comment"),
+  ),
+}));
 // Phase 1 admin auth (issue #42 follow-up): browser elevate + admin-exec proxy。
 vi.mock("../../src/handlers/mcp-elevate", () => ({
   handleMcpElevateStart: vi.fn(() => new Response("mcp-elevate-start")),
@@ -548,6 +557,40 @@ describe("Router (index.ts)", () => {
     });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("mcp-pair-grant-via-github");
+  });
+
+  it("POST mcp.* /mcp/pair/grant-via-oat → mcp-pair-grant-via-oat (relay host, issue auth-worker#174)", async () => {
+    const req = new Request("https://mcp.ippoan.org/mcp/pair/grant-via-oat", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-grant-via-oat");
+  });
+
+  it("POST auth.* /mcp/pair/grant-via-oat → mcp-pair-grant-via-oat (auth host for debug)", async () => {
+    const req = new Request("https://auth.test.example/mcp/pair/grant-via-oat", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-grant-via-oat");
+  });
+
+  it("POST mcp.* /mcp/pair/register-via-github-comment → mcp-pair-register-via-github-comment (relay host)", async () => {
+    const req = new Request(
+      "https://mcp.ippoan.org/mcp/pair/register-via-github-comment",
+      { method: "POST" },
+    );
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-register-via-github-comment");
+  });
+
+  it("POST auth.* /mcp/pair/register-via-github-comment → mcp-pair-register-via-github-comment (auth host)", async () => {
+    const req = new Request(
+      "https://auth.test.example/mcp/pair/register-via-github-comment",
+      { method: "POST" },
+    );
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-register-via-github-comment");
   });
 
   // --- issue #145: native MCP tools (also routed on the relay host) ---

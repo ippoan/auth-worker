@@ -178,6 +178,19 @@ branches = true
 path = "src/handlers/mcp-pair-grant.ts"
 branches = true
 
+# issue ippoan/auth-worker#174: OAT identity binding via GitHub issue-comment
+[[files]]
+path = "src/lib/mcp-oat-binding.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-pair-grant-via-oat.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-pair-register-via-github-comment.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]
