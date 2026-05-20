@@ -201,6 +201,11 @@ vi.mock("../../src/handlers/mcp-pair-callback", () => ({
 vi.mock("../../src/handlers/mcp-pair-grant", () => ({
   handleMcpPairGrant: vi.fn(() => new Response("mcp-pair-grant")),
 }));
+vi.mock("../../src/handlers/mcp-pair-grant-via-github", () => ({
+  handleMcpPairGrantViaGithub: vi.fn(
+    () => new Response("mcp-pair-grant-via-github"),
+  ),
+}));
 // Phase 1 admin auth (issue #42 follow-up): browser elevate + admin-exec proxy。
 vi.mock("../../src/handlers/mcp-elevate", () => ({
   handleMcpElevateStart: vi.fn(() => new Response("mcp-elevate-start")),
@@ -527,6 +532,22 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://auth.test.example/mcp/pair/grant", { method: "POST" });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("mcp-pair-grant");
+  });
+
+  it("POST mcp.* /mcp/pair/grant-via-github → mcp-pair-grant-via-github (relay host, issue mcp-relay-rs#15)", async () => {
+    const req = new Request("https://mcp.ippoan.org/mcp/pair/grant-via-github", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-grant-via-github");
+  });
+
+  it("POST auth.* /mcp/pair/grant-via-github → mcp-pair-grant-via-github (auth host for debug)", async () => {
+    const req = new Request("https://auth.test.example/mcp/pair/grant-via-github", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("mcp-pair-grant-via-github");
   });
 
   // --- issue #145: native MCP tools (also routed on the relay host) ---
