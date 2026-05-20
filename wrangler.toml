@@ -42,7 +42,7 @@ id = "f13ecae4b69043819c09f606abb84797"
 # `wrangler deploy [--env staging]` で binding が再生する。
 [[secrets_store_secrets]]
 binding = "INTERNAL_SHARED_SECRET"
-store_id = "REPLACE_ME_AFTER_secrets_store_create"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "mcp-internal-shared-secret-prod"
 
 # LINE WORKS webhook 受信用 Durable Object (bot_id ごとに 1 instance)
@@ -167,7 +167,7 @@ id = "0498e6057b8c4d7fbca92e9de41524ee"
 # binding コメント参照)。secret_name は env ごとに別 (staging は別系統)。
 [[env.staging.secrets_store_secrets]]
 binding = "INTERNAL_SHARED_SECRET"
-store_id = "REPLACE_ME_AFTER_secrets_store_create"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "mcp-internal-shared-secret-staging"
 
 [[env.staging.durable_objects.bindings]]
