@@ -1,7 +1,7 @@
 /**
  * `POST /mcp/pair/register-via-github-comment` — GitHub issue comment を
- * identity proof として OAT_hash → github_login mapping を KV に書き込む
- * (issue ippoan/auth-worker#174)。
+ * identity proof として OAT_hash / org_uuid → github_login mapping を KV に
+ * 書き込む (issues ippoan/auth-worker#174, #176)。
  *
  * 設計背景:
  *   CCoW container 内で `mcp__github__add_issue_comment` を呼ぶと Anthropic
@@ -13,9 +13,12 @@
  *   1. Container 内 Claude が `mcp__github__add_issue_comment` を本 tracking
  *      issue (#174) に投稿する。body = `oat-binding: <oat_hash> <nonce>`。
  *   2. Comment_id (or comment_url) を取得して本 endpoint に POST する。
+ *      `Authorization: Bearer <OAT>` を付ければ container reclaim 越しに
+ *      stable な org_uuid binding も作成される (#176)。
  *   3. auth-worker は comment を anonymous GitHub API で fetch、
  *      `comment.user.login` を取得、body 内に期待行を含むことを確認、
- *      KV に `oat_hash:<hash>` → { github_login, ... } を 30d TTL で書く。
+ *      KV に `oat_hash:<hash>` と (optional) `org_uuid:<uuid>` →
+ *      { github_login, ... } を 30d TTL で書く。
  *
  * Body:
  *   {
@@ -24,14 +27,23 @@
  *     "nonce":       "<8-128 url-safe chars>"
  *   }
  *
+ * Optional headers (#176):
+ *   Authorization: Bearer <OAT>   — OAT 自身を Bearer に乗せれば auth-worker
+ *     が `/v1/models` で verify + org_uuid を抽出し、`org_uuid:<uuid>` key にも
+ *     binding を書く。container reclaim 越しに stable な silent bootstrap を
+ *     実現するために必須。legacy clients (Bearer 無し) は oat_hash key のみで
+ *     bind するため後続 container で再 register が必要 (#174 behavior)。
+ *
  * Response:
- *   200 → { github_login, bound: true }
+ *   200 → { github_login, bound: true, org_uuid_bound?: bool }
  *   400 → invalid_request    (body 不正 / comment_url 不正な host・形式 / hash・nonce 形式違反)
+ *   400 → oat_hash_mismatch  (Bearer OAT の sha256 が body.oat_hash と一致しない)
  *   400 → binding_mismatch   (comment body が期待 line を含まない)
+ *   401 → invalid_token      (Bearer 付きで Anthropic API が OAT を reject)
  *   403 → comment_forbidden  (GitHub が anonymous fetch を reject 401/403)
  *   404 → comment_not_found  (comment が削除済み / 不存在)
  *   429 → rate_limited       (per source IP)
- *   502 → upstream_error     (api.github.com 5xx / network / response 不正)
+ *   502 → upstream_error     (api.github.com or api.anthropic.com 5xx / network / response 不正)
  *   503 → server_error       (KV 未設定)
  *
  * Security:
@@ -43,13 +55,22 @@
  *   - 自分の OAT_hash を yhonda-ohishi の comment に書いた風に偽造: comment は
  *     一意 `comment_url` でしか取れず、`user.login` が attacker login で記録さ
  *     れるため、attacker login にしか bind しない (自爆)。
+ *   - Bearer/hash mismatch: Bearer が付いていれば sha256(OAT) === body.oat_hash
+ *     を verify。不一致は confused-deputy 攻撃 (他人の OAT で他人の comment に
+ *     書かれた hash を自分の org に bind しようとする) を遮断するため 400 拒否。
  *   - replay 防止: nonce は per-binding で client が生成、KV に保存しない (1
  *     回の commit でしか使われないため再利用も無害)。
  */
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { OAT_BINDING_TTL_SEC, putOatBinding } from "../lib/mcp-oat-binding";
+import {
+  extractOrgUuidFromResponse,
+  hashOat,
+  OAT_BINDING_TTL_SEC,
+  putOatBinding,
+  putOrgBinding,
+} from "../lib/mcp-oat-binding";
 import { checkAndBumpRateLimit } from "../lib/mcp-pair";
 
 interface RegisterRequest {
@@ -97,6 +118,17 @@ export async function handleMcpPairRegisterViaGithubComment(
       },
       429,
     );
+  }
+
+  // ── optional Authorization: Bearer <OAT> for #176 org_uuid binding ──
+  // 付いていれば: /v1/models で OAT verify → header から org_uuid 抽出 →
+  // sha256(OAT) を後段で body.oat_hash と突合 → org_uuid:<uuid> にも write。
+  // 付いていなければ legacy #174 oat_hash-only path にそのまま乗る。
+  let bearerOat: string | null = null;
+  const authz = request.headers.get("Authorization") ?? "";
+  const m = /^Bearer\s+(.+)$/i.exec(authz);
+  if (m && m[1]) {
+    bearerOat = m[1].trim();
   }
 
   // ── parse body ───────────────────────────────────────────────────────
@@ -237,13 +269,86 @@ export async function handleMcpPairRegisterViaGithubComment(
     );
   }
 
-  // ── write KV ─────────────────────────────────────────────────────────
+  // ── Bearer OAT processing (#176, optional) ──────────────────────────
+  // Bearer が付いていれば: (1) hash 突合で confused-deputy 遮断、(2) Anthropic
+  // API で OAT verify + org_uuid header 抽出。失敗すれば binding を一切書かず
+  // 即 error 返却 (= attacker が自分の Bearer で他人の comment 経由 binding を
+  // 作る経路を遮断)。
+  let orgUuid: string | null = null;
+  if (bearerOat) {
+    const bearerHash = await hashOat(bearerOat);
+    if (bearerHash !== oatHash) {
+      return jsonResponse(
+        {
+          error: "oat_hash_mismatch",
+          error_description:
+            "sha256(Bearer OAT) does not match body.oat_hash; refusing to bind",
+        },
+        400,
+      );
+    }
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/models", {
+        headers: {
+          Authorization: `Bearer ${bearerOat}`,
+          "anthropic-version": "2023-06-01",
+          "User-Agent":
+            "ippoan-auth-worker/mcp-pair-register-via-github-comment",
+        },
+      });
+      if (res.status === 401 || res.status === 403) {
+        return jsonResponse(
+          {
+            error: "invalid_token",
+            error_description: `Anthropic rejected OAT (status=${res.status})`,
+          },
+          401,
+        );
+      }
+      if (!res.ok) {
+        return jsonResponse(
+          {
+            error: "upstream_error",
+            error_description: `api.anthropic.com status=${res.status}`,
+          },
+          502,
+        );
+      }
+      orgUuid = extractOrgUuidFromResponse(res);
+    } catch (e) {
+      return jsonResponse(
+        {
+          error: "upstream_error",
+          error_description: `api.anthropic.com fetch failed: ${(e as Error).message}`,
+        },
+        502,
+      );
+    }
+  }
+
+  // ── write KV: oat_hash (always) + org_uuid (#176, if available) ─────
   const now = Date.now();
-  await putOatBinding(env, oatHash, {
+  const rec = {
     github_login: login,
     bound_at: now,
     expires_at: now + OAT_BINDING_TTL_SEC * 1000,
-  });
+  };
+  await putOatBinding(env, oatHash, rec);
+  let orgUuidBound = false;
+  if (orgUuid) {
+    try {
+      await putOrgBinding(env, orgUuid, rec);
+      orgUuidBound = true;
+    } catch {
+      // org_uuid format validation 失敗等。oat_hash は既に bind 済みなので
+      // 全失敗にせず graceful — response で orgUuidBound:false を返して
+      // 呼び出し側が再 register / 別 path を選べるようにする。
+    }
+  }
 
-  return jsonResponse({ github_login: login, bound: true });
+  return jsonResponse({
+    github_login: login,
+    bound: true,
+    org_uuid_bound: orgUuidBound,
+  });
 }

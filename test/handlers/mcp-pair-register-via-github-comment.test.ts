@@ -1,7 +1,7 @@
 /**
  * `handleMcpPairRegisterViaGithubComment` —
  * `POST /mcp/pair/register-via-github-comment` テスト
- * (issue ippoan/auth-worker#174)。
+ * (issues ippoan/auth-worker#174, #176)。
  *
  * - env / KV guard (503)
  * - rate limit per IP (429)
@@ -14,6 +14,10 @@
  * - comment shape: missing user.login / body
  * - binding line missing (400 binding_mismatch)
  * - 正常系: KV に binding を書き込み、TTL 30d、github_login echo
+ * - #176 Bearer OAT path: dual binding write (oat_hash + org_uuid)
+ * - #176 oat_hash mismatch with Bearer (400)
+ * - #176 Bearer OAT invalid (Anthropic 401 reject)
+ * - #176 Bearer present but org_uuid header missing → only oat_hash binding
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -21,6 +25,8 @@ import { handleMcpPairRegisterViaGithubComment } from "../../src/handlers/mcp-pa
 import {
   OAT_BINDING_TTL_SEC,
   getOatBinding,
+  getOrgBinding,
+  hashOat,
 } from "../../src/lib/mcp-oat-binding";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
@@ -31,6 +37,10 @@ const OAT_HASH =
 const NONCE = "nonce-1234abcd";
 const COMMENT_URL =
   "https://api.github.com/repos/ippoan/auth-worker/issues/comments/12345";
+
+// #176 — real-ish OAT used to derive a real sha256 for Bearer-attached tests.
+const REAL_OAT = "sk-ant-oat01-real-test-token-zzzzzzzzzzzzzzzzzz";
+const ORG_UUID = "bbe9480d-6a09-4689-92d2-7197609417fe";
 
 function envWith(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
   const kv = createMockKV() as MockKV;
@@ -46,11 +56,13 @@ function buildReq(opts: {
   body?: string | object;
   contentType?: string;
   ip?: string;
+  auth?: string;
 } = {}): Request {
   const headers: Record<string, string> = {
     "Content-Type": opts.contentType ?? "application/json",
   };
   if (opts.ip) headers["CF-Connecting-IP"] = opts.ip;
+  if (opts.auth) headers.Authorization = opts.auth;
   const bodyStr =
     typeof opts.body === "string"
       ? opts.body
@@ -100,6 +112,59 @@ function mockGithubThrow(): void {
     "fetch",
     vi.fn(async () => {
       throw new Error("network down");
+    }),
+  );
+}
+
+/**
+ * Mock both GitHub comment fetch AND Anthropic `/v1/models`. Used by #176
+ * Bearer-attached register tests.
+ */
+function mockGithubAndAnthropic(opts: {
+  comment?: CommentMock;
+  anthropicStatus?: number;
+  orgUuid?: string | null;
+  throwOnAnthropic?: boolean;
+} = {}): void {
+  const status = opts.comment?.status ?? 200;
+  const commentBody =
+    opts.comment?.raw ??
+    JSON.stringify(
+      opts.comment?.body ?? {
+        user: { login: "yhonda-ohishi" },
+        body: `oat-binding: ${OAT_HASH} ${NONCE}`,
+      },
+    );
+  const anthropicStatus = opts.anthropicStatus ?? 200;
+  const orgUuid = opts.orgUuid === undefined ? ORG_UUID : opts.orgUuid;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === COMMENT_URL) {
+        return new Response(commentBody, {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.anthropic.com/v1/models") {
+        if (opts.throwOnAnthropic) throw new Error("anthropic network down");
+        const headers: Record<string, string> = {
+          "content-type": "application/json",
+        };
+        if (orgUuid !== null) headers["anthropic-organization-id"] = orgUuid;
+        if (anthropicStatus >= 200 && anthropicStatus < 300) {
+          return new Response(JSON.stringify({ data: [] }), {
+            status: anthropicStatus,
+            headers,
+          });
+        }
+        return new Response(JSON.stringify({ error: { message: "fail" } }), {
+          status: anthropicStatus,
+          headers,
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
     }),
   );
 }
@@ -510,5 +575,228 @@ describe("handleMcpPairRegisterViaGithubComment — happy path", () => {
       env,
     );
     expect(res.status).toBe(200);
+  });
+
+  it("legacy (no Bearer) flow: org_uuid_bound=false in response", async () => {
+    mockGithubComment();
+    const { env } = envWith();
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      org_uuid_bound: boolean;
+      bound: boolean;
+    };
+    expect(body.bound).toBe(true);
+    expect(body.org_uuid_bound).toBe(false);
+  });
+});
+
+// ── #176 Bearer OAT path: dual binding (oat_hash + org_uuid) ─────────────
+
+describe("handleMcpPairRegisterViaGithubComment — #176 Bearer OAT path", () => {
+  it("writes both oat_hash and org_uuid bindings when Bearer attached", async () => {
+    // body.oat_hash must match sha256(REAL_OAT) for the Bearer path to succeed.
+    const realHash = await hashOat(REAL_OAT);
+    mockGithubAndAnthropic({
+      comment: {
+        body: {
+          user: { login: "yhonda-ohishi" },
+          body: `oat-binding: ${realHash} ${NONCE}`,
+        },
+      },
+    });
+    const { env, kv } = envWith();
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: realHash, nonce: NONCE },
+        auth: `Bearer ${REAL_OAT}`,
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      github_login: string;
+      bound: boolean;
+      org_uuid_bound: boolean;
+    };
+    expect(body.github_login).toBe("yhonda-ohishi");
+    expect(body.bound).toBe(true);
+    expect(body.org_uuid_bound).toBe(true);
+    // both KV keys populated
+    expect(kv._data[`oat_hash:${realHash}`]).toBeDefined();
+    expect(kv._data[`org_uuid:${ORG_UUID}`]).toBeDefined();
+    const oatRec = await getOatBinding(env, realHash);
+    const orgRec = await getOrgBinding(env, ORG_UUID);
+    expect(oatRec?.github_login).toBe("yhonda-ohishi");
+    expect(orgRec?.github_login).toBe("yhonda-ohishi");
+  });
+
+  it("400 oat_hash_mismatch when sha256(Bearer) != body.oat_hash", async () => {
+    mockGithubAndAnthropic();
+    const { env, kv } = envWith();
+    // body.oat_hash uses the canned OAT_HASH (= "a".repeat(64)), but Bearer OAT
+    // hashes to a totally different value → 400 reject, no KV writes.
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+        auth: `Bearer ${REAL_OAT}`,
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("oat_hash_mismatch");
+    // confirm: no KV entries written
+    expect(kv._data[`oat_hash:${OAT_HASH}`]).toBeUndefined();
+    expect(kv._data[`org_uuid:${ORG_UUID}`]).toBeUndefined();
+  });
+
+  it("401 invalid_token when Anthropic rejects Bearer OAT", async () => {
+    const realHash = await hashOat(REAL_OAT);
+    mockGithubAndAnthropic({
+      comment: {
+        body: {
+          user: { login: "yhonda-ohishi" },
+          body: `oat-binding: ${realHash} ${NONCE}`,
+        },
+      },
+      anthropicStatus: 401,
+    });
+    const { env, kv } = envWith();
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: realHash, nonce: NONCE },
+        auth: `Bearer ${REAL_OAT}`,
+      }),
+      env,
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_token");
+    // no KV writes (= attacker who submits a revoked OAT cannot bind even
+    // their own legitimate comment to a binding entry).
+    expect(kv._data[`oat_hash:${realHash}`]).toBeUndefined();
+  });
+
+  it("401 invalid_token when Anthropic returns 403 for Bearer OAT", async () => {
+    const realHash = await hashOat(REAL_OAT);
+    mockGithubAndAnthropic({
+      comment: {
+        body: {
+          user: { login: "yhonda-ohishi" },
+          body: `oat-binding: ${realHash} ${NONCE}`,
+        },
+      },
+      anthropicStatus: 403,
+    });
+    const { env } = envWith();
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: realHash, nonce: NONCE },
+        auth: `Bearer ${REAL_OAT}`,
+      }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("502 upstream_error when Anthropic returns 5xx", async () => {
+    const realHash = await hashOat(REAL_OAT);
+    mockGithubAndAnthropic({
+      comment: {
+        body: {
+          user: { login: "yhonda-ohishi" },
+          body: `oat-binding: ${realHash} ${NONCE}`,
+        },
+      },
+      anthropicStatus: 503,
+    });
+    const { env } = envWith();
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: realHash, nonce: NONCE },
+        auth: `Bearer ${REAL_OAT}`,
+      }),
+      env,
+    );
+    expect(res.status).toBe(502);
+  });
+
+  it("502 upstream_error when Anthropic fetch throws", async () => {
+    const realHash = await hashOat(REAL_OAT);
+    mockGithubAndAnthropic({
+      comment: {
+        body: {
+          user: { login: "yhonda-ohishi" },
+          body: `oat-binding: ${realHash} ${NONCE}`,
+        },
+      },
+      throwOnAnthropic: true,
+    });
+    const { env } = envWith();
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: realHash, nonce: NONCE },
+        auth: `Bearer ${REAL_OAT}`,
+      }),
+      env,
+    );
+    expect(res.status).toBe(502);
+  });
+
+  it("Bearer present but org_uuid header missing → only oat_hash binding, org_uuid_bound=false", async () => {
+    const realHash = await hashOat(REAL_OAT);
+    mockGithubAndAnthropic({
+      comment: {
+        body: {
+          user: { login: "yhonda-ohishi" },
+          body: `oat-binding: ${realHash} ${NONCE}`,
+        },
+      },
+      orgUuid: null,
+    });
+    const { env, kv } = envWith();
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: realHash, nonce: NONCE },
+        auth: `Bearer ${REAL_OAT}`,
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { org_uuid_bound: boolean };
+    expect(body.org_uuid_bound).toBe(false);
+    expect(kv._data[`oat_hash:${realHash}`]).toBeDefined();
+    expect(kv._data[`org_uuid:${ORG_UUID}`]).toBeUndefined();
+  });
+
+  it("Bearer present but org_uuid header malformed → graceful skip", async () => {
+    const realHash = await hashOat(REAL_OAT);
+    mockGithubAndAnthropic({
+      comment: {
+        body: {
+          user: { login: "yhonda-ohishi" },
+          body: `oat-binding: ${realHash} ${NONCE}`,
+        },
+      },
+      orgUuid: "garbage-not-a-uuid",
+    });
+    const { env, kv } = envWith();
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: realHash, nonce: NONCE },
+        auth: `Bearer ${REAL_OAT}`,
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { org_uuid_bound: boolean };
+    expect(body.org_uuid_bound).toBe(false);
+    expect(kv._data[`oat_hash:${realHash}`]).toBeDefined();
   });
 });
