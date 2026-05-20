@@ -25,6 +25,26 @@ MCP_JWT_AUDIENCE_ALLOWLIST = "github-mcp-server-rs,ref-files-mcp-server-rs"
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"
 
+# ─── INTERNAL_SHARED_SECRET (Secrets Store binding) ─────────────────────────
+# `ref-files-worker` と同じ account-level Secrets Store entry を bind し、
+# 両 worker が物理的に同一の値を見る。Rust binary (github-mcp-server-rs /
+# ref-files-mcp-server-rs) は 1 つの埋め込み値で両 worker を introspect でき、
+# 「auth と ref-files の secret 同期がズレる」事故が構造的に消える。
+# Refs ippoan/ref-files-worker#4
+#
+# Bootstrap (1 回だけ admin が実行):
+#   wrangler secrets-store store create ippoan-mcp --remote
+#   wrangler secrets-store secret create <store-id> \
+#       --name mcp-internal-shared-secret-prod    --scopes workers --remote
+#   wrangler secrets-store secret create <store-id> \
+#       --name mcp-internal-shared-secret-staging --scopes workers --remote
+# 以後 store_id を auth-worker / ref-files-worker の wrangler.toml で同値に揃え、
+# `wrangler deploy [--env staging]` で binding が再生する。
+[[secrets_store_secrets]]
+binding = "INTERNAL_SHARED_SECRET"
+store_id = "REPLACE_ME_AFTER_secrets_store_create"
+secret_name = "mcp-internal-shared-secret-prod"
+
 # LINE WORKS webhook 受信用 Durable Object (bot_id ごとに 1 instance)
 [[durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
@@ -98,7 +118,9 @@ custom_domain = true
 #                               openssl rand -hex 32 | wrangler secret put SESSION_COOKIE_SECRET --env staging    # staging
 #                             ※ この repo の wrangler.toml は top-level = prod、`[env.staging]` のみ override。
 #                                `--env production` block は存在しないので `--env=production` は error になる)
-# INTERNAL_SHARED_SECRET     (Rust binary github-mcp-server-rs が /mcp/introspect 叩く際の Bearer)
+# INTERNAL_SHARED_SECRET は **Secrets Store binding** に移行済 — top-level の
+#   [[secrets_store_secrets]] / `[[env.staging.secrets_store_secrets]]` を参照。
+#   `wrangler secret put INTERNAL_SHARED_SECRET ...` は使わない (二重管理になる)。
 # GITHUB_MCP_USER_ALLOWLIST  (JSON array of github logins, e.g. ["yhonda-ohishi"]; fail-closed)
 # GITHUB_WEBHOOK_SECRET      (ADR-004: HMAC-SHA256 shared secret for `POST /webhooks/github`.
 #                             public issue 前提なので authn ではなく spam 対策、全 repo 共通値)
@@ -140,6 +162,13 @@ id = "f13ecae4b69043819c09f606abb84797"
 [[env.staging.kv_namespaces]]
 binding = "MCP_OAUTH_KV"
 id = "0498e6057b8c4d7fbca92e9de41524ee"
+
+# ref-files-worker と同じ store_id を point させて値を物理共有 (上の prod 用
+# binding コメント参照)。secret_name は env ごとに別 (staging は別系統)。
+[[env.staging.secrets_store_secrets]]
+binding = "INTERNAL_SHARED_SECRET"
+store_id = "REPLACE_ME_AFTER_secrets_store_create"
+secret_name = "mcp-internal-shared-secret-staging"
 
 [[env.staging.durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
