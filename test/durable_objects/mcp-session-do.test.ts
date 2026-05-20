@@ -70,12 +70,15 @@ function createMockState(initial: FakeWebSocket[] = []): {
   current: FakeWebSocket[];
   acceptCalls: { ws: WebSocket; tags: string[] | undefined }[];
   storageMap: Map<string, unknown>;
+  alarmCalls: number[];
 } {
   const current: FakeWebSocket[] = [...initial];
   const acceptCalls: { ws: WebSocket; tags: string[] | undefined }[] = [];
   // ADR-006: in-memory storage mock. DO `state.storage.get/put` を `Map` で擬装。
   // 実 DO storage は `Promise<T|undefined>` を返すので async を真似る。
   const storageMap = new Map<string, unknown>();
+  const alarmCalls: number[] = [];
+  let pendingAlarm: number | null = null;
   const storage = {
     get: async <T>(key: string) => storageMap.get(key) as T | undefined,
     put: async (key: string, value: unknown) => {
@@ -83,6 +86,16 @@ function createMockState(initial: FakeWebSocket[] = []): {
     },
     delete: async (key: string) => {
       storageMap.delete(key);
+    },
+    // issue #178 (a): alarm API mock。 `setAlarm(when)` を計測し、
+    // `getAlarm()` で pending alarm を返す (DO 仕様準拠)。
+    setAlarm: async (when: number) => {
+      alarmCalls.push(when);
+      pendingAlarm = when;
+    },
+    getAlarm: async () => pendingAlarm,
+    deleteAlarm: async () => {
+      pendingAlarm = null;
     },
   };
   const state = {
@@ -93,7 +106,7 @@ function createMockState(initial: FakeWebSocket[] = []): {
     },
     storage,
   } as unknown as DurableObjectState;
-  return { state, current, acceptCalls, storageMap };
+  return { state, current, acceptCalls, storageMap, alarmCalls };
 }
 
 // import after the polyfills
@@ -187,6 +200,45 @@ describe("McpSession.fetch — /__connect", () => {
     expect(res.status).toBe(101);
     expect(old.close).not.toHaveBeenCalled();
     expect(acceptCalls).toHaveLength(1);
+  });
+
+  it("#178: evicts stale (readyState !== OPEN) WS at accept time", async () => {
+    // issue #178 (b): 前 session の WS が CLOSING / CLOSED 状態で残っていると
+    // handleBridge の readyState filter で skip はされるが CF runtime の
+    // getWebSockets() list には残り続け、 次の accept で並ぶ。 新 session が
+    // 来た時点で stale を明示 close + cleanup する。
+    const stale = makeFakeWs("stale", 3 /* CLOSED */);
+    const live = makeFakeWs("live", 1 /* OPEN */);
+    const { state, acceptCalls } = createMockState([stale, live]);
+    const do_ = new McpSession(state, {});
+    const req = new Request("https://do.invalid/__connect", {
+      method: "GET",
+      headers: { Upgrade: "websocket" },
+    });
+    const res = await do_.fetch(req);
+    expect(res.status).toBe(101);
+    // stale だけが close される (live は維持)
+    expect(stale.close).toHaveBeenCalledWith(1000, "stale_on_connect");
+    expect(live.close).not.toHaveBeenCalled();
+    expect(acceptCalls).toHaveLength(1);
+  });
+
+  it("#178: evict tolerates close() throws on stale WS", async () => {
+    const stale = makeFakeWs("stale", 3 /* CLOSED */);
+    stale.close.mockImplementation(() => {
+      throw new Error("already closed");
+    });
+    const { state } = createMockState([stale]);
+    const do_ = new McpSession(state, {});
+    // must not throw
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__connect", {
+        method: "GET",
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    expect(res.status).toBe(101);
+    expect(stale.close).toHaveBeenCalled();
   });
 });
 
@@ -967,7 +1019,11 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     expect(await res.text()).toBe("");
   });
 
-  it("returns 502 when ws.send throws synchronously", async () => {
+  it("#178: ws.send throws → close stale WS + stub fallback (initialize)", async () => {
+    // issue #178 (c): relay_send_failed は stale WS 確定として扱う。
+    // 当該 WS を close (1011, stale_relay_send_failed) → request 自体は
+    // inline stub server の応答 (= 200 + cc-relay-stub serverInfo) に
+    // fallback する。 Claude.ai connector は 502 ではなく 200 を受け取る。
     setStubUUID("uuid-send-fail");
     const ws = makeFakeWs("active");
     ws.send.mockImplementation(() => {
@@ -977,15 +1033,26 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     const do_ = new McpSession(state, {});
 
     const res = await do_.fetch(
-      new Request("https://do.invalid/__bridge", { method: "POST", body: "x" }),
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2025-06-18" },
+        }),
+      }),
     );
-    expect(res.status).toBe(502);
-    const body = (await res.json()) as { error: string; message: string };
-    expect(body.error).toBe("relay_send_failed");
-    expect(body.message).toContain("ws closed mid-flight");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { serverInfo: { name: string } };
+    };
+    expect(body.result.serverInfo.name).toBe("cc-relay-stub");
+    // stale WS が close 呼ばれている事を確認 (1011 = internal error)
+    expect(ws.close).toHaveBeenCalledWith(1011, "stale_relay_send_failed");
   });
 
-  it("returns 502 when ws.send throws a non-Error value", async () => {
+  it("#178: ws.send throws non-Error value → close + stub fallback", async () => {
     setStubUUID("uuid-send-fail-2");
     const ws = makeFakeWs("active");
     ws.send.mockImplementation(() => {
@@ -996,15 +1063,24 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     const do_ = new McpSession(state, {});
 
     const res = await do_.fetch(
-      new Request("https://do.invalid/__bridge", { method: "POST", body: "x" }),
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 7,
+          method: "tools/list",
+        }),
+      }),
     );
-    expect(res.status).toBe(502);
-    const body = (await res.json()) as { error: string; message: string };
-    expect(body.error).toBe("relay_send_failed");
-    expect(body.message).toBe("string-error");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: { tools: unknown[] } };
+    expect(Array.isArray(body.result.tools)).toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(1011, "stale_relay_send_failed");
   });
 
-  it("returns 504 on relay_timeout (vi fake timers)", async () => {
+  it("#178: relay_timeout (10s) → close stale WS + stub fallback", async () => {
+    // issue #178 (c): REQUEST_TIMEOUT_MS を 30s → 10s に短縮。 timeout 時は
+    // 504 を返さず、stale WS を close + inline stub fallback に流す。
     vi.useFakeTimers({ shouldAdvanceTime: false });
     try {
       setStubUUID("uuid-timeout");
@@ -1014,16 +1090,27 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
       const sentP = whenSent(ws);
 
       const respPromise = do_.fetch(
-        new Request("https://do.invalid/__bridge", { method: "POST", body: "x" }),
+        new Request("https://do.invalid/__bridge", {
+          method: "POST",
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "initialize",
+            params: { protocolVersion: "2025-06-18" },
+          }),
+        }),
       );
       // pump microtasks until ws.send fires (req.arrayBuffer に乗っかってる)
       await sentP;
-      // setTimeout(REQUEST_TIMEOUT_MS) は fake timer に乗ったので advance で trigger
-      await vi.advanceTimersByTimeAsync(30_000);
+      // 10s 進めて timeout (新しい REQUEST_TIMEOUT_MS)
+      await vi.advanceTimersByTimeAsync(10_000);
       const res = await respPromise;
-      expect(res.status).toBe(504);
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toBe("relay_timeout");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        result: { serverInfo: { name: string } };
+      };
+      expect(body.result.serverInfo.name).toBe("cc-relay-stub");
+      expect(ws.close).toHaveBeenCalledWith(1011, "stale_relay_timeout");
     } finally {
       vi.useRealTimers();
     }
@@ -1771,10 +1858,16 @@ describe("McpSession multiplex — webSocketMessage hello frame (Phase 2)", () =
       }),
     );
 
-    expect(ws.serializeAttachment).toHaveBeenCalledWith({
-      service: "ref-files-mcp-server-rs",
-      binaryVersion: "0.2.0",
-    });
+    // issue #178: attachment は keepalive 関連 field (missedPings / lastPongAt /
+    // keepaliveSupported) も含むので objectContaining で核となる service /
+    // binaryVersion だけ assert する。
+    expect(ws.serializeAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        service: "ref-files-mcp-server-rs",
+        binaryVersion: "0.2.0",
+        keepaliveSupported: false,
+      }),
+    );
   });
 
   it("falls back to v1-compat service when hello.service is unknown", async () => {
@@ -1792,10 +1885,12 @@ describe("McpSession multiplex — webSocketMessage hello frame (Phase 2)", () =
       }),
     );
 
-    expect(ws.serializeAttachment).toHaveBeenCalledWith({
-      service: "github-mcp-server-rs", // DEFAULT_SERVICE_V1_COMPAT
-      binaryVersion: "0.0.0",
-    });
+    expect(ws.serializeAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        service: "github-mcp-server-rs", // DEFAULT_SERVICE_V1_COMPAT
+        binaryVersion: "0.0.0",
+      }),
+    );
   });
 
   it("falls back to v1-compat when hello.service is non-string and treats missing binary_version as empty string", async () => {
@@ -1808,10 +1903,12 @@ describe("McpSession multiplex — webSocketMessage hello frame (Phase 2)", () =
       JSON.stringify({ kind: "hello", v: 1, service: 123 }),
     );
 
-    expect(ws.serializeAttachment).toHaveBeenCalledWith({
-      service: "github-mcp-server-rs",
-      binaryVersion: "",
-    });
+    expect(ws.serializeAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        service: "github-mcp-server-rs",
+        binaryVersion: "",
+      }),
+    );
   });
 
   it("closes the previous same-service WS but retains different-service WS", async () => {
@@ -2835,5 +2932,315 @@ describe("McpSession multiplex — handleBridge aggregator (Phase 2)", () => {
     });
     const res = await respPromise;
     expect(res.status).toBe(200);
+  });
+});
+
+// ===========================================================================
+// issue #178 (a): keepalive ping/pong + alarm() による stale 検出
+// ===========================================================================
+
+describe("McpSession keepalive — alarm()-based ping/pong (issue #178)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("handleConnect schedules an alarm (keepalive bootstrap)", async () => {
+    const { state, alarmCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__connect", {
+        method: "GET",
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    expect(res.status).toBe(101);
+    // scheduleKeepalive() は Promise chain。 microtask flush 後に setAlarm が
+    // 呼ばれる。
+    await new Promise((r) => setImmediate(r));
+    expect(alarmCalls.length).toBeGreaterThanOrEqual(1);
+    expect(alarmCalls[0]).toBeGreaterThan(Date.now() - 1_000);
+  });
+
+  it("hello with keepalive_supported=true marks attachment for ping", async () => {
+    const ws = makeMultiplexWs("ws", undefined);
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.3.0",
+        keepalive_supported: true,
+      }),
+    );
+    // attachment に keepaliveSupported=true / missedPings=0 / lastPongAt 設定
+    const att = (
+      ws.serializeAttachment.mock.calls[0] as unknown as [Record<string, unknown>]
+    )[0];
+    expect(att.keepaliveSupported).toBe(true);
+    expect(att.missedPings).toBe(0);
+    expect(typeof att.lastPongAt).toBe("number");
+  });
+
+  it("alarm() sends a ping frame to keepalive-supported WS", async () => {
+    const ws = makeMultiplexWs("ws", "github-mcp-server-rs");
+    // hello を済ませて keepaliveSupported=true の attachment にしておく
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.3.0",
+        keepalive_supported: true,
+      }),
+    );
+    ws.send.mockClear();
+
+    await do_.alarm();
+
+    // ping frame が 1 件送られている
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const frame = JSON.parse(String(ws.send.mock.calls[0]?.[0])) as {
+      kind: string;
+      v: number;
+      id: string;
+    };
+    expect(frame.kind).toBe("ping");
+    expect(frame.v).toBe(1);
+    expect(typeof frame.id).toBe("string");
+  });
+
+  it("alarm() does NOT ping keepalive-unsupported WS (backward compat)", async () => {
+    // 旧 binary は hello に keepalive_supported を載せない → ping を出さない
+    const ws = makeMultiplexWs("ws", "github-mcp-server-rs");
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.2.0",
+        // keepalive_supported は省略 (= false)
+      }),
+    );
+    ws.send.mockClear();
+    await do_.alarm();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it("pong frame resets missedPings + updates lastPongAt", async () => {
+    const ws = makeMultiplexWs("ws", undefined);
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.3.0",
+        keepalive_supported: true,
+      }),
+    );
+    // 直接 attachment を弄って missedPings=1 にする (alarm 1 回挟んだ状態の simulate)
+    ws.serializeAttachment({
+      service: "github-mcp-server-rs",
+      binaryVersion: "0.3.0",
+      keepaliveSupported: true,
+      missedPings: 1,
+      lastPongAt: Date.now() - 60_000,
+    });
+
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({ kind: "pong", v: 1, id: "some-uuid" }),
+    );
+    // 最後の serializeAttachment 呼び出しを取得
+    const calls = ws.serializeAttachment.mock.calls;
+    const lastAtt = calls[calls.length - 1]?.[0] as Record<string, unknown>;
+    expect(lastAtt.missedPings).toBe(0);
+    expect(typeof lastAtt.lastPongAt).toBe("number");
+    expect(lastAtt.lastPongAt as number).toBeGreaterThan(Date.now() - 1_000);
+  });
+
+  it("alarm() closes WS after MAX_MISSED_PINGS consecutive pong misses", async () => {
+    // KEEPALIVE_MAX_MISSED_PINGS=2、 KEEPALIVE_PONG_TIMEOUT_MS=8000
+    const ws = makeMultiplexWs("ws", undefined);
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.3.0",
+        keepalive_supported: true,
+      }),
+    );
+    // lastPongAt をかなり過去にして missedPings=1 にする
+    ws.serializeAttachment({
+      service: "github-mcp-server-rs",
+      binaryVersion: "0.3.0",
+      keepaliveSupported: true,
+      missedPings: 1,
+      lastPongAt: Date.now() - 60_000,
+    });
+    // alarm 1 回で missedPings 1→2 (=MAX) → close
+    await do_.alarm();
+    expect(ws.close).toHaveBeenCalledWith(1011, "keepalive_timeout");
+  });
+
+  it("alarm() is a no-op when no WS attached (and does not self-schedule)", async () => {
+    const { state, alarmCalls } = createMockState();
+    const do_ = new McpSession(state, {});
+    await do_.alarm();
+    // alarm 内では setAlarm を呼ばない (handleConnect の初回 schedule のみ)
+    expect(alarmCalls).toHaveLength(0);
+  });
+
+  it("alarm() tolerates ws.send throw + close throw without escaping", async () => {
+    const ws = makeMultiplexWs("ws", undefined);
+    ws.send.mockImplementation(() => {
+      throw new Error("send broken");
+    });
+    ws.close.mockImplementation(() => {
+      throw new Error("close broken");
+    });
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.3.0",
+        keepalive_supported: true,
+      }),
+    );
+    // alarm は throw せず通る
+    await expect(do_.alarm()).resolves.toBeUndefined();
+  });
+
+  it("pong frame on a WS without attachment helpers is tolerated", async () => {
+    const ws = makeFakeWs("plain"); // no serialize/deserializeAttachment
+    const { state } = createMockState([ws]);
+    const do_ = new McpSession(state, {});
+    // 一度 hello を入れて (plain WS では attachment 書き込めず silent skip)
+    await do_.webSocketMessage(
+      ws as unknown as WebSocket,
+      JSON.stringify({
+        kind: "hello",
+        v: 1,
+        service: "github-mcp-server-rs",
+        binary_version: "0.3.0",
+        keepalive_supported: true,
+      }),
+    );
+    // pong も書き込みできずだが throw しない
+    await expect(
+      do_.webSocketMessage(
+        ws as unknown as WebSocket,
+        JSON.stringify({ kind: "pong", v: 1, id: "uuid-pong" }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// issue #178 E2E shape: CCoW fresh-container scenario simulation
+// ===========================================================================
+
+describe("McpSession recovery — CCoW reuse-DO scenario (issue #178)", () => {
+  it("stale prev-session WS detected mid-flight → next call hits stub immediately", async () => {
+    // 前 session で attach した binary が container reclaim で死亡:
+    //  - WS 自体は CF runtime には残るが、 send は throw (or 応答が来ない)
+    //  - readyState は OPEN のまま (CF が CLOSE を観測していない)
+    // 新 session で同 DO instance に当たって最初の MCP call を投げると:
+    //  1. handleBridge は open[] に WS を見つけて forward
+    //  2. send が throw or 応答 timeout → fwd.error が relay_send_failed / relay_timeout
+    //  3. DO が WS close + inline stub fallback で 200 を返す
+    //  4. 次の call からは open=[] になり inline stub が直接応答 (= 正常運用)
+    const staleWs = makeFakeWs("stale-from-prev-session", 1 /* OPEN */);
+    staleWs.send.mockImplementation(() => {
+      // simulate "binary が死んでて send pipe が broken"
+      throw new Error("write to closed pipe");
+    });
+    const { state, current } = createMockState([staleWs]);
+    const do_ = new McpSession(state, {});
+
+    // 1st call: stale WS に当たって stub fallback
+    const res1 = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2025-06-18" },
+        }),
+      }),
+    );
+    expect(res1.status).toBe(200);
+    const body1 = (await res1.json()) as {
+      result: { serverInfo: { name: string } };
+    };
+    expect(body1.result.serverInfo.name).toBe("cc-relay-stub");
+    expect(staleWs.close).toHaveBeenCalledWith(1011, "stale_relay_send_failed");
+
+    // close 済 WS の readyState を CLOSED に更新する (CF runtime 挙動 simulate)
+    staleWs.readyState = 3;
+
+    // 2nd call: stale 既に close → handleBridge は open=[] で即 stub に流す
+    const res2 = await do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list",
+        }),
+      }),
+    );
+    expect(res2.status).toBe(200);
+    const body2 = (await res2.json()) as { result: { tools: unknown[] } };
+    expect(Array.isArray(body2.result.tools)).toBe(true);
+    // 2nd call では stale.send 自体が呼ばれていない (= bridge filter で skip)
+    expect(staleWs.send).toHaveBeenCalledTimes(1);
+
+    // 3rd call: 新 session の binary が attach する (新 WS が並ぶ)
+    const freshWs = makeFakeWs("fresh", 1 /* OPEN */);
+    current.push(freshWs);
+    const sentP = whenSent(freshWs);
+    setStubUUID("uuid-fresh");
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", { method: "POST", body: "x" }),
+    );
+    await sentP;
+    await do_.webSocketMessage(
+      freshWs as unknown as WebSocket,
+      JSON.stringify({
+        kind: "resp",
+        v: 1,
+        id: "uuid-fresh",
+        status: 200,
+        body_b64: b64encode(JSON.stringify({ ok: true })),
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const res3 = await respPromise;
+    expect(res3.status).toBe(200);
+    // fresh WS には forward した、 stale WS には新たに forward していない
+    expect(freshWs.send).toHaveBeenCalled();
+    expect(staleWs.send).toHaveBeenCalledTimes(1);
   });
 });
