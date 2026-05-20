@@ -173,7 +173,48 @@ export class McpSession implements DurableObject {
       return this.handleConnectSse(req);
     }
 
+    if (url.pathname === "/__notify_tools_list_changed") {
+      return this.handleNotifyToolsListChanged(req);
+    }
+
     return new Response("Not Found", { status: 404 });
+  }
+
+  /**
+   * issue #155: 外部 handler (mcp-pair-claim, mcp-elevate) から「tools list が
+   * 変わった可能性」を知らせるための internal endpoint。`notifications/tools/list_changed`
+   * を attached SSE channel 全部に push し、attached client が tools/list を再 fetch
+   * するきっかけにする。
+   *
+   * 200 OK / `{ sse_total: number }`。POST 以外は 405。
+   */
+  private async handleNotifyToolsListChanged(req: Request): Promise<Response> {
+    if (req.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+    const sseTotal = this.broadcastToolsListChanged();
+    return jsonResponse(200, { sse_total: sseTotal });
+  }
+
+  /**
+   * issue #155: 現在 attached な全 SSE channel に
+   * `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}` を push する。
+   * MCP spec §6.5 に準じた tools/list_changed notification。
+   *
+   * 返り値は実際に push した channel 数 (test 用)。fail した channel は
+   * `writeSseRaw` が自前で cleanup する。
+   */
+  private broadcastToolsListChanged(): number {
+    const wire = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/tools/list_changed",
+    });
+    let count = 0;
+    for (const ch of this.sseChannels.values()) {
+      this.writeSse(ch, wire);
+      count += 1;
+    }
+    return count;
   }
 
   /**
@@ -564,7 +605,8 @@ export class McpSession implements DurableObject {
     return jsonRpcResponse(reqId, {
       result: {
         protocolVersion: proto,
-        capabilities: { tools: { listChanged: false } },
+        // issue #155: enable tools/list_changed for multiplex aggregator path.
+        capabilities: { tools: { listChanged: true } },
         serverInfo: {
           name: `mcp-relay-multiplex(${okResults.map((r) => r.service).join(",")})`,
           version: "0.1.0",
@@ -738,6 +780,10 @@ export class McpSession implements DurableObject {
       console.log(
         `[mcp-relay] hello: service=${service} binary_version=${binaryVersion}`,
       );
+      // issue #155: binary が attach した直後に tools/list_changed を broadcast。
+      // 直前まで stub (inline MCP) tools を見ていた client は、この notification を
+      // 受けて tools/list を再 fetch → full tool set に切り替わる。
+      this.broadcastToolsListChanged();
       return;
     }
     if (kind === "notif") {
@@ -745,6 +791,10 @@ export class McpSession implements DurableObject {
       // back-pipe してきた MCP `notifications/message`。`body` は JSON-RPC 2.0
       // notification (method = "notifications/message" etc) の object そのまま。
       // attached SSE channel 全部に fan-out する。
+      //
+      // issue #155: binary が `notifications/tools/list_changed` を能動的に
+      // 投げた場合も、そのまま SSE channel に流れて client が tools/list 再 fetch
+      // する経路として再利用される (本 fan-out 自体で完結)。
       const body = f["body"];
       if (typeof body !== "object" || body === null) return;
       const wire = JSON.stringify(body);
@@ -783,6 +833,11 @@ export class McpSession implements DurableObject {
       `[mcp-relay] webSocketClose code=${code} reason=${JSON.stringify(reason)} wasClean=${wasClean} remaining=${remaining} pending=${this.pending.size}`,
     );
     this.rejectAllPending("relay_session_closed");
+    // issue #155: binary が detach した境界でも tools/list_changed を broadcast。
+    // 「replaced」(同 service の hello 経由置換) では新 WS の hello が次に broadcast
+    // するので冗長だが、reason 検査の分岐を増やすより常時 broadcast の方が安価。
+    // remaining=0 になった瞬間も含めて client は stub 5 へ戻ったことを検知できる。
+    this.broadcastToolsListChanged();
   }
 
   async webSocketError(_ws: WebSocket, err: unknown): Promise<void> {
@@ -864,7 +919,10 @@ export class McpSession implements DurableObject {
         return jsonRpcResponse(id, {
           result: {
             protocolVersion: proto,
-            capabilities: { tools: { listChanged: false } },
+            // issue #155: stub server も listChanged: true を advertise する。
+            // 後で binary attach する場合に SSE 経由で notifications/tools/list_changed
+            // を投げて Claude 側を stub→full に切り替えるため。
+            capabilities: { tools: { listChanged: true } },
             serverInfo: { name: STUB_SERVER_NAME, version: STUB_SERVER_VERSION },
             instructions: STUB_SERVER_INSTRUCTIONS,
           },

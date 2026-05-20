@@ -220,6 +220,31 @@ export async function handleMcpPairClaim(
     });
   }
 
+  // issue #155: pair 完了境界で `notifications/tools/list_changed` を broadcast
+  // するよう DO に通知する。pair-claim 時点では binary 側 WS はまだ attach されて
+  // いない可能性が高いが、もし stub MCP server を踏みつつ Claude session を維持して
+  // いる client がいれば「再 tools/list せよ」のシグナルを早めに渡しておくことで
+  // pair 直後の UX 反応が滑らかになる。
+  //
+  // best-effort — DO binding 未設定 / fetch 失敗は無視 (本流の pair 成立を阻害しない)。
+  if (env.MCP_SESSION_DO) {
+    const stub = env.MCP_SESSION_DO.get(
+      env.MCP_SESSION_DO.idFromName(session.github_login),
+    );
+    await stub
+      .fetch(
+        new Request("https://do.invalid/__notify_tools_list_changed", {
+          method: "POST",
+        }),
+      )
+      .catch((e: unknown) => {
+        console.warn(
+          "mcp-pair-claim: tools/list_changed broadcast failed (best-effort):",
+          e,
+        );
+      });
+  }
+
   return page({
     title: "Paired ✓",
     body: `<p>Signed in as <code>${escapeHtml(session.github_login)}</code>. The MCP relay will start within ~5 seconds.</p>

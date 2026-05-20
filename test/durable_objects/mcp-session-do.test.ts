@@ -506,6 +506,55 @@ describe("McpSession.fetch — /__connect_sse (ADR-004 Phase D)", () => {
 });
 
 // =============================================================================
+// issue #155: /__notify_tools_list_changed — tools/list_changed broadcast
+// =============================================================================
+
+describe("McpSession.fetch — /__notify_tools_list_changed (issue #155)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 405 when method is not POST", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__notify_tools_list_changed", { method: "GET" }),
+    );
+    expect(res.status).toBe(405);
+  });
+
+  it("returns 200 + sse_total=0 when no SSE channels attached", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__notify_tools_list_changed", { method: "POST" }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sse_total: number };
+    expect(body.sse_total).toBe(0);
+  });
+
+  it("returns 200 + sse_total>=1 when an SSE channel is attached", async () => {
+    const { state } = createMockState();
+    const do_ = new McpSession(state, {});
+
+    const sseRes = await do_.fetch(
+      new Request("https://do.invalid/__connect_sse", { method: "GET" }),
+    );
+    expect(sseRes.status).toBe(200);
+
+    const res = await do_.fetch(
+      new Request("https://do.invalid/__notify_tools_list_changed", { method: "POST" }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sse_total: number };
+    expect(body.sse_total).toBe(1);
+
+    await sseRes.body!.cancel();
+  });
+});
+
+// =============================================================================
 // Phase 7: handleBridge — frame round-trip
 // =============================================================================
 
@@ -545,7 +594,8 @@ describe("McpSession.fetch — /__bridge (Phase 7 frame mapping)", () => {
     expect(body.jsonrpc).toBe("2.0");
     expect(body.id).toBe(1);
     expect(body.result.protocolVersion).toBe("2025-06-18");
-    expect(body.result.capabilities.tools.listChanged).toBe(false);
+    // issue #155: stub server も listChanged: true を advertise する。
+    expect(body.result.capabilities.tools.listChanged).toBe(true);
     expect(body.result.serverInfo.name).toBe("cc-relay-stub");
   });
 

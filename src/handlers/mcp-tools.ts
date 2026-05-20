@@ -381,7 +381,10 @@ function dispatchInitialize(id: string | number | null): JsonRpcResponse {
     protocolVersion: MCP_PROTOCOL_VERSION,
     serverInfo: { name: MCP_SERVER_NAME, version: "1.0.0" },
     capabilities: {
-      tools: { listChanged: false },
+      // issue #155: advertise tools/list_changed support so clients re-fetch
+      // tools/list when the DO broadcasts notifications/tools/list_changed
+      // (binary attach/detach, elevate completion, pair-claim 等)。
+      tools: { listChanged: true },
     },
   });
 }

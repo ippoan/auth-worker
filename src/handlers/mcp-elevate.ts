@@ -311,6 +311,28 @@ export async function handleMcpElevateCallback(
     { expirationTtl: ELEVATE_FLAG_TTL_SEC },
   );
 
+  // issue #155 (follow-up comment): elevate 完了境界で `notifications/tools/list_changed`
+  // を broadcast。tool schema 自体は変わらないが、Claude Code Web を含む MCP client が
+  // tools/list を再 fetch してくれることで「elevate 直後に admin tool を叩いて 403」の
+  // flaky 体感を緩和する (人間の手感覚で「いま elevate 効いた」がフィードバックされる)。
+  //
+  // best-effort — DO binding 未設定 / fetch 失敗は elevate 成立を阻害しない。
+  if (env.MCP_SESSION_DO) {
+    const stub = env.MCP_SESSION_DO.get(env.MCP_SESSION_DO.idFromName(login));
+    await stub
+      .fetch(
+        new Request("https://do.invalid/__notify_tools_list_changed", {
+          method: "POST",
+        }),
+      )
+      .catch((e: unknown) => {
+        console.warn(
+          "mcp-elevate: tools/list_changed broadcast failed (best-effort):",
+          e,
+        );
+      });
+  }
+
   // Best-effort: mint a fresh (access_token, refresh_token) pair for the
   // binary to pick up via `/mcp/jwt/pickup`. The binary's own JWT may have
   // expired in the long-running relay session; the user just did the
