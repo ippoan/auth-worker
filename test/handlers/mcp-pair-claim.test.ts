@@ -28,7 +28,12 @@ import {
   PAIR_SESSION_COOKIE_NAME,
   signPairSession,
 } from "../../src/lib/mcp-session";
-import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
+import {
+  createMockEnv,
+  createMockKV,
+  createSpyDONamespace,
+  type MockKV,
+} from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 const ISSUER = "https://auth.test.example";
@@ -370,5 +375,47 @@ describe("handleMcpPairClaim — refresh_token (issue #157)", () => {
       k.startsWith("mcp/pair_refresh/"),
     );
     expect(hashKeys).toHaveLength(0);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// issue #155: tools/list_changed broadcast on pair approve
+// ────────────────────────────────────────────────────────────────────────
+
+describe("handleMcpPairClaim — tools/list_changed broadcast (issue #155)", () => {
+  it("forwards /__notify_tools_list_changed to the DO when MCP_SESSION_DO is bound", async () => {
+    const { ns, calls } = createSpyDONamespace(
+      async () => new Response(JSON.stringify({ sse_total: 0 }), { status: 200 }),
+    );
+    const { env } = envWithKv({ MCP_SESSION_DO: ns });
+    await putPair(env, pairRec({ claim_login: "alice" }));
+    const sess = await signPairSession("alice", SESSION_SECRET);
+    const res = await handleMcpPairClaim(
+      await reqWith({ cookie: `${PAIR_SESSION_COOKIE_NAME}=${sess}` }),
+      env,
+      "PC1",
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe("POST");
+    expect(new URL(calls[0]!.url).pathname).toBe("/__notify_tools_list_changed");
+  });
+
+  it("does not block pair approval when DO fetch rejects (best-effort)", async () => {
+    const { ns } = createSpyDONamespace(async () => {
+      throw new Error("simulated DO unreachable");
+    });
+    const { env, kv } = envWithKv({ MCP_SESSION_DO: ns });
+    await putPair(env, pairRec({ claim_login: "alice" }));
+    const sess = await signPairSession("alice", SESSION_SECRET);
+    const res = await handleMcpPairClaim(
+      await reqWith({ cookie: `${PAIR_SESSION_COOKIE_NAME}=${sess}` }),
+      env,
+      "PC1",
+    );
+    // approve は成立する (broadcast 失敗は無視)
+    expect(res.status).toBe(200);
+    const updated = JSON.parse(kv._data["mcp/pair/PC1"]!) as PairRecord;
+    expect(updated.status).toBe("approved");
   });
 });

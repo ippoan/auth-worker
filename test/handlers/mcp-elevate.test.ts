@@ -10,7 +10,12 @@ import {
 } from "../../src/handlers/mcp-elevate";
 import { decryptWithKey } from "../../src/lib/mcp-crypto";
 import { verifyMcpJwtSignatureOnly } from "../../src/lib/mcp-jwt";
-import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
+import {
+  createMockEnv,
+  createMockKV,
+  createSpyDONamespace,
+  type MockKV,
+} from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 const ISSUER = "https://auth.test.example";
@@ -494,6 +499,56 @@ describe("handleMcpElevateCallback", () => {
       expect(kv._data["elevate:alice"]).toBeDefined();
       // No pickup entry (mint silently skipped)
       expect(kv._data["mcp_jwt_pickup:github:alice"]).toBeUndefined();
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // issue #155 (follow-up comment): tools/list_changed broadcast on elevate
+  // ────────────────────────────────────────────────────────────────────────
+  describe("tools/list_changed broadcast (issue #155)", () => {
+    it("forwards /__notify_tools_list_changed to the DO when MCP_SESSION_DO is bound", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      const { ns, calls } = createSpyDONamespace(
+        async () => new Response(JSON.stringify({ sse_total: 0 }), { status: 200 }),
+      );
+      const { env, kv } = envWithKv({ MCP_SESSION_DO: ns });
+      const state = await seedState(env, kv);
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.method).toBe("POST");
+      expect(new URL(calls[0]!.url).pathname).toBe(
+        "/__notify_tools_list_changed",
+      );
+    });
+
+    it("does not block the elevate flow when DO fetch rejects (best-effort)", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+          .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+      );
+      const { ns } = createSpyDONamespace(async () => {
+        throw new Error("simulated DO unreachable");
+      });
+      const { env, kv } = envWithKv({ MCP_SESSION_DO: ns });
+      const state = await seedState(env, kv);
+      const res = await handleMcpElevateCallback(
+        new Request(`${ISSUER}/mcp/elevate_callback?state=${state}&code=ghc`),
+        env,
+      );
+      // Elevate succeeded (flag set) despite broadcast failure
+      expect(res.status).toBe(200);
+      expect(kv._data["elevate:alice"]).toBeDefined();
     });
   });
 });

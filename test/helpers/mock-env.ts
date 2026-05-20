@@ -61,6 +61,35 @@ export function createMockDONamespace(): DurableObjectNamespace {
   } as unknown as DurableObjectNamespace;
 }
 
+/**
+ * issue #155 で使う handler 経由の DO 呼び出し検査用 mock。stub.fetch を
+ * `vi.fn()` で差し替え、引数の URL / method を assert できるようにする。
+ * fetch 結果は `fetchImpl` で制御 (resolve / reject 両方可)。
+ *
+ * 返り値の `calls` で呼び出された Request 一覧を取り出せる。
+ */
+export function createSpyDONamespace(
+  fetchImpl: (req: Request) => Promise<Response>,
+): {
+  ns: DurableObjectNamespace;
+  calls: Request[];
+} {
+  const calls: Request[] = [];
+  const stub = {
+    fetch: async (req: Request) => {
+      calls.push(req);
+      return await fetchImpl(req);
+    },
+  };
+  const ns = {
+    idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+    idFromString: (s: string) => ({ name: s }) as unknown as DurableObjectId,
+    newUniqueId: () => ({ name: "unique" }) as unknown as DurableObjectId,
+    get: () => stub as unknown as DurableObjectStub,
+  } as unknown as DurableObjectNamespace;
+  return { ns, calls };
+}
+
 const DEFAULT_ALLOWED_ORIGINS =
   "https://app1.test.example,https://app2.test.example,https://auth.test.example";
 
