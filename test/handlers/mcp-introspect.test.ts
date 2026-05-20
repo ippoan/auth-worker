@@ -318,3 +318,44 @@ describe("POST /mcp/introspect — github_token recovery", () => {
     expect(typeof body.exp).toBe("number");
   });
 });
+
+// `INTERNAL_SHARED_SECRET` can be either a plain string (legacy `wrangler
+// secret put`, still used by these mock-env fixtures) or a Secrets Store
+// binding (`{ get(): Promise<string> }`). The handler unwraps both through
+// `resolveInternalSharedSecret`; cover the object-shaped branch here so the
+// dual-mode helper stays at 100% line + branch coverage.
+describe("POST /mcp/introspect — Secrets Store binding (dual-mode)", () => {
+  it("unwraps a SecretsStoreSecret-shaped binding via async .get()", async () => {
+    const binding = {
+      get: async () => TEST_INTERNAL_SECRET,
+    } as unknown as SecretsStoreSecret;
+    const { env, kv } = envWithKv({ INTERNAL_SHARED_SECRET: binding });
+    const jwt = await makeValidJwt("alice", "read:user");
+    const encrypted = await encryptWithKey("gho_via_store", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = encrypted;
+
+    const res = await handleMcpIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token: jwt }) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { active: boolean; github_token: string };
+    expect(body.active).toBe(true);
+    expect(body.github_token).toBe("gho_via_store");
+  });
+
+  it("returns 503 when the SecretsStoreSecret binding's .get() throws", async () => {
+    const binding = {
+      get: async () => {
+        throw new Error("secrets store unavailable");
+      },
+    } as unknown as SecretsStoreSecret;
+    const { env } = envWithKv({ INTERNAL_SHARED_SECRET: binding });
+    const res = await handleMcpIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token: "x" }) }),
+      env,
+    );
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { active: boolean }).active).toBe(false);
+  });
+});
