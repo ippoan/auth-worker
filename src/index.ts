@@ -137,9 +137,19 @@ export interface Env {
   /** HS256 secret for MCP access tokens (JWT)。既存 JWT_SECRET とは別管理。
    *  Phase 1+ で MCP endpoint が実装されるまでは未参照。 */
   MCP_JWT_SECRET?: string;
-  /** Rust binary (github-mcp-server-rs) が /mcp/introspect 叩く際の認証用。
-   *  Bearer header で送られる固定共有鍵。 */
-  INTERNAL_SHARED_SECRET?: string;
+  /** Rust binary (github-mcp-server-rs / ref-files-mcp-server-rs) が
+   *  /mcp/introspect を叩く際の認証用。Bearer header で送られる固定共有鍵。
+   *
+   *  Two binding shapes are tolerated while we migrate to Cloudflare
+   *  Secrets Store:
+   *    - `string`     — legacy `wrangler secret put` (and mock-env tests).
+   *    - `SecretsStoreSecret` — account-level Secrets Store binding via
+   *                   `[[secrets_store_secrets]]`. Async `.get()`.
+   *  The same store_id + secret_name is bound on ref-files-worker so the
+   *  binary sees one physical value across both workers
+   *  (Refs ippoan/ref-files-worker#4). Use `resolveInternalSharedSecret(env)`
+   *  in mcp-introspect.ts to normalise. */
+  INTERNAL_SHARED_SECRET?: string | SecretsStoreSecret;
   /** JSON array of github logins allowed to use MCP server.
    *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed). */
   GITHUB_MCP_USER_ALLOWLIST?: string;

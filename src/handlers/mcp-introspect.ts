@@ -58,6 +58,29 @@ function constantTimeEquals(a: string, b: string): boolean {
 }
 
 /**
+ * Normalise either binding shape into a plain string for comparison.
+ *
+ * - Worker secret / mock-env test value → already a string, return it.
+ * - Secrets Store binding (`SecretsStoreSecret`) → call `.get()` and unwrap.
+ * - Missing or unreadable → `null` so the caller can 503.
+ *
+ * Mirrors `ref-files-worker/src/handlers/mcp-introspect.ts`. Keeping the
+ * dual-mode lets the `wrangler secret put` deployment keep working while
+ * we cut over both workers to the shared Secrets Store entry. Once both
+ * are on Secrets Store the `string` branch becomes dead code.
+ */
+async function resolveInternalSharedSecret(env: Env): Promise<string | null> {
+  const binding = env.INTERNAL_SHARED_SECRET;
+  if (!binding) return null;
+  if (typeof binding === "string") return binding;
+  try {
+    return await binding.get();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve `payload.sub` to its KV-encrypted `github_token` and build the
  * RFC 7662 `active:true` response. Common between mode 1 and mode 2.
  */
@@ -92,11 +115,13 @@ export async function handleMcpIntrospect(
   // ── env guard ────────────────────────────────────────────────────────────
   // INTERNAL_SHARED_SECRET は mode 2 でのみ実質必須。当面は既存 deployment
   // との互換を優先して両 mode の前提として require する (廃止は ADR-004)。
+  // Secrets Store binding は async resolve なのでここで一度確定させる。
+  const sharedSecret = await resolveInternalSharedSecret(env);
   if (
     !env.MCP_OAUTH_KV ||
     !env.MCP_JWT_SECRET ||
     !env.SSO_ENCRYPTION_KEY ||
-    !env.INTERNAL_SHARED_SECRET
+    !sharedSecret
   ) {
     return jsonNoStore({ active: false, error: "server_error" }, 503);
   }
@@ -117,7 +142,7 @@ export async function handleMcpIntrospect(
   }
 
   // ── Mode 2: 生 shared secret (legacy) ────────────────────────────────────
-  if (!authz || !constantTimeEquals(authz, env.INTERNAL_SHARED_SECRET)) {
+  if (!authz || !constantTimeEquals(authz, sharedSecret)) {
     return jsonNoStore({ error: "unauthorized" }, 401);
   }
 
