@@ -55,6 +55,7 @@ import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
 import { handleMcpPairCallback } from "./handlers/mcp-pair-callback";
 import { handleMcpPairGrant } from "./handlers/mcp-pair-grant";
+import { handleMcpPairGrantViaGithub } from "./handlers/mcp-pair-grant-via-github";
 import { handleMcpTools } from "./handlers/mcp-tools";
 import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
@@ -243,6 +244,12 @@ async function dispatchMcpRelay(
   // dispatcher にも下で同 case を入れる。
   if (url.pathname === "/mcp/pair/grant" && request.method === "POST") {
     return handleMcpPairGrant(request, env);
+  }
+  // issue ippoan/mcp-relay-rs#15: GitHub OAuth token を identity proof として
+  // 受け取って binding_jwt を 1 発で mint する endpoint。CCoW container のように
+  // browser cookie も pre-staged env も無い環境で bootstrap するための path。
+  if (url.pathname === "/mcp/pair/grant-via-github" && request.method === "POST") {
+    return handleMcpPairGrantViaGithub(request, env);
   }
   // ADR-004 (cc-relay/ARCHITECTURE.md): GitHub webhook を受け、既存
   // McpSession DO 経由で attached binary に broadcast する (multiplex)。
@@ -514,6 +521,10 @@ export default {
           // (debug / curl 用に auth host にも置く。binary は通常 relay host 経由)。
           case "/mcp/pair/grant":
             return await handleMcpPairGrant(request, env);
+          // issue ippoan/mcp-relay-rs#15: GitHub OAuth token → binding_jwt
+          // (debug / curl 用に auth host にも置く。binary は relay host 経由)。
+          case "/mcp/pair/grant-via-github":
+            return await handleMcpPairGrantViaGithub(request, env);
           // MCP OAuth Provider — Native MCP JSON-RPC tools (issue #145)
           // auth host 上でも受けることで binary なしで MCP server として機能する。
           // 同じ handler は dispatchMcpRelay (mcp.ippoan.org host) 経由でも到達可能。
