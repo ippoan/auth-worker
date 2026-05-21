@@ -468,6 +468,8 @@ describe("fetchProtectionRows", () => {
     ciYml?: string | null;
     /** Body of `Cargo.toml` (base64-encoded automatically). */
     cargoToml?: string | null;
+    /** Body of `go.mod` (base64-encoded automatically). */
+    goMod?: string | null;
   }>): void {
     const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
     const contentsRespFor = (body: string | null | undefined): Response => {
@@ -501,6 +503,9 @@ describe("fetchProtectionRows", () => {
           }
           if (url.includes(`/repos/ippoan/${key}/contents/Cargo.toml`)) {
             return contentsRespFor(plan.cargoToml ?? null);
+          }
+          if (url.includes(`/repos/ippoan/${key}/contents/go.mod`)) {
+            return contentsRespFor(plan.goMod ?? null);
           }
           if (url.endsWith(`/repos/ippoan/${key}`)) {
             return plan.settings ?? new Response(
@@ -706,7 +711,33 @@ describe("fetchProtectionRows", () => {
     expect(rows[0]?.project_type).toBe("rust");
   });
 
-  it("returns project_type=unknown when neither marker file exists", async () => {
+  it("populates project_type=go when ci.yml references go-ci.yml", async () => {
+    stubFetch({
+      f: {
+        ciYml:
+          "jobs:\n  ci:\n    uses: ippoan/ci-workflows/.github/workflows/go-ci.yml@main\n",
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "f", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("go");
+  });
+
+  it("falls back to go.mod when ci.yml is missing and Cargo.toml is absent", async () => {
+    stubFetch({
+      g: {
+        // ciYml + cargoToml unset → 404
+        goMod: "module github.com/ippoan/secrets-inventory-gcp\n\ngo 1.24\n",
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "g", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("go");
+  });
+
+  it("returns project_type=unknown when no marker file exists", async () => {
     stubFetch({ d: {} });
     const rows = await fetchProtectionRows(TOKEN, [
       { owner: "ippoan", name: "d", default_branch: "main" },
@@ -718,7 +749,7 @@ describe("fetchProtectionRows", () => {
     stubFetch({
       e: {
         ciYml: "jobs:\n  test:\n    runs-on: ubuntu-latest\n",
-        // no Cargo.toml either
+        // no Cargo.toml / go.mod either
       },
     });
     const rows = await fetchProtectionRows(TOKEN, [

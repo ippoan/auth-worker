@@ -357,26 +357,31 @@ export async function patchRepoSettings(
 
 /**
  * Detect whether a repo is a Cloudflare Worker (`frontend-ci.yml` consumer),
- * a Rust crate (`rust-ci.yml` consumer), or neither.
+ * a Rust crate (`rust-ci.yml` consumer), a Go service (`go-ci.yml` consumer
+ * or any repo with a top-level `go.mod`), or none of these.
  *
  * Source of truth, in order:
  *   1. `.github/workflows/ci.yml` — most consumers use exactly that path and
  *      its body references the shared workflow:
  *         uses: ippoan/ci-workflows/.github/workflows/frontend-ci.yml@main
  *         uses: ippoan/ci-workflows/.github/workflows/rust-ci.yml@main
+ *         uses: ippoan/ci-workflows/.github/workflows/go-ci.yml@main
  *      A simple substring match is robust here — `.yml@` is unique enough
  *      and immune to indentation / quoting differences.
  *   2. `Cargo.toml` at the repo root — definitive for Rust crates that
  *      either pre-date the reusable workflow or use a custom CI shell.
+ *   3. `go.mod` at the repo root — definitive for Go modules whose CI is
+ *      still a hand-rolled workflow file (e.g. the initial
+ *      `secrets-inventory-gcp` deploy.yml that pre-dates `go-ci.yml`).
  *
- * Returns `"unknown"` when neither file lookup succeeds. The dashboard
- * then surfaces every preset with a hint instead of locking the operator
- * out — the worst case is they pick the wrong one and the apply call
- * fails on the GitHub side with a structured error they can act on.
+ * Returns `"unknown"` when no marker matches. The dashboard then surfaces
+ * every preset with a hint instead of locking the operator out — the worst
+ * case is they pick the wrong one and the apply call fails on the GitHub
+ * side with a structured error they can act on.
  *
- * One bounded HTTP cost per repo: at most two GETs (ci.yml + Cargo.toml
- * fallback), both 404-fast when missing. Each call short-circuits on
- * any 5xx so transient GitHub errors don't blow up the dashboard page.
+ * Bounded HTTP cost per repo: at most three GETs (ci.yml + Cargo.toml +
+ * go.mod). All 404-fast when missing. Each call short-circuits on any 5xx
+ * so transient GitHub errors don't blow up the dashboard page.
  */
 export async function detectProjectType(
   token: string,
@@ -396,11 +401,19 @@ export async function detectProjectType(
     if (ci.includes("ci-workflows/.github/workflows/rust-ci.yml")) {
       return "rust";
     }
+    if (ci.includes("ci-workflows/.github/workflows/go-ci.yml")) {
+      return "go";
+    }
   }
   // Cargo.toml at the repo root is conclusive for Rust crates even when the
   // workflow file is missing / custom.
   const cargo = await fetchTextFile(token, owner, repo, "Cargo.toml");
   if (cargo) return "rust";
+  // go.mod at the repo root is conclusive for Go modules. We probe it last
+  // so a hybrid repo (e.g. a Rust crate with a vendored Go helper) still
+  // resolves to "rust" via Cargo.toml above.
+  const goMod = await fetchTextFile(token, owner, repo, "go.mod");
+  if (goMod) return "go";
   return "unknown";
 }
 

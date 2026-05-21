@@ -1,7 +1,7 @@
 /**
  * Branch protection presets (issue #159 Phase 1).
  *
- * Phase 1 では 2 つの preset を定義する。`/dashboard/branch-protection` から
+ * Phase 1 では 3 つの preset を定義する。`/dashboard/branch-protection` から
  * `[Apply <preset>]` を踏むと、対応する PUT payload が GitHub
  * `/repos/:o/:r/branches/:b/protection` に送られる。
  *
@@ -33,9 +33,25 @@
  *       silent block された事故に対応して実態名に揃えた (drift 検出は別系統で
  *       `ci-workflows/branch-protection-drift-check.yml` が拾う)。
  *     - 残りの safety knob (force push / 削除 / approval / bypass) は rust と同じ。
+ *   - `ippoan-go-default`:
+ *     - Go service 系 (現状 `ippoan/secrets-inventory-gcp` の Cloud Run proxy)。
+ *       `ci-workflows/.github/workflows/go-ci.yml` reusable workflow を caller
+ *       が job id `ci` で呼ぶ前提で、`vet` / `test` / `build` の 3 job 名
+ *       (`ci / vet` / `ci / test` / `ci / build`) を required に固定する。
+ *     - 現状 ippoan/* に Go repo は secrets-inventory-gcp 1 つだけで、まだ
+ *       reusable workflow に揃っていない。preset を Apply する前に caller 側
+ *       workflow を go-ci.yml reusable に揃えるか、dashboard の required
+ *       override で実 job 名に差し替えること。一致しない preset を当てると
+ *       worker preset 初版と同じ silent block 事故になる。
+ *     - safety knob (force push / 削除 / approval / bypass) は rust / worker
+ *       と同一。Cloud Run の attached SA + ADC 運用前提なので merge 後に
+ *       deploy が即走る ⇒ force push 経路を塞ぐ価値が他より高い。
  */
 
-export type PresetId = "ippoan-rust-default" | "ippoan-worker-default";
+export type PresetId =
+  | "ippoan-rust-default"
+  | "ippoan-worker-default"
+  | "ippoan-go-default";
 
 /**
  * Project type a preset applies to. The dashboard auto-detects each repo's
@@ -44,7 +60,7 @@ export type PresetId = "ippoan-rust-default" | "ippoan-worker-default";
  * vice versa. `"unknown"` repos are shown every preset with a hint instead
  * of being silently locked out.
  */
-export type ProjectType = "worker" | "rust" | "unknown";
+export type ProjectType = "worker" | "rust" | "go" | "unknown";
 
 export interface BranchProtectionPayload {
   required_status_checks: {
@@ -83,6 +99,12 @@ const IPPOAN_RUST_DEFAULT_CHECKS = [
 const IPPOAN_WORKER_DEFAULT_CHECKS = [
   "ci / Type Check",
   "ci / Vitest + Coverage",
+];
+
+const IPPOAN_GO_DEFAULT_CHECKS = [
+  "ci / vet",
+  "ci / test",
+  "ci / build",
 ];
 
 export const PRESETS: Record<PresetId, PresetDefinition> = {
@@ -128,10 +150,35 @@ export const PRESETS: Record<PresetId, PresetDefinition> = {
       required_conversation_resolution: false,
     },
   },
+  "ippoan-go-default": {
+    id: "ippoan-go-default",
+    label: "Apply ippoan-go-default",
+    description:
+      "Go service CI (go vet + go test + go build) required. No force push, no branch deletion, approval=0, admins cannot bypass.",
+    required_checks: IPPOAN_GO_DEFAULT_CHECKS,
+    project_type: "go",
+    payload: {
+      required_status_checks: {
+        strict: true,
+        contexts: IPPOAN_GO_DEFAULT_CHECKS,
+      },
+      required_pull_request_reviews: null,
+      enforce_admins: true,
+      restrictions: null,
+      required_linear_history: false,
+      allow_force_pushes: false,
+      allow_deletions: false,
+      required_conversation_resolution: false,
+    },
+  },
 };
 
 export function isPresetId(s: unknown): s is PresetId {
-  return s === "ippoan-rust-default" || s === "ippoan-worker-default";
+  return (
+    s === "ippoan-rust-default" ||
+    s === "ippoan-worker-default" ||
+    s === "ippoan-go-default"
+  );
 }
 
 /**
