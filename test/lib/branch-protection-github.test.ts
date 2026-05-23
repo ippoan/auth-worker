@@ -737,6 +737,22 @@ describe("fetchProtectionRows", () => {
     expect(rows[0]?.project_type).toBe("go");
   });
 
+  it("populates project_type=lib when ci.yml references lib-ci.yml", async () => {
+    // lib-ci.yml is the new Node.js library reusable. Detection lives in
+    // detectProjectType after worker/rust/go so hybrid repos keep their
+    // existing classification.
+    stubFetch({
+      h: {
+        ciYml:
+          "jobs:\n  ci:\n    uses: ippoan/ci-workflows/.github/workflows/lib-ci.yml@main\n",
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "h", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("lib");
+  });
+
   it("returns project_type=unknown when no marker file exists", async () => {
     stubFetch({ d: {} });
     const rows = await fetchProtectionRows(TOKEN, [
