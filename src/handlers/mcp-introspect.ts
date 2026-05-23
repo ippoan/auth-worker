@@ -62,17 +62,13 @@ function constantTimeEquals(a: string, b: string): boolean {
  *
  * - Worker secret / mock-env test value → already a string, return it.
  * - Secrets Store binding (`SecretsStoreSecret`) → call `.get()` and unwrap.
- * - Missing or unreadable → `null` so the caller can 503.
+ * - Missing or unreadable → `null`.
  *
- * Mirrors `ref-files-worker/src/handlers/mcp-introspect.ts`. Keeping the
- * dual-mode lets the `wrangler secret put` deployment keep working while
- * we cut over both workers to the shared Secrets Store entry. Once both
- * are on Secrets Store the `string` branch becomes dead code.
+ * Mirrors `ref-files-worker/src/handlers/mcp-introspect.ts`. The dual-mode
+ * lets `wrangler secret put` deployments keep working while we cut over
+ * both workers to Secrets Store. Once both are on Secrets Store the
+ * `string` branch becomes dead code.
  */
-async function resolveInternalSharedSecret(env: Env): Promise<string | null> {
-  return resolveSecretBinding(env.INTERNAL_SHARED_SECRET);
-}
-
 async function resolveSecretBinding(binding: unknown): Promise<string | null> {
   if (!binding) return null;
   if (typeof binding === "string") return binding;

@@ -380,8 +380,9 @@ describe("POST /mcp/introspect — github_token recovery", () => {
 // `INTERNAL_SHARED_SECRET` can be either a plain string (legacy `wrangler
 // secret put`, still used by these mock-env fixtures) or a Secrets Store
 // binding (`{ get(): Promise<string> }`). The handler unwraps both through
-// `resolveInternalSharedSecret`; cover the object-shaped branch here so the
-// dual-mode helper stays at 100% line + branch coverage.
+// `resolveSecretBinding` (via `resolveAllSharedSecrets`); cover the
+// object-shaped branch here so the dual-mode helper stays at 100% line +
+// branch coverage.
 describe("POST /mcp/introspect — Secrets Store binding (dual-mode)", () => {
   it("unwraps a SecretsStoreSecret-shaped binding via async .get()", async () => {
     const binding = {
