@@ -30,7 +30,15 @@ export function handleMcpResourceMetadata(_request: Request, env: Env): Response
     // Bearer token は Authorization header で受ける (binary も Web も同様)。
     bearer_methods_supported: ["header"],
     // AS metadata と同じ scope セットを advertise (一貫性のため)。
-    scopes_supported: ["mcp.read", "mcp.write", "offline_access"],
+    // `mcp.admin` は出さない (internal-only)、`mcp.workflow` / `mcp.project` は
+    // public (issue #184)。
+    scopes_supported: [
+      "mcp.read",
+      "mcp.write",
+      "mcp.workflow",
+      "mcp.project",
+      "offline_access",
+    ],
     // resource server が要求する文書化方針 (静的なので docs URL は省略)。
   });
   // resource metadata は静的なので edge cache を許可 (AS metadata と同方針)。

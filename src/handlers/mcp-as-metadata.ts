@@ -41,7 +41,17 @@ export function handleMcpAsMetadata(_request: Request, env: Env): Response {
     token_endpoint_auth_methods_supported: ["none"],
     // Phase 5: code response_type 対応
     response_types_supported: ["code"],
-    scopes_supported: ["mcp.read", "mcp.write", "offline_access"],
+    // `mcp.admin` は意図的に出さない (internal-only、`/mcp/elevate` 経由でだけ
+    // 付与される昇格 scope、CLAUDE.md 参照)。`mcp.workflow` / `mcp.project` は
+    // public — ci-dashboard 等の consumer が device flow / authcode で要求可能
+    // (issue #184)。
+    scopes_supported: [
+      "mcp.read",
+      "mcp.write",
+      "mcp.workflow",
+      "mcp.project",
+      "offline_access",
+    ],
     // PKCE: S256 のみ (Phase 5 で実装)
     code_challenge_methods_supported: ["S256"],
     // RFC 8707 Resource Indicators — MCP Authorization spec 2025-06-18 で
