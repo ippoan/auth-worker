@@ -147,8 +147,9 @@ export interface Env {
    *                   `[[secrets_store_secrets]]`. Async `.get()`.
    *  The same store_id + secret_name is bound on ref-files-worker so the
    *  binary sees one physical value across both workers
-   *  (Refs ippoan/ref-files-worker#4). Use `resolveInternalSharedSecret(env)`
-   *  in mcp-introspect.ts to normalise. */
+   *  (Refs ippoan/ref-files-worker#4). `resolveAllSharedSecrets(env)` in
+   *  mcp-introspect.ts iterates every `INTERNAL_SHARED_SECRET*` binding
+   *  and normalises each to a string (issue #189). */
   INTERNAL_SHARED_SECRET?: string | SecretsStoreSecret;
   /** JSON array of github logins allowed to use MCP server.
    *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed). */

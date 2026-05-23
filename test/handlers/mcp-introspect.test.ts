@@ -121,6 +121,64 @@ describe("POST /mcp/introspect — internal auth", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  // Multi-secret support: `INTERNAL_SHARED_SECRET` (legacy) + any
+  // `INTERNAL_SHARED_SECRET_<consumer>` binding is accepted. issue #189.
+  it("accepts a request authenticated by a per-consumer INTERNAL_SHARED_SECRET_* binding", async () => {
+    const CI_DASHBOARD_SECRET = "ci-dashboard-internal-shared-32chr!";
+    // The per-consumer key is dynamic on Env so we widen here. `createMockEnv`
+    // passes the override through; introspect's `resolveAllSharedSecrets`
+    // iterates `Object.keys(env)` so any string-valued key starting with
+    // `INTERNAL_SHARED_SECRET` becomes an accepted secret.
+    const { env, kv } = envWithKv(
+      { INTERNAL_SHARED_SECRET_CI_DASHBOARD: CI_DASHBOARD_SECRET } as unknown as Partial<Env>,
+    );
+    const jwt = await makeValidJwt("alice");
+    const enc = await encryptWithKey("gh_test_token", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = enc;
+    const res = await handleMcpIntrospect(
+      req({ auth: CI_DASHBOARD_SECRET, body: JSON.stringify({ token: jwt }) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json<{ active: boolean }>();
+    expect(json.active).toBe(true);
+  });
+
+  it("rejects 401 when neither legacy nor per-consumer secret matches", async () => {
+    const { env } = envWithKv(
+      { INTERNAL_SHARED_SECRET_CI_DASHBOARD: "ci-dashboard-internal-shared-32chr!" } as unknown as Partial<Env>,
+    );
+    const res = await handleMcpIntrospect(
+      req({ auth: "neither-of-the-two", body: JSON.stringify({ token: "x" }) }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  // `resolveAllSharedSecrets` must silently drop bindings that fail to resolve
+  // to a usable string so a single broken per-consumer entry doesn't take the
+  // whole handler down (issue #189). Exercises three code paths at once:
+  //  - `resolveSecretBinding` final `return null` (object without `.get`)
+  //  - `resolveSecretBinding` catch branch (`.get()` rejects)
+  //  - `resolveAllSharedSecrets` loop's `if (value)` false branch (both above)
+  it("ignores INTERNAL_SHARED_SECRET_* bindings that fail to resolve (no .get / .get throws)", async () => {
+    const { env, kv } = envWithKv({
+      INTERNAL_SHARED_SECRET_BROKEN: { foo: 1 },
+      INTERNAL_SHARED_SECRET_THROWS: {
+        get: () => Promise.reject(new Error("kv unavailable")),
+      },
+    } as unknown as Partial<Env>);
+    const jwt = await makeValidJwt("alice");
+    const enc = await encryptWithKey("gh_test_token", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = enc;
+    const res = await handleMcpIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token: jwt }) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { active: boolean }).active).toBe(true);
+  });
 });
 
 describe("POST /mcp/introspect — body parsing", () => {
@@ -322,8 +380,9 @@ describe("POST /mcp/introspect — github_token recovery", () => {
 // `INTERNAL_SHARED_SECRET` can be either a plain string (legacy `wrangler
 // secret put`, still used by these mock-env fixtures) or a Secrets Store
 // binding (`{ get(): Promise<string> }`). The handler unwraps both through
-// `resolveInternalSharedSecret`; cover the object-shaped branch here so the
-// dual-mode helper stays at 100% line + branch coverage.
+// `resolveSecretBinding` (via `resolveAllSharedSecrets`); cover the
+// object-shaped branch here so the dual-mode helper stays at 100% line +
+// branch coverage.
 describe("POST /mcp/introspect — Secrets Store binding (dual-mode)", () => {
   it("unwraps a SecretsStoreSecret-shaped binding via async .get()", async () => {
     const binding = {
