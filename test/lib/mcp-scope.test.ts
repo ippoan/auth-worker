@@ -83,6 +83,12 @@ describe("normalizeMcpScope — canonical ordering", () => {
     );
   });
 
+  it("reorders the new ci-dashboard scopes (mcp.workflow / mcp.project) to canonical order", () => {
+    expect(normalizeMcpScope("offline_access mcp.project mcp.workflow mcp.write mcp.read")).toBe(
+      "mcp.read mcp.write mcp.workflow mcp.project offline_access",
+    );
+  });
+
   it("dedupes while preserving canonical order", () => {
     expect(normalizeMcpScope("mcp.write mcp.read mcp.write")).toBe(
       "mcp.read mcp.write",
@@ -122,14 +128,34 @@ describe("mcpToGithubScope — translation map", () => {
   it("offline_access alone does NOT escalate to repo", () => {
     expect(mcpToGithubScope(new Set(["offline_access"]))).toBe("read:user");
   });
+
+  it("mcp.workflow alone → 'read:user workflow' (no repo escalation)", () => {
+    expect(mcpToGithubScope(new Set(["mcp.workflow"]))).toBe("read:user workflow");
+  });
+
+  it("mcp.project alone → 'read:user project' (no repo escalation)", () => {
+    expect(mcpToGithubScope(new Set(["mcp.project"]))).toBe("read:user project");
+  });
+
+  it("mcp.write + mcp.workflow + mcp.project → 'read:user repo workflow project' (ci-dashboard requested set)", () => {
+    expect(mcpToGithubScope(new Set(["mcp.write", "mcp.workflow", "mcp.project"])))
+      .toBe("read:user repo workflow project");
+  });
+
+  it("mcp.workflow + mcp.project (no write) → 'read:user workflow project' (additive translation)", () => {
+    expect(mcpToGithubScope(new Set(["mcp.workflow", "mcp.project"])))
+      .toBe("read:user workflow project");
+  });
 });
 
 describe("MCP_SCOPES_SUPPORTED — AS metadata contract", () => {
-  it("matches AS metadata advertisement", () => {
+  it("matches AS metadata advertisement (mcp.workflow / mcp.project added for ci-dashboard, #184)", () => {
     expect([...MCP_SCOPES_SUPPORTED]).toEqual([
       "mcp.read",
       "mcp.write",
       "mcp.admin",
+      "mcp.workflow",
+      "mcp.project",
       "offline_access",
     ]);
   });

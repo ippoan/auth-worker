@@ -53,7 +53,13 @@ describe("GET /.well-known/oauth-authorization-server", () => {
     expect(body.grant_types_supported).toContain("authorization_code");
     expect(body.grant_types_supported).toContain("refresh_token");
     expect(body.token_endpoint_auth_methods_supported).toEqual(["none"]);
-    expect(body.scopes_supported).toEqual(["mcp.read", "mcp.write", "offline_access"]);
+    expect(body.scopes_supported).toEqual([
+      "mcp.read",
+      "mcp.write",
+      "mcp.workflow",
+      "mcp.project",
+      "offline_access",
+    ]);
     // Phase 5: Browser client 向け Auth Code grant 追加で response_types に "code"
     expect(body.response_types_supported).toEqual(["code"]);
     expect(body.code_challenge_methods_supported).toEqual(["S256"]);

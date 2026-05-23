@@ -52,6 +52,12 @@ describe("GET /.well-known/oauth-protected-resource", () => {
       scopes_supported: string[];
     };
     expect(body.bearer_methods_supported).toEqual(["header"]);
-    expect(body.scopes_supported).toEqual(["mcp.read", "mcp.write", "offline_access"]);
+    expect(body.scopes_supported).toEqual([
+      "mcp.read",
+      "mcp.write",
+      "mcp.workflow",
+      "mcp.project",
+      "offline_access",
+    ]);
   });
 });

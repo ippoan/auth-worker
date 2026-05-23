@@ -93,7 +93,11 @@ cc-relay は `/mcp/device_authorization` の form に **`scope=mcp.read mcp.writ
 |---|---|---|
 | `mcp.read` (or 省略) | `read:user` | login 取得のみ (default / 下位互換) |
 | `mcp.write` | `read:user repo` | Issues r/w + private repo 含む完全アクセス |
+| `mcp.workflow` (#184) | `workflow` (additive) | Actions workflow dispatch (ci-dashboard の tag-release) |
+| `mcp.project` (#184) | `project` (additive) | Projects v2 mutation (add/remove item、field 更新) |
 | `offline_access` | (no-op) | 現状 token endpoint が常に refresh_token を発行 |
+
+翻訳は **additive**: 複数 MCP scope を組み合わせると GitHub scope も累積する。例: `mcp.write mcp.workflow mcp.project` → `read:user repo workflow project` (ci-dashboard 想定セット)。
 
 cc-relay broker は Issue body CAS + comments の post/list をやるため
 `mcp.write` 必須。GitHub `repo` scope は private repo 含む完全アクセスで
