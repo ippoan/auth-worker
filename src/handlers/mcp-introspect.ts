@@ -70,14 +70,44 @@ function constantTimeEquals(a: string, b: string): boolean {
  * are on Secrets Store the `string` branch becomes dead code.
  */
 async function resolveInternalSharedSecret(env: Env): Promise<string | null> {
-  const binding = env.INTERNAL_SHARED_SECRET;
+  return resolveSecretBinding(env.INTERNAL_SHARED_SECRET);
+}
+
+async function resolveSecretBinding(binding: unknown): Promise<string | null> {
   if (!binding) return null;
   if (typeof binding === "string") return binding;
-  try {
-    return await binding.get();
-  } catch {
-    return null;
+  if (typeof binding === "object" && binding !== null
+      && typeof (binding as { get?: unknown }).get === "function") {
+    try {
+      return await (binding as { get: () => Promise<string> }).get();
+    } catch {
+      return null;
+    }
   }
+  return null;
+}
+
+/**
+ * Resolve every `INTERNAL_SHARED_SECRET*` binding on the env (legacy
+ * `INTERNAL_SHARED_SECRET` + any per-consumer `INTERNAL_SHARED_SECRET_<NAME>`).
+ *
+ * The naming convention lets new consumers attach their own secret without
+ * a code change here — add the binding in `wrangler.toml` and redeploy
+ * auth-worker, then the consumer can authenticate `/mcp/introspect` with
+ * its own value (issue #189). Mode 2 below tries each candidate in
+ * constant-time; a match on ANY accepted secret authorizes the call.
+ *
+ * Returns `null` only when no candidate is bound — i.e. the env guard
+ * should treat this as misconfiguration and return 503.
+ */
+export async function resolveAllSharedSecrets(env: Env): Promise<string[] | null> {
+  const out: string[] = [];
+  for (const key of Object.keys(env)) {
+    if (!key.startsWith("INTERNAL_SHARED_SECRET")) continue;
+    const value = await resolveSecretBinding((env as unknown as Record<string, unknown>)[key]);
+    if (value) out.push(value);
+  }
+  return out.length > 0 ? out : null;
 }
 
 /**
@@ -113,15 +143,18 @@ export async function handleMcpIntrospect(
   env: Env,
 ): Promise<Response> {
   // ── env guard ────────────────────────────────────────────────────────────
-  // INTERNAL_SHARED_SECRET は mode 2 でのみ実質必須。当面は既存 deployment
-  // との互換を優先して両 mode の前提として require する (廃止は ADR-004)。
-  // Secrets Store binding は async resolve なのでここで一度確定させる。
-  const sharedSecret = await resolveInternalSharedSecret(env);
+  // INTERNAL_SHARED_SECRET* (legacy + per-consumer) は mode 2 でのみ実質必須。
+  // 当面は既存 deployment との互換を優先して両 mode の前提として require する
+  // (廃止は ADR-004)。Secrets Store binding は async resolve なのでここで
+  // 一度確定させる。`resolveAllSharedSecrets` は `INTERNAL_SHARED_SECRET` で
+  // 始まる全 binding を発見して array を返す (issue #189)。1 つも無ければ
+  // 503 を出して mode 2 を実質無効化する。
+  const sharedSecrets = await resolveAllSharedSecrets(env);
   if (
     !env.MCP_OAUTH_KV ||
     !env.MCP_JWT_SECRET ||
     !env.SSO_ENCRYPTION_KEY ||
-    !sharedSecret
+    !sharedSecrets
   ) {
     return jsonNoStore({ active: false, error: "server_error" }, 503);
   }
@@ -141,8 +174,11 @@ export async function handleMcpIntrospect(
     return await respondWithGithubToken(env, payload);
   }
 
-  // ── Mode 2: 生 shared secret (legacy) ────────────────────────────────────
-  if (!authz || !constantTimeEquals(authz, sharedSecret)) {
+  // ── Mode 2: 生 shared secret (legacy + per-consumer multi-secret #189) ──
+  // Each candidate is compared in constant-time. Total wall-clock leaks how
+  // many secrets are configured (1-N), but not which one matched. Acceptable
+  // for the small N we run with.
+  if (!authz || !sharedSecrets.some((s) => constantTimeEquals(authz, s))) {
     return jsonNoStore({ error: "unauthorized" }, 401);
   }
 

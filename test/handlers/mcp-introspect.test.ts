@@ -121,6 +121,40 @@ describe("POST /mcp/introspect — internal auth", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  // Multi-secret support: `INTERNAL_SHARED_SECRET` (legacy) + any
+  // `INTERNAL_SHARED_SECRET_<consumer>` binding is accepted. issue #189.
+  it("accepts a request authenticated by a per-consumer INTERNAL_SHARED_SECRET_* binding", async () => {
+    const CI_DASHBOARD_SECRET = "ci-dashboard-internal-shared-32chr!";
+    // The per-consumer key is dynamic on Env so we widen here. `createMockEnv`
+    // passes the override through; introspect's `resolveAllSharedSecrets`
+    // iterates `Object.keys(env)` so any string-valued key starting with
+    // `INTERNAL_SHARED_SECRET` becomes an accepted secret.
+    const { env, kv } = envWithKv(
+      { INTERNAL_SHARED_SECRET_CI_DASHBOARD: CI_DASHBOARD_SECRET } as unknown as Partial<Env>,
+    );
+    const jwt = await makeValidJwt("alice");
+    const enc = await encryptWithKey("gh_test_token", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = enc;
+    const res = await handleMcpIntrospect(
+      req({ auth: CI_DASHBOARD_SECRET, body: JSON.stringify({ token: jwt }) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json<{ active: boolean }>();
+    expect(json.active).toBe(true);
+  });
+
+  it("rejects 401 when neither legacy nor per-consumer secret matches", async () => {
+    const { env } = envWithKv(
+      { INTERNAL_SHARED_SECRET_CI_DASHBOARD: "ci-dashboard-internal-shared-32chr!" } as unknown as Partial<Env>,
+    );
+    const res = await handleMcpIntrospect(
+      req({ auth: "neither-of-the-two", body: JSON.stringify({ token: "x" }) }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
 });
 
 describe("POST /mcp/introspect — body parsing", () => {

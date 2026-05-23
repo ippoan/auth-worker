@@ -42,3 +42,19 @@ auth-client は `.vue` ソースファイルをそのまま ship する（ビル
 | `mcp.admin` | **internal only** (`scopes_supported` に**意図的に出さない**) | `/mcp/elevate` 経由の browser 昇格フローでのみ付与 (#149) |
 
 `auth.ippoan.org/.well-known/oauth-authorization-server` の `scopes_supported` に `mcp.admin` が無いのは仕様。client が `authorize?scope=mcp.admin` を要求できる public scope ではなく、server-side 昇格でだけ付く internal scope のため、advertise しないのが正。`mcp-as-metadata.ts` を編集する時に「`mcp.admin` が漏れている」と勘違いして足さないこと。
+
+### INTERNAL_SHARED_SECRET multi-binding 規約 (#189)
+
+`/mcp/introspect` Mode 2 は **`INTERNAL_SHARED_SECRET` で始まる全 binding** を accept する。consumer ごとに専用 secret を持たせたい場合は `wrangler.toml` に追加 binding を生やす:
+
+```toml
+[[env.staging.secrets_store_secrets]]
+binding = "INTERNAL_SHARED_SECRET"                    # legacy / shared (cc-relay broker / github-mcp-server-rs / ref-files-worker)
+secret_name = "mcp-internal-shared-secret-staging"
+
+[[env.staging.secrets_store_secrets]]
+binding = "INTERNAL_SHARED_SECRET_CI_DASHBOARD"       # per-consumer
+secret_name = "ci-dashboard-internal-shared-secret-staging"
+```
+
+introspect handler は `resolveAllSharedSecrets(env)` で `Object.keys(env)` を走査し、prefix match した全 binding の値を constant-time で順次比較する。1 つでも一致すれば 200、全 unmatch なら 401。新規 consumer を増やすときに introspect の **コード変更は不要**、binding と Secrets Store entry の追加だけで済む。
