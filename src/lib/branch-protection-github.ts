@@ -358,7 +358,8 @@ export async function patchRepoSettings(
 /**
  * Detect whether a repo is a Cloudflare Worker (`frontend-ci.yml` consumer),
  * a Rust crate (`rust-ci.yml` consumer), a Go service (`go-ci.yml` consumer
- * or any repo with a top-level `go.mod`), or none of these.
+ * or any repo with a top-level `go.mod`), a Node.js library (`lib-ci.yml`
+ * consumer), or none of these.
  *
  * Source of truth, in order:
  *   1. `.github/workflows/ci.yml` — most consumers use exactly that path and
@@ -366,6 +367,7 @@ export async function patchRepoSettings(
  *         uses: ippoan/ci-workflows/.github/workflows/frontend-ci.yml@main
  *         uses: ippoan/ci-workflows/.github/workflows/rust-ci.yml@main
  *         uses: ippoan/ci-workflows/.github/workflows/go-ci.yml@main
+ *         uses: ippoan/ci-workflows/.github/workflows/lib-ci.yml@main
  *      A simple substring match is robust here — `.yml@` is unique enough
  *      and immune to indentation / quoting differences.
  *   2. `Cargo.toml` at the repo root — definitive for Rust crates that
@@ -382,6 +384,12 @@ export async function patchRepoSettings(
  * Bounded HTTP cost per repo: at most three GETs (ci.yml + Cargo.toml +
  * go.mod). All 404-fast when missing. Each call short-circuits on any 5xx
  * so transient GitHub errors don't blow up the dashboard page.
+ *
+ * The `lib` detection only consults `ci.yml` because there is no language-
+ * level file that uniquely identifies a Node.js library repo (a generic
+ * `package.json` could be a worker, a frontend, or a lib). The dashboard
+ * therefore treats lib repos as `"unknown"` until their CI is migrated to
+ * the lib-ci.yml reusable.
  */
 export async function detectProjectType(
   token: string,
@@ -403,6 +411,9 @@ export async function detectProjectType(
     }
     if (ci.includes("ci-workflows/.github/workflows/go-ci.yml")) {
       return "go";
+    }
+    if (ci.includes("ci-workflows/.github/workflows/lib-ci.yml")) {
+      return "lib";
     }
   }
   // Cargo.toml at the repo root is conclusive for Rust crates even when the
