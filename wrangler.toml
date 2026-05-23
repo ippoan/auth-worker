@@ -170,6 +170,17 @@ binding = "INTERNAL_SHARED_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "mcp-internal-shared-secret-staging"
 
+# ci-dashboard 専用 secret。OAuth Code + PKCE consumer (`@ippoan/auth-client-worker`
+# 経由) なので MCP 系 secret (`mcp-internal-shared-secret-*`) は使わず、ci-dashboard
+# 向けに分けた `JWT_FOR_CI_DASHBOARD` entry を bind する。binding 名が
+# `INTERNAL_SHARED_SECRET*` で始まる必要があるのは `resolveAllSharedSecrets` (#189/#190)
+# の発見規約のため。Secrets Store entry は operator が事前作成済 (Cloudflare dashboard
+# Storage & databases → Secrets Store → `JWT_FOR_CI_DASHBOARD`)。
+[[env.staging.secrets_store_secrets]]
+binding = "INTERNAL_SHARED_SECRET_CI_DASHBOARD"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "JWT_FOR_CI_DASHBOARD"
+
 [[env.staging.durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
 class_name = "LineworksWebhookDO"
