@@ -170,6 +170,21 @@ binding = "INTERNAL_SHARED_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "mcp-internal-shared-secret-staging"
 
+# Per-consumer secret for ci-dashboard (#189 / #190). `/mcp/introspect` Mode 2
+# is multi-binding aware (`resolveAllSharedSecrets`), so adding a binding here
+# is enough — no handler code change. Lets ci-dashboard rotate / leak its own
+# secret without affecting the legacy shared `INTERNAL_SHARED_SECRET` consumers
+# (cc-relay broker / github-mcp-server-rs / ref-files-worker).
+#
+# Bootstrap (operator, once):
+#   STORE="bd7bc91a3e5f4111add4acf6cb4b8733"
+#   openssl rand -hex 32 | npx wrangler secrets-store secret create "$STORE" \
+#       --name ci-dashboard-internal-shared-secret-staging --scopes workers --remote
+[[env.staging.secrets_store_secrets]]
+binding = "INTERNAL_SHARED_SECRET_CI_DASHBOARD"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "ci-dashboard-internal-shared-secret-staging"
+
 [[env.staging.durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
 class_name = "LineworksWebhookDO"
