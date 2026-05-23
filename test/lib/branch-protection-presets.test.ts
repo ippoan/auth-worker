@@ -105,11 +105,47 @@ describe("PRESETS — ippoan-go-default", () => {
   });
 });
 
+describe("PRESETS — ippoan-lib-default", () => {
+  const p = PRESETS["ippoan-lib-default"];
+
+  it("required_checks lists the lib-ci.yml jobs (typecheck + test) in order", () => {
+    // These pin the `ci-workflows/.github/workflows/lib-ci.yml` job names
+    // prefixed by the caller's `ci` job id. `ci / lint` is intentionally
+    // excluded because lib-ci.yml auto-skips lint when no eslint config is
+    // present — pinning it as required would silently block all PRs on
+    // libs without lint (worker preset 初版 silent block 再発回避)。
+    expect(p.required_checks).toEqual([
+      "ci / typecheck",
+      "ci / test",
+    ]);
+  });
+
+  it("shares the same safety knobs as the rust / worker / go presets", () => {
+    expect(p.payload.allow_force_pushes).toBe(false);
+    expect(p.payload.allow_deletions).toBe(false);
+    expect(p.payload.enforce_admins).toBe(true);
+    expect(p.payload.required_pull_request_reviews).toBeNull();
+    expect(p.payload.restrictions).toBeNull();
+  });
+
+  it("required_status_checks.strict = true and contexts match required_checks", () => {
+    const rsc = p.payload.required_status_checks;
+    expect(rsc).not.toBeNull();
+    expect(rsc!.strict).toBe(true);
+    expect(rsc!.contexts).toEqual(p.required_checks);
+  });
+
+  it("project_type is 'lib' (drives dashboard auto-pick)", () => {
+    expect(p.project_type).toBe("lib");
+  });
+});
+
 describe("isPresetId", () => {
   it("accepts known preset ids", () => {
     expect(isPresetId("ippoan-rust-default")).toBe(true);
     expect(isPresetId("ippoan-worker-default")).toBe(true);
     expect(isPresetId("ippoan-go-default")).toBe(true);
+    expect(isPresetId("ippoan-lib-default")).toBe(true);
   });
   it("rejects unknown / non-string values", () => {
     expect(isPresetId("malicious-preset")).toBe(false);
