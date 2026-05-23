@@ -81,6 +81,19 @@ deleted_classes = ["IssueRoomDO"]
 enabled = true
 head_sampling_rate = 1
 
+# `secrets.required` は ci-workflows/secret-verify-gcp.yml の入力。GCP
+# Secret Manager 上に **これらと完全に同名の secret が存在することを CI で
+# 検証**する。CF Secrets Store binding 経由で使う全 secret_name を列挙する
+# (binding 名ではなく Secrets Store entry 名 = GCP secret 名と揃える)。
+# verify SA に `secretmanager.secrets.update` 権限があれば
+# `used-by-ippoan-auth-worker=active` label が自動付与される。
+[secrets]
+required = [
+  "mcp-internal-shared-secret-prod",
+  "mcp-internal-shared-secret-staging",
+  "JWT_FOR_CI_DASHBOARD",
+]
+
 [[routes]]
 pattern = "auth.ippoan.org"
 custom_domain = true
