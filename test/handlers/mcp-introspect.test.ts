@@ -155,6 +155,30 @@ describe("POST /mcp/introspect — internal auth", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  // `resolveAllSharedSecrets` must silently drop bindings that fail to resolve
+  // to a usable string so a single broken per-consumer entry doesn't take the
+  // whole handler down (issue #189). Exercises three code paths at once:
+  //  - `resolveSecretBinding` final `return null` (object without `.get`)
+  //  - `resolveSecretBinding` catch branch (`.get()` rejects)
+  //  - `resolveAllSharedSecrets` loop's `if (value)` false branch (both above)
+  it("ignores INTERNAL_SHARED_SECRET_* bindings that fail to resolve (no .get / .get throws)", async () => {
+    const { env, kv } = envWithKv({
+      INTERNAL_SHARED_SECRET_BROKEN: { foo: 1 },
+      INTERNAL_SHARED_SECRET_THROWS: {
+        get: () => Promise.reject(new Error("kv unavailable")),
+      },
+    } as unknown as Partial<Env>);
+    const jwt = await makeValidJwt("alice");
+    const enc = await encryptWithKey("gh_test_token", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = enc;
+    const res = await handleMcpIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token: jwt }) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { active: boolean }).active).toBe(true);
+  });
 });
 
 describe("POST /mcp/introspect — body parsing", () => {
