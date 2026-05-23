@@ -1,7 +1,7 @@
 # auth-worker
 
 Cloudflare Worker による共有認証ゲートウェイ。
-nuxt-pwa-carins / nuxt-dtako-logs のログイン画面・JWT 発行を担当。
+nuxt-pwa-carins / nuxt-dtako-logs のログイン画面・JWT 発行・MCP OAuth Provider を担当。
 
 ## 認証フロー
 
