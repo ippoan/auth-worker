@@ -324,6 +324,60 @@ describe("POST /mcp/introspect — Bearer JWT auth (mode 1)", () => {
   });
 });
 
+describe("POST /mcp/introspect — URL aud allowlist (Refs ippoan/secrets-inventory#43)", () => {
+  it("accepts URL aud matching an entry in MCP_RESOURCE_ORIGINS_ALLOWLIST", async () => {
+    const { env, kv } = envWithKv({
+      MCP_RESOURCE_ORIGINS_ALLOWLIST: "https://security-inventory.ippoan.org",
+    } as unknown as Partial<Env>);
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "https://security-inventory.ippoan.org/mcp",
+      },
+      TEST_MCP_JWT_SECRET,
+      3600,
+    );
+    const encrypted = await encryptWithKey("gho_inv_token", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = encrypted;
+
+    const res = await handleMcpIntrospect(req({ auth: `Bearer ${jwt}` }), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { active: boolean; github_token: string };
+    expect(body.active).toBe(true);
+    expect(body.github_token).toBe("gho_inv_token");
+  });
+
+  it("rejects URL aud whose origin is NOT in MCP_RESOURCE_ORIGINS_ALLOWLIST", async () => {
+    const { env } = envWithKv({
+      MCP_RESOURCE_ORIGINS_ALLOWLIST: "https://security-inventory.ippoan.org",
+    } as unknown as Partial<Env>);
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "",
+        aud: "https://evil.example/mcp",
+      },
+      TEST_MCP_JWT_SECRET,
+      3600,
+    );
+    const res = await handleMcpIntrospect(req({ auth: `Bearer ${jwt}` }), env);
+    expect(res.status).toBe(401);
+  });
+
+  it("still accepts the legacy literal aud 'github-mcp-server-rs' (regression guard)", async () => {
+    const { env, kv } = envWithKv();
+    const jwt = await makeValidJwt("alice");
+    const encrypted = await encryptWithKey("gho_legacy", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = encrypted;
+    const res = await handleMcpIntrospect(req({ auth: `Bearer ${jwt}` }), env);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { active: boolean }).active).toBe(true);
+  });
+});
+
 describe("POST /mcp/introspect — github_token recovery", () => {
   it("returns active:false when github_token:{sub} missing from KV", async () => {
     const { env } = envWithKv();
