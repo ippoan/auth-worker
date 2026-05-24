@@ -38,18 +38,27 @@ id = "f13ecae4b69043819c09f606abb84797"
 # 「auth と ref-files の secret 同期がズレる」事故が構造的に消える。
 # Refs ippoan/ref-files-worker#4
 #
-# Bootstrap (1 回だけ admin が実行):
-#   wrangler secrets-store store create ippoan-mcp --remote
+# 2026-05-24: secret_name を `mcp-internal-shared-secret-{prod,staging}` の
+# 2 entry 体制から **単一 `INTERNAL_SHARED_SECRET` entry** に統合
+# (Refs ippoan/mcp-relay-rs#21、ippoan/mcp-relay-rs#27)。
+# 統合理由:
+#   - mcp-relay-rs binary は build-time 1 値しか embed できない (release.yml の
+#     `secrets.INTERNAL_SHARED_SECRET` 経由)。同名 entry に揃えれば prod/staging
+#     共通で同じ binary が使えて、CCoW silent bootstrap が両 env で動く。
+#   - 両 entry の値同期が運用上必要だった (drift で 401 を起こした実害)。
+#     entry を 1 個にすれば構造的に drift しない。
+# 既存 entry `mcp-internal-shared-secret-{prod,staging}` は CF Secret Store
+# に残置 (削除すると他 worker への影響不明)。今後の rotate は
+# `INTERNAL_SHARED_SECRET` entry のみで行う。
+#
+# Bootstrap (初回のみ):
 #   wrangler secrets-store secret create <store-id> \
-#       --name mcp-internal-shared-secret-prod    --scopes workers --remote
-#   wrangler secrets-store secret create <store-id> \
-#       --name mcp-internal-shared-secret-staging --scopes workers --remote
-# 以後 store_id を auth-worker / ref-files-worker の wrangler.toml で同値に揃え、
-# `wrangler deploy [--env staging]` で binding が再生する。
+#       --name INTERNAL_SHARED_SECRET --scopes workers --remote
+# 以後 `wrangler deploy [--env staging]` で binding が再生する。
 [[secrets_store_secrets]]
 binding = "INTERNAL_SHARED_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
-secret_name = "mcp-internal-shared-secret-prod"
+secret_name = "INTERNAL_SHARED_SECRET"
 
 # LINE WORKS webhook 受信用 Durable Object (bot_id ごとに 1 instance)
 [[durable_objects.bindings]]
@@ -95,8 +104,15 @@ head_sampling_rate = 1
 # `used-by-ippoan-auth-worker=active` label が自動付与される。
 [secrets]
 required = [
-  "mcp-internal-shared-secret-prod",
-  "mcp-internal-shared-secret-staging",
+  # 2026-05-24: 旧 `mcp-internal-shared-secret-{prod,staging}` の 2 entry 体制
+  # から単一 `INTERNAL_SHARED_SECRET` entry に統合 (Refs ippoan/mcp-relay-rs#21)。
+  # **`INTERNAL_SHARED_SECRET` を本リストに入れない**: wrangler 4.79.0+ では
+  # `[secrets]` block が experimental "Secret binding" として解釈され、
+  # `[[secrets_store_secrets]].binding = "INTERNAL_SHARED_SECRET"` と
+  # binding 名前空間で collision して `wrangler types` が fail する。
+  # CF Secrets Store entry の存在は `wrangler deploy` が独自に verify する
+  # ので、GCP 側 mirror の verify を `[secrets].required` で重複させる必要は
+  # 無い (= INTERNAL_SHARED_SECRET の GCP 側 verify は skip)。
   "JWT_FOR_CI_DASHBOARD",
 ]
 
@@ -186,12 +202,13 @@ id = "f13ecae4b69043819c09f606abb84797"
 binding = "MCP_OAUTH_KV"
 id = "0498e6057b8c4d7fbca92e9de41524ee"
 
-# ref-files-worker と同じ store_id を point させて値を物理共有 (上の prod 用
-# binding コメント参照)。secret_name は env ごとに別 (staging は別系統)。
+# ref-files-worker と同じ store_id + secret_name を point させて値を物理共有
+# (top-level コメント参照)。2026-05-24 以降 prod/staging とも同一 entry
+# `INTERNAL_SHARED_SECRET` に統合済 (Refs ippoan/mcp-relay-rs#21)。
 [[env.staging.secrets_store_secrets]]
 binding = "INTERNAL_SHARED_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
-secret_name = "mcp-internal-shared-secret-staging"
+secret_name = "INTERNAL_SHARED_SECRET"
 
 # ci-dashboard 専用 secret。OAuth Code + PKCE consumer (`@ippoan/auth-client-worker`
 # 経由) なので MCP 系 secret (`mcp-internal-shared-secret-*`) は使わず、ci-dashboard
