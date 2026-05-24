@@ -470,6 +470,8 @@ describe("fetchProtectionRows", () => {
     cargoToml?: string | null;
     /** Body of `go.mod` (base64-encoded automatically). */
     goMod?: string | null;
+    /** Body of `app/src/main/AndroidManifest.xml` (base64-encoded automatically). */
+    androidManifest?: string | null;
   }>): void {
     const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
     const contentsRespFor = (body: string | null | undefined): Response => {
@@ -506,6 +508,9 @@ describe("fetchProtectionRows", () => {
           }
           if (url.includes(`/repos/ippoan/${key}/contents/go.mod`)) {
             return contentsRespFor(plan.goMod ?? null);
+          }
+          if (url.includes(`/repos/ippoan/${key}/contents/app/src/main/AndroidManifest.xml`)) {
+            return contentsRespFor(plan.androidManifest ?? null);
           }
           if (url.endsWith(`/repos/ippoan/${key}`)) {
             return plan.settings ?? new Response(
@@ -751,6 +756,40 @@ describe("fetchProtectionRows", () => {
       { owner: "ippoan", name: "h", default_branch: "main" },
     ]);
     expect(rows[0]?.project_type).toBe("lib");
+  });
+
+  it("populates project_type=android when ci.yml references android-ci.yml", async () => {
+    // android-ci.yml does not yet exist in ci-workflows but the detector
+    // pins the substring so the dashboard can pick the android preset as
+    // soon as a consumer migrates. Same pattern as the lib-ci.yml branch.
+    stubFetch({
+      i: {
+        ciYml:
+          "jobs:\n  ci:\n    uses: ippoan/ci-workflows/.github/workflows/android-ci.yml@main\n",
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "i", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("android");
+  });
+
+  it("falls back to AndroidManifest.xml when ci.yml/Cargo.toml/go.mod all missing", async () => {
+    // HealthConnectReader's bootstrap state: no PR-trigger ci.yml exists
+    // yet (only release.yml on push to main), so detection has to lean on
+    // the AGP-standard manifest path. The dashboard then offers the
+    // android preset with the standard caveat (override required_checks
+    // until android-ci.yml ships).
+    stubFetch({
+      j: {
+        androidManifest:
+          "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">\n</manifest>\n",
+      },
+    });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "j", default_branch: "main" },
+    ]);
+    expect(rows[0]?.project_type).toBe("android");
   });
 
   it("returns project_type=unknown when no marker file exists", async () => {
