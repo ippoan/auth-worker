@@ -50,7 +50,7 @@ auth-client は `.vue` ソースファイルをそのまま ship する（ビル
 ```toml
 [[env.staging.secrets_store_secrets]]
 binding = "INTERNAL_SHARED_SECRET"                    # legacy / shared (cc-relay broker / github-mcp-server-rs / ref-files-worker)
-secret_name = "mcp-internal-shared-secret-staging"
+secret_name = "INTERNAL_SHARED_SECRET"                # 2026-05-24: prod/staging 統合 (旧 mcp-internal-shared-secret-{prod,staging})
 
 [[env.staging.secrets_store_secrets]]
 binding = "INTERNAL_SHARED_SECRET_CI_DASHBOARD"       # per-consumer
