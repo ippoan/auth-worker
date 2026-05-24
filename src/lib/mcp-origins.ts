@@ -98,10 +98,12 @@ export function resourceOriginBySlug(env: Env): Map<string, string> {
     .filter((s) => s.length > 0);
   for (const origin of extra) {
     try {
+      // valid URL なら hostname は必ず非空、その first label を slug に使う
+      // (例: `security-inventory.ippoan.org` → `security-inventory`)
       const slug = new URL(origin).hostname.split(".")[0];
-      if (slug) map.set(slug, origin);
+      map.set(slug, origin);
     } catch {
-      // skip malformed
+      // skip malformed entries (= URL ctor が throw)
     }
   }
   return map;

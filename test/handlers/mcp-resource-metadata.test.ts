@@ -103,4 +103,12 @@ describe("GET /.well-known/oauth-protected-resource/<slug>", () => {
     const body = (await res.json()) as { resource: string };
     expect(body.resource).toBe("https://mcp-staging.ippoan.org");
   });
+
+  // defense-in-depth `if (!m)` branch: routing prefix `/.well-known/oauth-
+  // protected-resource/` には一致するが slug の char set (= [A-Za-z0-9-]) に
+  // 一致しない path (= 不正 char `.` を含む)。
+  it("returns 404 when path matches prefix but slug contains invalid chars", async () => {
+    const res = callPath(createMockEnv(), "/.well-known/oauth-protected-resource/bad..slug");
+    expect(res.status).toBe(404);
+  });
 });
