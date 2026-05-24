@@ -99,8 +99,12 @@ export function resourceOriginBySlug(env: Env): Map<string, string> {
   for (const origin of extra) {
     try {
       // valid URL なら hostname は必ず非空、その first label を slug に使う
-      // (例: `security-inventory.ippoan.org` → `security-inventory`)
-      const slug = new URL(origin).hostname.split(".")[0];
+      // (例: `security-inventory.ippoan.org` → `security-inventory`)。
+      // `split(".")[0]` の戻り型は `string | undefined` (array index 規約)
+      // だが空文字 hostname は URL ctor が throw 済みなので必ず string 確定。
+      // `??` で fallback を書くと coverage 100% gate の未到達 branch になる
+      // ため non-null assertion を使う。
+      const slug = new URL(origin).hostname.split(".")[0]!;
       map.set(slug, origin);
     } catch {
       // skip malformed entries (= URL ctor が throw)
