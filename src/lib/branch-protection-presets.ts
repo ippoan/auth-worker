@@ -59,13 +59,31 @@
  *       今後この preset に乗る予定。
  *     - safety knob は rust / worker / go と同一。lib として公開 registry に
  *       publish される以上、staging 運用でも品質ガードは緩めない方が安全。
+ *   - `ippoan-android-default`:
+ *     - Android (Gradle) 系。`ci-workflows/.github/workflows/android-ci.yml`
+ *       reusable workflow を caller が job id `ci` で呼ぶ前提で、`Build APK`
+ *       / `Lint` の 2 job 名 (`ci / Build APK` / `ci / Lint`) を required に
+ *       固定する。Build APK は `./gradlew assembleDebug` (署名不要)、Lint は
+ *       `./gradlew lint` を想定。
+ *     - 初期 consumer は `ippoan/HealthConnectReader` (Health Connect 経由で
+ *       Life Fitness トレッドミルデータを読む自分用アプリ)。同 repo は現状
+ *       `release.yml` だけで PR-trigger CI が無いため、preset を Apply する
+ *       前に `ci.yml` (android-ci.yml reusable 呼び出し) を先に追加する必要
+ *       あり — worker preset 初版の silent block 事故 (ci-workflows 側の job
+ *       名と required_checks 名の不一致 / そもそも check が存在しない) と
+ *       同型なので、required override で空にするか、check 名を実態に合わせる
+ *       こと。`android-ci.yml` reusable は ci-workflows 側に未追加。
+ *     - safety knob (force push / 削除 / approval / bypass) は他の preset と
+ *       同一。署名済み APK を GitHub Release / Pages に配る性質上、force push
+ *       経路を塞ぐ価値は go preset と同等以上。
  */
 
 export type PresetId =
   | "ippoan-rust-default"
   | "ippoan-worker-default"
   | "ippoan-go-default"
-  | "ippoan-lib-default";
+  | "ippoan-lib-default"
+  | "ippoan-android-default";
 
 /**
  * Project type a preset applies to. The dashboard auto-detects each repo's
@@ -74,7 +92,13 @@ export type PresetId =
  * vice versa. `"unknown"` repos are shown every preset with a hint instead
  * of being silently locked out.
  */
-export type ProjectType = "worker" | "rust" | "go" | "lib" | "unknown";
+export type ProjectType =
+  | "worker"
+  | "rust"
+  | "go"
+  | "lib"
+  | "android"
+  | "unknown";
 
 export interface BranchProtectionPayload {
   required_status_checks: {
@@ -124,6 +148,11 @@ const IPPOAN_GO_DEFAULT_CHECKS = [
 const IPPOAN_LIB_DEFAULT_CHECKS = [
   "ci / typecheck",
   "ci / test",
+];
+
+const IPPOAN_ANDROID_DEFAULT_CHECKS = [
+  "ci / Build APK",
+  "ci / Lint",
 ];
 
 export const PRESETS: Record<PresetId, PresetDefinition> = {
@@ -211,6 +240,27 @@ export const PRESETS: Record<PresetId, PresetDefinition> = {
       required_conversation_resolution: false,
     },
   },
+  "ippoan-android-default": {
+    id: "ippoan-android-default",
+    label: "Apply ippoan-android-default",
+    description:
+      "Android (Gradle) CI (assembleDebug + lint) required. Requires android-ci.yml reusable workflow in ci-workflows, which does not yet exist — apply this preset only after the consumer repo's ci.yml emits matching check names, or use the required-checks override. No force push, no branch deletion, approval=0, admins cannot bypass.",
+    required_checks: IPPOAN_ANDROID_DEFAULT_CHECKS,
+    project_type: "android",
+    payload: {
+      required_status_checks: {
+        strict: true,
+        contexts: IPPOAN_ANDROID_DEFAULT_CHECKS,
+      },
+      required_pull_request_reviews: null,
+      enforce_admins: true,
+      restrictions: null,
+      required_linear_history: false,
+      allow_force_pushes: false,
+      allow_deletions: false,
+      required_conversation_resolution: false,
+    },
+  },
 };
 
 export function isPresetId(s: unknown): s is PresetId {
@@ -218,7 +268,8 @@ export function isPresetId(s: unknown): s is PresetId {
     s === "ippoan-rust-default" ||
     s === "ippoan-worker-default" ||
     s === "ippoan-go-default" ||
-    s === "ippoan-lib-default"
+    s === "ippoan-lib-default" ||
+    s === "ippoan-android-default"
   );
 }
 

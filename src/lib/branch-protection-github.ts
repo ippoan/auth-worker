@@ -359,7 +359,8 @@ export async function patchRepoSettings(
  * Detect whether a repo is a Cloudflare Worker (`frontend-ci.yml` consumer),
  * a Rust crate (`rust-ci.yml` consumer), a Go service (`go-ci.yml` consumer
  * or any repo with a top-level `go.mod`), a Node.js library (`lib-ci.yml`
- * consumer), or none of these.
+ * consumer), an Android app (`android-ci.yml` consumer or any repo with
+ * `app/src/main/AndroidManifest.xml`), or none of these.
  *
  * Source of truth, in order:
  *   1. `.github/workflows/ci.yml` — most consumers use exactly that path and
@@ -368,6 +369,7 @@ export async function patchRepoSettings(
  *         uses: ippoan/ci-workflows/.github/workflows/rust-ci.yml@main
  *         uses: ippoan/ci-workflows/.github/workflows/go-ci.yml@main
  *         uses: ippoan/ci-workflows/.github/workflows/lib-ci.yml@main
+ *         uses: ippoan/ci-workflows/.github/workflows/android-ci.yml@main
  *      A simple substring match is robust here — `.yml@` is unique enough
  *      and immune to indentation / quoting differences.
  *   2. `Cargo.toml` at the repo root — definitive for Rust crates that
@@ -375,15 +377,21 @@ export async function patchRepoSettings(
  *   3. `go.mod` at the repo root — definitive for Go modules whose CI is
  *      still a hand-rolled workflow file (e.g. the initial
  *      `secrets-inventory-gcp` deploy.yml that pre-dates `go-ci.yml`).
+ *   4. `app/src/main/AndroidManifest.xml` — definitive for Android (Gradle)
+ *      apps. The Manifest path is fixed by AGP convention and is far more
+ *      specific than `build.gradle.kts` (which a generic Kotlin/JVM project
+ *      could also have). Probed last so a Rust/Go hybrid that vendored an
+ *      Android shim still wins on its primary marker.
  *
  * Returns `"unknown"` when no marker matches. The dashboard then surfaces
  * every preset with a hint instead of locking the operator out — the worst
  * case is they pick the wrong one and the apply call fails on the GitHub
  * side with a structured error they can act on.
  *
- * Bounded HTTP cost per repo: at most three GETs (ci.yml + Cargo.toml +
- * go.mod). All 404-fast when missing. Each call short-circuits on any 5xx
- * so transient GitHub errors don't blow up the dashboard page.
+ * Bounded HTTP cost per repo: at most four GETs (ci.yml + Cargo.toml +
+ * go.mod + AndroidManifest.xml). All 404-fast when missing. Each call
+ * short-circuits on any 5xx so transient GitHub errors don't blow up the
+ * dashboard page.
  *
  * The `lib` detection only consults `ci.yml` because there is no language-
  * level file that uniquely identifies a Node.js library repo (a generic
@@ -415,6 +423,9 @@ export async function detectProjectType(
     if (ci.includes("ci-workflows/.github/workflows/lib-ci.yml")) {
       return "lib";
     }
+    if (ci.includes("ci-workflows/.github/workflows/android-ci.yml")) {
+      return "android";
+    }
   }
   // Cargo.toml at the repo root is conclusive for Rust crates even when the
   // workflow file is missing / custom.
@@ -425,6 +436,16 @@ export async function detectProjectType(
   // resolves to "rust" via Cargo.toml above.
   const goMod = await fetchTextFile(token, owner, repo, "go.mod");
   if (goMod) return "go";
+  // AndroidManifest.xml at the AGP-standard module path is conclusive for
+  // Android apps (Gradle / Kotlin). Probed after Cargo/go so a hybrid repo
+  // keeps its primary classification.
+  const manifest = await fetchTextFile(
+    token,
+    owner,
+    repo,
+    "app/src/main/AndroidManifest.xml",
+  );
+  if (manifest) return "android";
   return "unknown";
 }
 

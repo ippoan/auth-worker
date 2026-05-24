@@ -237,6 +237,8 @@ export function renderBranchProtectionPage(opts: {
         typeBadge = '<span class="badge-ok" title="Detected from .github/workflows/ci.yml (rust-ci.yml) or Cargo.toml">rust</span>';
       } else if (rowType === "go") {
         typeBadge = '<span class="badge-ok" title="Detected from .github/workflows/ci.yml (go-ci.yml) or go.mod">go</span>';
+      } else if (rowType === "android") {
+        typeBadge = '<span class="badge-ok" title="Detected from .github/workflows/ci.yml (android-ci.yml) or app/src/main/AndroidManifest.xml">android</span>';
       } else {
         typeBadge = '<span class="branch-warn" title="No ci.yml referencing ippoan/ci-workflows reusable; showing every preset as a fallback.">unknown type</span>';
       }
