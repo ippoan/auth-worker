@@ -39,12 +39,16 @@ import { decryptWithKey } from "../lib/mcp-crypto";
 import { verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 
-const MCP_AUD_LEGACY = "github-mcp-server-rs";
+const MCP_AUD_LEGACY: readonly string[] = ["github-mcp-server-rs", "ref-files-mcp-server-rs"];
 
 /**
  * binding_jwt の aud claim 受理 predicate を構築する。
  *
- * - legacy literal `"github-mcp-server-rs"` (= Rust github-mcp-server)
+ * - legacy literal allowlist (default: `["github-mcp-server-rs", "ref-files-mcp-server-rs"]`、
+ *   env `MCP_JWT_AUDIENCE_ALLOWLIST` で上書き) — Rust mcp-relay-rs 由来の
+ *   binary が `binding_jwt` の `aud` に焼く literal。`mcp-pair-grant-via-oat` /
+ *   `mcp-relay-bridge` と同じ allowlist source を使う (issue #23 — 片方の
+ *   handler だけが accept する &quot;片肺&quot; を防ぐ)
  * - `mcp(-staging).ippoan.org` 起点の URL aud (= relay 既存実装)
  * - `MCP_RESOURCE_ORIGINS_ALLOWLIST` env (comma-sep) に並ぶ URL の origin
  *   一致 (= secrets-inventory / secrets-rotate-mcp など追加 RS 用)
@@ -62,8 +66,17 @@ function audPredicate(env: Env): (aud: string) => boolean {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   const allowedOrigins = new Set<string>([relayOrigin, ...extra]);
+  const literalRaw = (env as Env & { MCP_JWT_AUDIENCE_ALLOWLIST?: string })
+    .MCP_JWT_AUDIENCE_ALLOWLIST;
+  const literalParsed = (literalRaw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const allowedLiterals = new Set<string>(
+    literalParsed.length > 0 ? literalParsed : MCP_AUD_LEGACY,
+  );
   return (aud: string) => {
-    if (aud === MCP_AUD_LEGACY) return true;
+    if (allowedLiterals.has(aud)) return true;
     try {
       return allowedOrigins.has(new URL(aud).origin);
     } catch {

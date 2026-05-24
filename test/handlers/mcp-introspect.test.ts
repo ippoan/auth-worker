@@ -377,6 +377,57 @@ describe("POST /mcp/introspect — URL aud allowlist (Refs ippoan/secrets-invent
     expect(((await res.json()) as { active: boolean }).active).toBe(true);
   });
 
+  // ippoan/mcp-relay-rs#23: ref-files-mcp-server-rs aud JWT が
+  // `pair-grant-via-oat` で mint されるのに `/mcp/introspect` で 401 になっていた
+  // 片肺問題の regression。default literal allowlist に両 aud が入っている
+  // ことを保証する。
+  it("accepts the literal aud 'ref-files-mcp-server-rs' from default allowlist (mcp-relay-rs#23)", async () => {
+    const { env, kv } = envWithKv();
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read mcp.write",
+        aud: "ref-files-mcp-server-rs",
+      },
+      TEST_MCP_JWT_SECRET,
+      3600,
+    );
+    const encrypted = await encryptWithKey("gho_ref_files", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = encrypted;
+    const res = await handleMcpIntrospect(req({ auth: `Bearer ${jwt}` }), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { active: boolean; github_token: string };
+    expect(body.active).toBe(true);
+    expect(body.github_token).toBe("gho_ref_files");
+  });
+
+  it("MCP_JWT_AUDIENCE_ALLOWLIST env overrides the default literal allowlist", async () => {
+    const { env, kv } = envWithKv({
+      MCP_JWT_AUDIENCE_ALLOWLIST: "future-binary-rs",
+    } as unknown as Partial<Env>);
+    const encrypted = await encryptWithKey("gho_future", TEST_SSO_KEY);
+    kv._data["github_token:github:alice"] = encrypted;
+
+    // future-binary-rs (env で許可された literal) は 200
+    const allowed = await signMcpJwt(
+      { sub: "github:alice", github_login: "alice", scope: "", aud: "future-binary-rs" },
+      TEST_MCP_JWT_SECRET,
+      3600,
+    );
+    const res1 = await handleMcpIntrospect(req({ auth: `Bearer ${allowed}` }), env);
+    expect(res1.status).toBe(200);
+
+    // env override 下では default の github-mcp-server-rs literal は弾かれる
+    const denied = await signMcpJwt(
+      { sub: "github:alice", github_login: "alice", scope: "", aud: "github-mcp-server-rs" },
+      TEST_MCP_JWT_SECRET,
+      3600,
+    );
+    const res2 = await handleMcpIntrospect(req({ auth: `Bearer ${denied}` }), env);
+    expect(res2.status).toBe(401);
+  });
+
   it("rejects non-URL non-legacy aud (`new URL(...)` throws → predicate returns false)", async () => {
     const { env } = envWithKv();
     const jwt = await signMcpJwt(
