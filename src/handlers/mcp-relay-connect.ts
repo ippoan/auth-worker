@@ -23,6 +23,7 @@
  */
 
 import type { Env } from "../index";
+import { getLiteralAudAllowlist } from "../lib/mcp-aud";
 import { verifyMcpJwt } from "../lib/mcp-jwt";
 import { wwwAuthenticateValue } from "../lib/mcp-origins";
 import {
@@ -30,9 +31,6 @@ import {
   deletePair,
   getPair,
 } from "../lib/mcp-pair";
-
-/** Phase 3 `/mcp/token` で発行される JWT の aud と一致させる (Rust binary 名)。 */
-const MCP_AUD = "github-mcp-server-rs";
 
 /** issue #144: pair_code の base64url 文字 + 長さ。誤って JWT を pair_code として
  *  扱わないために、形を狭く絞る (JWT は dot を含むのでまず除外できる)。 */
@@ -87,7 +85,11 @@ async function resolveAuth(
   // JWT は dot を 2 つ含む。pair_code (base64url、dot 無し) と完全に
   // disjoint なので、形だけ見て先に分岐する。
   if (token.includes(".")) {
-    const payload = await verifyMcpJwt(token, env.MCP_JWT_SECRET!, MCP_AUD);
+    const payload = await verifyMcpJwt(
+      token,
+      env.MCP_JWT_SECRET!,
+      getLiteralAudAllowlist(env),
+    );
     if (payload) {
       return {
         kind: "ok",
