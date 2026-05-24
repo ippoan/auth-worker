@@ -37,8 +37,40 @@
 import type { Env } from "../index";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
+import { mcpRelayOrigin } from "../lib/mcp-origins";
 
-const MCP_AUD = "github-mcp-server-rs";
+const MCP_AUD_LEGACY = "github-mcp-server-rs";
+
+/**
+ * binding_jwt の aud claim 受理 predicate を構築する。
+ *
+ * - legacy literal `"github-mcp-server-rs"` (= Rust github-mcp-server)
+ * - `mcp(-staging).ippoan.org` 起点の URL aud (= relay 既存実装)
+ * - `MCP_RESOURCE_ORIGINS_ALLOWLIST` env (comma-sep) に並ぶ URL の origin
+ *   一致 (= secrets-inventory / secrets-rotate-mcp など追加 RS 用)
+ *
+ * URL aud は MCP Authorization spec 2025-06-18 が RFC 8707 で要求する
+ * `resource` parameter のため、claude.ai connector が任意の RS URL を aud
+ * として要求してくる。許容する URL origin を env で明示的に絞り込むことで
+ * confused-deputy を防ぐ。
+ */
+function audPredicate(env: Env): (aud: string) => boolean {
+  const relayOrigin = mcpRelayOrigin(env);
+  const extra = ((env as Env & { MCP_RESOURCE_ORIGINS_ALLOWLIST?: string })
+    .MCP_RESOURCE_ORIGINS_ALLOWLIST ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const allowedOrigins = new Set<string>([relayOrigin, ...extra]);
+  return (aud: string) => {
+    if (aud === MCP_AUD_LEGACY) return true;
+    try {
+      return allowedOrigins.has(new URL(aud).origin);
+    } catch {
+      return false;
+    }
+  };
+}
 
 function jsonNoStore(data: unknown, status = 200): Response {
   const res = new Response(JSON.stringify(data), {
@@ -160,7 +192,7 @@ export async function handleMcpIntrospect(
   // ── Mode 1: Bearer JWT (推奨) ───────────────────────────────────────────
   const bearer = /^Bearer\s+(.+)$/i.exec(authz);
   if (bearer && bearer[1]) {
-    const payload = await verifyMcpJwt(bearer[1], env.MCP_JWT_SECRET, MCP_AUD);
+    const payload = await verifyMcpJwt(bearer[1], env.MCP_JWT_SECRET, audPredicate(env));
     if (!payload) {
       // Bearer 形式で来たが verify 失敗 → mode 2 フォールバックさせず即 401
       // (timing attack 経路を増やさない、かつ legacy caller は Bearer prefix
@@ -190,7 +222,7 @@ export async function handleMcpIntrospect(
     return jsonNoStore({ active: false });
   }
 
-  const payload = await verifyMcpJwt(token, env.MCP_JWT_SECRET, MCP_AUD);
+  const payload = await verifyMcpJwt(token, env.MCP_JWT_SECRET, audPredicate(env));
   if (!payload) {
     return jsonNoStore({ active: false });
   }
