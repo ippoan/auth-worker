@@ -35,11 +35,10 @@
  */
 
 import type { Env } from "../index";
+import { getLiteralAudAllowlist } from "../lib/mcp-aud";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
-
-const MCP_AUD_LEGACY: readonly string[] = ["github-mcp-server-rs", "ref-files-mcp-server-rs"];
 
 /**
  * binding_jwt の aud claim 受理 predicate を構築する。
@@ -66,15 +65,7 @@ function audPredicate(env: Env): (aud: string) => boolean {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   const allowedOrigins = new Set<string>([relayOrigin, ...extra]);
-  const literalRaw = (env as Env & { MCP_JWT_AUDIENCE_ALLOWLIST?: string })
-    .MCP_JWT_AUDIENCE_ALLOWLIST;
-  const literalParsed = (literalRaw ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const allowedLiterals = new Set<string>(
-    literalParsed.length > 0 ? literalParsed : MCP_AUD_LEGACY,
-  );
+  const allowedLiterals = new Set<string>(getLiteralAudAllowlist(env));
   return (aud: string) => {
     if (allowedLiterals.has(aud)) return true;
     try {

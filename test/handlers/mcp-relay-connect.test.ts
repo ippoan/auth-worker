@@ -172,6 +172,91 @@ describe("handleMcpRelayConnect — JWT authentication", () => {
   });
 });
 
+// mcp-relay-rs#15 / auth-worker #198 と同じ片肺事故を /connect 側でも
+// 起こしていた件。`/mcp/introspect` は #198 で aud=ref-files-mcp-server-rs
+// を accept するように直したが、`/u/:user/connect` の handler は
+// `MCP_AUD = "github-mcp-server-rs"` を hardcode したままで WS upgrade が
+// 401 で reject されていた。`getLiteralAudAllowlist(env)` の導入で両 path
+// が同じ source of truth を共有する。
+describe("handleMcpRelayConnect — aud allowlist (legacy + env override)", () => {
+  it("accepts aud=ref-files-mcp-server-rs (legacy default allowlist)", async () => {
+    const { env } = envWithDO();
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "ref-files-mcp-server-rs",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${jwt}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(101);
+  });
+
+  it("rejects unknown aud with 401 (default allowlist does not include it)", async () => {
+    const { env } = envWithDO();
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "some-other-mcp-server",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${jwt}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("MCP_JWT_AUDIENCE_ALLOWLIST env overrides the legacy default", async () => {
+    const { ns } = mockDONamespace(async () => new Response(null, { status: 101 }));
+    const baseEnv = createMockEnv({
+      MCP_JWT_SECRET: TEST_SECRET,
+      MCP_SESSION_DO: ns,
+    });
+    const env = {
+      ...baseEnv,
+      MCP_JWT_AUDIENCE_ALLOWLIST: "custom-aud-only",
+    } as unknown as Env;
+    const customJwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "mcp.read",
+        aud: "custom-aud-only",
+      },
+      TEST_SECRET,
+      3600,
+    );
+    const okRes = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${customJwt}` }),
+      env,
+      "alice",
+    );
+    expect(okRes.status).toBe(101);
+
+    // legacy aud is now rejected (env override replaces, doesn't extend)
+    const legacyJwt = await validJwt("alice");
+    const rejected = await handleMcpRelayConnect(
+      wsReq({ upgrade: "websocket", auth: `Bearer ${legacyJwt}` }),
+      env,
+      "alice",
+    );
+    expect(rejected.status).toBe(401);
+  });
+});
+
 describe("handleMcpRelayConnect — DO forwarding", () => {
   it("calls DO.idFromName(user) and forwards request to /__connect", async () => {
     const stubFetch = vi.fn(
