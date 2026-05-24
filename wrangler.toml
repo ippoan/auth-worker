@@ -104,9 +104,15 @@ head_sampling_rate = 1
 # `used-by-ippoan-auth-worker=active` label が自動付与される。
 [secrets]
 required = [
-  # 2026-05-24: mcp-internal-shared-secret-{prod,staging} の 2 entry 体制から
-  # 単一 `INTERNAL_SHARED_SECRET` に統合 (Refs ippoan/mcp-relay-rs#21)。
-  "INTERNAL_SHARED_SECRET",
+  # 2026-05-24: 旧 `mcp-internal-shared-secret-{prod,staging}` の 2 entry 体制
+  # から単一 `INTERNAL_SHARED_SECRET` entry に統合 (Refs ippoan/mcp-relay-rs#21)。
+  # **`INTERNAL_SHARED_SECRET` を本リストに入れない**: wrangler 4.79.0+ では
+  # `[secrets]` block が experimental "Secret binding" として解釈され、
+  # `[[secrets_store_secrets]].binding = "INTERNAL_SHARED_SECRET"` と
+  # binding 名前空間で collision して `wrangler types` が fail する。
+  # CF Secrets Store entry の存在は `wrangler deploy` が独自に verify する
+  # ので、GCP 側 mirror の verify を `[secrets].required` で重複させる必要は
+  # 無い (= INTERNAL_SHARED_SECRET の GCP 側 verify は skip)。
   "JWT_FOR_CI_DASHBOARD",
 ]
 
