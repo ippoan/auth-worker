@@ -301,6 +301,10 @@ describe("Router (index.ts)", () => {
     ["/api/bot-config/export?tenant_id=abc", "bot-export"],
     ["/.well-known/oauth-authorization-server", "mcp-as-metadata"],
     ["/.well-known/oauth-protected-resource", "mcp-resource-metadata"],
+    // ippoan/secrets-inventory#45 / auth-worker#195: per-resource variant
+    // (= dynamic slug suffix routes through the `startsWith` branch in
+    // index.ts dispatch).
+    ["/.well-known/oauth-protected-resource/security-inventory", "mcp-resource-metadata"],
     ["/device", "mcp-device-page"],
     ["/device?user_code=BCDF-GHJK", "mcp-device-page"],
     ["/mcp/device_callback?code=abc&state=xyz", "mcp-device-callback"],

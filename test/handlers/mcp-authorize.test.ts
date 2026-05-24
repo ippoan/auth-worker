@@ -318,6 +318,41 @@ describe("handleMcpAuthorize — RFC 8707 resource parameter", () => {
     const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
     expect(stored.resource).toBeUndefined();
   });
+
+  // ippoan/secrets-inventory#45: MCP relay 以外の RS (= secrets-inventory worker
+  // など、独立 host) を `MCP_RESOURCE_ORIGINS_ALLOWLIST` env で許容する分岐。
+  // 旧来 mcpRelayOrigin のみ許容 → secrets-inventory MCP に audience 焼けない
+  // 問題を fix。
+  it("accepts resource origin listed in MCP_RESOURCE_ORIGINS_ALLOWLIST", async () => {
+    const kv = createMockKV() as unknown as MockKV;
+    const env = createMockEnv({
+      MCP_OAUTH_KV: kv,
+      GITHUB_MCP_CLIENT_ID: "gh-test-id",
+      OAUTH_STATE_SECRET: "test-state-secret-32chars!!!!!!!",
+      AUTH_WORKER_ORIGIN: "https://auth.test.example",
+      MCP_RESOURCE_ORIGINS_ALLOWLIST: "https://security-inventory.ippoan.org",
+    } as unknown as Partial<Env>);
+    await putDcrClient(env, {
+      client_id: "c-1",
+      client_id_issued_at: 1_000_000,
+      token_endpoint_auth_method: "none",
+      response_types: ["code"],
+      grant_types: ["authorization_code", "refresh_token"],
+      redirect_uris: ["https://claude.ai/cb"],
+    });
+    const resourceUrl = "https://security-inventory.ippoan.org/mcp";
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams("c-1"), resource: resourceUrl }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    // GitHub OAuth に redirect されているはず (= invalid_target エラーではない)
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.host).toBe("github.com");
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
+    expect(stored.resource).toBe(resourceUrl);
+  });
 });
 
 // `params.get(...) ?? ""` の null branch カバー (string-empty vs null は別 branch 扱い)

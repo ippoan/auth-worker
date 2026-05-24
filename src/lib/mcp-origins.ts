@@ -41,6 +41,79 @@ export function resourceMetadataUrl(env: Env): string {
 }
 
 /**
+ * 同 metadata endpoint の per-resource variant URL。`/.well-known/oauth-protected-
+ * resource/<slug>` 形式で、resource server が複数 (= MCP relay 以外に
+ * `security-inventory` 等の独立 worker) ある場合に、各 RS が自分用の metadata
+ * URL を `WWW-Authenticate.resource_metadata` に載せて宣言できる。
+ *
+ * slug は `MCP_RESOURCE_ORIGINS_ALLOWLIST` 内 URL の hostname 先頭 label を
+ * そのまま使う (例: `https://security-inventory.ippoan.org` → `security-inventory`)。
+ */
+export function resourceMetadataUrlFor(slug: string, env: Env): string {
+  const auth = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
+  return `${auth}/.well-known/oauth-protected-resource/${slug}`;
+}
+
+/**
+ * `/authorize` / `/mcp/token` が受理する resource origin の許可集合。
+ *
+ * - `mcpRelayOrigin(env)` (= mcp(-staging).ippoan.org) — auth-worker 自身が
+ *   front door として相手する MCP relay
+ * - `MCP_RESOURCE_ORIGINS_ALLOWLIST` env (comma-sep) に並ぶ追加 RS origin —
+ *   secrets-inventory (= security-inventory.ippoan.org) 等の独立 worker
+ *
+ * 旧来 `mcp-authorize.ts` は前者のみを許容し、後者 origin の resource を
+ * `invalid_target` で reject していた (= secrets-inventory MCP に対する
+ * RFC 8707 audience binding が成立せず client が token を使えない問題)。
+ * 本 helper を通すことで両者を統一許容する。confused-deputy 防止は
+ * allowlist env で明示的に絞ることで担保する (任意 URL は通さない)。
+ */
+export function allowedResourceOrigins(env: Env): Set<string> {
+  const relayOrigin = mcpRelayOrigin(env);
+  const extra = ((env as Env & { MCP_RESOURCE_ORIGINS_ALLOWLIST?: string })
+    .MCP_RESOURCE_ORIGINS_ALLOWLIST ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return new Set<string>([relayOrigin, ...extra]);
+}
+
+/** `allowedResourceOrigins` に origin が含まれるか。 */
+export function isAllowedResourceOrigin(origin: string, env: Env): boolean {
+  return allowedResourceOrigins(env).has(origin);
+}
+
+/**
+ * `MCP_RESOURCE_ORIGINS_ALLOWLIST` から slug → origin map を作る。slug は
+ * hostname の先頭 label (= `security-inventory.ippoan.org` → `security-inventory`)。
+ * `mcpRelayOrigin` 自身は含めない (= per-resource metadata の対象は extra RS のみ、
+ * relay 用 metadata は無印 path で配信する設計)。
+ */
+export function resourceOriginBySlug(env: Env): Map<string, string> {
+  const map = new Map<string, string>();
+  const extra = ((env as Env & { MCP_RESOURCE_ORIGINS_ALLOWLIST?: string })
+    .MCP_RESOURCE_ORIGINS_ALLOWLIST ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const origin of extra) {
+    try {
+      // valid URL なら hostname は必ず非空、その first label を slug に使う
+      // (例: `security-inventory.ippoan.org` → `security-inventory`)。
+      // `split(".")[0]` の戻り型は `string | undefined` (array index 規約)
+      // だが空文字 hostname は URL ctor が throw 済みなので必ず string 確定。
+      // `??` で fallback を書くと coverage 100% gate の未到達 branch になる
+      // ため non-null assertion を使う。
+      const slug = new URL(origin).hostname.split(".")[0]!;
+      map.set(slug, origin);
+    } catch {
+      // skip malformed entries (= URL ctor が throw)
+    }
+  }
+  return map;
+}
+
+/**
  * MCP Authorization spec で要求される 401 応答用 `WWW-Authenticate` header value。
  *
  * ```
