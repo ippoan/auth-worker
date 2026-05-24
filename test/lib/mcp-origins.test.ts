@@ -77,6 +77,13 @@ describe("resourceMetadataUrlFor", () => {
       "https://auth-staging.ippoan.org/.well-known/oauth-protected-resource/security-inventory",
     );
   });
+
+  it("falls back to https://auth.ippoan.org when AUTH_WORKER_ORIGIN is empty", () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "" });
+    expect(resourceMetadataUrlFor("security-inventory", env)).toBe(
+      "https://auth.ippoan.org/.well-known/oauth-protected-resource/security-inventory",
+    );
+  });
 });
 
 describe("allowedResourceOrigins / isAllowedResourceOrigin", () => {
