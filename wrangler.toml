@@ -98,21 +98,26 @@ head_sampling_rate = 1
 
 # `secrets.required` は ci-workflows/secret-verify-gcp.yml の入力。GCP
 # Secret Manager 上に **これらと完全に同名の secret が存在することを CI で
-# 検証**する。CF Secrets Store binding 経由で使う全 secret_name を列挙する
-# (binding 名ではなく Secrets Store entry 名 = GCP secret 名と揃える)。
-# verify SA に `secretmanager.secrets.update` 権限があれば
+# 検証**する。verify SA に `secretmanager.secrets.update` 権限があれば
 # `used-by-ippoan-auth-worker=active` label が自動付与される。
+#
+# 2026-05-24 (ippoan/ci-workflows#58 以降): `[[secrets_store_secrets]]`
+# bindings の `secret_name` は `secret-verify-gcp.yml` が **自動抽出** して
+# verify 対象に加える (top-level + `[env.*]` 配下 nested 共に走査)。本リスト
+# に重複宣言する必要は無く、また宣言すると wrangler 4.79+ の binding
+# 名前空間 collision で `wrangler types` が fail する (= 本リストには
+# `[[secrets_store_secrets]]` 系の secret_name を書かない)。
+#
+# 結果として本リストには **`[[secrets_store_secrets]]` で bind していない
+# 純粋 GCP-only secret** だけが残る (現状 `JWT_FOR_CI_DASHBOARD` は CF
+# Secrets Store binding 経由なので本来は auto-extract 対象だが、過渡期
+# 互換のため明示宣言を残す)。
 [secrets]
 required = [
-  # 2026-05-24: 旧 `mcp-internal-shared-secret-{prod,staging}` の 2 entry 体制
-  # から単一 `INTERNAL_SHARED_SECRET` entry に統合 (Refs ippoan/mcp-relay-rs#21)。
-  # **`INTERNAL_SHARED_SECRET` を本リストに入れない**: wrangler 4.79.0+ では
-  # `[secrets]` block が experimental "Secret binding" として解釈され、
-  # `[[secrets_store_secrets]].binding = "INTERNAL_SHARED_SECRET"` と
-  # binding 名前空間で collision して `wrangler types` が fail する。
-  # CF Secrets Store entry の存在は `wrangler deploy` が独自に verify する
-  # ので、GCP 側 mirror の verify を `[secrets].required` で重複させる必要は
-  # 無い (= INTERNAL_SHARED_SECRET の GCP 側 verify は skip)。
+  # INTERNAL_SHARED_SECRET (= 旧 mcp-internal-shared-secret-{prod,staging}
+  # 統合先) は `[[secrets_store_secrets]]` 経由で auto-extract される。
+  # 本リストに書かないこと (binding collision 防止、Refs
+  # ippoan/mcp-relay-rs#21、ippoan/ci-workflows#58)。
   "JWT_FOR_CI_DASHBOARD",
 ]
 
