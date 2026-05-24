@@ -376,6 +376,22 @@ describe("POST /mcp/introspect — URL aud allowlist (Refs ippoan/secrets-invent
     expect(res.status).toBe(200);
     expect(((await res.json()) as { active: boolean }).active).toBe(true);
   });
+
+  it("rejects non-URL non-legacy aud (`new URL(...)` throws → predicate returns false)", async () => {
+    const { env } = envWithKv();
+    const jwt = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "",
+        aud: "not-a-url-not-the-legacy-literal",
+      },
+      TEST_MCP_JWT_SECRET,
+      3600,
+    );
+    const res = await handleMcpIntrospect(req({ auth: `Bearer ${jwt}` }), env);
+    expect(res.status).toBe(401);
+  });
 });
 
 describe("POST /mcp/introspect — github_token recovery", () => {
