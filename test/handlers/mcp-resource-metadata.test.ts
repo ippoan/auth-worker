@@ -61,3 +61,46 @@ describe("GET /.well-known/oauth-protected-resource", () => {
     ]);
   });
 });
+
+describe("GET /.well-known/oauth-protected-resource/<slug>", () => {
+  function callPath(env: Env, path: string): Response {
+    const req = new Request(`https://auth.test.example${path}`);
+    return handleMcpResourceMetadata(req, env);
+  }
+
+  it("returns 200 with resource overridden to the slug-matched allowlist origin", async () => {
+    const env = createMockEnv({
+      AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org",
+      MCP_RESOURCE_ORIGINS_ALLOWLIST: "https://security-inventory.ippoan.org",
+    } as unknown as Partial<Env>);
+    const res = callPath(env, "/.well-known/oauth-protected-resource/security-inventory");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { resource: string; authorization_servers: string[] };
+    expect(body.resource).toBe("https://security-inventory.ippoan.org");
+    expect(body.authorization_servers).toEqual(["https://auth-staging.ippoan.org"]);
+  });
+
+  it("returns 404 for unknown slug (not in MCP_RESOURCE_ORIGINS_ALLOWLIST)", async () => {
+    const env = createMockEnv({
+      MCP_RESOURCE_ORIGINS_ALLOWLIST: "https://security-inventory.ippoan.org",
+    } as unknown as Partial<Env>);
+    const res = callPath(env, "/.well-known/oauth-protected-resource/attacker");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when MCP_RESOURCE_ORIGINS_ALLOWLIST is empty", async () => {
+    const res = callPath(createMockEnv(), "/.well-known/oauth-protected-resource/security-inventory");
+    expect(res.status).toBe(404);
+  });
+
+  it("base path (no slug) still returns mcpRelayOrigin even with allowlist set", async () => {
+    const env = createMockEnv({
+      AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org",
+      MCP_RESOURCE_ORIGINS_ALLOWLIST: "https://security-inventory.ippoan.org",
+    } as unknown as Partial<Env>);
+    const res = callPath(env, "/.well-known/oauth-protected-resource");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { resource: string };
+    expect(body.resource).toBe("https://mcp-staging.ippoan.org");
+  });
+});

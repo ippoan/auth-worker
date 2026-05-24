@@ -1,5 +1,6 @@
 /**
  * `GET /.well-known/oauth-protected-resource` (issue #126 / Phase 4)
+ * `GET /.well-known/oauth-protected-resource/<slug>` (per-resource variant)
  *
  * RFC 9728 (OAuth 2.0 Protected Resource Metadata) + MCP Authorization spec
  * ([2025-06-18](https://spec.modelcontextprotocol.io/specification/2025-06-18/basic/authorization/))
@@ -12,20 +13,52 @@
  *
  * 本 endpoint は AS host (`auth(-staging).ippoan.org`) 側に置く (RS host にも
  * 置く設計はありえるが、AS にまとめる方が運用一貫 — issue #126 plan 参照)。
- * resource は MCP relay origin、authorization_servers は AS origin。
+ *
+ * **Per-resource variant** (Refs ippoan/secrets-inventory#45): MCP relay 以外に
+ * 独立した RS (= secrets-inventory worker, `security-inventory.ippoan.org`)
+ * を増やしたとき、各 RS が自分用の metadata URL を `WWW-Authenticate` で宣言
+ * できるよう、`/<slug>` suffix で resource を切り替える。slug は
+ * `MCP_RESOURCE_ORIGINS_ALLOWLIST` env URL の hostname 先頭 label。
+ *   - `/.well-known/oauth-protected-resource`                  → mcpRelayOrigin
+ *   - `/.well-known/oauth-protected-resource/security-inventory` → security-inventory.ippoan.org
  */
 
 import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
-import { mcpRelayOrigin } from "../lib/mcp-origins";
+import { mcpRelayOrigin, resourceOriginBySlug } from "../lib/mcp-origins";
 
-export function handleMcpResourceMetadata(_request: Request, env: Env): Response {
+export function handleMcpResourceMetadata(request: Request, env: Env): Response {
   const issuer = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
+  const url = new URL(request.url);
+  // path 末尾 segment が slug。base path (= `/.well-known/oauth-protected-
+  // resource` ぴったり) の場合は slug 無し扱い (= mcpRelayOrigin)。
+  const m = /^\/\.well-known\/oauth-protected-resource(?:\/([A-Za-z0-9-]+))?\/?$/.exec(
+    url.pathname,
+  );
+  // routing 側で path 一致確認済みなので m が null になることは現実には無いが、
+  // defense-in-depth として 404。
+  if (!m) {
+    return corsJsonResponse({ error: "unknown metadata path" }, 404);
+  }
+  const slug = m[1] ?? null;
+
+  let resource: string;
+  if (slug === null) {
+    resource = mcpRelayOrigin(env);
+  } else {
+    const found = resourceOriginBySlug(env).get(slug);
+    if (!found) {
+      // 未登録 slug は 404 (= MCP_RESOURCE_ORIGINS_ALLOWLIST に対応 origin 無し)。
+      // 攻撃者が任意 slug で metadata を mint させて confused-deputy を引き起こす
+      // のを防ぐ。
+      return corsJsonResponse({ error: `unknown resource slug: ${slug}` }, 404);
+    }
+    resource = found;
+  }
+
   const res = corsJsonResponse({
-    // resource: MCP relay の base URL (path は user 別の `/u/<login>/mcp` だが、
-    // RFC 9728 上 base URL でよい)。client は本 origin に対する resource server
-    // metadata と解釈する。
-    resource: mcpRelayOrigin(env),
+    // resource: 本 metadata document が記述する RS の base URL。
+    resource,
     authorization_servers: [issuer],
     // Bearer token は Authorization header で受ける (binary も Web も同様)。
     bearer_methods_supported: ["header"],

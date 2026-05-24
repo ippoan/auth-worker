@@ -35,7 +35,7 @@ import {
   putAuthRequest,
 } from "../lib/mcp-authcode";
 import { getDcrClient } from "../lib/mcp-dcr";
-import { mcpRelayOrigin } from "../lib/mcp-origins";
+import { isAllowedResourceOrigin } from "../lib/mcp-origins";
 import { mcpToGithubScope, normalizeMcpScope, parseMcpScope } from "../lib/mcp-scope";
 import { generateOAuthState } from "../lib/security";
 
@@ -103,8 +103,10 @@ export async function handleMcpAuthorize(
 
   // ── RFC 8707 Resource Indicator (MCP Authorization spec 2025-06-18 で必須化) ──
   // browser MCP client (Anthropic Claude.ai 等) は canonical resource URI を送る。
-  // 値の URL.origin が本 AS の MCP relay origin と一致することを要求し、不一致は
-  // RFC 8707 §2 `invalid_target` で redirect エラー返却 (confused-deputy 防止)。
+  // 値の URL.origin が `mcpRelayOrigin(env)` (= mcp(-staging).ippoan.org) または
+  // `MCP_RESOURCE_ORIGINS_ALLOWLIST` env に並ぶ追加 RS origin (= secrets-inventory
+  // 等の独立 worker) のいずれかと一致することを要求し、不一致は RFC 8707 §2
+  // `invalid_target` で redirect エラー返却 (confused-deputy 防止)。
   // path / trailing slash 等は client が指定したまま echo し token aud にする
   // (Anthropic は自分が送った resource と JWT aud の完全一致を client 側で
   // 検証する。例: client が `https://mcp.example/mcp` を送ったら aud も同値)。
@@ -119,7 +121,7 @@ export async function handleMcpAuthorize(
     } catch {
       parsedOrigin = null;
     }
-    if (parsedOrigin === null || parsedOrigin !== mcpRelayOrigin(env)) {
+    if (parsedOrigin === null || !isAllowedResourceOrigin(parsedOrigin, env)) {
       return redirectErrorResponse(
         redirect_uri,
         "invalid_target",

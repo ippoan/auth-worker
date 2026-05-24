@@ -334,6 +334,14 @@ export default {
           return errorResponse(404, "Not found");
         }
 
+        // Per-resource Protected Resource Metadata (RFC 9728) — switch では
+        // 末尾 segment が動的なため prefix で先取りする (slug は handler 側で
+        // MCP_RESOURCE_ORIGINS_ALLOWLIST 突合して 404 か正常応答かを判定)。
+        // base path 単体は下の switch case でそのまま受ける。
+        if (url.pathname.startsWith("/.well-known/oauth-protected-resource/")) {
+          return handleMcpResourceMetadata(request, env);
+        }
+
         switch (url.pathname) {
           case "/api/health":
             return await handleHealthProxy(env);
