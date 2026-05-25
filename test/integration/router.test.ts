@@ -26,6 +26,9 @@ vi.mock("../../src/handlers/health", () => ({
     headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
   })),
 }));
+vi.mock("../../src/handlers/health-oauth", () => ({
+  handleHealthOAuth: vi.fn(() => new Response("health-oauth")),
+}));
 vi.mock("../../src/handlers/login-page", () => ({
   handleLoginPage: vi.fn(() => new Response("login-page")),
 }));
@@ -316,6 +319,8 @@ describe("Router (index.ts)", () => {
     // issue #159 Phase 1: branch-protection dashboard.
     ["/dashboard/branch-protection", "dashboard-branch-protection"],
     ["/api/dashboard/repos", "api-dashboard-list"],
+    // issue #209: OAuth client_id health check (JWT-guarded).
+    ["/health/oauth", "health-oauth"],
   ];
 
   it("GET /api/health → health proxy", async () => {
