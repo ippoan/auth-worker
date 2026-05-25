@@ -29,6 +29,7 @@
  */
 
 import type { Env } from "../index";
+import { resolveSecret } from "../lib/secret";
 
 /** GitHub 公式の sig header。lowercase で取れる。 */
 const SIG_HEADER = "x-hub-signature-256";
@@ -58,7 +59,8 @@ export async function handleGithubWebhook(
   if (request.method !== "POST") {
     return jsonResp(405, { error: "method_not_allowed" });
   }
-  if (!env.GITHUB_WEBHOOK_SECRET) {
+  const webhookSecret = await resolveSecret(env.GITHUB_WEBHOOK_SECRET);
+  if (!webhookSecret) {
     console.error("github_webhook_secret_not_configured");
     return jsonResp(503, { error: "webhook_not_configured" });
   }
@@ -80,7 +82,7 @@ export async function handleGithubWebhook(
   // body を 1 度だけ読む (consumable)。検証 + DO への push の両方で使う。
   const rawBody = await request.arrayBuffer();
 
-  const verified = await verifySignature(env.GITHUB_WEBHOOK_SECRET, rawBody, sig);
+  const verified = await verifySignature(webhookSecret, rawBody, sig);
   if (!verified) {
     console.warn(
       JSON.stringify({ event: "github_webhook_sig_mismatch", delivery, eventType }),

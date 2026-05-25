@@ -25,6 +25,7 @@ import {
   setDeviceCodeStatus,
   setDeviceCodeStatusApproved,
 } from "../lib/mcp-kv";
+import { resolveSecret } from "../lib/secret";
 import { verifyOAuthState } from "../lib/security";
 
 /** github_token は refresh 寿命 (30 日) と同じ TTL で KV に保管。Phase 5 introspect が使う。 */
@@ -60,10 +61,12 @@ export async function handleMcpDeviceCallback(
 
   // ── env guard ────────────────────────────────────────────────────────────
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const githubClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.GITHUB_MCP_CLIENT_ID ||
-    !env.GITHUB_MCP_CLIENT_SECRET ||
+    !githubClientId ||
+    !githubClientSecret ||
     !jwtSecret ||
     !env.SSO_ENCRYPTION_KEY ||
     !env.OAUTH_STATE_SECRET
@@ -133,8 +136,8 @@ export async function handleMcpDeviceCallback(
         "User-Agent": "auth-worker-mcp-oauth",
       },
       body: new URLSearchParams({
-        client_id: env.GITHUB_MCP_CLIENT_ID,
-        client_secret: env.GITHUB_MCP_CLIENT_SECRET,
+        client_id: githubClientId,
+        client_secret: githubClientSecret,
         code,
         redirect_uri: callbackUri,
       }),
@@ -186,7 +189,9 @@ export async function handleMcpDeviceCallback(
   }
 
   // ── ACL check (fail-closed) ────────────────────────────────────────────
-  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlist = parseAllowlist(
+    (await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST)) ?? undefined,
+  );
   if (!allowlist.includes(login)) {
     await setDeviceCodeStatus(env, deviceCode, "denied");
     return htmlResponse(

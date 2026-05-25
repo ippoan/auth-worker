@@ -32,6 +32,11 @@ function mockDONamespace(stubFetch: (req: Request) => Promise<Response>): {
   return { ns, idFromNameCalls, fetchCalls };
 }
 
+/** Refs #206: `Env.JWT_SECRET` を `SecretBinding` (string | SecretsStoreSecret |
+ *  undefined) に緩めたため、test 内で string が必要な箇所は env から引かず
+ *  この const を直接使う。`makeEnv()` でも同じ値を bind してある。 */
+const TEST_JWT_SECRET = "test-secret";
+
 function makeEnv(overrides: Partial<Env> = {}): Env {
   const { ns } = mockDONamespace(async () => new Response("ok", { status: 200 }));
   return {
@@ -42,7 +47,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     ALC_API_ORIGIN: "https://alc-api.test",
     VERSION: "test",
     WORKER_ENV: "test",
-    JWT_SECRET: "test-secret",
+    JWT_SECRET: TEST_JWT_SECRET,
     SSO_ENCRYPTION_KEY: "test-key",
     LINEWORKS_WEBHOOK_DO: ns,
     AUTH_CONFIG: {} as unknown as KVNamespace,
@@ -194,7 +199,7 @@ describe("handleLineworksRefresh", () => {
   test("returns 401 with wrong aud", async () => {
     const env = makeEnv();
     const exp = Math.floor(Date.now() / 1000) + 60;
-    const jwt = await signTestJwt(env.JWT_SECRET, { aud: "wrong", exp });
+    const jwt = await signTestJwt(TEST_JWT_SECRET, { aud: "wrong", exp });
     const resp = await handleLineworksRefresh(
       new Request("https://x/lineworks/refresh/bot1", {
         method: "POST",
@@ -209,7 +214,7 @@ describe("handleLineworksRefresh", () => {
   test("returns 401 with expired token", async () => {
     const env = makeEnv();
     const exp = Math.floor(Date.now() / 1000) - 10;
-    const jwt = await signTestJwt(env.JWT_SECRET, { aud: "alc-api-internal", exp });
+    const jwt = await signTestJwt(TEST_JWT_SECRET, { aud: "alc-api-internal", exp });
     const resp = await handleLineworksRefresh(
       new Request("https://x/lineworks/refresh/bot1", {
         method: "POST",
@@ -226,7 +231,7 @@ describe("handleLineworksRefresh", () => {
     const { ns, fetchCalls } = mockDONamespace(fetchSpy);
     const env = makeEnv({ LINEWORKS_WEBHOOK_DO: ns });
     const exp = Math.floor(Date.now() / 1000) + 60;
-    const jwt = await signTestJwt(env.JWT_SECRET, { aud: "alc-api-internal", exp });
+    const jwt = await signTestJwt(TEST_JWT_SECRET, { aud: "alc-api-internal", exp });
 
     const resp = await handleLineworksRefresh(
       new Request("https://x/lineworks/refresh/bot1", {

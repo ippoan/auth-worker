@@ -290,6 +290,32 @@ describe("handleGithubWebhook", () => {
     expect(idFromNameCalls).toEqual(["ippoan"]);
   });
 
+  test("Refs #206: accepts SecretsStoreSecret binding (calls .get()) and verifies signature", async () => {
+    // PR #205 で GITHUB_WEBHOOK_SECRET を Secrets Store binding に移行した際の
+    // 退行を再現するテスト。binding を `{ get(): Promise<string> }` shape で渡し、
+    // 内部で `.get()` が呼ばれて plain string と同じ HMAC が計算されることを確認する。
+    const secretValue = "secrets-store-value";
+    const binding = {
+      get: async () => secretValue,
+    } as unknown as SecretsStoreSecret;
+    const env = makeEnv({ GITHUB_WEBHOOK_SECRET: binding });
+    const body = JSON.stringify(ISSUE_PAYLOAD);
+    const sig = await sign(secretValue, new TextEncoder().encode(body));
+    const req = new Request("https://mcp.test/webhooks/github", {
+      method: "POST",
+      body,
+      headers: {
+        "X-Hub-Signature-256": sig,
+        "X-GitHub-Event": "issue_comment",
+        "X-GitHub-Delivery": "secrets-store-delivery",
+      },
+    });
+    const resp = await handleGithubWebhook(req, env);
+    // `.get()` が呼ばれず binding object 自体を toString する旧バグでは
+    // HMAC 比較が外れて 401 になる。`.get()` 経由で string 化されていれば 200。
+    expect(resp.status).toBe(200);
+  });
+
   test("returns 200 ignored when payload lacks owner/repo/issue", async () => {
     const env = makeEnv();
     const body = JSON.stringify({ action: "edited" });

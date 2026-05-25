@@ -4,6 +4,7 @@
  */
 
 import type { Env } from "../index";
+import { resolveSecret } from "../lib/secret";
 import { renderJoinPage, renderJoinNotFoundPage } from "../lib/join-html";
 
 export async function handleJoinPage(
@@ -42,7 +43,7 @@ export async function handleJoinPage(
     const html = renderJoinPage({
       orgName: orgInfo.name,
       orgSlug: slug,
-      googleEnabled: Boolean(env.GOOGLE_CLIENT_ID),
+      googleEnabled: !!(await resolveSecret(env.GOOGLE_CLIENT_ID)),
       authWorkerOrigin: env.AUTH_WORKER_ORIGIN,
     });
 

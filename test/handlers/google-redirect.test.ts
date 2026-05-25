@@ -63,6 +63,26 @@ describe("handleGoogleRedirect", () => {
     expect(location).toContain("state=");
   });
 
+  it("Refs #206: accepts SecretsStoreSecret binding (calls .get()) for GOOGLE_CLIENT_ID", async () => {
+    // PR #205 で GOOGLE_CLIENT_ID を Secrets Store binding に移行した際の退行を
+    // 再現するテスト。`{ get(): Promise<string> }` shape を直接 env に渡し、
+    // 内部で `.get()` が解決されて Google authorize URL の `client_id` query に
+    // 文字列値が乗ることを確認する (旧バグだと "[object Fetcher]" が乗る)。
+    const secretValue = "secrets-store-google-client-id";
+    const binding = {
+      get: async () => secretValue,
+    } as unknown as SecretsStoreSecret;
+    const env = createMockEnv({ GOOGLE_CLIENT_ID: binding });
+    const req = new Request(
+      "https://auth.test.example/oauth/google/redirect?redirect_uri=https://app1.test.example/callback",
+    );
+    const res = await handleGoogleRedirect(req, env);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("Location")!;
+    expect(location).toContain(`client_id=${secretValue}`);
+    expect(location).not.toContain("%5Bobject"); // "[object" — old bug fingerprint
+  });
+
   it("sets correct redirect_uri in Google OAuth URL", async () => {
     const env = createMockEnv({
       AUTH_WORKER_ORIGIN: "https://auth.my-domain.com",

@@ -37,6 +37,7 @@ import {
 import { getDcrClient } from "../lib/mcp-dcr";
 import { isAllowedResourceOrigin } from "../lib/mcp-origins";
 import { mcpToGithubScope, normalizeMcpScope, parseMcpScope } from "../lib/mcp-scope";
+import { resolveSecret } from "../lib/secret";
 import { generateOAuthState } from "../lib/security";
 
 /** redirect 先 URL に `error` を query string で乗せる helper (RFC 6749 §4.1.2.1)。 */
@@ -58,9 +59,10 @@ export async function handleMcpAuthorize(
   env: Env,
 ): Promise<Response> {
   // ── env guard ──
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.GITHUB_MCP_CLIENT_ID ||
+    !githubClientId ||
     !env.OAUTH_STATE_SECRET ||
     !env.AUTH_WORKER_ORIGIN
   ) {
@@ -155,7 +157,7 @@ export async function handleMcpAuthorize(
     auth_request_id: id,
   });
   const ghAuthorize = new URL("https://github.com/login/oauth/authorize");
-  ghAuthorize.searchParams.set("client_id", env.GITHUB_MCP_CLIENT_ID);
+  ghAuthorize.searchParams.set("client_id", githubClientId);
   ghAuthorize.searchParams.set("redirect_uri", callbackUri);
   ghAuthorize.searchParams.set("scope", mcpToGithubScope(parseMcpScope(scope)));
   ghAuthorize.searchParams.set("state", ghState);

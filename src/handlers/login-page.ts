@@ -1,5 +1,6 @@
 import type { Env } from "../index";
 import { getAllowedOrigins } from "../lib/config";
+import { resolveSecret } from "../lib/secret";
 import { isAllowedRedirectUri } from "../lib/security";
 import { renderLoginPage } from "../lib/html";
 
@@ -38,7 +39,7 @@ export async function handleLoginPage(
     return new Response("Invalid redirect_uri", { status: 400 });
   }
 
-  const googleEnabled = Boolean(env.GOOGLE_CLIENT_ID);
+  const googleEnabled = !!(await resolveSecret(env.GOOGLE_CLIENT_ID));
   const authOrigin = requestOrigin;
   const alcApiOrigin = env.ALC_API_ORIGIN || '';
   const googleRedirectUrl = googleEnabled
