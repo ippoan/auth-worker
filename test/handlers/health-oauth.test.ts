@@ -532,7 +532,7 @@ describe("handleHealthOAuth", () => {
 
   it("egov: trims trailing slash from EGOV_AUTH_BASE", async () => {
     // 末尾 / があっても // にならず 1 リクエストで叩ける。
-    const fetchSpy = vi.fn(async () =>
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) =>
       new Response(JSON.stringify({
         issuer: "i", authorization_endpoint: "a", token_endpoint: "t",
       }), { status: 200 }),
@@ -540,8 +540,8 @@ describe("handleHealthOAuth", () => {
     vi.stubGlobal("fetch", fetchSpy);
     const env = envAllConfigured({ EGOV_AUTH_BASE: "https://egov.test.example/auth/realms/test/" });
     await handleHealthOAuth(await authedRequest(), env);
-    const calls = fetchSpy.mock.calls.map((c) =>
-      typeof c[0] === "string" ? c[0] : (c[0] as URL | { toString(): string }).toString(),
+    const calls: string[] = fetchSpy.mock.calls.map(([input]) =>
+      typeof input === "string" ? input : input.toString(),
     );
     const egovCall = calls.find((u) => u.includes(".well-known/openid-configuration"));
     expect(egovCall).toBe(
