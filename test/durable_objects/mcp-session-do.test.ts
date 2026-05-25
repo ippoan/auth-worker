@@ -2281,9 +2281,15 @@ describe("McpSession multiplex — handleBridge aggregator (Phase 2)", () => {
     expect(body.error.message).toMatch(/'ping'/);
   });
 
-  it("routeToolsCall: returns -32602 when tools/list was never called (cache miss)", async () => {
-    const { do_ } = setup();
-    const res = await do_.fetch(
+  it("routeToolsCall: cache miss → lazy rebuild → still -32602 when rebuilt cache lacks the tool (issue #202)", async () => {
+    const { wsGh, wsRef, do_ } = setup();
+    // No prior tools/list. routeToolsCall should self-trigger an internal
+    // tools/list broadcast to repopulate `toolToService`. Respond to the
+    // rebuild broadcast with tool sets that do NOT include the called tool,
+    // so the second cache lookup still misses and -32602 is returned.
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
       new Request("https://do.invalid/__bridge", {
         method: "POST",
         body: JSON.stringify({
@@ -2294,6 +2300,164 @@ describe("McpSession multiplex — handleBridge aggregator (Phase 2)", () => {
         }),
       }),
     );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "some_other_gh_tool" }] },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "some_other_ref_tool" }] },
+    });
+    const res = await respPromise;
+    const body = (await res.json()) as { error: { code: number; message: string } };
+    expect(body.error.code).toBe(-32602);
+    expect(body.error.message).toMatch(/unknown tool/);
+  });
+
+  it("routeToolsCall: cache miss → lazy rebuild self-heals routing (issue #202)", async () => {
+    // Reproduces the cc-relay scenario: client jumps straight to tools/call
+    // without ever issuing tools/list. The DO must internally broadcast
+    // tools/list once, populate `toolToService`, then forward the call to
+    // the correct service WS.
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const callP = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 7,
+          method: "tools/call",
+          params: { name: "ref_search_files", arguments: { q: "x" } },
+        }),
+      }),
+    );
+    // First round-trip: internal tools/list rebuild broadcast.
+    const fGh1 = await capGh;
+    const fRef1 = await capRef;
+    // Re-arm capture for the subsequent tools/call forward to wsRef.
+    const capRefCall = captureSentFrame(wsRef);
+    await respondJson(do_, wsGh, fGh1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "get_pull_request" }] },
+    });
+    await respondJson(do_, wsRef, fRef1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "ref_search_files" }] },
+    });
+    // Second round-trip: tools/call routed only to wsRef.
+    const fRefCall = await capRefCall;
+    await respondJson(do_, wsRef, fRefCall.id, 200, {
+      jsonrpc: "2.0",
+      id: 7,
+      result: { content: [{ type: "text", text: "found" }], isError: false },
+    });
+    const res = await callP;
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { content: { text: string }[] };
+    };
+    expect(body.result.content[0]!.text).toBe("found");
+    // Cache is now populated by the lazy rebuild.
+    expect(
+      (do_ as unknown as { toolToService: Map<string, string> }).toolToService.get(
+        "ref_search_files",
+      ),
+    ).toBe("ref-files-mcp-server-rs");
+    expect(
+      (do_ as unknown as { toolToService: Map<string, string> }).toolToService.get(
+        "get_pull_request",
+      ),
+    ).toBe("github-mcp-server-rs");
+  });
+
+  it("routeToolsCall: lazy rebuild tolerates send failure and malformed tool entries (issue #202)", async () => {
+    // Defensive paths in rebuildToolToServiceCache:
+    //   - broadcast result with ok=false (one binary's send failed) → skipped
+    //   - tool array entries that are null / lack a string name → skipped
+    //   - valid entries are still registered → call routes through.
+    const { wsGh, wsRef, do_ } = setup();
+    // wsGh.send throws → forwardToWs returns ok:false → r.ok=false branch.
+    wsGh.send.mockImplementationOnce(() => {
+      throw new Error("simulated send failure");
+    });
+    const capRef = captureSentFrame(wsRef);
+    const callP = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 11,
+          method: "tools/call",
+          params: { name: "valid_tool" },
+        }),
+      }),
+    );
+    const fRef1 = await capRef;
+    const capRefCall = captureSentFrame(wsRef);
+    await respondJson(do_, wsRef, fRef1.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        tools: [
+          null,
+          { foo: "missing-name" },
+          { name: 42 },
+          { name: "valid_tool" },
+        ],
+      },
+    });
+    const fRefCall = await capRefCall;
+    await respondJson(do_, wsRef, fRefCall.id, 200, {
+      jsonrpc: "2.0",
+      id: 11,
+      result: { content: [{ type: "text", text: "ok" }], isError: false },
+    });
+    const res = await callP;
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: { content: { text: string }[] } };
+    expect(body.result.content[0]!.text).toBe("ok");
+  });
+
+  it("routeToolsCall: lazy rebuild skips results whose tools field is not an array (issue #202)", async () => {
+    // Covers the `if (!Array.isArray(tools)) continue` defensive branch in
+    // rebuildToolToServiceCache: one binary returns a result without a
+    // proper tools array, and is silently skipped (no throw).
+    const { wsGh, wsRef, do_ } = setup();
+    const capGh = captureSentFrame(wsGh);
+    const capRef = captureSentFrame(wsRef);
+    const respPromise = do_.fetch(
+      new Request("https://do.invalid/__bridge", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 13,
+          method: "tools/call",
+          params: { name: "absent" },
+        }),
+      }),
+    );
+    const fGh = await capGh;
+    const fRef = await capRef;
+    // tools field is a string (not array) — must be tolerated.
+    await respondJson(do_, wsGh, fGh.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: "not-an-array" },
+    });
+    await respondJson(do_, wsRef, fRef.id, 200, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {},
+    });
+    const res = await respPromise;
     const body = (await res.json()) as { error: { code: number; message: string } };
     expect(body.error.code).toBe(-32602);
     expect(body.error.message).toMatch(/unknown tool/);

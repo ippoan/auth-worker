@@ -755,7 +755,10 @@ export class McpSession implements DurableObject {
   }
 
   /** `tools/call`: tool 名から所属 service を引いて該当 WS のみに forward。
-   *  cache miss なら fail (caller は tools/list を再実行する想定)。 */
+   *  issue #202: cache miss なら 1 度だけ内部 `tools/list` broadcast で cache
+   *  を rebuild してから retry する (self-healing)。DO hibernation 後の cache
+   *  消失や、`notifications/tools/list_changed` を upstream に forward しない
+   *  proxy (cc-relay 等) 経由でも初回 `tools/call` が通るようになる。 */
   private async routeToolsCall(
     wsByService: Map<string, WebSocket>,
     headers: Record<string, string>,
@@ -770,12 +773,16 @@ export class McpSession implements DurableObject {
         error: { code: -32602, message: "tools/call missing params.name" },
       });
     }
-    const service = this.toolToService.get(toolName);
+    let service = this.toolToService.get(toolName);
+    if (!service) {
+      await this.rebuildToolToServiceCache(wsByService, headers);
+      service = this.toolToService.get(toolName);
+    }
     if (!service) {
       return jsonRpcResponse(reqId, {
         error: {
           code: -32602,
-          message: `unknown tool '${toolName}' — call tools/list to refresh routing cache`,
+          message: `unknown tool '${toolName}'`,
         },
       });
     }
@@ -797,6 +804,35 @@ export class McpSession implements DurableObject {
       return jsonResponse(fwd.status, body);
     }
     return buildResponseFromRespFrame(fwd.resp);
+  }
+
+  /** issue #202: 内部生成した `tools/list` を全 attached binary に broadcast
+   *  して `toolToService` cache を rebuild する。broadcast 失敗 binary は
+   *  単に skip され、結果 0 件なら caller 側で `unknown tool` として返す。 */
+  private async rebuildToolToServiceCache(
+    wsByService: Map<string, WebSocket>,
+    headers: Record<string, string>,
+  ): Promise<void> {
+    const listBody = new TextEncoder().encode(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: `__rebuild_${Date.now()}__`,
+        method: "tools/list",
+        params: {},
+      }),
+    ).buffer as ArrayBuffer;
+    const results = await this.broadcast(wsByService, headers, listBody);
+    this.toolToService.clear();
+    for (const r of results) {
+      if (!r.ok) continue;
+      const tools = (r.body.result as { tools?: unknown } | undefined)?.tools;
+      if (!Array.isArray(tools)) continue;
+      for (const t of tools) {
+        if (typeof t !== "object" || t === null) continue;
+        const name = (t as { name?: unknown }).name;
+        if (typeof name === "string") this.toolToService.set(name, r.service);
+      }
+    }
   }
 
   /** 全 service WS に同じ body を投げ、各 service の JSON-RPC response body を
