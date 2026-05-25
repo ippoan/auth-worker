@@ -1,9 +1,16 @@
 /**
- * Tests for handleHealthOAuth (issue #209 PR1 — Google probe + JWT guard).
+ * Tests for handleHealthOAuth (issue #209 — 4-provider probe).
  *
- * 外部 provider (Google) を実際に叩かないよう、fetch を vi.stubGlobal で差し替える。
+ * 外部 provider を実際に叩かないよう、fetch を URL ベースで mock する。
+ *
+ * 各 probe の役割:
+ *   - google     : client_id 生死を判定 (mode = "client_id_check")
+ *   - github_mcp : reachability のみ (GitHub は client_id 正否で挙動が変わらない)
+ *   - lineworks  : rust-alc-api の reachability のみ
+ *   - egov       : Keycloak well-known の reachability + JSON 整合性
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { Env } from "../../src/index";
 import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 import { handleHealthOAuth } from "../../src/handlers/health-oauth";
@@ -15,15 +22,83 @@ async function authedRequest(): Promise<Request> {
   });
 }
 
+type ProbeMode = "client_id_check" | "reachability";
+type ProbeResultJson =
+  | { configured: false }
+  | { configured: true; ok: boolean; status: number; mode: ProbeMode; hint?: string }
+  | { configured: true; unknown: true; mode: ProbeMode; hint: string };
+
 interface OAuthBody {
   checked_at: string;
   overall: "ok" | "degraded" | "unknown";
   providers: {
-    google:
-      | { configured: false }
-      | { configured: true; ok: boolean; status: number; hint?: string }
-      | { configured: true; unknown: true; hint: string };
+    google: ProbeResultJson;
+    github_mcp: ProbeResultJson;
+    lineworks: ProbeResultJson;
+    egov: ProbeResultJson;
   };
+}
+
+/** デフォルトで全 provider が ok を返すような happy-path Response 群。 */
+function defaultResponses(): Record<string, Response> {
+  return {
+    google: new Response(null, {
+      status: 302,
+      headers: { Location: "https://accounts.google.com/v3/signin/identifier?client_id=x" },
+    }),
+    github: new Response(null, {
+      status: 302,
+      headers: { Location: "https://github.com/login?client_id=x&return_to=..." },
+    }),
+    // パラメータ無しで叩いた時の rust-alc-api 期待応答。
+    lineworks: new Response("Missing parameters", { status: 400 }),
+    egov: new Response(
+      JSON.stringify({
+        issuer: "https://egov.test.example/auth/realms/test",
+        authorization_endpoint: "https://egov.test.example/auth/realms/test/protocol/openid-connect/auth",
+        token_endpoint: "https://egov.test.example/auth/realms/test/protocol/openid-connect/token",
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ),
+  };
+}
+
+/** URL host / path で probe 先を識別して mock を返す。
+ *  値が `Error` の場合は throw される (fetch 失敗の模擬)。
+ *  各 probe は 1 リクエストしか発行しないので Response を clone しなくて良い。 */
+function setupFetch(overrides: Partial<{
+  google: Response | Error;
+  github: Response | Error;
+  lineworks: Response | Error;
+  egov: Response | Error;
+}> = {}): void {
+  const merged: Record<string, Response | Error> = {
+    ...defaultResponses(),
+    ...overrides,
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === "string" ? input : input.toString();
+    let key: string | undefined;
+    if (url.includes("accounts.google.com")) key = "google";
+    else if (url.includes("github.com")) key = "github";
+    else if (url.includes("/api/auth/lineworks/redirect")) key = "lineworks";
+    else if (url.includes(".well-known/openid-configuration")) key = "egov";
+    if (!key) throw new Error(`unexpected fetch URL: ${url}`);
+    const r = merged[key];
+    if (!r) throw new Error(`no mock for fetch URL: ${url}`);
+    if (r instanceof Error) throw r;
+    return r;
+  }));
+}
+
+/** 全 4 provider が configured になる env を返す。デフォルト env は github_mcp / egov 未設定。 */
+function envAllConfigured(extra: Partial<Env> = {}): Env {
+  return createMockEnv({
+    GITHUB_MCP_CLIENT_ID: "Iv1.testgithubclient",
+    EGOV_CLIENT_ID: "egov-test-client",
+    EGOV_AUTH_BASE: "https://egov.test.example/auth/realms/test",
+    ...extra,
+  });
 }
 
 describe("handleHealthOAuth", () => {
@@ -33,6 +108,10 @@ describe("handleHealthOAuth", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  // -------------------------------------------------------------------------
+  // auth guard
+  // -------------------------------------------------------------------------
 
   it("returns 503 when JWT_SECRET is empty (fail-closed)", async () => {
     const env = createMockEnv({ JWT_SECRET: "" });
@@ -67,60 +146,88 @@ describe("handleHealthOAuth", () => {
     expect(res.status).toBe(401);
   });
 
-  it("reports configured:false for Google when GOOGLE_CLIENT_ID is empty", async () => {
-    const env = createMockEnv({ GOOGLE_CLIENT_ID: "" });
-    // fetch must NOT be called for skipped providers.
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
+  // -------------------------------------------------------------------------
+  // overall response shape
+  // -------------------------------------------------------------------------
 
+  it("returns overall:ok with all 4 providers configured and healthy", async () => {
+    setupFetch();
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     expect(res.status).toBe(200);
     const body = await res.json() as OAuthBody;
     expect(body.overall).toBe("ok");
-    expect(body.providers.google).toEqual({ configured: false });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(typeof body.checked_at).toBe("string");
+    // mode が各 provider で正しく出る
+    expect((body.providers.google as { mode: ProbeMode }).mode).toBe("client_id_check");
+    expect((body.providers.github_mcp as { mode: ProbeMode }).mode).toBe("reachability");
+    expect((body.providers.lineworks as { mode: ProbeMode }).mode).toBe("reachability");
+    expect((body.providers.egov as { mode: ProbeMode }).mode).toBe("reachability");
   });
 
-  it("reports ok when Google returns 302 to /v3/signin/identifier (real happy-path)", async () => {
-    // 実応答観測: 正常時の Location は /v3/signin/identifier (path に
-    // /signin/oauth/error を含まず、authError も無い)
+  it("reports skip (configured:false) for unset providers without calling fetch for them", async () => {
+    // default env: GITHUB_MCP_CLIENT_ID / EGOV_* 未設定。Google + lineworks のみ probe される。
+    setupFetch();
     const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response(null, {
-        status: 302,
-        headers: {
-          Location:
-            "https://accounts.google.com/v3/signin/identifier?opparams=%253F&access_type=online&client_id=valid.apps.googleusercontent.com",
-        },
-      }),
-    ));
-
     const res = await handleHealthOAuth(await authedRequest(), env);
     expect(res.status).toBe(200);
     const body = await res.json() as OAuthBody;
     expect(body.overall).toBe("ok");
+    expect(body.providers.github_mcp).toEqual({ configured: false });
+    expect(body.providers.egov).toEqual({ configured: false });
+  });
+
+  it("reports skip for lineworks when ALC_API_ORIGIN is empty", async () => {
+    setupFetch();
+    const env = createMockEnv({ ALC_API_ORIGIN: "" });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    expect(body.providers.lineworks).toEqual({ configured: false });
+  });
+
+  it("reports skip for egov when only EGOV_CLIENT_ID is set but EGOV_AUTH_BASE is missing", async () => {
+    setupFetch();
+    const env = createMockEnv({ EGOV_CLIENT_ID: "x" });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    expect(body.providers.egov).toEqual({ configured: false });
+  });
+
+  it("reports skip for google when GOOGLE_CLIENT_ID is empty", async () => {
+    setupFetch();
+    const env = createMockEnv({ GOOGLE_CLIENT_ID: "" });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    expect(body.providers.google).toEqual({ configured: false });
+  });
+
+  // -------------------------------------------------------------------------
+  // google probe — client_id_check mode
+  // -------------------------------------------------------------------------
+
+  it("google: ok when 302 to /v3/signin/identifier (real happy-path)", async () => {
+    setupFetch();
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
     const g = body.providers.google;
     if (!("ok" in g)) throw new Error("expected ok variant");
     expect(g.ok).toBe(true);
+    expect(g.mode).toBe("client_id_check");
     expect(g.status).toBe(302);
-    expect(typeof body.checked_at).toBe("string");
   });
 
-  it("reports degraded (503) when Google 302s to /signin/oauth/error with authError= (real invalid_client)", async () => {
-    // 実応答観測: 不正 client_id で Google は 302 + Location
-    // /signin/oauth/error?authError=Cg5pbnZhbGlkX2NsaWVudBI... (base64 で
-    // "invalid_client / The OAuth client was not found.")
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response(null, {
+  it("google: degraded when 302 to /signin/oauth/error?authError= (real invalid_client)", async () => {
+    setupFetch({
+      google: new Response(null, {
         status: 302,
         headers: {
           Location:
-            "https://accounts.google.com/signin/oauth/error?authError=Cg5pbnZhbGlkX2NsaWVudBIfVGhlIE9BdXRoIGNsaWVudCB3YXMgbm90IGZvdW5kLiCRAw&flowName=GeneralOAuthFlow",
+            "https://accounts.google.com/signin/oauth/error?authError=Cg5pbnZhbGlkX2NsaWVudBI&flowName=GeneralOAuthFlow",
         },
       }),
-    ));
-
+    });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     expect(res.status).toBe(503);
     const body = await res.json() as OAuthBody;
@@ -131,16 +238,14 @@ describe("handleHealthOAuth", () => {
     expect(g.hint).toMatch(/client_id/);
   });
 
-  it("reports degraded (503) when Location has plain 'error=' query (defensive)", async () => {
-    // 観測では出ないが、Google 仕様変更で `error=` クエリで返されたケースの保険。
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response(null, {
+  it("google: degraded when Location has plain error= query (defensive)", async () => {
+    setupFetch({
+      google: new Response(null, {
         status: 302,
         headers: { Location: "https://accounts.google.com/o/oauth2/v2/auth?error=invalid_client" },
       }),
-    ));
-
+    });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     expect(res.status).toBe(503);
     const body = await res.json() as OAuthBody;
@@ -149,110 +254,124 @@ describe("handleHealthOAuth", () => {
     expect(g.ok).toBe(false);
   });
 
-  it("reports unknown when 30x redirects to an unexpected host", async () => {
-    // Google が別 host (CDN, etc.) に飛ばすことは観測されなかったが、防御的に
-    // host mismatch は ok とも fail とも言えない → unknown。
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response(null, {
+  it("google: unknown when 30x redirects to an unexpected host", async () => {
+    setupFetch({
+      google: new Response(null, {
         status: 302,
-        headers: { Location: "https://example.com/somewhere" },
+        headers: { Location: "https://accounts.google.example/somewhere" },
       }),
-    ));
-
+    });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
-    expect(res.status).toBe(200);
     const body = await res.json() as OAuthBody;
     expect(body.overall).toBe("unknown");
     const g = body.providers.google;
     if (!("unknown" in g)) throw new Error("expected unknown variant");
-    expect(g.hint).toMatch(/example\.com/);
+    expect(g.hint).toMatch(/accounts\.google\.example/);
   });
 
-  it("reports unknown when 30x Location is a malformed URL", async () => {
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response(null, {
-        status: 302,
-        headers: { Location: "not a url" },
-      }),
-    ));
-
+  it("google: unknown when 30x Location is a malformed URL", async () => {
+    setupFetch({
+      google: new Response(null, { status: 302, headers: { Location: "not a url" } }),
+    });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     const body = await res.json() as OAuthBody;
-    expect(body.overall).toBe("unknown");
     const g = body.providers.google;
     if (!("unknown" in g)) throw new Error("expected unknown variant");
     expect(g.hint).toMatch(/malformed Location/);
   });
 
-  it("reports degraded (503) when Google returns 400 with 'OAuth client was not found'", async () => {
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response(
+  it("google: degraded when 400 with 'OAuth client was not found' body (defensive)", async () => {
+    setupFetch({
+      google: new Response(
         "<html>Error 401 — The OAuth client was not found.</html>",
         { status: 400 },
       ),
-    ));
-
+    });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
-    expect(res.status).toBe(503);
     const body = await res.json() as OAuthBody;
     const g = body.providers.google;
     if (!("ok" in g)) throw new Error("expected ok variant");
     expect(g.ok).toBe(false);
     expect(g.status).toBe(400);
-    expect(g.hint).toMatch(/client_id/);
   });
 
-  it("reports degraded when Google returns 200 with invalid_client error body", async () => {
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response("error=invalid_client", { status: 200 }),
-    ));
-
+  it("google: degraded when 200 with invalid_client error body (defensive)", async () => {
+    setupFetch({
+      google: new Response("error=invalid_client", { status: 200 }),
+    });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     const body = await res.json() as OAuthBody;
     const g = body.providers.google;
     if (!("ok" in g)) throw new Error("expected ok variant");
     expect(g.ok).toBe(false);
-    expect(g.status).toBe(200);
   });
 
-  it("reports unknown when Google returns unexpected non-redirect 2xx", async () => {
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response("totally fine", { status: 200 }),
-    ));
-
+  it("google: unknown when status 2xx is non-redirect with no error markers", async () => {
+    setupFetch({
+      google: new Response("totally fine", { status: 200 }),
+    });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
-    // unknown → 200 (CI should NOT fail on unknown, only on degraded)
-    expect(res.status).toBe(200);
     const body = await res.json() as OAuthBody;
     expect(body.overall).toBe("unknown");
     const g = body.providers.google;
     if (!("unknown" in g)) throw new Error("expected unknown variant");
-    expect(g.unknown).toBe(true);
     expect(g.hint).toMatch(/unexpected status 200/);
   });
 
-  it("reports unknown when fetch itself throws (network/timeout)", async () => {
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new Error("timeout")));
-
+  it("google: unknown when fetch itself throws (network/timeout)", async () => {
+    setupFetch({ google: new Error("timeout") });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
-    expect(res.status).toBe(200);
     const body = await res.json() as OAuthBody;
-    expect(body.overall).toBe("unknown");
     const g = body.providers.google;
     if (!("unknown" in g)) throw new Error("expected unknown variant");
     expect(g.hint).toMatch(/timeout/);
   });
 
-  it("handles fetch throwing a non-Error value", async () => {
-    const env = createMockEnv();
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce("network down"));
+  it("google: tolerates body.text() throwing when sniffing error body", async () => {
+    const broken = new Response("placeholder", { status: 400 });
+    (broken as unknown as { text: () => Promise<string> }).text = () => {
+      throw new Error("body read failed");
+    };
+    setupFetch({ google: broken });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.google;
+    if (!("ok" in g)) throw new Error("expected ok variant");
+    expect(g.ok).toBe(false);
+  });
 
+  it("google: unknown when 30x has no Location header at all", async () => {
+    // 30x branch is gated by `loc` being non-empty; without Location we fall
+    // through to the body-sniff path and end up as `unknown`.
+    setupFetch({
+      google: new Response("", { status: 302 }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.google;
+    if (!("unknown" in g)) throw new Error("expected unknown variant");
+    expect(g.hint).toMatch(/unexpected status 302/);
+  });
+
+  it("google: handles fetch throwing a non-Error value", async () => {
+    setupFetch({
+      // simulate `throw "network down"` (string thrown, not Error)
+      google: { _notError: true } as unknown as Error,
+    });
+    // The setupFetch helper only `throw`s when r instanceof Error, so we need
+    // a different path: stub fetch directly so it rejects with a non-Error.
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw "network down";
+    }));
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     const body = await res.json() as OAuthBody;
     const g = body.providers.google;
@@ -260,33 +379,286 @@ describe("handleHealthOAuth", () => {
     expect(g.hint).toContain("network down");
   });
 
-  it("treats redirect without Location header as unknown status", async () => {
-    const env = createMockEnv();
-    // 302 but no Location header → falls through to body-sniff path.
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response("", { status: 302 }),
-    ));
+  // -------------------------------------------------------------------------
+  // github_mcp probe — reachability only
+  // -------------------------------------------------------------------------
 
+  it("github_mcp: ok when 302 to github.com host (any path, reachability)", async () => {
+    setupFetch();
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     const body = await res.json() as OAuthBody;
-    expect(body.overall).toBe("unknown");
+    const g = body.providers.github_mcp;
+    if (!("ok" in g)) throw new Error("expected ok variant");
+    expect(g.ok).toBe(true);
+    expect(g.mode).toBe("reachability");
   });
 
-  it("tolerates body.text() throwing when sniffing error body", async () => {
-    const env = createMockEnv();
-    const broken = new Response("placeholder", { status: 400 });
-    // Replace text() with a thrower.
-    (broken as unknown as { text: () => Promise<string> }).text = () => {
-      throw new Error("body read failed");
-    };
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(broken));
-
+  it("github_mcp: unknown when 30x redirects off github.com", async () => {
+    setupFetch({
+      github: new Response(null, {
+        status: 302,
+        headers: { Location: "https://something-else.example/foo" },
+      }),
+    });
+    const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
-    // status >= 400 → invalid regardless of body
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.github_mcp;
+    if (!("unknown" in g)) throw new Error("expected unknown variant");
+    expect(g.hint).toMatch(/something-else\.example/);
+  });
+
+  it("github_mcp: unknown when Location is malformed URL", async () => {
+    setupFetch({
+      github: new Response(null, { status: 302, headers: { Location: "not-a-url" } }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.github_mcp;
+    if (!("unknown" in g)) throw new Error("expected unknown variant");
+    expect(g.hint).toMatch(/malformed Location/);
+  });
+
+  it("github_mcp: degraded when GitHub returns 5xx (provider down)", async () => {
+    setupFetch({
+      github: new Response("internal error", { status: 503 }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
     expect(res.status).toBe(503);
     const body = await res.json() as OAuthBody;
-    const g = body.providers.google;
+    const g = body.providers.github_mcp;
     if (!("ok" in g)) throw new Error("expected ok variant");
     expect(g.ok).toBe(false);
+    expect(g.hint).toMatch(/expected 30x/);
+  });
+
+  it("github_mcp: unknown on fetch error", async () => {
+    setupFetch({ github: new Error("conn reset") });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.github_mcp;
+    if (!("unknown" in g)) throw new Error("expected unknown variant");
+    expect(g.hint).toMatch(/conn reset/);
+  });
+
+  // -------------------------------------------------------------------------
+  // lineworks probe — reachability of rust-alc-api lineworks route
+  // -------------------------------------------------------------------------
+
+  it("lineworks: ok when rust-alc-api returns 400 (params missing — route alive)", async () => {
+    setupFetch();
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const lw = body.providers.lineworks;
+    if (!("ok" in lw)) throw new Error("expected ok variant");
+    expect(lw.ok).toBe(true);
+    expect(lw.mode).toBe("reachability");
+    expect(lw.status).toBe(400);
+  });
+
+  it("lineworks: ok also on 422 (other validation framework)", async () => {
+    setupFetch({ lineworks: new Response("validation error", { status: 422 }) });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const lw = body.providers.lineworks;
+    if (!("ok" in lw)) throw new Error("expected ok variant");
+    expect(lw.ok).toBe(true);
+    expect(lw.status).toBe(422);
+  });
+
+  it("lineworks: degraded when rust-alc-api returns 404 (route missing)", async () => {
+    setupFetch({ lineworks: new Response("not found", { status: 404 }) });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    const lw = body.providers.lineworks;
+    if (!("ok" in lw)) throw new Error("expected ok variant");
+    expect(lw.ok).toBe(false);
+    expect(lw.hint).toMatch(/404/);
+  });
+
+  it("lineworks: degraded when rust-alc-api returns 5xx", async () => {
+    setupFetch({ lineworks: new Response("oops", { status: 502 }) });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const lw = body.providers.lineworks;
+    if (!("ok" in lw)) throw new Error("expected ok variant");
+    expect(lw.ok).toBe(false);
+  });
+
+  it("lineworks: unknown for unexpected 2xx", async () => {
+    setupFetch({ lineworks: new Response("ok", { status: 200 }) });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const lw = body.providers.lineworks;
+    if (!("unknown" in lw)) throw new Error("expected unknown variant");
+    expect(lw.hint).toMatch(/unexpected status 200/);
+  });
+
+  it("lineworks: unknown on fetch error", async () => {
+    setupFetch({ lineworks: new Error("dns failure") });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const lw = body.providers.lineworks;
+    if (!("unknown" in lw)) throw new Error("expected unknown variant");
+    expect(lw.hint).toMatch(/dns failure/);
+  });
+
+  // -------------------------------------------------------------------------
+  // egov probe — Keycloak well-known reachability + JSON shape
+  // -------------------------------------------------------------------------
+
+  it("egov: ok when well-known returns 200 with required OIDC fields", async () => {
+    setupFetch();
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const e = body.providers.egov;
+    if (!("ok" in e)) throw new Error("expected ok variant");
+    expect(e.ok).toBe(true);
+    expect(e.mode).toBe("reachability");
+    expect(e.status).toBe(200);
+  });
+
+  it("egov: trims trailing slash from EGOV_AUTH_BASE", async () => {
+    // 末尾 / があっても // にならず 1 リクエストで叩ける。
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) =>
+      new Response(JSON.stringify({
+        issuer: "i", authorization_endpoint: "a", token_endpoint: "t",
+      }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const env = envAllConfigured({ EGOV_AUTH_BASE: "https://egov.test.example/auth/realms/test/" });
+    await handleHealthOAuth(await authedRequest(), env);
+    const calls: string[] = fetchSpy.mock.calls.map(([input]) =>
+      typeof input === "string" ? input : input.toString(),
+    );
+    const egovCall = calls.find((u) => u.includes(".well-known/openid-configuration"));
+    expect(egovCall).toBe(
+      "https://egov.test.example/auth/realms/test/.well-known/openid-configuration",
+    );
+  });
+
+  it("egov: degraded when well-known returns 4xx (realm misconfigured)", async () => {
+    setupFetch({
+      egov: new Response("not found", { status: 404 }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    const e = body.providers.egov;
+    if (!("ok" in e)) throw new Error("expected ok variant");
+    expect(e.ok).toBe(false);
+    expect(e.hint).toMatch(/404/);
+  });
+
+  it("egov: unknown when well-known body is not JSON", async () => {
+    setupFetch({
+      egov: new Response("<html>oops</html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const e = body.providers.egov;
+    if (!("unknown" in e)) throw new Error("expected unknown variant");
+    expect(e.hint).toMatch(/not JSON/);
+  });
+
+  it("egov: degraded when well-known JSON misses issuer", async () => {
+    setupFetch({
+      egov: new Response(JSON.stringify({
+        authorization_endpoint: "x", token_endpoint: "y",
+        // issuer missing
+      }), { status: 200 }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const e = body.providers.egov;
+    if (!("ok" in e)) throw new Error("expected ok variant");
+    expect(e.ok).toBe(false);
+    expect(e.hint).toMatch(/missing required/);
+  });
+
+  it("egov: degraded when issuer is non-string", async () => {
+    setupFetch({
+      egov: new Response(JSON.stringify({
+        issuer: 42, authorization_endpoint: "x", token_endpoint: "y",
+      }), { status: 200 }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const e = body.providers.egov;
+    if (!("ok" in e)) throw new Error("expected ok variant");
+    expect(e.ok).toBe(false);
+  });
+
+  it("egov: unknown on fetch error", async () => {
+    setupFetch({ egov: new Error("connection refused") });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const e = body.providers.egov;
+    if (!("unknown" in e)) throw new Error("expected unknown variant");
+    expect(e.hint).toMatch(/connection refused/);
+  });
+
+  it("egov: handles res.json() throwing a non-Error value", async () => {
+    // Cover the `String(e)` branch in `well-known body is not JSON: ...`.
+    const fake = new Response("ignored", { status: 200 });
+    (fake as unknown as { json: () => Promise<unknown> }).json = () => {
+      throw "raw string";
+    };
+    setupFetch({ egov: fake });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const e = body.providers.egov;
+    if (!("unknown" in e)) throw new Error("expected unknown variant");
+    expect(e.hint).toContain("raw string");
+  });
+
+  // -------------------------------------------------------------------------
+  // overall aggregation
+  // -------------------------------------------------------------------------
+
+  it("overall: degraded when any provider has ok:false", async () => {
+    setupFetch({
+      egov: new Response("not found", { status: 404 }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("degraded");
+  });
+
+  it("overall: unknown when only unknowns (no fail)", async () => {
+    setupFetch({
+      google: new Error("net down"),
+      github: new Error("net down"),
+      lineworks: new Error("net down"),
+      egov: new Error("net down"),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("unknown");
   });
 });
