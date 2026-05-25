@@ -15,10 +15,13 @@
 
 import { decryptBotSecret, signWebhookBody, constantTimeEqual, base64Decode } from "../lib/lineworks-crypto";
 import { signInternalJWT } from "../lib/internal-jwt";
+import type { SecretBinding } from "../lib/secret";
 
 interface DOEnv {
   ALC_API_ORIGIN: string;
-  JWT_SECRET: string;
+  /** Refs #206: Secrets Store binding 化済。`signInternalJWT()` 内部で
+   *  `resolveSecret()` 経由で string 化される。 */
+  JWT_SECRET: SecretBinding;
   SSO_ENCRYPTION_KEY: string;
 }
 

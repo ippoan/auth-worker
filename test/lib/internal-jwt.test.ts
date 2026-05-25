@@ -38,6 +38,45 @@ describe("signInternalJWT", () => {
     expect(header.typ).toBe("JWT");
   });
 
+  test("Refs #206: accepts SecretsStoreSecret binding shape (calls .get())", async () => {
+    const secretValue = "stored-secret-from-secrets-store";
+    const binding = {
+      get: async () => secretValue,
+    } as unknown as SecretsStoreSecret;
+    const jwt = await signInternalJWT({ JWT_SECRET: binding });
+    const [headerB64, payloadB64, sigB64] = jwt.split(".") as [string, string, string];
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secretValue),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    const ok = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      b64UrlDecodeBytes(sigB64),
+      enc.encode(`${headerB64}.${payloadB64}`),
+    );
+    expect(ok).toBe(true);
+  });
+
+  test("Refs #206: throws when JWT_SECRET is not bound", async () => {
+    await expect(
+      signInternalJWT({ JWT_SECRET: undefined }),
+    ).rejects.toThrow(/not configured/);
+  });
+
+  test("Refs #206: throws when SecretsStoreSecret.get() returns empty", async () => {
+    const binding = {
+      get: async () => "",
+    } as unknown as SecretsStoreSecret;
+    await expect(
+      signInternalJWT({ JWT_SECRET: binding }),
+    ).rejects.toThrow(/not configured/);
+  });
+
   test("signature verifies with same secret", async () => {
     const secret = "test-secret-256-bits-long";
     const jwt = await signInternalJWT({ JWT_SECRET: secret });

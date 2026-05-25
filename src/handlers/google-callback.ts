@@ -6,6 +6,7 @@
 import type { Env } from "../index";
 import { getAllowedOrigins } from "../lib/config";
 import { checkOrgAccess, checkAppTenant } from "../lib/acl";
+import { resolveSecret } from "../lib/secret";
 import { verifyOAuthState, isAllowedRedirectUri } from "../lib/security";
 import { setAuthCookie } from "../lib/cookies";
 
@@ -13,6 +14,11 @@ export async function handleGoogleCallback(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  const clientId = await resolveSecret(env.GOOGLE_CLIENT_ID);
+  const clientSecret = await resolveSecret(env.GOOGLE_CLIENT_SECRET);
+  if (!clientId || !clientSecret) {
+    return new Response("Google OAuth not configured", { status: 503 });
+  }
   const url = new URL(request.url);
   const origin = url.origin;
   const code = url.searchParams.get("code");
@@ -49,8 +55,8 @@ export async function handleGoogleCallback(
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       code,
-      client_id: env.GOOGLE_CLIENT_ID,
-      client_secret: env.GOOGLE_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       redirect_uri: `${env.AUTH_WORKER_ORIGIN}/oauth/google/callback`,
       grant_type: "authorization_code",
     }),

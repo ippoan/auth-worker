@@ -4,27 +4,36 @@
  * rust-alc-api 側 `crates/alc-core/src/auth_jwt.rs::verify_internal_token` と
  * `crates/alc-core/src/auth_middleware.rs::require_internal_jwt` で検証される。
  * 必須クレーム: `aud="alc-api-internal"` (これにより通常ユーザー JWT との混入を防止)、
- * `iss`, `iat`, `exp`。署名は `JWT_SECRET` (Workers Secret、rust-alc-api と共有) で行う。
+ * `iss`, `iat`, `exp`。署名は `JWT_SECRET` (rust-alc-api と共有) で行う。
+ *
+ * Refs #206: `JWT_SECRET` は CF Secrets Store binding に移行済 (PR #205)。
+ * `resolveSecret()` で `string | null` に正規化してから HMAC 計算に流す。
  */
 
 import { base64Encode } from "./lineworks-crypto";
+import { resolveSecret, type SecretBinding } from "./secret";
 
 const TEXT_ENCODER = new TextEncoder();
 const INTERNAL_AUD = "alc-api-internal";
 const ISSUER = "auth-worker";
 
 interface InternalEnv {
-  JWT_SECRET: string;
+  JWT_SECRET: SecretBinding;
 }
 
 /**
  * 短命 (デフォルト 60s) の internal JWT を発行する。
  * 同じ `env` を複数回呼んでもキャッシュしないので、必要なら呼び出し側でキャッシュする。
+ * `JWT_SECRET` 未 bind / `.get()` 失敗時は throw する (caller 側で 500 を返す前提)。
  */
 export async function signInternalJWT(
   env: InternalEnv,
   ttlSeconds = 60,
 ): Promise<string> {
+  const secret = await resolveSecret(env.JWT_SECRET);
+  if (!secret) {
+    throw new Error("JWT_SECRET not configured");
+  }
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     iss: ISSUER,
@@ -32,7 +41,7 @@ export async function signInternalJWT(
     iat: now,
     exp: now + ttlSeconds,
   };
-  return signHs256(claims, env.JWT_SECRET);
+  return signHs256(claims, secret);
 }
 
 async function signHs256(

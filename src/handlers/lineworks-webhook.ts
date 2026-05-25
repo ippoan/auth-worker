@@ -11,6 +11,7 @@
  */
 
 import type { Env } from "../index";
+import { resolveSecret } from "../lib/secret";
 
 export async function handleLineworksWebhook(
   request: Request,
@@ -82,7 +83,9 @@ async function verifyInternalAuthHeader(request: Request, env: Env): Promise<boo
   if (parts.length !== 3) return false;
   const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
 
-  const expectedSig = await hmacSha256(`${headerB64}.${payloadB64}`, env.JWT_SECRET);
+  const jwtSecret = await resolveSecret(env.JWT_SECRET);
+  if (!jwtSecret) return false;
+  const expectedSig = await hmacSha256(`${headerB64}.${payloadB64}`, jwtSecret);
   if (expectedSig !== sigB64) return false;
 
   try {

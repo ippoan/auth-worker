@@ -30,6 +30,7 @@ import {
 } from "../lib/mcp-authcode";
 import { encryptWithKey } from "../lib/mcp-crypto";
 import { jsonResponse } from "../lib/errors";
+import { resolveSecret } from "../lib/secret";
 import { verifyOAuthState } from "../lib/security";
 
 /** github_token は refresh 寿命と同じ TTL で KV に保管 (Phase 3 と同じ key 規約)。 */
@@ -65,10 +66,12 @@ export async function handleMcpAuthCallback(
   env: Env,
 ): Promise<Response> {
   // ── env guard ──
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const githubClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.GITHUB_MCP_CLIENT_ID ||
-    !env.GITHUB_MCP_CLIENT_SECRET ||
+    !githubClientId ||
+    !githubClientSecret ||
     !env.SSO_ENCRYPTION_KEY ||
     !env.OAUTH_STATE_SECRET ||
     !env.AUTH_WORKER_ORIGIN
@@ -122,8 +125,8 @@ export async function handleMcpAuthCallback(
         "User-Agent": "auth-worker-mcp-oauth",
       },
       body: new URLSearchParams({
-        client_id: env.GITHUB_MCP_CLIENT_ID,
-        client_secret: env.GITHUB_MCP_CLIENT_SECRET,
+        client_id: githubClientId,
+        client_secret: githubClientSecret,
         code: ghCode,
         redirect_uri: callbackUri,
       }),
@@ -169,7 +172,9 @@ export async function handleMcpAuthCallback(
   }
 
   // ── ACL (fail-closed) ──
-  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlist = parseAllowlist(
+    (await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST)) ?? undefined,
+  );
   if (!allowlist.includes(login)) {
     await deleteAuthRequest(env, reqRec.id);
     return redirectError(

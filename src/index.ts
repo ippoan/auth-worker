@@ -73,9 +73,15 @@ import {
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
 
+import type { SecretBinding } from "./lib/secret";
+
 export interface Env {
-  GOOGLE_CLIENT_ID: string;
-  GOOGLE_CLIENT_SECRET: string;
+  /** Refs #206: `.dev.vars` 由来 prod secret 一式を CF Secrets Store binding に移行
+   *  (PR #205)。`string` (vitest / `wrangler dev`) と `SecretsStoreSecret`
+   *  (`.get()` 持ち) の両形態を `resolveSecret()` で `string | null` に正規化して
+   *  使う。直接 `env.X` を string として読むと `[object Fetcher]` が漏れる。 */
+  GOOGLE_CLIENT_ID: SecretBinding;
+  GOOGLE_CLIENT_SECRET: SecretBinding;
   OAUTH_STATE_SECRET: string;
   AUTH_WORKER_ORIGIN: string;
   ALC_API_ORIGIN: string;
@@ -87,8 +93,9 @@ export interface Env {
   AUTH_CONFIG: KVNamespace;
   /** HS256 JWT secret, shared with rust-alc-api. Used by /top to verify the
    *  `logi_auth_token` cookie before serving the page. Missing → /top
-   *  redirects everyone to /login (fail-closed). */
-  JWT_SECRET: string;
+   *  redirects everyone to /login (fail-closed).
+   *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */
+  JWT_SECRET: SecretBinding;
   /** e-Gov (Keycloak) OAuth — all optional; handlers return 503 if unset. */
   EGOV_CLIENT_ID?: string;
   EGOV_CLIENT_SECRET?: string;
@@ -131,9 +138,10 @@ export interface Env {
   /** LINE WORKS webhook 受信用 Durable Object Namespace (bot_id ごとに 1 instance)。 */
   LINEWORKS_WEBHOOK_DO: DurableObjectNamespace;
   /** MCP OAuth Provider 用 GitHub OAuth App credentials.
-   *  staging/prod で別 App (callback URL が異なるため)。 */
-  GITHUB_MCP_CLIENT_ID?: string;
-  GITHUB_MCP_CLIENT_SECRET?: string;
+   *  staging/prod で別 App (callback URL が異なるため)。
+   *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */
+  GITHUB_MCP_CLIENT_ID?: SecretBinding;
+  GITHUB_MCP_CLIENT_SECRET?: SecretBinding;
   /** HS256 secret for MCP access tokens (JWT)。既存 JWT_SECRET とは別管理。
    *
    *  2026-05-25 (Refs ippoan/ref-files-worker#6): `wrangler secret put` の
@@ -159,8 +167,9 @@ export interface Env {
    *  and normalises each to a string (issue #189). */
   INTERNAL_SHARED_SECRET?: string | SecretsStoreSecret;
   /** JSON array of github logins allowed to use MCP server.
-   *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed). */
-  GITHUB_MCP_USER_ALLOWLIST?: string;
+   *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed).
+   *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */
+  GITHUB_MCP_USER_ALLOWLIST?: SecretBinding;
   /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens)。
    *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
   MCP_OAUTH_KV?: KVNamespace;
@@ -171,8 +180,9 @@ export interface Env {
   MCP_SESSION_DO?: DurableObjectNamespace;
   /** ADR-004: GitHub webhook の HMAC-SHA256 検証用共有 secret。public issue
    *  前提なので authentication ではなく spam 対策。全 repo の webhook 設定で
-   *  同じ値を使う。 */
-  GITHUB_WEBHOOK_SECRET?: string;
+   *  同じ値を使う。
+   *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */
+  GITHUB_WEBHOOK_SECRET?: SecretBinding;
   /** issue #144: 1-click pair flow 用の auth-worker ブラウザ session cookie 署名鍵。
    *  既存 `MCP_JWT_SECRET` と分けるのは scope を局所化するため (pair session が
    *  漏洩しても device-flow JWT には影響しない)。未設定 → /mcp/pair/* は 503。 */

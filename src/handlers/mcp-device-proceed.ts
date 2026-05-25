@@ -20,6 +20,7 @@ import {
   setDeviceCodeStatus,
 } from "../lib/mcp-kv";
 import { mcpToGithubScope, parseMcpScope } from "../lib/mcp-scope";
+import { resolveSecret } from "../lib/secret";
 import { generateOAuthState } from "../lib/security";
 import { normalizeUserCode } from "./mcp-device-verify";
 
@@ -158,7 +159,8 @@ export async function handleMcpDeviceProceed(
   }
 
   // action === "approve"
-  if (!env.GITHUB_MCP_CLIENT_ID) {
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  if (!githubClientId) {
     return htmlResponse(
       renderDeviceResultPage({
         title: "Configuration error",
@@ -180,7 +182,7 @@ export async function handleMcpDeviceProceed(
   );
 
   const ghAuthorize = new URL("https://github.com/login/oauth/authorize");
-  ghAuthorize.searchParams.set("client_id", env.GITHUB_MCP_CLIENT_ID);
+  ghAuthorize.searchParams.set("client_id", githubClientId);
   ghAuthorize.searchParams.set("redirect_uri", callbackUri);
   ghAuthorize.searchParams.set("scope", mcpToGithubScope(parseMcpScope(record.scope)));
   ghAuthorize.searchParams.set("state", state);

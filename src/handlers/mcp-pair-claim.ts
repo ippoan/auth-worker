@@ -41,6 +41,7 @@ import {
   readPairSessionCookie,
   verifyPairSession,
 } from "../lib/mcp-session";
+import { resolveSecret } from "../lib/secret";
 import { generateOAuthState } from "../lib/security";
 
 /** binding_jwt の TTL。device flow と異なり再認証はブラウザ pair の再踏みで簡単なので
@@ -100,12 +101,13 @@ export async function handleMcpPairClaim(
 ): Promise<Response> {
   // ── env guard ────────────────────────────────────────────────────────
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
   if (
     !env.MCP_OAUTH_KV ||
     !jwtSecret ||
     !env.SESSION_COOKIE_SECRET ||
     !env.OAUTH_STATE_SECRET ||
-    !env.GITHUB_MCP_CLIENT_ID ||
+    !githubClientId ||
     !env.AUTH_WORKER_ORIGIN
   ) {
     return page({
@@ -132,7 +134,7 @@ export async function handleMcpPairClaim(
       pair_code,
     });
     const ghAuthorize = new URL("https://github.com/login/oauth/authorize");
-    ghAuthorize.searchParams.set("client_id", env.GITHUB_MCP_CLIENT_ID);
+    ghAuthorize.searchParams.set("client_id", githubClientId);
     ghAuthorize.searchParams.set("redirect_uri", callbackUri);
     ghAuthorize.searchParams.set(
       "scope",

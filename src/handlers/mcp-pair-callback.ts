@@ -31,6 +31,7 @@
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
 import { buildSetCookie, signPairSession } from "../lib/mcp-session";
+import { resolveSecret } from "../lib/secret";
 import { verifyOAuthState } from "../lib/security";
 
 function htmlResponse(html: string, status: number): Response {
@@ -66,10 +67,12 @@ export async function handleMcpPairCallback(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const githubClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.GITHUB_MCP_CLIENT_ID ||
-    !env.GITHUB_MCP_CLIENT_SECRET ||
+    !githubClientId ||
+    !githubClientSecret ||
     !env.OAUTH_STATE_SECRET ||
     !env.SESSION_COOKIE_SECRET ||
     !env.AUTH_WORKER_ORIGIN
@@ -119,8 +122,8 @@ export async function handleMcpPairCallback(
         "User-Agent": "auth-worker-mcp-pair",
       },
       body: new URLSearchParams({
-        client_id: env.GITHUB_MCP_CLIENT_ID,
-        client_secret: env.GITHUB_MCP_CLIENT_SECRET,
+        client_id: githubClientId,
+        client_secret: githubClientSecret,
         code: ghCode,
         redirect_uri: callbackUri,
       }),
@@ -154,7 +157,9 @@ export async function handleMcpPairCallback(
   }
 
   // ── ACL (fail-closed) ──
-  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlist = parseAllowlist(
+    (await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST)) ?? undefined,
+  );
   if (!allowlist.includes(login)) {
     return errorPage(
       "Access denied",

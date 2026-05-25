@@ -35,6 +35,7 @@ import { errorResponse, jsonResponse } from "../lib/errors";
 import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
 import { issueRefreshToken } from "../lib/mcp-refresh";
 import { buildSetCookie, signPairSession } from "../lib/mcp-session";
+import { resolveSecret } from "../lib/secret";
 
 /** Browser からの elevate 開始時に KV に保存する state entry。 */
 interface ElevateState {
@@ -153,9 +154,10 @@ export async function handleMcpElevateStart(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.GITHUB_MCP_CLIENT_ID ||
+    !githubClientId ||
     !env.AUTH_WORKER_ORIGIN
   ) {
     return jsonResponse(
@@ -185,7 +187,7 @@ export async function handleMcpElevateStart(
 
   const redirectUri = `${env.AUTH_WORKER_ORIGIN}/mcp/elevate_callback`;
   const params = new URLSearchParams({
-    client_id: env.GITHUB_MCP_CLIENT_ID,
+    client_id: githubClientId,
     redirect_uri: redirectUri,
     state,
     scope: "read:user",
@@ -204,10 +206,12 @@ export async function handleMcpElevateCallback(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const githubClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.GITHUB_MCP_CLIENT_ID ||
-    !env.GITHUB_MCP_CLIENT_SECRET ||
+    !githubClientId ||
+    !githubClientSecret ||
     !env.AUTH_WORKER_ORIGIN
   ) {
     return jsonResponse(
@@ -257,8 +261,8 @@ export async function handleMcpElevateCallback(
         "User-Agent": "ippoan-auth-worker",
       },
       body: new URLSearchParams({
-        client_id: env.GITHUB_MCP_CLIENT_ID,
-        client_secret: env.GITHUB_MCP_CLIENT_SECRET,
+        client_id: githubClientId,
+        client_secret: githubClientSecret,
         code,
       }),
     });
@@ -297,7 +301,9 @@ export async function handleMcpElevateCallback(
   }
 
   // ACL — fail-closed when allowlist env unset or malformed.
-  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlist = parseAllowlist(
+    (await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST)) ?? undefined,
+  );
   if (allowlist === null) {
     return errorResponse(403, "admin_allowlist_unset");
   }
