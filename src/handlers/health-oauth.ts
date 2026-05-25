@@ -57,24 +57,45 @@ async function probeGoogle(env: Env): Promise<ProbeResult> {
     };
   }
 
-  // 正: 302 で accounts.google.com のセッション/同意画面へ。
-  //     Cloudflare Workers fetch は `redirect: "manual"` で 30x を保持する。
-  // 誤: 400 + 本文 "The OAuth client was not found."
-  //     (status 400 ではなく 200 で error HTML を返すこともあるので本文も見る)
+  // Refs #209: 実応答観測 (PR1 merge 後、staging deploy 不要で curl 検証済) で、
+  // Google は client_id 正否に関わらず HTTP 302 で同じ host (`accounts.google.com`)
+  // に飛ばす。判定は **Location の path / query** で行う:
+  //   正常: path `/v3/signin/identifier` 等 (ログイン画面) — `authError=` 無し
+  //   異常: path `/signin/oauth/error?authError=...` (base64 で
+  //         `invalid_client / The OAuth client was not found.` 等)
+  // 旧実装は `/[?&]error=/` のみ見ていたため `authError=` (大文字 A) を取りこぼし、
+  // invalid_client を ok と誤判定していた。
   const loc = res.headers.get("location") ?? "";
   if (res.status >= 300 && res.status < 400 && loc) {
-    const ok = !/[?&]error=/.test(loc);
-    return ok
-      ? { configured: true, ok: true, status: res.status }
-      : {
+    let locUrl: URL | null = null;
+    try {
+      locUrl = new URL(loc);
+    } catch {
+      /* malformed Location */
+    }
+    if (locUrl && locUrl.host === "accounts.google.com") {
+      const errPath = locUrl.pathname.startsWith("/signin/oauth/error");
+      const hasErr = locUrl.searchParams.has("authError") ||
+        locUrl.searchParams.has("error");
+      if (errPath || hasErr) {
+        return {
           configured: true,
           ok: false,
           status: res.status,
-          hint: "authorization endpoint redirected to error",
+          hint: "invalid_client — client_id may be wrong",
         };
+      }
+      return { configured: true, ok: true, status: res.status };
+    }
+    return {
+      configured: true,
+      unknown: true,
+      hint: `redirected to unexpected host ${locUrl?.host ?? "(malformed Location)"}`,
+    };
   }
 
-  // 4xx / 5xx / 200 with error body → ok:false。本文を一度だけ読む。
+  // 30x 以外 (4xx / 5xx / 200) は実応答観測では確認されなかったが、
+  // 将来 Google が挙動を変えた場合の防御として本文を sniff する。
   let body = "";
   try {
     body = (await res.text()).slice(0, 1024);

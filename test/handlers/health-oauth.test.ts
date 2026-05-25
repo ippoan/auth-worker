@@ -81,12 +81,17 @@ describe("handleHealthOAuth", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("reports ok when Google returns 302 to accounts.google.com", async () => {
+  it("reports ok when Google returns 302 to /v3/signin/identifier (real happy-path)", async () => {
+    // 実応答観測: 正常時の Location は /v3/signin/identifier (path に
+    // /signin/oauth/error を含まず、authError も無い)
     const env = createMockEnv();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
       new Response(null, {
         status: 302,
-        headers: { Location: "https://accounts.google.com/signin/v2/identifier?..." },
+        headers: {
+          Location:
+            "https://accounts.google.com/v3/signin/identifier?opparams=%253F&access_type=online&client_id=valid.apps.googleusercontent.com",
+        },
       }),
     ));
 
@@ -101,7 +106,33 @@ describe("handleHealthOAuth", () => {
     expect(typeof body.checked_at).toBe("string");
   });
 
-  it("reports degraded (503) when Google returns 302 with error= in Location", async () => {
+  it("reports degraded (503) when Google 302s to /signin/oauth/error with authError= (real invalid_client)", async () => {
+    // 実応答観測: 不正 client_id で Google は 302 + Location
+    // /signin/oauth/error?authError=Cg5pbnZhbGlkX2NsaWVudBI... (base64 で
+    // "invalid_client / The OAuth client was not found.")
+    const env = createMockEnv();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: {
+          Location:
+            "https://accounts.google.com/signin/oauth/error?authError=Cg5pbnZhbGlkX2NsaWVudBIfVGhlIE9BdXRoIGNsaWVudCB3YXMgbm90IGZvdW5kLiCRAw&flowName=GeneralOAuthFlow",
+        },
+      }),
+    ));
+
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("degraded");
+    const g = body.providers.google;
+    if (!("ok" in g)) throw new Error("expected ok variant");
+    expect(g.ok).toBe(false);
+    expect(g.hint).toMatch(/client_id/);
+  });
+
+  it("reports degraded (503) when Location has plain 'error=' query (defensive)", async () => {
+    // 観測では出ないが、Google 仕様変更で `error=` クエリで返されたケースの保険。
     const env = createMockEnv();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
       new Response(null, {
@@ -113,11 +144,46 @@ describe("handleHealthOAuth", () => {
     const res = await handleHealthOAuth(await authedRequest(), env);
     expect(res.status).toBe(503);
     const body = await res.json() as OAuthBody;
-    expect(body.overall).toBe("degraded");
     const g = body.providers.google;
     if (!("ok" in g)) throw new Error("expected ok variant");
     expect(g.ok).toBe(false);
-    expect(g.hint).toMatch(/error/i);
+  });
+
+  it("reports unknown when 30x redirects to an unexpected host", async () => {
+    // Google が別 host (CDN, etc.) に飛ばすことは観測されなかったが、防御的に
+    // host mismatch は ok とも fail とも言えない → unknown。
+    const env = createMockEnv();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { Location: "https://example.com/somewhere" },
+      }),
+    ));
+
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("unknown");
+    const g = body.providers.google;
+    if (!("unknown" in g)) throw new Error("expected unknown variant");
+    expect(g.hint).toMatch(/example\.com/);
+  });
+
+  it("reports unknown when 30x Location is a malformed URL", async () => {
+    const env = createMockEnv();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { Location: "not a url" },
+      }),
+    ));
+
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("unknown");
+    const g = body.providers.google;
+    if (!("unknown" in g)) throw new Error("expected unknown variant");
+    expect(g.hint).toMatch(/malformed Location/);
   });
 
   it("reports degraded (503) when Google returns 400 with 'OAuth client was not found'", async () => {
