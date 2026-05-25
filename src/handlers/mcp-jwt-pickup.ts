@@ -33,7 +33,7 @@
 
 import type { Env } from "../index";
 import { decryptWithKey } from "../lib/mcp-crypto";
-import { verifyMcpJwtSignatureOnly } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, verifyMcpJwtSignatureOnly } from "../lib/mcp-jwt";
 
 function jsonNoStore(data: unknown, status = 200): Response {
   const res = new Response(JSON.stringify(data), {
@@ -55,9 +55,10 @@ export async function handleMcpJwtPickup(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.MCP_JWT_SECRET ||
+    !jwtSecret ||
     !env.SSO_ENCRYPTION_KEY
   ) {
     return jsonNoStore({ error: "server_error" }, 503);
@@ -71,7 +72,7 @@ export async function handleMcpJwtPickup(
 
   // Signature-only verification — exp is allowed to be in the past so a
   // stale binary can recover. `sub` shape is validated inside the helper.
-  const payload = await verifyMcpJwtSignatureOnly(bearer[1], env.MCP_JWT_SECRET);
+  const payload = await verifyMcpJwtSignatureOnly(bearer[1], jwtSecret);
   if (!payload) {
     return jsonNoStore({ error: "unauthorized" }, 401);
   }

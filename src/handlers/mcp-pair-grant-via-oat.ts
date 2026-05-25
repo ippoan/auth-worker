@@ -65,7 +65,7 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { signMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
 import {
   extractOrgUuidFromResponse,
   getOatBinding,
@@ -106,7 +106,8 @@ export async function handleMcpPairGrantViaOat(
   env: Env,
 ): Promise<Response> {
   // ── env / KV guard ───────────────────────────────────────────────────
-  if (!env.MCP_JWT_SECRET || !env.AUTH_WORKER_ORIGIN) {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!jwtSecret || !env.AUTH_WORKER_ORIGIN) {
     return jsonResponse(
       {
         error: "server_error",
@@ -288,7 +289,7 @@ export async function handleMcpPairGrantViaOat(
       scope: requestedScope,
       aud: requestedAud,
     },
-    env.MCP_JWT_SECRET,
+    jwtSecret,
     BINDING_JWT_TTL_SEC,
   );
 

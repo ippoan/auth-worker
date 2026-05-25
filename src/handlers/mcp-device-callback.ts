@@ -20,6 +20,7 @@
 import type { Env } from "../index";
 import { renderDeviceResultPage } from "../lib/mcp-device-html";
 import { encryptWithKey } from "../lib/mcp-crypto";
+import { resolveMcpJwtSecret } from "../lib/mcp-jwt";
 import {
   setDeviceCodeStatus,
   setDeviceCodeStatusApproved,
@@ -58,11 +59,12 @@ export async function handleMcpDeviceCallback(
   const issuer = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
 
   // ── env guard ────────────────────────────────────────────────────────────
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
     !env.GITHUB_MCP_CLIENT_ID ||
     !env.GITHUB_MCP_CLIENT_SECRET ||
-    !env.MCP_JWT_SECRET ||
+    !jwtSecret ||
     !env.SSO_ENCRYPTION_KEY ||
     !env.OAUTH_STATE_SECRET
   ) {

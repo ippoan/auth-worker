@@ -20,7 +20,7 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { verifyMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, verifyMcpJwt } from "../lib/mcp-jwt";
 
 const MCP_AUD_LEGACY = "github-mcp-server-rs";
 
@@ -47,14 +47,16 @@ async function deleteRefresh(env: Env, token: string): Promise<boolean> {
 }
 
 async function deleteGithubTokenForJwt(env: Env, token: string): Promise<boolean> {
-  if (!env.MCP_OAUTH_KV || !env.MCP_JWT_SECRET) return false;
+  if (!env.MCP_OAUTH_KV) return false;
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!jwtSecret) return false;
   // verifyMcpJwt は aud strict だが revoke は best-effort なので legacy aud
   // でも relay-origin aud でも通す (どちらも有効に発行されている前提)。
   const accept = (aud: string): boolean => {
     if (aud === MCP_AUD_LEGACY) return true;
     try { return /^https:\/\/[^/]+$/.test(new URL(aud).origin); } catch { return false; }
   };
-  const payload = await verifyMcpJwt(token, env.MCP_JWT_SECRET, accept);
+  const payload = await verifyMcpJwt(token, jwtSecret, accept);
   if (!payload) return false;
   const key = `github_token:${payload.sub}`;
   const existed = (await env.MCP_OAUTH_KV.get(key)) !== null;
@@ -66,7 +68,8 @@ export async function handleMcpRevoke(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  if (!env.MCP_OAUTH_KV || !env.MCP_JWT_SECRET) {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!env.MCP_OAUTH_KV || !jwtSecret) {
     return jsonResponse(
       { error: "server_error", error_description: "MCP OAuth Provider not configured" },
       503,

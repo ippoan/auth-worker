@@ -24,7 +24,7 @@
 
 import type { Env } from "../index";
 import { getLiteralAudAllowlist } from "../lib/mcp-aud";
-import { verifyMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, verifyMcpJwt } from "../lib/mcp-jwt";
 import { wwwAuthenticateValue } from "../lib/mcp-origins";
 import {
   PAIR_REFRESH_TTL_SEC,
@@ -76,6 +76,7 @@ interface ResolvedAuth {
 async function resolveAuth(
   token: string,
   env: Env,
+  jwtSecret: string,
 ): Promise<
   | { kind: "ok"; auth: ResolvedAuth }
   | { kind: "pending" }
@@ -87,7 +88,7 @@ async function resolveAuth(
   if (token.includes(".")) {
     const payload = await verifyMcpJwt(
       token,
-      env.MCP_JWT_SECRET!,
+      jwtSecret,
       getLiteralAudAllowlist(env),
     );
     if (payload) {
@@ -122,7 +123,8 @@ export async function handleMcpRelayConnect(
   env: Env,
   user: string | null,
 ): Promise<Response> {
-  if (!env.MCP_JWT_SECRET) {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!jwtSecret) {
     return new Response("MCP not configured", { status: 503 });
   }
   if (request.headers.get("Upgrade") !== "websocket") {
@@ -142,7 +144,7 @@ export async function handleMcpRelayConnect(
   }
   const token = m[1];
 
-  const resolved = await resolveAuth(token, env);
+  const resolved = await resolveAuth(token, env, jwtSecret);
   if (resolved.kind === "pending") return pendingPairResponse();
   if (resolved.kind === "unauthorized") {
     return unauthorizedResponse(env, "Invalid token");

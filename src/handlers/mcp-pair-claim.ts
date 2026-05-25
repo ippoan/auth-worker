@@ -25,7 +25,7 @@
  */
 
 import type { Env } from "../index";
-import { signMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
 import {
   PAIR_REFRESH_TTL_SEC,
   approvePair,
@@ -99,9 +99,10 @@ export async function handleMcpPairClaim(
   pair_code: string,
 ): Promise<Response> {
   // ── env guard ────────────────────────────────────────────────────────
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.MCP_JWT_SECRET ||
+    !jwtSecret ||
     !env.SESSION_COOKIE_SECRET ||
     !env.OAUTH_STATE_SECRET ||
     !env.GITHUB_MCP_CLIENT_ID ||
@@ -185,7 +186,7 @@ export async function handleMcpPairClaim(
       scope,
       aud: MCP_AUD,
     },
-    env.MCP_JWT_SECRET,
+    jwtSecret,
     BINDING_JWT_TTL_SEC,
   );
 

@@ -60,6 +60,21 @@ binding = "INTERNAL_SHARED_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "INTERNAL_SHARED_SECRET"
 
+# MCP_JWT_SECRET (HS256 JWT 署名/検証鍵): 2026-05-25 (Refs ippoan/ref-files-worker#6)
+# で Worker secret から Secrets Store binding に移行。`INTERNAL_SHARED_SECRET` entry
+# を point することで ref-files-worker と同じ HS256 鍵を物理共有 — worker 間で
+# 鍵 drift する事故 (= ref-files-worker#6 smoke で発見) を構造的に潰す。
+#
+# 移行手順 (admin が deploy 前に 1 回だけ):
+#   wrangler secret delete MCP_JWT_SECRET                  # prod
+#   wrangler secret delete MCP_JWT_SECRET --env staging    # staging
+# (binding 名と Worker secret 名が衝突するため事前削除が必要。binding 経由は
+#  `wrangler deploy` 後に自動 hydrate される。)
+[[secrets_store_secrets]]
+binding = "MCP_JWT_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "INTERNAL_SHARED_SECRET"
+
 # LINE WORKS webhook 受信用 Durable Object (bot_id ごとに 1 instance)
 [[durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
@@ -212,6 +227,13 @@ id = "0498e6057b8c4d7fbca92e9de41524ee"
 # `INTERNAL_SHARED_SECRET` に統合済 (Refs ippoan/mcp-relay-rs#21)。
 [[env.staging.secrets_store_secrets]]
 binding = "INTERNAL_SHARED_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "INTERNAL_SHARED_SECRET"
+
+# MCP_JWT_SECRET (HS256): top-level コメント参照。Refs ippoan/ref-files-worker#6 で
+# ref-files-worker と HS256 鍵を物理共有するため `INTERNAL_SHARED_SECRET` entry に bind。
+[[env.staging.secrets_store_secrets]]
+binding = "MCP_JWT_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "INTERNAL_SHARED_SECRET"
 

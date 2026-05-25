@@ -135,8 +135,15 @@ export interface Env {
   GITHUB_MCP_CLIENT_ID?: string;
   GITHUB_MCP_CLIENT_SECRET?: string;
   /** HS256 secret for MCP access tokens (JWT)。既存 JWT_SECRET とは別管理。
-   *  Phase 1+ で MCP endpoint が実装されるまでは未参照。 */
-  MCP_JWT_SECRET?: string;
+   *
+   *  2026-05-25 (Refs ippoan/ref-files-worker#6): `wrangler secret put` の
+   *  Worker secret から **Secrets Store binding** に移行。auth-worker と
+   *  ref-files-worker が同 entry `INTERNAL_SHARED_SECRET` を point して鍵を
+   *  物理共有する設計に揃え、worker 間で HS256 鍵が drift しなくなる。
+   *  - `string`            — vitest binding / 移行前互換
+   *  - `SecretsStoreSecret` — 実 deploy 環境 (`.get()` 経由で値取得)
+   *  値の取り出しは `resolveMcpJwtSecret(env.MCP_JWT_SECRET)` を必ず通すこと。 */
+  MCP_JWT_SECRET?: string | SecretsStoreSecret;
   /** Rust binary (github-mcp-server-rs / ref-files-mcp-server-rs) が
    *  /mcp/introspect を叩く際の認証用。Bearer header で送られる固定共有鍵。
    *

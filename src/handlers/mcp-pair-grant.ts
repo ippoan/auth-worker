@@ -30,7 +30,7 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { signMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 import {
   checkAndBumpGrantRateLimit,
@@ -54,7 +54,8 @@ export async function handleMcpPairGrant(
   env: Env,
 ): Promise<Response> {
   // ── env guard ────────────────────────────────────────────────────────
-  if (!env.MCP_OAUTH_KV || !env.MCP_JWT_SECRET || !env.AUTH_WORKER_ORIGIN) {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!env.MCP_OAUTH_KV || !jwtSecret || !env.AUTH_WORKER_ORIGIN) {
     return jsonResponse(
       { error: "server_error", error_description: "MCP OAuth Provider not configured" },
       503,
@@ -122,7 +123,7 @@ export async function handleMcpPairGrant(
       scope: rec.requested_scope,
       aud: MCP_AUD,
     },
-    env.MCP_JWT_SECRET,
+    jwtSecret,
     BINDING_JWT_TTL_SEC,
   );
 
