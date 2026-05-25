@@ -17,6 +17,10 @@ path = "src/handlers/health.ts"
 branches = true
 
 [[files]]
+path = "src/handlers/health-oauth.ts"
+branches = true
+
+[[files]]
 path = "src/handlers/login-page.ts"
 branches = true
 

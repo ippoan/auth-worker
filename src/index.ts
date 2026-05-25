@@ -20,6 +20,7 @@ import {
 import { handleAdminRichMenuPage, handleAdminRichMenuCallback } from "./handlers/admin-rich-menu";
 import { handleTopPage } from "./handlers/top-page";
 import { handleHealthProxy } from "./handlers/health";
+import { handleHealthOAuth } from "./handlers/health-oauth";
 import {
   handleUsersList, handleInvitationsList, handleInviteUser,
   handleDeleteInvitation, handleDeleteUser,
@@ -362,6 +363,10 @@ export default {
         switch (url.pathname) {
           case "/api/health":
             return await handleHealthProxy(env);
+          // issue #209: OAuth client_id 死活チェック (Bearer JWT 必須)。
+          // /api/health (ALC proxy) と分離した独立ハンドラ。
+          case "/health/oauth":
+            return await handleHealthOAuth(request, env);
           case "/login":
             return await handleLoginPage(request, env);
           case "/top":
