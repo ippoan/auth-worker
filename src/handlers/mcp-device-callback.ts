@@ -25,6 +25,7 @@ import {
   setDeviceCodeStatus,
   setDeviceCodeStatusApproved,
 } from "../lib/mcp-kv";
+import { resolveSecret } from "../lib/resolve-secret";
 import { verifyOAuthState } from "../lib/security";
 
 /** github_token は refresh 寿命 (30 日) と同じ TTL で KV に保管。Phase 5 introspect が使う。 */
@@ -123,6 +124,20 @@ export async function handleMcpDeviceCallback(
 
   // ── GitHub token exchange ──────────────────────────────────────────────
   const callbackUri = `${issuer}/mcp/device_callback`;
+  const ghClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const ghClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
+  if (!ghClientId || !ghClientSecret) {
+    await setDeviceCodeStatus(env, deviceCode, "denied");
+    return htmlResponse(
+      renderDeviceResultPage({
+        title: "Server error",
+        message: "GitHub OAuth credentials not resolvable.",
+        level: "error",
+        issuer,
+      }),
+      503,
+    );
+  }
   let ghToken: string;
   try {
     const ghResp = await fetch("https://github.com/login/oauth/access_token", {
@@ -133,8 +148,8 @@ export async function handleMcpDeviceCallback(
         "User-Agent": "auth-worker-mcp-oauth",
       },
       body: new URLSearchParams({
-        client_id: env.GITHUB_MCP_CLIENT_ID,
-        client_secret: env.GITHUB_MCP_CLIENT_SECRET,
+        client_id: ghClientId,
+        client_secret: ghClientSecret,
         code,
         redirect_uri: callbackUri,
       }),
@@ -186,7 +201,8 @@ export async function handleMcpDeviceCallback(
   }
 
   // ── ACL check (fail-closed) ────────────────────────────────────────────
-  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlistRaw = await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlist = parseAllowlist(allowlistRaw ?? undefined);
   if (!allowlist.includes(login)) {
     await setDeviceCodeStatus(env, deviceCode, "denied");
     return htmlResponse(

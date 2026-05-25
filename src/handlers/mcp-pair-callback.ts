@@ -31,6 +31,7 @@
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
 import { buildSetCookie, signPairSession } from "../lib/mcp-session";
+import { resolveSecret } from "../lib/resolve-secret";
 import { verifyOAuthState } from "../lib/security";
 
 function htmlResponse(html: string, status: number): Response {
@@ -109,6 +110,11 @@ export async function handleMcpPairCallback(
   // ── GitHub token exchange ──
   const issuer = env.AUTH_WORKER_ORIGIN;
   const callbackUri = `${issuer}/mcp/pair_callback`;
+  const ghClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const ghClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
+  if (!ghClientId || !ghClientSecret) {
+    return errorPage("Server error", "GitHub OAuth credentials not resolvable.", 503);
+  }
   let ghToken: string;
   try {
     const ghResp = await fetch("https://github.com/login/oauth/access_token", {
@@ -119,8 +125,8 @@ export async function handleMcpPairCallback(
         "User-Agent": "auth-worker-mcp-pair",
       },
       body: new URLSearchParams({
-        client_id: env.GITHUB_MCP_CLIENT_ID,
-        client_secret: env.GITHUB_MCP_CLIENT_SECRET,
+        client_id: ghClientId,
+        client_secret: ghClientSecret,
         code: ghCode,
         redirect_uri: callbackUri,
       }),
@@ -154,7 +160,8 @@ export async function handleMcpPairCallback(
   }
 
   // ── ACL (fail-closed) ──
-  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlistRaw = await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlist = parseAllowlist(allowlistRaw ?? undefined);
   if (!allowlist.includes(login)) {
     return errorPage(
       "Access denied",

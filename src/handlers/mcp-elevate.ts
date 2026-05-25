@@ -34,6 +34,7 @@ import { encryptWithKey } from "../lib/mcp-crypto";
 import { errorResponse, jsonResponse } from "../lib/errors";
 import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
 import { issueRefreshToken } from "../lib/mcp-refresh";
+import { resolveSecret } from "../lib/resolve-secret";
 import { buildSetCookie, signPairSession } from "../lib/mcp-session";
 
 /** Browser からの elevate 開始時に KV に保存する state entry。 */
@@ -184,8 +185,15 @@ export async function handleMcpElevateStart(
   );
 
   const redirectUri = `${env.AUTH_WORKER_ORIGIN}/mcp/elevate_callback`;
+  const ghClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  if (!ghClientId) {
+    return jsonResponse(
+      { error: "server_error", error_description: "GitHub OAuth client_id not resolvable" },
+      503,
+    );
+  }
   const params = new URLSearchParams({
-    client_id: env.GITHUB_MCP_CLIENT_ID,
+    client_id: ghClientId,
     redirect_uri: redirectUri,
     state,
     scope: "read:user",
@@ -247,6 +255,11 @@ export async function handleMcpElevateCallback(
   }
 
   // GitHub token 交換
+  const cbGhClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const cbGhClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
+  if (!cbGhClientId || !cbGhClientSecret) {
+    return errorResponse(503, "github_credentials_not_resolvable");
+  }
   let ghToken: string;
   try {
     const tokenResp = await fetch("https://github.com/login/oauth/access_token", {
@@ -257,8 +270,8 @@ export async function handleMcpElevateCallback(
         "User-Agent": "ippoan-auth-worker",
       },
       body: new URLSearchParams({
-        client_id: env.GITHUB_MCP_CLIENT_ID,
-        client_secret: env.GITHUB_MCP_CLIENT_SECRET,
+        client_id: cbGhClientId,
+        client_secret: cbGhClientSecret,
         code,
       }),
     });
@@ -297,7 +310,8 @@ export async function handleMcpElevateCallback(
   }
 
   // ACL — fail-closed when allowlist env unset or malformed.
-  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlistRaw = await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlist = parseAllowlist(allowlistRaw ?? undefined);
   if (allowlist === null) {
     return errorResponse(403, "admin_allowlist_unset");
   }

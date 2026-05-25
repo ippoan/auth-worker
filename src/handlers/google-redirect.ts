@@ -1,12 +1,14 @@
 import type { Env } from "../index";
 import { getAllowedOrigins } from "../lib/config";
+import { resolveSecret } from "../lib/resolve-secret";
 import { isAllowedRedirectUri, generateOAuthState } from "../lib/security";
 
 export async function handleGoogleRedirect(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  if (!env.GOOGLE_CLIENT_ID) {
+  const clientId = await resolveSecret(env.GOOGLE_CLIENT_ID);
+  if (!clientId) {
     return new Response("Google OAuth not configured", { status: 503 });
   }
 
@@ -27,7 +29,7 @@ export async function handleGoogleRedirect(
 
   // Build Google OAuth authorization URL
   const googleAuthUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  googleAuthUrl.searchParams.set("client_id", env.GOOGLE_CLIENT_ID);
+  googleAuthUrl.searchParams.set("client_id", clientId);
   googleAuthUrl.searchParams.set(
     "redirect_uri",
     `${env.AUTH_WORKER_ORIGIN}/oauth/google/callback`,

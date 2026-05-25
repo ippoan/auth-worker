@@ -36,6 +36,7 @@ import {
   type PairRefreshRecord,
 } from "../lib/mcp-pair";
 import { mcpToGithubScope, parseMcpScope } from "../lib/mcp-scope";
+import { resolveSecret } from "../lib/resolve-secret";
 import {
   PAIR_SESSION_COOKIE_NAME,
   readPairSessionCookie,
@@ -131,8 +132,17 @@ export async function handleMcpPairClaim(
       provider: "github_mcp_pair",
       pair_code,
     });
+    const ghClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+    if (!ghClientId) {
+      return page({
+        title: "Service unavailable",
+        body: "<p>GitHub OAuth client_id not resolvable.</p>",
+        status: 503,
+        color: "#b91c1c",
+      });
+    }
     const ghAuthorize = new URL("https://github.com/login/oauth/authorize");
-    ghAuthorize.searchParams.set("client_id", env.GITHUB_MCP_CLIENT_ID);
+    ghAuthorize.searchParams.set("client_id", ghClientId);
     ghAuthorize.searchParams.set("redirect_uri", callbackUri);
     ghAuthorize.searchParams.set(
       "scope",

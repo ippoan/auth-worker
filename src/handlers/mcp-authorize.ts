@@ -37,6 +37,7 @@ import {
 import { getDcrClient } from "../lib/mcp-dcr";
 import { isAllowedResourceOrigin } from "../lib/mcp-origins";
 import { mcpToGithubScope, normalizeMcpScope, parseMcpScope } from "../lib/mcp-scope";
+import { resolveSecret } from "../lib/resolve-secret";
 import { generateOAuthState } from "../lib/security";
 
 /** redirect 先 URL に `error` を query string で乗せる helper (RFC 6749 §4.1.2.1)。 */
@@ -154,8 +155,15 @@ export async function handleMcpAuthorize(
     provider: "github_mcp_authcode",
     auth_request_id: id,
   });
+  const ghClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  if (!ghClientId) {
+    return jsonResponse(
+      { error: "server_error", error_description: "GitHub OAuth client_id not resolvable" },
+      503,
+    );
+  }
   const ghAuthorize = new URL("https://github.com/login/oauth/authorize");
-  ghAuthorize.searchParams.set("client_id", env.GITHUB_MCP_CLIENT_ID);
+  ghAuthorize.searchParams.set("client_id", ghClientId);
   ghAuthorize.searchParams.set("redirect_uri", callbackUri);
   ghAuthorize.searchParams.set("scope", mcpToGithubScope(parseMcpScope(scope)));
   ghAuthorize.searchParams.set("state", ghState);

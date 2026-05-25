@@ -30,6 +30,7 @@ import {
 } from "../lib/mcp-authcode";
 import { encryptWithKey } from "../lib/mcp-crypto";
 import { jsonResponse } from "../lib/errors";
+import { resolveSecret } from "../lib/resolve-secret";
 import { verifyOAuthState } from "../lib/security";
 
 /** github_token は refresh 寿命と同じ TTL で KV に保管 (Phase 3 と同じ key 規約)。 */
@@ -112,6 +113,11 @@ export async function handleMcpAuthCallback(
   // ── GitHub token exchange ──
   const issuer = env.AUTH_WORKER_ORIGIN;
   const callbackUri = `${issuer}/mcp/auth_callback`;
+  const ghClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const ghClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
+  if (!ghClientId || !ghClientSecret) {
+    return jsonResponse({ error: "server_error", error_description: "GitHub OAuth credentials not resolvable" }, 503);
+  }
   let ghToken: string;
   try {
     const ghResp = await fetch("https://github.com/login/oauth/access_token", {
@@ -122,8 +128,8 @@ export async function handleMcpAuthCallback(
         "User-Agent": "auth-worker-mcp-oauth",
       },
       body: new URLSearchParams({
-        client_id: env.GITHUB_MCP_CLIENT_ID,
-        client_secret: env.GITHUB_MCP_CLIENT_SECRET,
+        client_id: ghClientId,
+        client_secret: ghClientSecret,
         code: ghCode,
         redirect_uri: callbackUri,
       }),
@@ -169,7 +175,8 @@ export async function handleMcpAuthCallback(
   }
 
   // ── ACL (fail-closed) ──
-  const allowlist = parseAllowlist(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlistRaw = await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST);
+  const allowlist = parseAllowlist(allowlistRaw ?? undefined);
   if (!allowlist.includes(login)) {
     await deleteAuthRequest(env, reqRec.id);
     return redirectError(

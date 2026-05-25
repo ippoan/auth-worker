@@ -8,6 +8,7 @@ import { getAuthCookie } from "../lib/cookies";
 import { classifyOrigin, getDisplayOrigins } from "../lib/config";
 import { isTenantInOrgAllowlist } from "../lib/acl";
 import { verifyJwt, type JwtPayload } from "../lib/jwt";
+import { resolveSecret } from "../lib/resolve-secret";
 
 /** Known app patterns — matches both production and staging URLs */
 const APP_PATTERNS: Array<{
@@ -71,8 +72,9 @@ export async function handleTopPage(
   // bypasses because the OAuth callback may redirect here in the same response
   // that issued Set-Cookie, before the UA persists it for the next request.
   const cookieToken = getAuthCookie(request);
-  const payload = cookieToken
-    ? await verifyJwt(cookieToken, env.JWT_SECRET)
+  const jwtSecret = await resolveSecret(env.JWT_SECRET);
+  const payload = cookieToken && jwtSecret
+    ? await verifyJwt(cookieToken, jwtSecret)
     : null;
   if (
     !url.searchParams.has("woff") &&

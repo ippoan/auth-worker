@@ -8,23 +8,31 @@
  */
 
 import { base64Encode } from "./lineworks-crypto";
+import { resolveSecret } from "./resolve-secret";
 
 const TEXT_ENCODER = new TextEncoder();
 const INTERNAL_AUD = "alc-api-internal";
 const ISSUER = "auth-worker";
 
 interface InternalEnv {
-  JWT_SECRET: string;
+  JWT_SECRET: string | SecretsStoreSecret;
 }
 
 /**
  * 短命 (デフォルト 60s) の internal JWT を発行する。
  * 同じ `env` を複数回呼んでもキャッシュしないので、必要なら呼び出し側でキャッシュする。
+ *
+ * `JWT_SECRET` が Workers secret (string) でも CF Secrets Store binding
+ * (`SecretsStoreSecret`) でも動くよう `resolveSecret` で正規化する。
  */
 export async function signInternalJWT(
   env: InternalEnv,
   ttlSeconds = 60,
 ): Promise<string> {
+  const secret = await resolveSecret(env.JWT_SECRET);
+  if (!secret) {
+    throw new Error("JWT_SECRET not configured");
+  }
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     iss: ISSUER,
@@ -32,7 +40,7 @@ export async function signInternalJWT(
     iat: now,
     exp: now + ttlSeconds,
   };
-  return signHs256(claims, env.JWT_SECRET);
+  return signHs256(claims, secret);
 }
 
 async function signHs256(
