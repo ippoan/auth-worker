@@ -1,0 +1,133 @@
+# OAuth client_id health check (issue #209 PR3)
+#
+# auth-worker の `/health/oauth` エンドポイントを叩いて全 OAuth provider の
+# client_id 生死 (Google) / 認可エンドポイント到達性 (github_mcp / lineworks
+# / egov) を 1 リクエストで CI から検知する。
+#
+# Trigger:
+#   - schedule: 毎日 23:00 UTC (= 08:00 JST)
+#   - workflow_dispatch: 手動実行 (target=prod|staging を選択可)
+#   - workflow_run: "CI" workflow が main で success した直後 (post-deploy)
+#
+# 失敗条件 (= step exit 1):
+#   - HTTP 503 (overall=degraded — 1 つ以上の provider が ok:false)
+#   - HTTP 401 (JWT 失効 / JWT_SECRET drift)
+#   - HTTP 200 でも fetch error 等で curl が失敗
+#
+# HTTP 200 + overall=unknown は CI を fail させない (provider 側の一時的な
+# 障害で誤検知しない方針。詳細は src/handlers/health-oauth.ts 参照)。
+#
+# ----------------------------------------------------------------------------
+# secrets.HEALTH_OAUTH_JWT の発行手順 (M2M 長期 token)
+# ----------------------------------------------------------------------------
+#
+# `verifyJwt(token, env.JWT_SECRET)` (HS256, exp 必須) を pass する JWT を
+# JWT_SECRET と同じ鍵で発行し、GitHub org secret に保管する。1 年ごとに rotate。
+#
+# Python 例 (Anthropic CCoW container 等で実行):
+#
+#   import base64, hmac, hashlib, json, time
+#   JWT_SECRET = "<env.JWT_SECRET と同じ値>"  # CF Secrets Store から取得
+#   payload = {"sub": "ci-health-oauth", "exp": int(time.time()) + 365*24*3600}
+#   def b64(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+#   h = b64(json.dumps({"alg":"HS256","typ":"JWT"}).encode())
+#   p = b64(json.dumps(payload).encode())
+#   sig = b64(hmac.new(JWT_SECRET.encode(), f"{h}.{p}".encode(),
+#                      hashlib.sha256).digest())
+#   print(f"{h}.{p}.{sig}")
+#
+# 出力 token を GitHub repo (or org) secret `HEALTH_OAUTH_JWT` に登録。
+# `sub: "ci-health-oauth"` で audit log 上 CI 由来と判別可能。
+# ----------------------------------------------------------------------------
+name: OAuth Health Check
+
+on:
+  schedule:
+    - cron: '0 23 * * *'  # 08:00 JST daily
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target environment'
+        type: choice
+        options:
+          - prod
+          - staging
+        default: prod
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    # post-deploy: 直前の CI が success した時のみ実行 (fail のあと healthcheck
+    # 走らせても二重に騒がしいだけ)
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Resolve target URL
+        id: target
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          case "${INPUT_TARGET:-prod}" in
+            staging)
+              echo "url=https://auth-staging.ippoan.org/health/oauth" >> "$GITHUB_OUTPUT"
+              echo "env_name=staging" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "url=https://auth.ippoan.org/health/oauth" >> "$GITHUB_OUTPUT"
+              echo "env_name=prod" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Probe /health/oauth
+        env:
+          JWT: ${{ secrets.HEALTH_OAUTH_JWT }}
+          URL: ${{ steps.target.outputs.url }}
+          ENV_NAME: ${{ steps.target.outputs.env_name }}
+        run: |
+          set -u
+          if [ -z "${JWT}" ]; then
+            echo "::error::HEALTH_OAUTH_JWT secret is not set. See file header for mint instructions."
+            exit 1
+          fi
+          body=$(mktemp)
+          http_code=$(curl -sS -o "$body" -w '%{http_code}' \
+            -H "Authorization: Bearer ${JWT}" \
+            --max-time 30 \
+            "${URL}")
+          echo "Target: ${ENV_NAME} (${URL})"
+          echo "HTTP ${http_code}"
+          echo "Response body:"
+          jq . < "$body" 2>/dev/null || cat "$body"
+
+          # /health/oauth contract:
+          #   200 + overall:ok      → 全 provider 正常
+          #   200 + overall:unknown → provider 側で fetch 失敗 (誤検知防止で fail させない)
+          #   503 + overall:degraded → 1 つ以上の provider が ok:false (要対応)
+          #   401 → JWT 失効 / JWT_SECRET drift
+          #   other → endpoint 自体の障害
+          if [ "${http_code}" = "200" ]; then
+            overall=$(jq -r '.overall // "unknown"' < "$body" 2>/dev/null || echo "unknown")
+            echo "overall=${overall}"
+            exit 0
+          fi
+          echo "::error::/health/oauth returned HTTP ${http_code} (target=${ENV_NAME})"
+          exit 1
+
+      - name: Job summary
+        if: always()
+        env:
+          ENV_NAME: ${{ steps.target.outputs.env_name }}
+        run: |
+          {
+            echo "## OAuth Health Check (${ENV_NAME})"
+            echo ""
+            echo "Trigger: ${{ github.event_name }}"
+            echo "Result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
