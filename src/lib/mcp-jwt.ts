@@ -25,6 +25,41 @@ export interface McpJwtPayload {
 }
 
 /**
+ * `MCP_JWT_SECRET` binding shape (= 環境による 2 形態を共通化):
+ *   - `string`            — `wrangler secret put` 由来 / vitest 用 plain binding
+ *   - `SecretsStoreSecret` — account-level Secrets Store binding
+ *                          (`[[secrets_store_secrets]]`、`.get()` で値取得)
+ * Refs ippoan/ref-files-worker#6: ref-files-worker 側で同一 entry
+ * `INTERNAL_SHARED_SECRET` を point している HS256 鍵に統合済。auth-worker も
+ * 同 entry に bind することで、worker 同士の鍵 drift が構造的に消える。
+ */
+export type McpJwtSecretBinding = string | SecretsStoreSecret | undefined;
+
+/**
+ * Resolve `env.MCP_JWT_SECRET` binding to a plain string for HMAC use.
+ *
+ * - 文字列 (`wrangler secret` / vitest) → そのまま
+ * - SecretsStoreSecret (`.get()` 持ち) → 解決して return
+ * - 未 bind / `.get()` 失敗 → `null` (上位 handler は 500 / 503 を返す)
+ *
+ * 戻り値は **常に string | null** で、上位 handler は falsy check 1 回で
+ * "set されているか" を判定できる (= 既存 `!env.MCP_JWT_SECRET` 系の置換)。
+ */
+export async function resolveMcpJwtSecret(
+  binding: McpJwtSecretBinding,
+): Promise<string | null> {
+  if (!binding) return null;
+  // 空文字は上の `!binding` で既に弾いているので、ここでは型判定だけで十分。
+  if (typeof binding === "string") return binding;
+  try {
+    const value = await binding.get();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sign HS256 JWT with `secret`. `exp` is computed as `now + ttlSec`. `iat` is `now`.
  * `secret` が falsy なら throw する (上位 handler が 500 を返す前提)。
  */

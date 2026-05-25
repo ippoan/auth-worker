@@ -23,7 +23,7 @@
 import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
 import { consumeAuthCode } from "../lib/mcp-authcode";
-import { signMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
 import { getDeviceCode } from "../lib/mcp-kv";
 import { verifyPkceS256 } from "../lib/mcp-pkce";
 import {
@@ -71,7 +71,8 @@ export async function handleMcpToken(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  if (!env.MCP_OAUTH_KV || !env.MCP_JWT_SECRET) {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!env.MCP_OAUTH_KV || !jwtSecret) {
     return oauthError("server_error", "MCP OAuth Provider not configured", 503);
   }
 
@@ -84,13 +85,13 @@ export async function handleMcpToken(
 
   const grant_type = ((form.get("grant_type") as string | null) ?? "").trim();
   if (grant_type === "urn:ietf:params:oauth:grant-type:device_code") {
-    return await handleDeviceCodeGrant(form, env);
+    return await handleDeviceCodeGrant(form, env, jwtSecret);
   }
   if (grant_type === "authorization_code") {
-    return await handleAuthorizationCodeGrant(form, env);
+    return await handleAuthorizationCodeGrant(form, env, jwtSecret);
   }
   if (grant_type === "refresh_token") {
-    return await handleRefreshGrant(form, env);
+    return await handleRefreshGrant(form, env, jwtSecret);
   }
   return oauthError("unsupported_grant_type", `grant_type "${grant_type}" not supported`);
 }
@@ -103,6 +104,7 @@ export async function handleMcpToken(
 async function handleAuthorizationCodeGrant(
   form: FormData,
   env: Env,
+  jwtSecret: string,
 ): Promise<Response> {
   const code = ((form.get("code") as string | null) ?? "").trim();
   const code_verifier = ((form.get("code_verifier") as string | null) ?? "").trim();
@@ -153,7 +155,7 @@ async function handleAuthorizationCodeGrant(
       scope: rec.scope,
       aud,
     },
-    env.MCP_JWT_SECRET!,
+    jwtSecret,
     ACCESS_TOKEN_TTL_SEC,
   );
   const refresh_token = await issueRefreshToken(env, {
@@ -165,7 +167,7 @@ async function handleAuthorizationCodeGrant(
   return successResponse({ access_token, refresh_token, scope: rec.scope });
 }
 
-async function handleDeviceCodeGrant(form: FormData, env: Env): Promise<Response> {
+async function handleDeviceCodeGrant(form: FormData, env: Env, jwtSecret: string): Promise<Response> {
   const device_code = ((form.get("device_code") as string | null) ?? "").trim();
   const client_id = ((form.get("client_id") as string | null) ?? "").trim();
   if (!device_code || !client_id) {
@@ -200,7 +202,7 @@ async function handleDeviceCodeGrant(form: FormData, env: Env): Promise<Response
       scope: rec.scope,
       aud: MCP_AUD,
     },
-    env.MCP_JWT_SECRET!,
+    jwtSecret,
     ACCESS_TOKEN_TTL_SEC,
   );
   const refresh_token = await issueRefreshToken(env, {
@@ -215,7 +217,7 @@ async function handleDeviceCodeGrant(form: FormData, env: Env): Promise<Response
   return successResponse({ access_token, refresh_token, scope: rec.scope });
 }
 
-async function handleRefreshGrant(form: FormData, env: Env): Promise<Response> {
+async function handleRefreshGrant(form: FormData, env: Env, jwtSecret: string): Promise<Response> {
   const refresh_token = ((form.get("refresh_token") as string | null) ?? "").trim();
   if (!refresh_token) {
     return oauthError("invalid_request", "refresh_token is required");
@@ -238,7 +240,7 @@ async function handleRefreshGrant(form: FormData, env: Env): Promise<Response> {
       scope: consumed.scope,
       aud,
     },
-    env.MCP_JWT_SECRET!,
+    jwtSecret,
     ACCESS_TOKEN_TTL_SEC,
   );
   const newRefresh = await issueRefreshToken(env, {

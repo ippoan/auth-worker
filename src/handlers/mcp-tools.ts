@@ -31,7 +31,7 @@
 
 import type { Env } from "../index";
 import { decryptWithKey } from "../lib/mcp-crypto";
-import { verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import { mcpRelayOrigin, wwwAuthenticateValue } from "../lib/mcp-origins";
 
 const MCP_AUD_LEGACY = "github-mcp-server-rs";
@@ -319,9 +319,10 @@ type AuthGate =
   | { kind: "error"; response: Response };
 
 async function authenticate(request: Request, env: Env): Promise<AuthGate> {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.MCP_JWT_SECRET ||
+    !jwtSecret ||
     !env.SSO_ENCRYPTION_KEY
   ) {
     return {
@@ -341,7 +342,7 @@ async function authenticate(request: Request, env: Env): Promise<AuthGate> {
     };
   }
   const relayOrigin = mcpRelayOrigin(env);
-  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, (aud) => {
+  const payload = await verifyMcpJwt(m[1], jwtSecret, (aud) => {
     if (aud === MCP_AUD_LEGACY) return true;
     try { return new URL(aud).origin === relayOrigin; } catch { return false; }
   });

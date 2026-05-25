@@ -62,7 +62,7 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { signMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 import { checkAndBumpGrantRateLimit, hashRefreshToken } from "../lib/mcp-pair";
 
@@ -110,7 +110,8 @@ export async function handleMcpPairGrantViaGithub(
   env: Env,
 ): Promise<Response> {
   // ── env guard ────────────────────────────────────────────────────────
-  if (!env.MCP_JWT_SECRET || !env.AUTH_WORKER_ORIGIN) {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!jwtSecret || !env.AUTH_WORKER_ORIGIN) {
     return jsonResponse(
       {
         error: "server_error",
@@ -257,7 +258,7 @@ export async function handleMcpPairGrantViaGithub(
       scope: requestedScope,
       aud: requestedAud,
     },
-    env.MCP_JWT_SECRET,
+    jwtSecret,
     BINDING_JWT_TTL_SEC,
   );
 

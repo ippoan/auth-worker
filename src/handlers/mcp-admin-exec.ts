@@ -21,7 +21,7 @@
  */
 
 import type { Env } from "../index";
-import { verifyMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, verifyMcpJwt } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 import { decryptWithKey } from "../lib/mcp-crypto";
 
@@ -86,9 +86,10 @@ export async function handleMcpAdminExec(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.MCP_JWT_SECRET ||
+    !jwtSecret ||
     !env.SSO_ENCRYPTION_KEY ||
     !env.AUTH_WORKER_ORIGIN
   ) {
@@ -104,7 +105,7 @@ export async function handleMcpAdminExec(
     return jsonResponse({ ok: false, error: "missing_authorization" }, 401);
   }
   const relayOrigin = mcpRelayOrigin(env);
-  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, (aud) => {
+  const payload = await verifyMcpJwt(m[1], jwtSecret, (aud) => {
     if (aud === MCP_AUD_LEGACY) return true;
     try { return new URL(aud).origin === relayOrigin; } catch { return false; }
   });

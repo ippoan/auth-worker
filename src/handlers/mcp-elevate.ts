@@ -32,7 +32,7 @@
 import type { Env } from "../index";
 import { encryptWithKey } from "../lib/mcp-crypto";
 import { errorResponse, jsonResponse } from "../lib/errors";
-import { signMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
 import { issueRefreshToken } from "../lib/mcp-refresh";
 import { buildSetCookie, signPairSession } from "../lib/mcp-session";
 
@@ -75,12 +75,13 @@ const PICKUP_AUD = "github-mcp-server-rs";
  */
 async function mintJwtPickup(env: Env, login: string): Promise<void> {
   if (!env.MCP_OAUTH_KV) throw new Error("MCP_OAUTH_KV not bound");
-  if (!env.MCP_JWT_SECRET) throw new Error("MCP_JWT_SECRET not bound");
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!jwtSecret) throw new Error("MCP_JWT_SECRET not bound");
   if (!env.SSO_ENCRYPTION_KEY) throw new Error("SSO_ENCRYPTION_KEY not bound");
   const sub = `github:${login}`;
   const accessToken = await signMcpJwt(
     { sub, github_login: login, scope: PICKUP_SCOPE, aud: PICKUP_AUD },
-    env.MCP_JWT_SECRET,
+    jwtSecret,
     PICKUP_TTL_SEC,
   );
   const refreshToken = await issueRefreshToken(env, {

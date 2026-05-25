@@ -21,7 +21,7 @@
  */
 
 import type { Env } from "../index";
-import { verifyMcpJwt } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, verifyMcpJwt } from "../lib/mcp-jwt";
 import { mcpRelayOrigin, wwwAuthenticateValue } from "../lib/mcp-origins";
 
 /**
@@ -123,7 +123,8 @@ async function authenticateMcpRelay(
   env: Env,
   user: string | null,
 ): Promise<Gate> {
-  if (!env.MCP_JWT_SECRET) {
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  if (!jwtSecret) {
     return { kind: "error", response: new Response("MCP not configured", { status: 503 }) };
   }
   if (!env.MCP_SESSION_DO) {
@@ -140,7 +141,7 @@ async function authenticateMcpRelay(
   }
   const relayOrigin = mcpRelayOrigin(env);
   const audAllowlist = legacyAudienceAllowlist(env);
-  const payload = await verifyMcpJwt(m[1], env.MCP_JWT_SECRET, (aud) => {
+  const payload = await verifyMcpJwt(m[1], jwtSecret, (aud) => {
     if (audAllowlist.has(aud)) return true;
     try {
       return new URL(aud).origin === relayOrigin;

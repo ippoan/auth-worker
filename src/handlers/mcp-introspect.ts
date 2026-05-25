@@ -37,7 +37,7 @@
 import type { Env } from "../index";
 import { getLiteralAudAllowlist } from "../lib/mcp-aud";
 import { decryptWithKey } from "../lib/mcp-crypto";
-import { verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
+import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 
 /**
@@ -182,9 +182,10 @@ export async function handleMcpIntrospect(
   // 始まる全 binding を発見して array を返す (issue #189)。1 つも無ければ
   // 503 を出して mode 2 を実質無効化する。
   const sharedSecrets = await resolveAllSharedSecrets(env);
+  const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (
     !env.MCP_OAUTH_KV ||
-    !env.MCP_JWT_SECRET ||
+    !jwtSecret ||
     !env.SSO_ENCRYPTION_KEY ||
     !sharedSecrets
   ) {
@@ -196,7 +197,7 @@ export async function handleMcpIntrospect(
   // ── Mode 1: Bearer JWT (推奨) ───────────────────────────────────────────
   const bearer = /^Bearer\s+(.+)$/i.exec(authz);
   if (bearer && bearer[1]) {
-    const payload = await verifyMcpJwt(bearer[1], env.MCP_JWT_SECRET, audPredicate(env));
+    const payload = await verifyMcpJwt(bearer[1], jwtSecret, audPredicate(env));
     if (!payload) {
       // Bearer 形式で来たが verify 失敗 → mode 2 フォールバックさせず即 401
       // (timing attack 経路を増やさない、かつ legacy caller は Bearer prefix
@@ -226,7 +227,7 @@ export async function handleMcpIntrospect(
     return jsonNoStore({ active: false });
   }
 
-  const payload = await verifyMcpJwt(token, env.MCP_JWT_SECRET, audPredicate(env));
+  const payload = await verifyMcpJwt(token, jwtSecret, audPredicate(env));
   if (!payload) {
     return jsonNoStore({ active: false });
   }
