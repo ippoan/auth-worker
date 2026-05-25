@@ -49,7 +49,8 @@ export async function resolveMcpJwtSecret(
   binding: McpJwtSecretBinding,
 ): Promise<string | null> {
   if (!binding) return null;
-  if (typeof binding === "string") return binding || null;
+  // 空文字は上の `!binding` で既に弾いているので、ここでは型判定だけで十分。
+  if (typeof binding === "string") return binding;
   try {
     const value = await binding.get();
     return value || null;
