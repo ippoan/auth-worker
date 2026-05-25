@@ -75,6 +75,60 @@ binding = "MCP_JWT_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "INTERNAL_SHARED_SECRET"
 
+# 2026-05-25 (Refs #204): `.dev.vars` 由来の prod secret 一式を Workers secret
+# (`wrangler secret put`) から CF Secrets Store binding に移行。secret-verify-gcp.yml
+# が secret_name を auto-extract → GCP backup を CI で検証してくれる効果も入る。
+# 値は MCP create_secret 経由で `.dev.vars` の prod 値を CF Secrets Store + GCP に
+# 投入済 (新 version)。
+# OAUTH_STATE_SECRET / SSO_ENCRYPTION_KEY / EGOV_CLIENT_SECRET / SESSION_COOKIE_SECRET /
+# TENANT_ACL / USER_ACL / APP_TENANT_ACL は `.dev.vars` の値が placeholder or
+# 未掲載のため別 PR で対応。
+[[secrets_store_secrets]]
+binding = "GOOGLE_CLIENT_ID"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GOOGLE_CLIENT_ID"
+
+[[secrets_store_secrets]]
+binding = "GOOGLE_CLIENT_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GOOGLE_CLIENT_SECRET"
+
+# JWT_SECRET: rust-alc-api と HS256 鍵共有 (= verifies /top cookie + signs internal JWT)。
+# hcreader-worker (ippoan/HealthConnectReaderWorker) も同 entry を bind して cookie
+# verify に流用する設計 (Refs HealthConnectReaderWorker#15)。
+[[secrets_store_secrets]]
+binding = "JWT_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "JWT_SECRET"
+
+[[secrets_store_secrets]]
+binding = "GITHUB_MCP_CLIENT_ID"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GITHUB_MCP_CLIENT_ID"
+
+[[secrets_store_secrets]]
+binding = "GITHUB_MCP_CLIENT_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GITHUB_MCP_CLIENT_SECRET"
+
+[[secrets_store_secrets]]
+binding = "GITHUB_MCP_USER_ALLOWLIST"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GITHUB_MCP_USER_ALLOWLIST"
+
+[[secrets_store_secrets]]
+binding = "GITHUB_WEBHOOK_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GITHUB_WEBHOOK_SECRET"
+
+# JWT_FOR_CI_DASHBOARD: ci-dashboard 用 OAuth Code + PKCE 経由の `INTERNAL_SHARED_SECRET*`
+# として bind (#189 multi-binding 規約)。staging は既に同名で bind 済、本 PR で prod にも
+# 同じ binding を追加。これにより `[secrets.required]` から外せる (= 完全 binding 経由)。
+[[secrets_store_secrets]]
+binding = "INTERNAL_SHARED_SECRET_CI_DASHBOARD"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "JWT_FOR_CI_DASHBOARD"
+
 # LINE WORKS webhook 受信用 Durable Object (bot_id ごとに 1 instance)
 [[durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
@@ -124,17 +178,12 @@ head_sampling_rate = 1
 # `[[secrets_store_secrets]]` 系の secret_name を書かない)。
 #
 # 結果として本リストには **`[[secrets_store_secrets]]` で bind していない
-# 純粋 GCP-only secret** だけが残る (現状 `JWT_FOR_CI_DASHBOARD` は CF
-# Secrets Store binding 経由なので本来は auto-extract 対象だが、過渡期
-# 互換のため明示宣言を残す)。
+# 純粋 GCP-only secret** だけが残る。2026-05-25 (Refs #204) で `.dev.vars`
+# 由来の prod secret 一式を Secrets Store binding に移行したので本リストは空。
+# `JWT_FOR_CI_DASHBOARD` も `INTERNAL_SHARED_SECRET_CI_DASHBOARD` binding 経由で
+# auto-extract されるためここからは外す。
 [secrets]
-required = [
-  # INTERNAL_SHARED_SECRET (= 旧 mcp-internal-shared-secret-{prod,staging}
-  # 統合先) は `[[secrets_store_secrets]]` 経由で auto-extract される。
-  # 本リストに書かないこと (binding collision 防止、Refs
-  # ippoan/mcp-relay-rs#21、ippoan/ci-workflows#58)。
-  "JWT_FOR_CI_DASHBOARD",
-]
+required = []
 
 [[routes]]
 pattern = "auth.ippoan.org"
@@ -247,6 +296,43 @@ secret_name = "INTERNAL_SHARED_SECRET"
 binding = "INTERNAL_SHARED_SECRET_CI_DASHBOARD"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "JWT_FOR_CI_DASHBOARD"
+
+# 2026-05-25 (Refs #204): `.dev.vars` 由来 prod secret 一式の Secrets Store 移行。
+# top-level (= prod) と同 binding を staging にも生やして両 env で同 entry を共有。
+[[env.staging.secrets_store_secrets]]
+binding = "GOOGLE_CLIENT_ID"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GOOGLE_CLIENT_ID"
+
+[[env.staging.secrets_store_secrets]]
+binding = "GOOGLE_CLIENT_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GOOGLE_CLIENT_SECRET"
+
+[[env.staging.secrets_store_secrets]]
+binding = "JWT_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "JWT_SECRET"
+
+[[env.staging.secrets_store_secrets]]
+binding = "GITHUB_MCP_CLIENT_ID"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GITHUB_MCP_CLIENT_ID"
+
+[[env.staging.secrets_store_secrets]]
+binding = "GITHUB_MCP_CLIENT_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GITHUB_MCP_CLIENT_SECRET"
+
+[[env.staging.secrets_store_secrets]]
+binding = "GITHUB_MCP_USER_ALLOWLIST"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GITHUB_MCP_USER_ALLOWLIST"
+
+[[env.staging.secrets_store_secrets]]
+binding = "GITHUB_WEBHOOK_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GITHUB_WEBHOOK_SECRET"
 
 [[env.staging.durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
