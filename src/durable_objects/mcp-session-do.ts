@@ -20,7 +20,7 @@
  * - 同一 user の同時接続は 1 本のみ。新 upgrade で旧 WS は `close(1000, "replaced")`。
  * - DO 内 path は worker public path と衝突しないように `/__connect` /
  *   `/__bridge` の double-underscore prefix を使う。
- * - Frame schema は ippoan/github-mcp-server-rs#27 の binary 側で確定済み:
+ * - Frame schema は ippoan/github-mcp-server-rs#27 (archived; monorepo: ippoan/mcp-relay-rs) の binary 側で確定済み:
  *
  *   ```json
  *   {"kind":"req","v":1,"id":"<uuid>","method":"POST","path":"/","headers":{...},"body_b64":"..."}

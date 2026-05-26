@@ -7,7 +7,7 @@ auth-worker (`auth.ippoan.org`) を **MCP OAuth Provider** として使う consu
 
 | consumer | mode | repo |
 |---|---|---|
-| `github-mcp-server-rs` | device flow (CLI) | [ippoan/github-mcp-server-rs](https://github.com/ippoan/github-mcp-server-rs) |
+| `github-mcp-server-rs` | device flow (CLI) | [ippoan/mcp-relay-rs](https://github.com/ippoan/mcp-relay-rs/tree/main/binaries/github-mcp-server-rs) (旧 `ippoan/github-mcp-server-rs`, archived) |
 | `cc-relay` broker | device flow (CLI) | [ippoan/cc-relay](https://github.com/ippoan/cc-relay) |
 | Claude.ai | auth code + PKCE (browser) | (Anthropic) |
 
