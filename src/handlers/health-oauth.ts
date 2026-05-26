@@ -31,7 +31,7 @@ import { resolveSecret } from "../lib/secret";
 /** 外部 provider への probe 1 回のタイムアウト (ms)。 */
 const PROBE_TIMEOUT_MS = 5000;
 
-type ProbeMode = "client_id_check" | "reachability";
+type ProbeMode = "client_id_check" | "reachability" | "secret_check";
 
 type ProbeOk = {
   configured: true;
@@ -161,6 +161,73 @@ async function probeGoogle(env: Env): Promise<ProbeResult> {
 }
 
 // ---------------------------------------------------------------------------
+// google_secret — secret_check
+//
+// OAuth2 spec の token endpoint に意図的に invalid な code を投げて、
+// error 種別 で client_secret の正否を判定する (= 標準的な monitoring 技法)。
+//
+//   creds OK  / code bad : 400 {"error":"invalid_grant"}     ← 期待
+//   creds bad            : 401 {"error":"invalid_client"}    ← 検知目標
+//
+// 実 token は発行されないので安全。client_secret 値は HTTPS body 内のみで
+// log / response に echo されない。
+// ---------------------------------------------------------------------------
+
+async function probeGoogleSecret(env: Env): Promise<ProbeResult> {
+  const mode: ProbeMode = "secret_check";
+  const clientId = await resolveSecret(env.GOOGLE_CLIENT_ID);
+  const clientSecret = await resolveSecret(env.GOOGLE_CLIENT_SECRET);
+  if (!clientId || !clientSecret) return { configured: false };
+
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: "health_probe_intentionally_invalid",
+    client_id: clientId,
+    client_secret: clientSecret,
+    redirect_uri: `${env.AUTH_WORKER_ORIGIN}/oauth/google/callback`,
+  });
+
+  const res = await timedFetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (isFetchError(res)) {
+    return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
+  }
+
+  let json: { error?: string } = {};
+  try {
+    json = (await res.json()) as { error?: string };
+  } catch {
+    /* swallow — provider may change response shape */
+  }
+  const err = json.error ?? "";
+
+  // creds accepted, code rejected — what we want
+  if (res.status === 400 && err === "invalid_grant") {
+    return { configured: true, ok: true, status: res.status, mode };
+  }
+  // creds drift — exactly the failure mode we are detecting
+  if (err === "invalid_client") {
+    return {
+      configured: true,
+      ok: false,
+      status: res.status,
+      mode,
+      hint: "invalid_client — GOOGLE_CLIENT_ID/SECRET pair rejected by token endpoint",
+    };
+  }
+  // unexpected — Google が仕様変更したとき誤検知しないよう unknown 扱い
+  return {
+    configured: true,
+    unknown: true,
+    mode,
+    hint: `unexpected ${res.status} ${err || "(no error field)"}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // github_mcp — reachability only (client_id 正否は probe で区別不能)
 // ---------------------------------------------------------------------------
 
@@ -207,6 +274,72 @@ async function probeGithubMcp(env: Env): Promise<ProbeResult> {
     status: res.status,
     mode,
     hint: `expected 30x to github.com but got ${res.status}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// github_mcp_secret — secret_check
+//
+// GitHub の OAuth token endpoint に invalid な code を投げて error 種別で
+// client_secret の正否を判定する。GitHub は標準 OAuth2 と違って HTTP 200 で
+// error を body に返す:
+//
+//   creds OK  / code bad : 200 {"error":"bad_verification_code"}        ← 期待
+//   creds bad            : 200 {"error":"incorrect_client_credentials"} ← 検知目標
+//
+// `Accept: application/json` を付けて JSON 応答を強制する (デフォは form-urlencoded)。
+// ---------------------------------------------------------------------------
+
+async function probeGithubMcpSecret(env: Env): Promise<ProbeResult> {
+  const mode: ProbeMode = "secret_check";
+  const clientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  const clientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
+  if (!clientId || !clientSecret) return { configured: false };
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    code: "health_probe_intentionally_invalid",
+    redirect_uri: `${env.AUTH_WORKER_ORIGIN}/mcp/auth_callback`,
+  });
+
+  const res = await timedFetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "application/json",
+    },
+    body: body.toString(),
+  });
+  if (isFetchError(res)) {
+    return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
+  }
+
+  let json: { error?: string } = {};
+  try {
+    json = (await res.json()) as { error?: string };
+  } catch {
+    /* swallow */
+  }
+  const err = json.error ?? "";
+
+  if (err === "bad_verification_code") {
+    return { configured: true, ok: true, status: res.status, mode };
+  }
+  if (err === "incorrect_client_credentials") {
+    return {
+      configured: true,
+      ok: false,
+      status: res.status,
+      mode,
+      hint: "incorrect_client_credentials — GITHUB_MCP_CLIENT_ID/SECRET pair rejected",
+    };
+  }
+  return {
+    configured: true,
+    unknown: true,
+    mode,
+    hint: `unexpected ${res.status} ${err || "(no error field)"}`,
   };
 }
 
@@ -333,15 +466,26 @@ export async function handleHealthOAuth(
     return new Response("unauthorized", { status: 401 });
   }
 
-  // 4 provider 並列実行 (Promise.all)。1 つの probe の latency が全体を
+  // 6 probe 並列実行 (Promise.all)。1 つの probe の latency が全体を
   // 引っ張らないように、各々が 5s timeout 内で完結する。
-  const [google, github_mcp, lineworks, egov] = await Promise.all([
+  // *_secret probe は token endpoint に invalid code を投げて
+  // client_secret 正否を判定する (Refs #217)。
+  const [google, google_secret, github_mcp, github_mcp_secret, lineworks, egov] = await Promise.all([
     probeGoogle(env),
+    probeGoogleSecret(env),
     probeGithubMcp(env),
+    probeGithubMcpSecret(env),
     probeLineworks(env),
     probeEgov(env),
   ]);
-  const providers: Record<string, ProbeResult> = { google, github_mcp, lineworks, egov };
+  const providers: Record<string, ProbeResult> = {
+    google,
+    google_secret,
+    github_mcp,
+    github_mcp_secret,
+    lineworks,
+    egov,
+  };
   const overall = computeOverall(providers);
 
   console.log(JSON.stringify({

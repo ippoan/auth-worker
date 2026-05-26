@@ -22,7 +22,7 @@ async function authedRequest(): Promise<Request> {
   });
 }
 
-type ProbeMode = "client_id_check" | "reachability";
+type ProbeMode = "client_id_check" | "reachability" | "secret_check";
 type ProbeResultJson =
   | { configured: false }
   | { configured: true; ok: boolean; status: number; mode: ProbeMode; hint?: string }
@@ -33,7 +33,9 @@ interface OAuthBody {
   overall: "ok" | "degraded" | "unknown";
   providers: {
     google: ProbeResultJson;
+    google_secret: ProbeResultJson;
     github_mcp: ProbeResultJson;
+    github_mcp_secret: ProbeResultJson;
     lineworks: ProbeResultJson;
     egov: ProbeResultJson;
   };
@@ -46,10 +48,20 @@ function defaultResponses(): Record<string, Response> {
       status: 302,
       headers: { Location: "https://accounts.google.com/v3/signin/identifier?client_id=x" },
     }),
+    // google token endpoint: creds OK + code bad => 400 invalid_grant
+    google_token: new Response(
+      JSON.stringify({ error: "invalid_grant", error_description: "Bad Request" }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    ),
     github: new Response(null, {
       status: 302,
       headers: { Location: "https://github.com/login?client_id=x&return_to=..." },
     }),
+    // github token endpoint: creds OK + code bad => 200 bad_verification_code
+    github_token: new Response(
+      JSON.stringify({ error: "bad_verification_code" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ),
     // パラメータ無しで叩いた時の rust-alc-api 期待応答。
     lineworks: new Response("Missing parameters", { status: 400 }),
     egov: new Response(
@@ -68,7 +80,9 @@ function defaultResponses(): Record<string, Response> {
  *  各 probe は 1 リクエストしか発行しないので Response を clone しなくて良い。 */
 function setupFetch(overrides: Partial<{
   google: Response | Error;
+  google_token: Response | Error;
   github: Response | Error;
+  github_token: Response | Error;
   lineworks: Response | Error;
   egov: Response | Error;
 }> = {}): void {
@@ -79,7 +93,9 @@ function setupFetch(overrides: Partial<{
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     let key: string | undefined;
-    if (url.includes("accounts.google.com")) key = "google";
+    if (url.includes("oauth2.googleapis.com/token")) key = "google_token";
+    else if (url.includes("accounts.google.com")) key = "google";
+    else if (url.includes("github.com/login/oauth/access_token")) key = "github_token";
     else if (url.includes("github.com")) key = "github";
     else if (url.includes("/api/auth/lineworks/redirect")) key = "lineworks";
     else if (url.includes(".well-known/openid-configuration")) key = "egov";
@@ -91,10 +107,13 @@ function setupFetch(overrides: Partial<{
   }));
 }
 
-/** 全 4 provider が configured になる env を返す。デフォルト env は github_mcp / egov 未設定。 */
+/** 全 provider が configured になる env を返す。デフォルト env は github_mcp / egov 未設定。
+ *  GITHUB_MCP_CLIENT_SECRET も含めることで github_mcp_secret probe が configured 扱いになる。
+ *  GOOGLE_CLIENT_SECRET は createMockEnv のデフォで既に設定済。 */
 function envAllConfigured(extra: Partial<Env> = {}): Env {
   return createMockEnv({
     GITHUB_MCP_CLIENT_ID: "Iv1.testgithubclient",
+    GITHUB_MCP_CLIENT_SECRET: "test-github-mcp-secret",
     EGOV_CLIENT_ID: "egov-test-client",
     EGOV_AUTH_BASE: "https://egov.test.example/auth/realms/test",
     ...extra,
@@ -150,7 +169,7 @@ describe("handleHealthOAuth", () => {
   // overall response shape
   // -------------------------------------------------------------------------
 
-  it("returns overall:ok with all 4 providers configured and healthy", async () => {
+  it("returns overall:ok with all 6 probes configured and healthy", async () => {
     setupFetch();
     const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
@@ -158,9 +177,11 @@ describe("handleHealthOAuth", () => {
     const body = await res.json() as OAuthBody;
     expect(body.overall).toBe("ok");
     expect(typeof body.checked_at).toBe("string");
-    // mode が各 provider で正しく出る
+    // mode が各 probe で正しく出る
     expect((body.providers.google as { mode: ProbeMode }).mode).toBe("client_id_check");
+    expect((body.providers.google_secret as { mode: ProbeMode }).mode).toBe("secret_check");
     expect((body.providers.github_mcp as { mode: ProbeMode }).mode).toBe("reachability");
+    expect((body.providers.github_mcp_secret as { mode: ProbeMode }).mode).toBe("secret_check");
     expect((body.providers.lineworks as { mode: ProbeMode }).mode).toBe("reachability");
     expect((body.providers.egov as { mode: ProbeMode }).mode).toBe("reachability");
   });
@@ -380,6 +401,81 @@ describe("handleHealthOAuth", () => {
   });
 
   // -------------------------------------------------------------------------
+  // google_secret probe — secret_check mode (POST /token with invalid code)
+  // -------------------------------------------------------------------------
+
+  it("google_secret: ok when token endpoint returns 400 invalid_grant (creds accepted)", async () => {
+    setupFetch();
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.google_secret as { ok: boolean; status: number };
+    expect(g.ok).toBe(true);
+    expect(g.status).toBe(400);
+  });
+
+  it("google_secret: degraded when token endpoint returns 401 invalid_client (creds drift)", async () => {
+    setupFetch({
+      google_token: new Response(
+        JSON.stringify({ error: "invalid_client", error_description: "The OAuth client was not found." }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.google_secret as { ok: boolean; status: number; hint: string };
+    expect(g.ok).toBe(false);
+    expect(g.status).toBe(401);
+    expect(g.hint).toContain("invalid_client");
+  });
+
+  it("google_secret: unknown when token endpoint returns unexpected status", async () => {
+    setupFetch({
+      google_token: new Response(JSON.stringify({ error: "server_error" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.google_secret as { unknown: boolean; hint: string };
+    expect(g.unknown).toBe(true);
+    expect(g.hint).toContain("500");
+  });
+
+  it("google_secret: unknown when token body is not JSON", async () => {
+    setupFetch({
+      google_token: new Response("not json", { status: 400 }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.google_secret as { unknown: boolean };
+    expect(g.unknown).toBe(true);
+  });
+
+  it("google_secret: unknown when fetch throws", async () => {
+    setupFetch({ google_token: new Error("ECONNRESET") });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.google_secret as { unknown: boolean; hint: string };
+    expect(g.unknown).toBe(true);
+    expect(g.hint).toContain("ECONNRESET");
+  });
+
+  it("google_secret: skip when GOOGLE_CLIENT_SECRET is empty", async () => {
+    setupFetch();
+    const env = envAllConfigured({ GOOGLE_CLIENT_SECRET: "" });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    expect(body.providers.google_secret).toEqual({ configured: false });
+  });
+
+  // -------------------------------------------------------------------------
   // github_mcp probe — reachability only
   // -------------------------------------------------------------------------
 
@@ -443,6 +539,68 @@ describe("handleHealthOAuth", () => {
     const g = body.providers.github_mcp;
     if (!("unknown" in g)) throw new Error("expected unknown variant");
     expect(g.hint).toMatch(/conn reset/);
+  });
+
+  // -------------------------------------------------------------------------
+  // github_mcp_secret probe — secret_check mode
+  // -------------------------------------------------------------------------
+
+  it("github_mcp_secret: ok when 200 bad_verification_code (creds accepted)", async () => {
+    setupFetch();
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.github_mcp_secret as { ok: boolean; status: number };
+    expect(g.ok).toBe(true);
+    expect(g.status).toBe(200);
+  });
+
+  it("github_mcp_secret: degraded when 200 incorrect_client_credentials (creds drift)", async () => {
+    setupFetch({
+      github_token: new Response(
+        JSON.stringify({ error: "incorrect_client_credentials" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.github_mcp_secret as { ok: boolean; hint: string };
+    expect(g.ok).toBe(false);
+    expect(g.hint).toContain("incorrect_client_credentials");
+  });
+
+  it("github_mcp_secret: unknown when body has unexpected error", async () => {
+    setupFetch({
+      github_token: new Response(JSON.stringify({ error: "unknown_error" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.github_mcp_secret as { unknown: boolean };
+    expect(g.unknown).toBe(true);
+  });
+
+  it("github_mcp_secret: unknown on fetch error", async () => {
+    setupFetch({ github_token: new Error("timeout") });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const g = body.providers.github_mcp_secret as { unknown: boolean; hint: string };
+    expect(g.unknown).toBe(true);
+    expect(g.hint).toContain("timeout");
+  });
+
+  it("github_mcp_secret: skip when GITHUB_MCP_CLIENT_SECRET is missing", async () => {
+    setupFetch();
+    const env = envAllConfigured({ GITHUB_MCP_CLIENT_SECRET: undefined });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    expect(body.providers.github_mcp_secret).toEqual({ configured: false });
   });
 
   // -------------------------------------------------------------------------
