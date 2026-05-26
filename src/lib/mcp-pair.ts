@@ -1,6 +1,6 @@
 /**
  * MCP OAuth Provider — 1-click pair flow KV layer (issue #144 / #157 /
- * consumer: ippoan/github-mcp-server-rs#42, #57)。
+ * consumer: ippoan/github-mcp-server-rs#42, #57 — archived; monorepo successor: ippoan/mcp-relay-rs)。
  *
  * Device flow と並行する代替認証経路で、binary は CLI prompt 無しで pair_code
  * を取得し、ブラウザは auth-worker 側 sticky cookie session で「自分が誰か」を

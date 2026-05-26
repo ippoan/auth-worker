@@ -4,7 +4,7 @@
 |--------------|------------------------------------------------------------------------------------------------|
 | Date         | 2026-05-18                                                                                     |
 | Environment  | staging (`auth-staging.ippoan.org`, `mcp-staging.ippoan.org`)                                  |
-| PRs covered  | ippoan/auth-worker#149, ippoan/github-mcp-server-rs#48                                         |
+| PRs covered  | ippoan/auth-worker#149, ippoan/github-mcp-server-rs#48 (archived; monorepo successor: ippoan/mcp-relay-rs) |
 | Binary       | github-mcp-server-rs v0.0.14 (first release containing PR #48)                                 |
 | Tester       | yhonda-ohishi                                                                                  |
 | Result       | **PASS** (7/8 checks; 403 not_elevated path deferred — see "Deferred")                         |
@@ -85,7 +85,9 @@ Audit trail bonus: every elevate triggers a fresh GitHub OAuth Apps consent gran
 
 ```bash
 # 1. Install binary (released)
-curl -sSfL "https://github.com/ippoan/github-mcp-server-rs/releases/download/v0.0.14/github-mcp-server-rs-v0.0.14-x86_64-unknown-linux-gnu.tar.gz" \
+# NOTE: 元の smoke test は archived `ippoan/github-mcp-server-rs` の v0.0.14 を使用。
+# 現行 release は monorepo `ippoan/mcp-relay-rs` から配信される。最新 dev tag を指す例:
+curl -sSfL "https://github.com/ippoan/mcp-relay-rs/releases/download/dev-14/github-mcp-server-rs-dev-14-x86_64-unknown-linux-gnu.tar.gz" \
   | tar -xz -C /tmp && install -m 0755 /tmp/github-mcp-server-rs ~/.local/bin/
 
 # 2. Device flow (prints verification_uri_complete; browser-confirm)
