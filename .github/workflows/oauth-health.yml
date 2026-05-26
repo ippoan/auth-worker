@@ -5,9 +5,11 @@
 # / egov) を 1 リクエストで CI から検知する。
 #
 # Trigger:
-#   - schedule: 毎日 23:00 UTC (= 08:00 JST)
-#   - workflow_dispatch: 手動実行 (target=prod|staging を選択可)
-#   - workflow_run: "CI" workflow が main で success した直後 (post-deploy)
+#   - schedule: 毎日 23:00 UTC (= 08:00 JST), target=prod
+#   - workflow_dispatch: 手動実行 (target=prod|staging を選択可, default=prod)
+#   - workflow_run: "CI" workflow が main で success した直後 (post-deploy),
+#                   target=staging を強制 (main merge = staging deploy 済みのため)
+#                   prod は v* tag で配信されるので post-CI 時点ではまだ古い
 #
 # 失敗条件 (= step exit 1):
 #   - HTTP 503 (overall=degraded — 1 つ以上の provider が ok:false)
@@ -73,8 +75,18 @@ jobs:
         id: target
         env:
           INPUT_TARGET: ${{ inputs.target }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          case "${INPUT_TARGET:-prod}" in
+          # workflow_run (post-CI on main) は staging を強制する。
+          # main merge 時点で staging deploy は完了しているが、prod は v* tag で
+          # 配信されるため post-CI の段階では prod に新コードはまだ無く 404 になる。
+          # schedule / workflow_dispatch は inputs.target (default=prod) を尊重。
+          if [ "${EVENT_NAME}" = "workflow_run" ]; then
+            TARGET="staging"
+          else
+            TARGET="${INPUT_TARGET:-prod}"
+          fi
+          case "${TARGET}" in
             staging)
               echo "url=https://auth-staging.ippoan.org/health/oauth" >> "$GITHUB_OUTPUT"
               echo "env_name=staging" >> "$GITHUB_OUTPUT"
