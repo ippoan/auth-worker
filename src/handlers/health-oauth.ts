@@ -25,6 +25,7 @@
  *   - 1 つでも `ok: false` → overall = "degraded" (HTTP 503)。
  */
 import type { Env } from "../index";
+import { signInternalJWT } from "../lib/internal-jwt";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 
@@ -344,6 +345,139 @@ async function probeGithubMcpSecret(env: Env): Promise<ProbeResult> {
 }
 
 // ---------------------------------------------------------------------------
+// jwt_secret_drift — secret_check (Refs #218)
+//
+// auth-worker と rust-alc-api は HS256 鍵 `JWT_SECRET` を物理共有している。
+// 片方だけ rotate された / Secrets Store 移行漏れで drift すると、ユーザー
+// ログイン後の cookie verify が silent fail して redirect loop に陥る。
+//
+// rust-alc-api 側の `GET /api/internal/health/jwt-canary?challenge=<hex>` に
+// 32-byte random challenge を投げ、返ってきた HMAC-SHA256(challenge) を
+// auth-worker 側の `JWT_SECRET` で再計算した値と比較する:
+//
+//   一致      → ok (両者の JWT_SECRET が一致)
+//   不一致    → degraded (drift 検知)
+//   401       → degraded (internal JWT 自体が拒否される = drift の典型)
+//   404       → unknown (rust-alc-api がまだ canary endpoint を持たない旧版)
+//   その他    → unknown (上流障害 / 仕様変更)
+//
+// secret 値そのものは body / log / response に echo されない。HMAC tag のみ。
+// ---------------------------------------------------------------------------
+
+async function probeJwtDrift(env: Env): Promise<ProbeResult> {
+  const mode: ProbeMode = "secret_check";
+  if (!env.ALC_API_ORIGIN) return { configured: false };
+  const jwtSecret = await resolveSecret(env.JWT_SECRET);
+  if (!jwtSecret) return { configured: false };
+
+  const challengeBytes = new Uint8Array(32);
+  crypto.getRandomValues(challengeBytes);
+  const challengeHex = bytesToHex(challengeBytes);
+
+  let internalJwt: string;
+  try {
+    internalJwt = await signInternalJWT(env, 30);
+  } catch (e: unknown) {
+    return {
+      configured: true,
+      unknown: true,
+      mode,
+      hint: `sign internal JWT failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  const url =
+    `${env.ALC_API_ORIGIN}/api/internal/health/jwt-canary?challenge=${challengeHex}`;
+  const res = await timedFetch(url, {
+    headers: { Authorization: `Bearer ${internalJwt}` },
+  });
+  if (isFetchError(res)) {
+    return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
+  }
+
+  // 401 → require_internal_jwt が JWT を弾いた = 鍵が違う = drift。
+  if (res.status === 401) {
+    return {
+      configured: true,
+      ok: false,
+      status: 401,
+      mode,
+      hint: "internal JWT rejected by rust-alc-api — JWT_SECRET drift",
+    };
+  }
+  // 404 → rust-alc-api が canary endpoint を持たない旧版 (= deploy 順序)。
+  if (res.status === 404) {
+    return {
+      configured: true,
+      unknown: true,
+      mode,
+      hint: "canary endpoint not deployed on rust-alc-api (pre #218 build)",
+    };
+  }
+  if (res.status !== 200) {
+    return { configured: true, unknown: true, mode, hint: `unexpected status ${res.status}` };
+  }
+
+  let json: { signature?: unknown } = {};
+  try {
+    json = (await res.json()) as { signature?: unknown };
+  } catch {
+    /* swallow */
+  }
+  const sig = typeof json.signature === "string" ? json.signature : "";
+  if (!/^[0-9a-f]{64}$/.test(sig)) {
+    return {
+      configured: true,
+      unknown: true,
+      mode,
+      hint: "canary response missing/invalid signature",
+    };
+  }
+
+  const expected = await hmacSha256Hex(jwtSecret, challengeBytes);
+  if (timingSafeHexEqual(sig, expected)) {
+    return { configured: true, ok: true, status: 200, mode };
+  }
+  return {
+    configured: true,
+    ok: false,
+    status: 200,
+    mode,
+    hint: "signature mismatch — JWT_SECRET drift between auth-worker and rust-alc-api",
+  };
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let s = "";
+  for (const b of bytes) {
+    s += b.toString(16).padStart(2, "0");
+  }
+  return s;
+}
+
+async function hmacSha256Hex(secret: string, data: Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, data);
+  return bytesToHex(new Uint8Array(sig));
+}
+
+/** lowercase hex 文字列同士の constant-time 比較 (length も一致前提)。 */
+function timingSafeHexEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+// ---------------------------------------------------------------------------
 // lineworks — reachability only (client_id は rust-alc-api 側)
 // ---------------------------------------------------------------------------
 
@@ -481,17 +615,28 @@ export async function handleHealthOAuth(
     return new Response("unauthorized", { status: 401 });
   }
 
-  // 6 probe 並列実行 (Promise.all)。1 つの probe の latency が全体を
+  // 7 probe 並列実行 (Promise.all)。1 つの probe の latency が全体を
   // 引っ張らないように、各々が 5s timeout 内で完結する。
   // *_secret probe は token endpoint に invalid code を投げて
   // client_secret 正否を判定する (Refs #217)。
-  const [google, google_secret, github_mcp, github_mcp_secret, lineworks, egov] = await Promise.all([
+  // jwt_secret_drift は rust-alc-api の canary endpoint と HMAC を突き合わせ
+  // て JWT_SECRET の drift を検知する (Refs #218)。
+  const [
+    google,
+    google_secret,
+    github_mcp,
+    github_mcp_secret,
+    lineworks,
+    egov,
+    jwt_secret_drift,
+  ] = await Promise.all([
     probeGoogle(env),
     probeGoogleSecret(env),
     probeGithubMcp(env),
     probeGithubMcpSecret(env),
     probeLineworks(env),
     probeEgov(env),
+    probeJwtDrift(env),
   ]);
   const providers: Record<string, ProbeResult> = {
     google,
@@ -500,6 +645,7 @@ export async function handleHealthOAuth(
     github_mcp_secret,
     lineworks,
     egov,
+    jwt_secret_drift,
   };
   const overall = computeOverall(providers);
 
