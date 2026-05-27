@@ -721,6 +721,38 @@ describe("handleHealthOAuth", () => {
     expect(e.hint).toMatch(/404/);
   });
 
+  it("egov: unknown when well-known returns 401 (sandbox basic auth gate)", async () => {
+    setupFetch({
+      egov: new Response("auth required", {
+        status: 401,
+        headers: { "WWW-Authenticate": 'Basic realm="Password Required for API environment"' },
+      }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("unknown");
+    const e = body.providers.egov;
+    if (!("unknown" in e)) throw new Error("expected unknown variant");
+    expect(e.unknown).toBe(true);
+    expect(e.hint).toMatch(/401.*sandbox/);
+  });
+
+  it("egov: unknown when well-known returns 403 (sandbox ip allowlist gate)", async () => {
+    setupFetch({
+      egov: new Response("forbidden", { status: 403 }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as OAuthBody;
+    const e = body.providers.egov;
+    if (!("unknown" in e)) throw new Error("expected unknown variant");
+    expect(e.unknown).toBe(true);
+    expect(e.hint).toMatch(/403.*sandbox/);
+  });
+
   it("egov: unknown when well-known body is not JSON", async () => {
     setupFetch({
       egov: new Response("<html>oops</html>", {

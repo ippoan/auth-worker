@@ -400,6 +400,21 @@ async function probeEgov(env: Env): Promise<ProbeResult> {
     return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
   }
 
+  if (res.status === 401 || res.status === 403) {
+    // e-Gov sandbox (sbx) は well-known endpoint を Basic auth / IP allowlist で
+    // 保護しているため、認証なしの probe は 401 (Basic challenge) / 403 を返す。
+    // socket レベルには到達できているので "configured + reachable" だが、
+    // discovery JSON の検証ができないので unknown 扱いにする (CI fail 防止)。
+    // prod の e-Gov 本番 endpoint が同じ status を返す事態は本物の障害だが、
+    // それは workflow_dispatch → target=prod で別途検知する設計。
+    return {
+      configured: true,
+      unknown: true,
+      mode,
+      hint: `well-known returned ${res.status} (likely sandbox auth gate)`,
+    };
+  }
+
   if (res.status !== 200) {
     return {
       configured: true,
