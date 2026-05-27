@@ -38,7 +38,28 @@ interface OAuthBody {
     github_mcp_secret: ProbeResultJson;
     lineworks: ProbeResultJson;
     egov: ProbeResultJson;
+    jwt_secret_drift: ProbeResultJson;
   };
+}
+
+/** auth-worker と同じ HMAC-SHA256(secret, challenge_bytes) を hex で返す。
+ *  jwt_secret_drift probe の happy-path 用 oracle。 */
+async function hmacHex(secret: string, challengeHex: string): Promise<string> {
+  const bytes = new Uint8Array(challengeHex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(challengeHex.slice(i * 2, i * 2 + 2), 16);
+  }
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, bytes);
+  let out = "";
+  for (const b of new Uint8Array(sig)) out += b.toString(16).padStart(2, "0");
+  return out;
 }
 
 /** デフォルトで全 provider が ok を返すような happy-path Response 群。 */
@@ -75,6 +96,16 @@ function defaultResponses(): Record<string, Response> {
   };
 }
 
+/** jwt_secret_drift probe 用の mock 振る舞い指定。
+ *
+ *  - "happy" (default): challenge を auth-worker と同じ secret (TEST_JWT_SECRET) で
+ *                       署名して返す → ok 判定
+ *  - "drift":            別 secret で署名 → signature mismatch (ok: false)
+ *  - 任意 Response:      丸ごと差し替え (404 / 500 / 401 / 不正 body 等)
+ *  - Error:              throw (fetch 失敗を模擬)
+ */
+type CanaryMock = "happy" | "drift" | Response | Error;
+
 /** URL host / path で probe 先を識別して mock を返す。
  *  値が `Error` の場合は throw される (fetch 失敗の模擬)。
  *  各 probe は 1 リクエストしか発行しないので Response を clone しなくて良い。 */
@@ -85,13 +116,29 @@ function setupFetch(overrides: Partial<{
   github_token: Response | Error;
   lineworks: Response | Error;
   egov: Response | Error;
+  canary: CanaryMock;
 }> = {}): void {
+  const { canary: canaryOverride, ...rest } = overrides;
   const merged: Record<string, Response | Error> = {
     ...defaultResponses(),
-    ...overrides,
+    ...rest,
   };
+  const canary: CanaryMock = canaryOverride ?? "happy";
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
+    // canary は URL に challenge query を含むので先に判定
+    if (url.includes("/api/internal/health/jwt-canary")) {
+      if (canary instanceof Error) throw canary;
+      if (canary instanceof Response) return canary;
+      // dynamic: HMAC を計算して返す
+      const challenge = new URL(url).searchParams.get("challenge") ?? "";
+      const signSecret = canary === "happy" ? TEST_JWT_SECRET : "different-secret-32-byte-padding";
+      const signature = await hmacHex(signSecret, challenge);
+      return new Response(JSON.stringify({ signature }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     let key: string | undefined;
     if (url.includes("oauth2.googleapis.com/token")) key = "google_token";
     else if (url.includes("accounts.google.com")) key = "google";
@@ -169,7 +216,7 @@ describe("handleHealthOAuth", () => {
   // overall response shape
   // -------------------------------------------------------------------------
 
-  it("returns overall:ok with all 6 probes configured and healthy", async () => {
+  it("returns overall:ok with all 7 probes configured and healthy", async () => {
     setupFetch();
     const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
@@ -184,6 +231,7 @@ describe("handleHealthOAuth", () => {
     expect((body.providers.github_mcp_secret as { mode: ProbeMode }).mode).toBe("secret_check");
     expect((body.providers.lineworks as { mode: ProbeMode }).mode).toBe("reachability");
     expect((body.providers.egov as { mode: ProbeMode }).mode).toBe("reachability");
+    expect((body.providers.jwt_secret_drift as { mode: ProbeMode }).mode).toBe("secret_check");
   });
 
   it("reports skip (configured:false) for unset providers without calling fetch for them", async () => {
@@ -844,11 +892,152 @@ describe("handleHealthOAuth", () => {
       github: new Error("net down"),
       lineworks: new Error("net down"),
       egov: new Error("net down"),
+      canary: new Error("net down"),
     });
     const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     expect(res.status).toBe(200);
     const body = await res.json() as OAuthBody;
     expect(body.overall).toBe("unknown");
+  });
+
+  // -------------------------------------------------------------------------
+  // jwt_secret_drift — secret_check mode (Refs #218)
+  // -------------------------------------------------------------------------
+
+  it("jwt_secret_drift: ok when canary signature matches local HMAC", async () => {
+    setupFetch();
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const p = body.providers.jwt_secret_drift;
+    if (!("ok" in p)) throw new Error("expected ok variant");
+    expect(p.ok).toBe(true);
+    expect(p.status).toBe(200);
+    expect(p.mode).toBe("secret_check");
+  });
+
+  it("jwt_secret_drift: skip when ALC_API_ORIGIN is empty", async () => {
+    setupFetch();
+    const env = createMockEnv({ ALC_API_ORIGIN: "" });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    expect(body.providers.jwt_secret_drift).toEqual({ configured: false });
+  });
+
+  it("jwt_secret_drift: degraded when canary returns mismatched signature (drift)", async () => {
+    setupFetch({ canary: "drift" });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("degraded");
+    const p = body.providers.jwt_secret_drift;
+    if (!("ok" in p)) throw new Error("expected ok variant");
+    expect(p.ok).toBe(false);
+    expect(p.hint).toMatch(/signature mismatch/);
+  });
+
+  it("jwt_secret_drift: degraded when canary returns 401 (internal JWT rejected)", async () => {
+    setupFetch({ canary: new Response("unauthorized", { status: 401 }) });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    const p = body.providers.jwt_secret_drift;
+    if (!("ok" in p)) throw new Error("expected ok variant");
+    expect(p.ok).toBe(false);
+    expect(p.status).toBe(401);
+    expect(p.hint).toMatch(/JWT_SECRET drift/);
+  });
+
+  it("jwt_secret_drift: unknown when canary returns 404 (endpoint not deployed)", async () => {
+    setupFetch({ canary: new Response("not found", { status: 404 }) });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    // 他は ok なので overall は unknown
+    expect(res.status).toBe(200);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("unknown");
+    const p = body.providers.jwt_secret_drift;
+    if (!("unknown" in p)) throw new Error("expected unknown variant");
+    expect(p.hint).toMatch(/not deployed/);
+  });
+
+  it("jwt_secret_drift: unknown on fetch error", async () => {
+    setupFetch({ canary: new Error("connection reset") });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const p = body.providers.jwt_secret_drift;
+    if (!("unknown" in p)) throw new Error("expected unknown variant");
+    expect(p.hint).toMatch(/connection reset/);
+  });
+
+  it("jwt_secret_drift: unknown when canary returns non-200/401/404", async () => {
+    setupFetch({ canary: new Response("server error", { status: 500 }) });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const p = body.providers.jwt_secret_drift;
+    if (!("unknown" in p)) throw new Error("expected unknown variant");
+    expect(p.hint).toMatch(/unexpected status 500/);
+  });
+
+  it("jwt_secret_drift: unknown when canary response body is not JSON", async () => {
+    setupFetch({ canary: new Response("not json", { status: 200 }) });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const p = body.providers.jwt_secret_drift;
+    if (!("unknown" in p)) throw new Error("expected unknown variant");
+    expect(p.hint).toMatch(/invalid signature/);
+  });
+
+  it("jwt_secret_drift: unknown when signature is not 64-char lowercase hex", async () => {
+    setupFetch({
+      canary: new Response(JSON.stringify({ signature: "XYZ" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    });
+    const env = envAllConfigured();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const p = body.providers.jwt_secret_drift;
+    if (!("unknown" in p)) throw new Error("expected unknown variant");
+    expect(p.hint).toMatch(/invalid signature/);
+  });
+
+  it("jwt_secret_drift: sends a 64-char hex challenge with Bearer auth", async () => {
+    let observedUrl = "";
+    let observedAuth = "";
+    setupFetch({
+      canary: new Response(JSON.stringify({ signature: "0".repeat(64) }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    });
+    // setupFetch を上書きして観測
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/internal/health/jwt-canary")) {
+        observedUrl = url;
+        observedAuth = (init?.headers as Record<string, string> | undefined)?.["Authorization"]
+          ?? (init?.headers as Record<string, string> | undefined)?.["authorization"]
+          ?? "";
+        return new Response(JSON.stringify({ signature: "0".repeat(64) }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return originalFetch(input, init);
+    }));
+    const env = envAllConfigured();
+    await handleHealthOAuth(await authedRequest(), env);
+    const challenge = new URL(observedUrl).searchParams.get("challenge") ?? "";
+    expect(challenge).toMatch(/^[0-9a-f]{64}$/);
+    expect(observedAuth).toMatch(/^Bearer eyJ/);
   });
 });
