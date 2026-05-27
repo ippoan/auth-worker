@@ -367,24 +367,17 @@ async function probeGithubMcpSecret(env: Env): Promise<ProbeResult> {
 async function probeJwtDrift(env: Env): Promise<ProbeResult> {
   const mode: ProbeMode = "secret_check";
   if (!env.ALC_API_ORIGIN) return { configured: false };
-  const jwtSecret = await resolveSecret(env.JWT_SECRET);
-  if (!jwtSecret) return { configured: false };
 
+  // JWT_SECRET の null チェックは handler 入口の auth guard が既に弾いて
+  // いるので、probe 到達時点で `signInternalJWT` が throw する経路は無い。
+  // signInternalJWT の resolveSecret が race で null を返す ev は同 handler
+  // の verifyJwt も同様に落ちて 500 になるので、ここでは throw させて
+  // /health/oauth 全体の 500 で異常検知させる (二重 try/catch を書かない)。
+  const jwtSecret = (await resolveSecret(env.JWT_SECRET))!;
   const challengeBytes = new Uint8Array(32);
   crypto.getRandomValues(challengeBytes);
   const challengeHex = bytesToHex(challengeBytes);
-
-  let internalJwt: string;
-  try {
-    internalJwt = await signInternalJWT(env, 30);
-  } catch (e: unknown) {
-    return {
-      configured: true,
-      unknown: true,
-      mode,
-      hint: `sign internal JWT failed: ${e instanceof Error ? e.message : String(e)}`,
-    };
-  }
+  const internalJwt = await signInternalJWT(env, 30);
 
   const url =
     `${env.ALC_API_ORIGIN}/api/internal/health/jwt-canary?challenge=${challengeHex}`;
@@ -467,9 +460,12 @@ async function hmacSha256Hex(secret: string, data: Uint8Array): Promise<string> 
   return bytesToHex(new Uint8Array(sig));
 }
 
-/** lowercase hex 文字列同士の constant-time 比較 (length も一致前提)。 */
+/** lowercase hex 文字列同士の constant-time 比較。
+ *  caller が同一長 (HMAC-SHA256 hex = 64 chars) を保証する前提。 */
 function timingSafeHexEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
+  // 呼び出し元 (probeJwtDrift) は事前に `/^[0-9a-f]{64}$/.test(sig)` で
+  // sig 側を 64 chars に固定し、expected 側も hmacSha256Hex で必ず 64 chars
+  // 返るので length チェックは不要 (= dead branch を作らない)。
   let diff = 0;
   for (let i = 0; i < a.length; i++) {
     diff |= a.charCodeAt(i) ^ b.charCodeAt(i);

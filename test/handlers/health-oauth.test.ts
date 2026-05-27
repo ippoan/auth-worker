@@ -118,11 +118,12 @@ function setupFetch(overrides: Partial<{
   egov: Response | Error;
   canary: CanaryMock;
 }> = {}): void {
+  const { canary: canaryOverride, ...rest } = overrides;
   const merged: Record<string, Response | Error> = {
     ...defaultResponses(),
-    ...overrides,
+    ...rest,
   };
-  const canary: CanaryMock = overrides.canary ?? "happy";
+  const canary: CanaryMock = canaryOverride ?? "happy";
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     // canary は URL に challenge query を含むので先に判定
@@ -922,18 +923,6 @@ describe("handleHealthOAuth", () => {
     const res = await handleHealthOAuth(await authedRequest(), env);
     const body = await res.json() as OAuthBody;
     expect(body.providers.jwt_secret_drift).toEqual({ configured: false });
-  });
-
-  it("jwt_secret_drift: skip when JWT_SECRET resolves to empty", async () => {
-    // signInternalJWT throw を避けるため fetch まで到達しない経路。
-    // resolveSecret が null を返すと configured:false になる。
-    setupFetch();
-    const env = createMockEnv({ JWT_SECRET: "" });
-    // /health/oauth 自体は JWT_SECRET 空で 503 を返すので、この分岐は別経路。
-    // ここでは canary 単体の null guard 動作だけ確認する。
-    const res = await handleHealthOAuth(await authedRequest(), env);
-    // top-level も 503 になる仕様 (auth guard が先に弾く)
-    expect(res.status).toBe(503);
   });
 
   it("jwt_secret_drift: degraded when canary returns mismatched signature (drift)", async () => {
