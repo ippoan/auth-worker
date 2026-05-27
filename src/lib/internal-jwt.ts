@@ -19,12 +19,19 @@ const ISSUER = "auth-worker";
 
 interface InternalEnv {
   JWT_SECRET: SecretBinding;
+  /// Refs #218: 発行環境ラベル ("staging" / "prod")。internal JWT の `env`
+  /// claim に載せて rust-alc-api 側で同 env のみ accept させる (cross-env
+  /// token replay 防止)。値は wrangler.toml で `WORKER_ENV` として注入される。
+  WORKER_ENV: string;
 }
 
 /**
  * 短命 (デフォルト 60s) の internal JWT を発行する。
  * 同じ `env` を複数回呼んでもキャッシュしないので、必要なら呼び出し側でキャッシュする。
  * `JWT_SECRET` 未 bind / `.get()` 失敗時は throw する (caller 側で 500 を返す前提)。
+ *
+ * Refs #218: `env` claim に `env.WORKER_ENV` をそのまま載せる。rust-alc-api 側は
+ * `verify_internal_token` で `current_env_label()` と一致しないものを reject する。
  */
 export async function signInternalJWT(
   env: InternalEnv,
@@ -40,6 +47,7 @@ export async function signInternalJWT(
     aud: INTERNAL_AUD,
     iat: now,
     exp: now + ttlSeconds,
+    env: env.WORKER_ENV,
   };
   return signHs256(claims, secret);
 }

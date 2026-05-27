@@ -73,8 +73,9 @@ export async function handleTopPage(
   // that issued Set-Cookie, before the UA persists it for the next request.
   const cookieToken = getAuthCookie(request);
   const jwtSecret = await resolveSecret(env.JWT_SECRET);
+  // Refs #218: token に env claim があれば WORKER_ENV と一致を強制
   const payload = cookieToken && jwtSecret
-    ? await verifyJwt(cookieToken, jwtSecret)
+    ? await verifyJwt(cookieToken, jwtSecret, env.WORKER_ENV)
     : null;
   if (
     !url.searchParams.has("woff") &&

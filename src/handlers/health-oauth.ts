@@ -606,7 +606,8 @@ export async function handleHealthOAuth(
 
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  const payload = token ? await verifyJwt(token, jwtSecret) : null;
+  // Refs #218: token に env claim があれば WORKER_ENV と一致を強制
+  const payload = token ? await verifyJwt(token, jwtSecret, env.WORKER_ENV) : null;
   if (!payload) {
     return new Response("unauthorized", { status: 401 });
   }

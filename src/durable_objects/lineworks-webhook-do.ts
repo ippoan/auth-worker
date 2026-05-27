@@ -22,6 +22,9 @@ interface DOEnv {
   /** Refs #206: Secrets Store binding 化済。`signInternalJWT()` 内部で
    *  `resolveSecret()` 経由で string 化される。 */
   JWT_SECRET: SecretBinding;
+  /** Refs #218: internal JWT の `env` claim 用 ("staging"/"prod")。
+   *  `signInternalJWT()` が要求する。 */
+  WORKER_ENV: string;
   SSO_ENCRYPTION_KEY: string;
 }
 
