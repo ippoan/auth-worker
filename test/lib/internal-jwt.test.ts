@@ -3,13 +3,13 @@ import { signInternalJWT } from "../../src/lib/internal-jwt";
 
 describe("signInternalJWT", () => {
   test("produces 3-segment HS256 JWT", async () => {
-    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret" });
+    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret", WORKER_ENV: "prod" });
     const parts = jwt.split(".");
     expect(parts).toHaveLength(3);
   });
 
   test("payload contains aud=alc-api-internal and iss=auth-worker", async () => {
-    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret" });
+    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret", WORKER_ENV: "prod" });
     const parts = jwt.split(".");
     const payload = JSON.parse(b64UrlDecodeString(parts[1] ?? ""));
     expect(payload.aud).toBe("alc-api-internal");
@@ -18,7 +18,7 @@ describe("signInternalJWT", () => {
 
   test("default ttl 60s yields exp ≈ now+60", async () => {
     const before = Math.floor(Date.now() / 1000);
-    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret" });
+    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret", WORKER_ENV: "prod" });
     const after = Math.floor(Date.now() / 1000);
     const payload = JSON.parse(b64UrlDecodeString(jwt.split(".")[1] ?? ""));
     expect(payload.exp).toBeGreaterThanOrEqual(before + 60);
@@ -26,13 +26,13 @@ describe("signInternalJWT", () => {
   });
 
   test("custom ttl is respected", async () => {
-    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret" }, 600);
+    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret", WORKER_ENV: "prod" }, 600);
     const payload = JSON.parse(b64UrlDecodeString(jwt.split(".")[1] ?? ""));
     expect(payload.exp - payload.iat).toBe(600);
   });
 
   test("header is alg=HS256 typ=JWT", async () => {
-    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret" });
+    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret", WORKER_ENV: "prod" });
     const header = JSON.parse(b64UrlDecodeString(jwt.split(".")[0] ?? ""));
     expect(header.alg).toBe("HS256");
     expect(header.typ).toBe("JWT");
@@ -43,7 +43,7 @@ describe("signInternalJWT", () => {
     const binding = {
       get: async () => secretValue,
     } as unknown as SecretsStoreSecret;
-    const jwt = await signInternalJWT({ JWT_SECRET: binding });
+    const jwt = await signInternalJWT({ JWT_SECRET: binding, WORKER_ENV: "prod" });
     const [headerB64, payloadB64, sigB64] = jwt.split(".") as [string, string, string];
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
@@ -64,7 +64,7 @@ describe("signInternalJWT", () => {
 
   test("Refs #206: throws when JWT_SECRET is not bound", async () => {
     await expect(
-      signInternalJWT({ JWT_SECRET: undefined }),
+      signInternalJWT({ JWT_SECRET: undefined, WORKER_ENV: "prod" }),
     ).rejects.toThrow(/not configured/);
   });
 
@@ -73,13 +73,26 @@ describe("signInternalJWT", () => {
       get: async () => "",
     } as unknown as SecretsStoreSecret;
     await expect(
-      signInternalJWT({ JWT_SECRET: binding }),
+      signInternalJWT({ JWT_SECRET: binding, WORKER_ENV: "prod" }),
     ).rejects.toThrow(/not configured/);
+  });
+
+  // Refs #218: env claim
+  test("Refs #218: env claim is set from WORKER_ENV (staging)", async () => {
+    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret", WORKER_ENV: "staging" });
+    const payload = JSON.parse(b64UrlDecodeString(jwt.split(".")[1] ?? ""));
+    expect(payload.env).toBe("staging");
+  });
+
+  test("Refs #218: env claim is set from WORKER_ENV (prod)", async () => {
+    const jwt = await signInternalJWT({ JWT_SECRET: "test-secret", WORKER_ENV: "prod" });
+    const payload = JSON.parse(b64UrlDecodeString(jwt.split(".")[1] ?? ""));
+    expect(payload.env).toBe("prod");
   });
 
   test("signature verifies with same secret", async () => {
     const secret = "test-secret-256-bits-long";
-    const jwt = await signInternalJWT({ JWT_SECRET: secret });
+    const jwt = await signInternalJWT({ JWT_SECRET: secret, WORKER_ENV: "prod" });
     const [headerB64, payloadB64, sigB64] = jwt.split(".") as [string, string, string];
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(

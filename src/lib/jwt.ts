@@ -13,10 +13,18 @@ export interface JwtPayload {
 /**
  * Verify an HS256 JWT. Returns the decoded payload on success, or null if
  * malformed, signed with the wrong secret, expired, or missing `exp`.
+ *
+ * Refs #218: `expectedEnv` を渡すと、payload に `env` claim がある場合に
+ * 一致を強制する (= cross-env token replay 防止)。
+ *   - `payload.env` が文字列で expectedEnv と不一致 → null (reject)
+ *   - `payload.env` が無い (= 旧 token) → 通す (backward compat)
+ *   - expectedEnv 自体が undefined → env チェック skip
+ * deploy 後 1h で旧 token (env なし) は expire するので実質必須化と等価。
  */
 export async function verifyJwt(
   token: string,
   secret: string,
+  expectedEnv?: string,
 ): Promise<JwtPayload | null> {
   if (!secret) return null;
   const parts = token.split(".");
@@ -45,6 +53,10 @@ export async function verifyJwt(
 
   if (typeof payload.exp !== "number") return null;
   if (payload.exp <= Math.floor(Date.now() / 1000)) return null;
+
+  if (expectedEnv !== undefined && typeof payload.env === "string" && payload.env !== expectedEnv) {
+    return null;
+  }
 
   return payload;
 }

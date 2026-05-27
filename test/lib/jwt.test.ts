@@ -109,4 +109,31 @@ describe("verifyJwt", () => {
     const sigB64 = btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     expect(await verifyJwt(`${data}.${sigB64}`, SECRET)).toBeNull();
   });
+
+  // Refs #218: env claim による cross-env replay 防止
+  it("Refs #218: accepts token whose env matches expectedEnv", async () => {
+    const token = await signTestJwt({ sub: "u1", env: "staging" }, SECRET);
+    const payload = await verifyJwt(token, SECRET, "staging");
+    expect(payload).not.toBeNull();
+    expect(payload!.env).toBe("staging");
+  });
+
+  it("Refs #218: rejects token whose env does not match expectedEnv", async () => {
+    const token = await signTestJwt({ sub: "u1", env: "staging" }, SECRET);
+    expect(await verifyJwt(token, SECRET, "prod")).toBeNull();
+  });
+
+  it("Refs #218: accepts token without env claim regardless of expectedEnv (backward compat)", async () => {
+    // env field 自体が無い旧 token (deploy 直後の transition 想定)。
+    // signTestJwt は env を入れないので普通に発行。
+    const token = await signTestJwt({ sub: "u1" }, SECRET);
+    expect(await verifyJwt(token, SECRET, "prod")).not.toBeNull();
+    expect(await verifyJwt(token, SECRET, "staging")).not.toBeNull();
+  });
+
+  it("Refs #218: skips env check when expectedEnv is undefined", async () => {
+    const token = await signTestJwt({ sub: "u1", env: "staging" }, SECRET);
+    // expectedEnv 未指定 → env 不一致でも accept
+    expect(await verifyJwt(token, SECRET)).not.toBeNull();
+  });
 });
