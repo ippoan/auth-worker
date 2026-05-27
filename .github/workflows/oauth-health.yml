@@ -5,11 +5,15 @@
 # / egov) を 1 リクエストで CI から検知する。
 #
 # Trigger:
-#   - schedule: 毎日 23:00 UTC (= 08:00 JST), target=prod
-#   - workflow_dispatch: 手動実行 (target=prod|staging を選択可, default=prod)
+#   - schedule: 毎日 23:00 UTC (= 08:00 JST), target=staging
+#   - workflow_dispatch: 手動実行 (target=staging|prod を選択可, default=staging)
 #   - workflow_run: "CI" workflow が main で success した直後 (post-deploy),
 #                   target=staging を強制 (main merge = staging deploy 済みのため)
-#                   prod は v* tag で配信されるので post-CI 時点ではまだ古い
+#
+# prod を default にしない理由: prod は v* tag で配信されるため、main に新 endpoint
+# (e.g. /health/oauth 自体) が merge されてから v* tag が切られるまでの数日間、prod は
+# 古いコードのまま 404 を返す。schedule で prod を毎日叩くと release 待ちの間ずっと
+# CI が赤くなる。prod の死活は v* tag 配信時に workflow_dispatch で明示的に確認する。
 #
 # 失敗条件 (= step exit 1):
 #   - HTTP 503 (overall=degraded — 1 つ以上の provider が ok:false)
@@ -52,9 +56,9 @@ on:
         description: 'Target environment'
         type: choice
         options:
-          - prod
           - staging
-        default: prod
+          - prod
+        default: staging
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -77,15 +81,19 @@ jobs:
           INPUT_TARGET: ${{ inputs.target }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          # workflow_run (post-CI on main) は staging を強制する。
+          # workflow_run (post-CI on main) / schedule は staging を強制する。
           # main merge 時点で staging deploy は完了しているが、prod は v* tag で
-          # 配信されるため post-CI の段階では prod に新コードはまだ無く 404 になる。
-          # schedule / workflow_dispatch は inputs.target (default=prod) を尊重。
-          if [ "${EVENT_NAME}" = "workflow_run" ]; then
-            TARGET="staging"
-          else
-            TARGET="${INPUT_TARGET:-prod}"
-          fi
+          # 配信されるため post-deploy の段階では prod に新コードはまだ無く 404 になる。
+          # workflow_dispatch だけ inputs.target (default=staging) を尊重し、prod の
+          # 死活確認は v* tag release 後に手動で target=prod を選んで実行する。
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              TARGET="${INPUT_TARGET:-staging}"
+              ;;
+            *)
+              TARGET="staging"
+              ;;
+          esac
           case "${TARGET}" in
             staging)
               echo "url=https://auth-staging.ippoan.org/health/oauth" >> "$GITHUB_OUTPUT"
