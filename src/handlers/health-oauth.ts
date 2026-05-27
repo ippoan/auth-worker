@@ -32,6 +32,13 @@ import { resolveSecret } from "../lib/secret";
 /** 外部 provider への probe 1 回のタイムアウト (ms)。 */
 const PROBE_TIMEOUT_MS = 5000;
 
+/** `jwt_secret_drift` probe (rust-alc-api canary) 専用の長めタイムアウト。
+ *  staging Cloud Run は minScale=0 + PostgreSQL sidecar + migration 全件再適用で
+ *  cold-start に 15-30s かかる。5s timeout だと毎回 `unknown` で返ってしまい
+ *  drift 検知 probe が機能しないため、本 probe だけ 30s 許容する (Refs #218)。
+ *  prod は常時稼働で数百 ms 応答なので max 値を増やしても実行時間は伸びない。 */
+const CANARY_PROBE_TIMEOUT_MS = 30000;
+
 type ProbeMode = "client_id_check" | "reachability" | "secret_check";
 
 type ProbeOk = {
@@ -383,6 +390,8 @@ async function probeJwtDrift(env: Env): Promise<ProbeResult> {
     `${env.ALC_API_ORIGIN}/api/internal/health/jwt-canary?challenge=${challengeHex}`;
   const res = await timedFetch(url, {
     headers: { Authorization: `Bearer ${internalJwt}` },
+    // staging cold-start (15-30s) を踏み倒すため default 5s timeout を override
+    signal: AbortSignal.timeout(CANARY_PROBE_TIMEOUT_MS),
   });
   if (isFetchError(res)) {
     return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
