@@ -24,11 +24,10 @@ jobs:
         npx wrangler types
         bash scripts/export-ts-bindings.sh src/types
       deploy_staging_script: 'npx wrangler deploy --env staging --var VERSION:${{ github.sha }}'
-      # [TEST ippoan/ci-workflows#78] deploy_release_script を wrangler を含まない
-      # 値にして、release_no_traffic=true (default) の loud-fail guard が exit 1
-      # するか実 CI で確認するためのテスト変更。検証後に必ず revert すること
-      # (元: 'npx wrangler deploy --var VERSION:${{ github.ref_name }}')。
-      deploy_release_script: 'echo "[guard test] no wrangler here — no-traffic guard should fail"'
+      # release は frontend-ci の release_no_traffic=true (default) により
+      # `wrangler deploy` が `wrangler versions upload` (no-traffic) に置換される。
+      # flip は CF ダッシュボード / `wrangler versions deploy <id>@100%` で行う。
+      deploy_release_script: 'npx wrangler deploy --var VERSION:${{ github.ref_name }}'
       npm_scope: '@ippoan'
       # comma-separated multi-publish (ippoan/ci-workflows#48): auth-client は
       # Nuxt frontend 向け、auth-client-worker は Cloudflare Worker consumer 向け。
