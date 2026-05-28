@@ -346,6 +346,7 @@ export function renderTopPage(
   <div class="container">
     <div class="header">
       <h1>Logi</h1>
+      <p class="release-wave-marker">🌊 release wave preview test</p>
       <p id="org-name"></p>
       <button id="hamburger-btn" class="hamburger-btn" onclick="toggleNav(true)">&#9776;</button>
       <div id="nav-popover" class="nav-popover">
