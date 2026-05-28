@@ -24,7 +24,11 @@ jobs:
         npx wrangler types
         bash scripts/export-ts-bindings.sh src/types
       deploy_staging_script: 'npx wrangler deploy --env staging --var VERSION:${{ github.sha }}'
-      deploy_release_script: 'npx wrangler deploy --var VERSION:${{ github.ref_name }}'
+      # v* リリースは traffic を変えない (no-traffic version upload)。flip は
+      # Cloudflare ダッシュボード (Workers > Deployments で version を 100% に
+      # promote) か `npx wrangler versions deploy <version-id>@100% --yes` で
+      # 明示的に行う。Refs ippoan/ci-dashboard#174。
+      deploy_release_script: 'npx wrangler versions upload --var VERSION:${{ github.ref_name }}'
       npm_scope: '@ippoan'
       # comma-separated multi-publish (ippoan/ci-workflows#48): auth-client は
       # Nuxt frontend 向け、auth-client-worker は Cloudflare Worker consumer 向け。
