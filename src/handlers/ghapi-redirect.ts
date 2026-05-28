@@ -24,13 +24,15 @@ import { getAllowedOrigins } from "../lib/config";
 import { resolveSecret } from "../lib/secret";
 import { isAllowedRedirectUri, generateOAuthState } from "../lib/security";
 
+// Google Health API v4 (`health.googleapis.com/v4/users/me/dataTypes/exercise`)
+// 用 scope。旧 Google Fit (`fitness.*`) とは別物で、hcreader-worker が叩く
+// exercise dataPoints endpoint は googlehealth.activity_and_fitness(.readonly)
+// を要求する。scope を変えたら user は disconnect → reconnect で再認証が必要。
+// Refs ippoan/HealthConnectReaderWorker#60
 const DEFAULT_GHAPI_SCOPES = [
   "openid",
   "email",
-  "https://www.googleapis.com/auth/fitness.activity.read",
-  "https://www.googleapis.com/auth/fitness.heart_rate.read",
-  "https://www.googleapis.com/auth/fitness.location.read",
-  "https://www.googleapis.com/auth/fitness.body.read",
+  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
 ].join(" ");
 
 export async function handleGhapiRedirect(
