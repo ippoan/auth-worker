@@ -2,6 +2,10 @@ name = "auth-worker"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 account_id = "24b45709d060d957340180e995f0d373"
+# version ごとの preview URL (<hash>-auth-worker.<subdomain>.workers.dev) を有効化。
+# release-wave の no-traffic stage で upload した version へ、その専用 URL から
+# 移動して検証できる。production traffic は custom route のままで workers_dev とは独立。
+preview_urls = true
 
 [vars]
 AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
