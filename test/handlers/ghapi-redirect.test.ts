@@ -49,7 +49,7 @@ describe("handleGhapiRedirect", () => {
     );
     expect(location).toContain("access_type=offline");
     expect(location).toContain("prompt=consent");
-    expect(location).toContain("fitness.activity.read");
+    expect(location).toContain("googlehealth.activity_and_fitness.readonly");
     expect(location).toContain("state=");
   });
 
@@ -65,7 +65,7 @@ describe("handleGhapiRedirect", () => {
     expect(res.status).toBe(302);
     const location = res.headers.get("Location")!;
     expect(location).toContain("healthdata.read");
-    expect(location).not.toContain("fitness.activity.read");
+    expect(location).not.toContain("googlehealth.activity_and_fitness.readonly");
   });
 
   it("accepts SecretsStoreSecret binding for GOOGLE_HEALTH_CLIENT_ID", async () => {
