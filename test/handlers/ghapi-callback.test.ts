@@ -234,12 +234,10 @@ describe("handleGhapiCallback", () => {
       "https://hcreader.test.example/api/ghapi/connected",
     );
 
-    // 1st call: Google token exchange
-    const tokenCall = fetchSpy.mock.calls[0];
+    const tokenCall = fetchSpy.mock.calls[0]!;
     expect(tokenCall[0]).toBe("https://oauth2.googleapis.com/token");
 
-    // 2nd call: hcreader store-tokens
-    const storeCall = fetchSpy.mock.calls[1];
+    const storeCall = fetchSpy.mock.calls[1]!;
     expect(storeCall[0]).toBe("https://hcreader.test.example/api/ghapi/store-tokens");
     const init = storeCall[1] as RequestInit;
     expect(init.method).toBe("POST");
