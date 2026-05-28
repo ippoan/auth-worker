@@ -261,6 +261,11 @@ MCP_JWT_AUDIENCE_ALLOWLIST = "github-mcp-server-rs,ref-files-mcp-server-rs"
 # staging custom domain 配下も足したいが、secrets-inventory は prod URL の
 # まま staging deploy しているため同じ entry を流用する。
 MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://security-rotate.ippoan.org"
+# hcreader-worker origin — `/oauth/ghapi/callback` から refresh_token を
+# 内部 POST する宛先 (`${HCREADER_WORKER_ORIGIN}/api/ghapi/store-tokens`)。
+# hcreader-worker は single-env (staging = prod = hcreader.ippoan.org)。
+# Refs ippoan/HealthConnectReaderWorker#60, #61
+HCREADER_WORKER_ORIGIN = "https://hcreader.ippoan.org"
 
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
@@ -333,6 +338,26 @@ secret_name = "GITHUB_MCP_USER_ALLOWLIST"
 binding = "GITHUB_WEBHOOK_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "GITHUB_WEBHOOK_SECRET"
+
+# Google Health API OAuth Client — hcreader-worker 連携用 (`/oauth/ghapi/*`)。
+# Google Cloud Console で `https://auth-staging.ippoan.org/oauth/ghapi/callback`
+# を Authorized redirect URI として登録した OAuth Client を bind する。staging
+# のみで実用する設計のため prod 側 binding は意図的に追加しない (prod で叩くと
+# 503 "Google Health OAuth not configured" を返す)。
+# Bootstrap (初回のみ、operator が `secrets-inventory` MCP の `create_secret`
+# 経由で投入推奨 — 値が LLM context に乗らない):
+#   - CF Secrets Store entry `GOOGLE_HEALTH_CLIENT_ID` (kebab) を作成
+#   - CF Secrets Store entry `GOOGLE_HEALTH_CLIENT_SECRET` を作成
+# Refs ippoan/HealthConnectReaderWorker#60, #61
+[[env.staging.secrets_store_secrets]]
+binding = "GOOGLE_HEALTH_CLIENT_ID"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GOOGLE_HEALTH_CLIENT_ID"
+
+[[env.staging.secrets_store_secrets]]
+binding = "GOOGLE_HEALTH_CLIENT_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "GOOGLE_HEALTH_CLIENT_SECRET"
 
 [[env.staging.durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
