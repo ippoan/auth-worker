@@ -4,6 +4,8 @@ import { handleGoogleRedirect } from "./handlers/google-redirect";
 import { handleGoogleCallback } from "./handlers/google-callback";
 import { handleEgovRedirect } from "./handlers/egov-redirect";
 import { handleEgovCallback } from "./handlers/egov-callback";
+import { handleGhapiRedirect } from "./handlers/ghapi-redirect";
+import { handleGhapiCallback } from "./handlers/ghapi-callback";
 import { handleLineworksRedirect } from "./handlers/lineworks-redirect";
 import { handleLineworksCallback } from "./handlers/lineworks-callback";
 import { handleAdminSsoPage, handleAdminSsoCallback } from "./handlers/admin-sso";
@@ -188,6 +190,22 @@ export interface Env {
    *  既存 `MCP_JWT_SECRET` と分けるのは scope を局所化するため (pair session が
    *  漏洩しても device-flow JWT には影響しない)。未設定 → /mcp/pair/* は 503。 */
   SESSION_COOKIE_SECRET?: string;
+  /** Google Health API OAuth Client (= `ippoan/HealthConnectReaderWorker` 連携用)。
+   *  既存ログイン用 (`GOOGLE_CLIENT_ID`) とは別 OAuth Client。Google Cloud で
+   *  `${AUTH_WORKER_ORIGIN}/oauth/ghapi/callback` を redirect URI として登録した
+   *  staging 側 client を bind する。未設定 → `/oauth/ghapi/*` は 503。
+   *  Refs ippoan/HealthConnectReaderWorker#60, #61 */
+  GOOGLE_HEALTH_CLIENT_ID?: SecretBinding;
+  GOOGLE_HEALTH_CLIENT_SECRET?: SecretBinding;
+  /** OAuth 認可リクエストで送る scope (space 区切り)。未設定なら handler 内
+   *  default (openid email + Google Fit Exercise / heart_rate / location / body)
+   *  を使う。Google Health Data Platform GA で scope 名が変わったら vars で上書く。 */
+  GOOGLE_HEALTH_SCOPES?: string;
+  /** hcreader-worker (`ippoan/HealthConnectReaderWorker`) の origin。
+   *  ghapi callback 内部から `${HCREADER_WORKER_ORIGIN}/api/ghapi/store-tokens`
+   *  に refresh_token を内部 POST するのに使う。
+   *  例: `https://hcreader.ippoan.org` */
+  HCREADER_WORKER_ORIGIN?: string;
 }
 
 function errorResponse(status: number, message: string): Response {
@@ -379,6 +397,12 @@ export default {
             return await handleEgovRedirect(request, env);
           case "/oauth/egov/callback":
             return await handleEgovCallback(request, env);
+          // Google Health API OAuth pass-through for hcreader-worker.
+          // Refs ippoan/HealthConnectReaderWorker#60, #61
+          case "/oauth/ghapi/redirect":
+            return await handleGhapiRedirect(request, env);
+          case "/oauth/ghapi/callback":
+            return await handleGhapiCallback(request, env);
           case "/oauth/lineworks/redirect":
             return await handleLineworksRedirect(request, env);
           case "/oauth/lineworks/callback":

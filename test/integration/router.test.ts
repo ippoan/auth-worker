@@ -56,6 +56,12 @@ vi.mock("../../src/handlers/egov-redirect", () => ({
 vi.mock("../../src/handlers/egov-callback", () => ({
   handleEgovCallback: vi.fn(() => new Response("egov-callback")),
 }));
+vi.mock("../../src/handlers/ghapi-redirect", () => ({
+  handleGhapiRedirect: vi.fn(() => new Response("ghapi-redirect")),
+}));
+vi.mock("../../src/handlers/ghapi-callback", () => ({
+  handleGhapiCallback: vi.fn(() => new Response("ghapi-callback")),
+}));
 vi.mock("../../src/handlers/woff-auth", () => ({
   handleWoffAuth: vi.fn(() => new Response("woff-auth")),
   handleWoffConfig: vi.fn(() => new Response("woff-config")),
@@ -321,6 +327,9 @@ describe("Router (index.ts)", () => {
     ["/api/dashboard/repos", "api-dashboard-list"],
     // issue #209: OAuth client_id health check (JWT-guarded).
     ["/health/oauth", "health-oauth"],
+    // Refs ippoan/HealthConnectReaderWorker#60, #61: Google Health API pass-through.
+    ["/oauth/ghapi/redirect", "ghapi-redirect"],
+    ["/oauth/ghapi/callback", "ghapi-callback"],
   ];
 
   it("GET /api/health → health proxy", async () => {
