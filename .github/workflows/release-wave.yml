@@ -20,6 +20,7 @@ permissions:
   contents: write     # tag push (stage 時)
   id-token: write     # WIF (cloudrun path 用、本 repo は CF だが reusable
                       # parse 時 caller permissions check が要る)
+  packages: read      # @ippoan/* GitHub Packages dep install (npm_scope=@ippoan)
 
 jobs:
   handler:
