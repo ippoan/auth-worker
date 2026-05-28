@@ -24,15 +24,19 @@ import { getAllowedOrigins } from "../lib/config";
 import { resolveSecret } from "../lib/secret";
 import { isAllowedRedirectUri, generateOAuthState } from "../lib/security";
 
-// Google Health API v4 (`health.googleapis.com/v4/users/me/dataTypes/exercise`)
-// 用 scope。旧 Google Fit (`fitness.*`) とは別物で、hcreader-worker が叩く
-// exercise dataPoints endpoint は googlehealth.activity_and_fitness(.readonly)
-// を要求する。scope を変えたら user は disconnect → reconnect で再認証が必要。
+// Google Health API v4 (`health.googleapis.com/v4/users/me/dataTypes/...`) 用 scope。
+// 旧 Google Fit (`fitness.*`) とは別物。hcreader-worker が叩く 2 dataType が
+// それぞれ別 scope を要求する:
+//   - exercise (session)   → googlehealth.activity_and_fitness.readonly
+//   - heart-rate (sample)  → googlehealth.health_metrics_and_measurements.readonly
+// 両方付けないと HR 時系列取得が 403 PERMISSION_DENIED になる。
+// scope を変えたら user は disconnect → reconnect で再認証が必要。
 // Refs ippoan/HealthConnectReaderWorker#60
 const DEFAULT_GHAPI_SCOPES = [
   "openid",
   "email",
   "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
 ].join(" ");
 
 export async function handleGhapiRedirect(

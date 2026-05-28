@@ -50,6 +50,8 @@ describe("handleGhapiRedirect", () => {
     expect(location).toContain("access_type=offline");
     expect(location).toContain("prompt=consent");
     expect(location).toContain("googlehealth.activity_and_fitness.readonly");
+    // heart-rate dataType 用 scope も付く (HR 時系列取得が 403 にならないよう)
+    expect(location).toContain("googlehealth.health_metrics_and_measurements.readonly");
     expect(location).toContain("state=");
   });
 
