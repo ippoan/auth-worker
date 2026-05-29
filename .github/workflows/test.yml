@@ -41,4 +41,14 @@ jobs:
       # これで Compatibility グラフに auth-worker → rust-alc-api edge が載る。
       compat_backend_repo: 'ippoan/rust-alc-api'
       compat_backend_image_env: 'API_IMAGE'
-    secrets: inherit
+    # XXX(検証用 / マージ非推奨): traffic-report step (ci-workflows#83/#84) が
+    # RELEASE_WAVE_WEBHOOK_SECRET 不在で loud fail する経路を実観測するための構成。
+    # `secrets: inherit` をやめ、deploy に必要な secret は明示で渡しつつ
+    # RELEASE_WAVE_WEBHOOK_SECRET は意図的に渡さない (= 空)。
+    # これで release deploy (wrangler versions upload) は成功し、後続の
+    # traffic-report step だけが secret 空で exit 1 する。
+    # GITHUB_TOKEN は GitHub が自動 inject するので明示不要。
+    # 確認後に必ず `secrets: inherit` へ戻すこと (この PR は merge せず close)。
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PROPAGATE_PAT: ${{ secrets.PROPAGATE_PAT }}
