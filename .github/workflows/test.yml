@@ -34,4 +34,11 @@ jobs:
       # 両 package を 1 回の CI で publish — dev tag は `0.0.<PR>-dev.<SHA>`、
       # release tag は `v0.2.3` などのキャプチャ済み tag を全 package 共通で適用。
       npm_publish_directory: 'packages/auth-client,packages/auth-client-worker'
+      # Release Wave compatibility (Refs ippoan/ci-dashboard#157):
+      # auth-worker は integration test で rust-alc-api を backend として叩く
+      # consumer。docker-compose.test.yml の API_IMAGE を現 production SHA に
+      # 差し替えて test し (truthful 突合)、結果を ci-dashboard に記録する。
+      # これで Compatibility グラフに auth-worker → rust-alc-api edge が載る。
+      compat_backend_repo: 'ippoan/rust-alc-api'
+      compat_backend_image_env: 'API_IMAGE'
     secrets: inherit
