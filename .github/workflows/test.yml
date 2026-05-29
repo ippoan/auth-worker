@@ -41,4 +41,7 @@ jobs:
       # これで Compatibility グラフに auth-worker → rust-alc-api edge が載る。
       compat_backend_repo: 'ippoan/rust-alc-api'
       compat_backend_image_env: 'API_IMAGE'
-    secrets: inherit
+    # XXX(検証用 / マージ非推奨): traffic-report step (ci-workflows#83) が
+    # RELEASE_WAVE_WEBHOOK_SECRET 不在で loud fail することを確認するため、
+    # 一時的に `secrets: inherit` を外す。確認後に必ず元へ戻すこと。
+    # secrets: inherit
