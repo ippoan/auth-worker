@@ -176,8 +176,33 @@ describe("PRESETS — ippoan-android-default", () => {
   });
 });
 
+describe("PRESETS — ippoan-base", () => {
+  const p = PRESETS["ippoan-base"];
+
+  it("has an empty required_checks list (safety knobs only)", () => {
+    expect(p.required_checks).toEqual([]);
+  });
+
+  it("payload.required_status_checks is null so it never silent-blocks PRs", () => {
+    expect(p.payload.required_status_checks).toBeNull();
+  });
+
+  it("payload disables force pushes / deletions / admin bypass and uses approval=0", () => {
+    expect(p.payload.allow_force_pushes).toBe(false);
+    expect(p.payload.allow_deletions).toBe(false);
+    expect(p.payload.enforce_admins).toBe(true);
+    expect(p.payload.required_pull_request_reviews).toBeNull();
+    expect(p.payload.restrictions).toBeNull();
+  });
+
+  it("project_type is 'any' so dashboard always shows the button", () => {
+    expect(p.project_type).toBe("any");
+  });
+});
+
 describe("isPresetId", () => {
   it("accepts known preset ids", () => {
+    expect(isPresetId("ippoan-base")).toBe(true);
     expect(isPresetId("ippoan-rust-default")).toBe(true);
     expect(isPresetId("ippoan-worker-default")).toBe(true);
     expect(isPresetId("ippoan-go-default")).toBe(true);
@@ -225,5 +250,22 @@ describe("buildPayload", () => {
   it("treats null override as 'preset default'", () => {
     const out = buildPayload("ippoan-rust-default", null);
     expect(out).toEqual(PRESETS["ippoan-rust-default"].payload);
+  });
+
+  it("ippoan-base with no override keeps required_status_checks=null", () => {
+    const out = buildPayload("ippoan-base");
+    expect(out.required_status_checks).toBeNull();
+    expect(out.allow_force_pushes).toBe(false);
+    expect(out.enforce_admins).toBe(true);
+  });
+
+  it("ippoan-base accepts a custom checks override on top of the safety knobs", () => {
+    const out = buildPayload("ippoan-base", ["ci / shellcheck"]);
+    expect(out.required_status_checks).toEqual({
+      strict: true,
+      contexts: ["ci / shellcheck"],
+    });
+    expect(out.allow_force_pushes).toBe(false);
+    expect(out.enforce_admins).toBe(true);
   });
 });
