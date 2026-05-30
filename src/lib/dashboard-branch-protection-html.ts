@@ -208,11 +208,14 @@ export function renderBranchProtectionPage(opts: {
       // Pick presets that match this repo's detected project_type. Unknown
       // → show everything so the operator is never locked out. Matching
       // preset rendered as primary; fallback (unknown) as plain so the
-      // operator notices something's off.
+      // operator notices something's off. project_type === "any"
+      // (= ippoan-base) is shown for every detected type because it ships
+      // only safety knobs and no required_checks, so it can never
+      // silent-block a CI.
       var rowType = row.project_type || "unknown";
       var matchedPresets = rowType === "unknown"
         ? presets
-        : presets.filter(function (p) { return p.project_type === rowType; });
+        : presets.filter(function (p) { return p.project_type === rowType || p.project_type === "any"; });
       var presetsToShow = matchedPresets.length > 0 ? matchedPresets : presets;
       var actions = presetsToShow.map(function (p) {
         var btnClass = rowType === "unknown" ? "" : "primary";

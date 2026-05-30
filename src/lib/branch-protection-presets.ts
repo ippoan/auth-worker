@@ -79,6 +79,7 @@
  */
 
 export type PresetId =
+  | "ippoan-base"
   | "ippoan-rust-default"
   | "ippoan-worker-default"
   | "ippoan-go-default"
@@ -98,6 +99,7 @@ export type ProjectType =
   | "go"
   | "lib"
   | "android"
+  | "any"
   | "unknown";
 
 export interface BranchProtectionPayload {
@@ -156,6 +158,24 @@ const IPPOAN_ANDROID_DEFAULT_CHECKS = [
 ];
 
 export const PRESETS: Record<PresetId, PresetDefinition> = {
+  "ippoan-base": {
+    id: "ippoan-base",
+    label: "Apply ippoan-base",
+    description:
+      "Safety knobs only — required_status_checks は付けない。force push 禁止、branch 削除禁止、approval=0、admins cannot bypass。CI 名が他 preset と一致しない / shell hooks / 整備中の repo 用。後から dashboard の required override で check 名を足せる。",
+    required_checks: [],
+    project_type: "any",
+    payload: {
+      required_status_checks: null,
+      required_pull_request_reviews: null,
+      enforce_admins: true,
+      restrictions: null,
+      required_linear_history: false,
+      allow_force_pushes: false,
+      allow_deletions: false,
+      required_conversation_resolution: false,
+    },
+  },
   "ippoan-rust-default": {
     id: "ippoan-rust-default",
     label: "Apply ippoan-rust-default",
@@ -265,6 +285,7 @@ export const PRESETS: Record<PresetId, PresetDefinition> = {
 
 export function isPresetId(s: unknown): s is PresetId {
   return (
+    s === "ippoan-base" ||
     s === "ippoan-rust-default" ||
     s === "ippoan-worker-default" ||
     s === "ippoan-go-default" ||
