@@ -39,6 +39,7 @@ interface OAuthBody {
     lineworks: ProbeResultJson;
     egov: ProbeResultJson;
     jwt_secret_drift: ProbeResultJson;
+    secrets_format: ProbeResultJson;
   };
 }
 
@@ -216,7 +217,7 @@ describe("handleHealthOAuth", () => {
   // overall response shape
   // -------------------------------------------------------------------------
 
-  it("returns overall:ok with all 7 probes configured and healthy", async () => {
+  it("returns overall:ok with all 8 probes configured and healthy", async () => {
     setupFetch();
     const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
@@ -232,6 +233,7 @@ describe("handleHealthOAuth", () => {
     expect((body.providers.lineworks as { mode: ProbeMode }).mode).toBe("reachability");
     expect((body.providers.egov as { mode: ProbeMode }).mode).toBe("reachability");
     expect((body.providers.jwt_secret_drift as { mode: ProbeMode }).mode).toBe("secret_check");
+    expect((body.providers.secrets_format as { mode: ProbeMode }).mode).toBe("secret_check");
   });
 
   it("reports skip (configured:false) for unset providers without calling fetch for them", async () => {
@@ -1039,5 +1041,70 @@ describe("handleHealthOAuth", () => {
     const challenge = new URL(observedUrl).searchParams.get("challenge") ?? "";
     expect(challenge).toMatch(/^[0-9a-f]{64}$/);
     expect(observedAuth).toMatch(/^Bearer eyJ/);
+  });
+
+  // -------------------------------------------------------------------------
+  // secrets_format probe — Secrets Store binding の値 format 検査 (Refs #208)
+  // -------------------------------------------------------------------------
+
+  it("secrets_format: configured:false when no GITHUB_MCP_* / WEBHOOK secrets bound", async () => {
+    setupFetch();
+    const env = createMockEnv();
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    expect(body.providers.secrets_format).toEqual({ configured: false });
+  });
+
+  it("secrets_format: ok when bound secrets are clean", async () => {
+    setupFetch();
+    const env = envAllConfigured({
+      GITHUB_MCP_USER_ALLOWLIST: '["alice","bob"]',
+      GITHUB_WEBHOOK_SECRET: "whsec_clean_value",
+    });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as OAuthBody;
+    const sf = body.providers.secrets_format as { configured: true; ok: boolean; mode: ProbeMode };
+    expect(sf.ok).toBe(true);
+    expect(sf.mode).toBe("secret_check");
+  });
+
+  it("secrets_format: degraded (503) when a secret has a trailing newline (echo 投入の再現)", async () => {
+    setupFetch();
+    const env = envAllConfigured({
+      GITHUB_WEBHOOK_SECRET: "whsec_value\n", // echo "$v" | gcloud ... 相当の末尾 \n
+    });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    expect(body.overall).toBe("degraded");
+    const sf = body.providers.secrets_format as { ok: boolean; hint: string };
+    expect(sf.ok).toBe(false);
+    expect(sf.hint).toContain("GITHUB_WEBHOOK_SECRET");
+    expect(sf.hint).toContain("trailing whitespace");
+    // 値そのものは hint に漏れない
+    expect(sf.hint).not.toContain("whsec_value");
+  });
+
+  it("secrets_format: degraded when USER_ALLOWLIST is not valid JSON (placeholder のまま)", async () => {
+    setupFetch();
+    const env = envAllConfigured({ GITHUB_MCP_USER_ALLOWLIST: "REPLACE_ME" });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as OAuthBody;
+    const sf = body.providers.secrets_format as { ok: boolean; hint: string };
+    expect(sf.ok).toBe(false);
+    expect(sf.hint).toContain("GITHUB_MCP_USER_ALLOWLIST");
+    expect(sf.hint).toContain("invalid JSON");
+  });
+
+  it("secrets_format: degraded when USER_ALLOWLIST is a JSON object (not an array)", async () => {
+    setupFetch();
+    const env = envAllConfigured({ GITHUB_MCP_USER_ALLOWLIST: '{"alice":true}' });
+    const res = await handleHealthOAuth(await authedRequest(), env);
+    const body = await res.json() as OAuthBody;
+    const sf = body.providers.secrets_format as { ok: boolean; hint: string };
+    expect(sf.ok).toBe(false);
+    expect(sf.hint).toContain("not a JSON array");
   });
 });

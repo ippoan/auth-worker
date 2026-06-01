@@ -592,6 +592,65 @@ async function probeEgov(env: Env): Promise<ProbeResult> {
 }
 
 // ---------------------------------------------------------------------------
+// secrets_format — secret_check (Refs #208)
+//
+// Secrets Store binding から resolveSecret した値の **format** を検査する。
+// 外部 provider は叩かず、値そのものも response / log に出さない (問題のある
+// secret 名と症状だけを hint に出す)。PR #205 で 7 secret を Secrets Store
+// binding 化したが、GCP/CF へ `echo` で投入すると末尾に `\n` が混入し、消費側
+// の string compare (OAuth audience / HMAC 鍵 / webhook secret) が silent fail
+// する (#208: GOOGLE_CLIENT_ID 末尾 `\n` → rust-alc-api InvalidAudience)。
+// Google / JWT_SECRET は既存 probe が creds drift を検知するが、開発用の
+// GITHUB_MCP_* / GITHUB_WEBHOOK_SECRET は実走しないと露見しないため、format を
+// 直接検査する:
+//   - GITHUB_MCP_CLIENT_ID / _SECRET / GITHUB_WEBHOOK_SECRET:
+//     末尾 whitespace (`echo` 投入の `\n` 混入) を検出
+//   - GITHUB_MCP_USER_ALLOWLIST: JSON.parse + Array.isArray (placeholder /
+//     壊れた JSON / 末尾改行を検出)
+//
+// 1 つでも問題があれば ok:false → overall=degraded (HTTP 503) で
+// oauth-health.yml CI (staging post-deploy + 毎日 schedule) が拾う。
+// 4 secret すべて未 bind の env では configured:false で skip。
+// ---------------------------------------------------------------------------
+
+async function probeSecretsFormat(env: Env): Promise<ProbeResult> {
+  const mode: ProbeMode = "secret_check";
+  const entries: Array<{ name: string; value: string | null; json: boolean }> = [
+    { name: "GITHUB_MCP_CLIENT_ID", value: await resolveSecret(env.GITHUB_MCP_CLIENT_ID), json: false },
+    { name: "GITHUB_MCP_CLIENT_SECRET", value: await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET), json: false },
+    { name: "GITHUB_WEBHOOK_SECRET", value: await resolveSecret(env.GITHUB_WEBHOOK_SECRET), json: false },
+    { name: "GITHUB_MCP_USER_ALLOWLIST", value: await resolveSecret(env.GITHUB_MCP_USER_ALLOWLIST), json: true },
+  ];
+  const configured = entries.filter((e) => e.value !== null);
+  if (configured.length === 0) return { configured: false };
+
+  // 値そのものは hint に載せない。secret 名 + 症状だけを集める。
+  const problems: string[] = [];
+  for (const e of configured) {
+    const v = e.value as string;
+    if (/\s$/.test(v)) {
+      problems.push(`${e.name}: trailing whitespace`);
+    }
+    if (e.json) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(v);
+      } catch {
+        problems.push(`${e.name}: invalid JSON`);
+        continue;
+      }
+      if (!Array.isArray(parsed)) {
+        problems.push(`${e.name}: not a JSON array`);
+      }
+    }
+  }
+  if (problems.length > 0) {
+    return { configured: true, ok: false, status: 200, mode, hint: problems.join("; ") };
+  }
+  return { configured: true, ok: true, status: 200, mode };
+}
+
+// ---------------------------------------------------------------------------
 // dispatch
 // ---------------------------------------------------------------------------
 
@@ -621,12 +680,14 @@ export async function handleHealthOAuth(
     return new Response("unauthorized", { status: 401 });
   }
 
-  // 7 probe 並列実行 (Promise.all)。1 つの probe の latency が全体を
+  // 8 probe 並列実行 (Promise.all)。1 つの probe の latency が全体を
   // 引っ張らないように、各々が 5s timeout 内で完結する。
   // *_secret probe は token endpoint に invalid code を投げて
   // client_secret 正否を判定する (Refs #217)。
   // jwt_secret_drift は rust-alc-api の canary endpoint と HMAC を突き合わせ
   // て JWT_SECRET の drift を検知する (Refs #218)。
+  // secrets_format は Secrets Store binding の値の format (末尾 whitespace /
+  // JSON 整合) を値非開示で検査する (Refs #208)。
   const [
     google,
     google_secret,
@@ -635,6 +696,7 @@ export async function handleHealthOAuth(
     lineworks,
     egov,
     jwt_secret_drift,
+    secrets_format,
   ] = await Promise.all([
     probeGoogle(env),
     probeGoogleSecret(env),
@@ -643,6 +705,7 @@ export async function handleHealthOAuth(
     probeLineworks(env),
     probeEgov(env),
     probeJwtDrift(env),
+    probeSecretsFormat(env),
   ]);
   const providers: Record<string, ProbeResult> = {
     google,
@@ -652,6 +715,7 @@ export async function handleHealthOAuth(
     lineworks,
     egov,
     jwt_secret_drift,
+    secrets_format,
   };
   const overall = computeOverall(providers);
 
