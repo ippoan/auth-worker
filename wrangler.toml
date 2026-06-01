@@ -29,7 +29,7 @@ MCP_JWT_AUDIENCE_ALLOWLIST = "github-mcp-server-rs,ref-files-mcp-server-rs"
 # 形式の aud (RFC 8707 resource parameter で client が指定) を origin 一致で
 # 受理する allowlist。`mcp(-staging).ippoan.org` は env から導出するので
 # 不要。secrets-inventory 系の custom domain などをここに足す。
-MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://security-rotate.ippoan.org"
+MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://security-rotate.ippoan.org,https://ref-files.ippoan.org"
 
 [[kv_namespaces]]
 binding = "AUTH_CONFIG"
@@ -264,7 +264,7 @@ MCP_JWT_AUDIENCE_ALLOWLIST = "github-mcp-server-rs,ref-files-mcp-server-rs"
 # Refs ippoan/secrets-inventory#43: URL aud origin allowlist (staging 用)。
 # staging custom domain 配下も足したいが、secrets-inventory は prod URL の
 # まま staging deploy しているため同じ entry を流用する。
-MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://security-rotate.ippoan.org"
+MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://security-rotate.ippoan.org,https://ref-files.ippoan.org"
 # hcreader-worker origin — `/oauth/ghapi/callback` から refresh_token を
 # 内部 POST する宛先 (`${HCREADER_WORKER_ORIGIN}/api/ghapi/store-tokens`)。
 # hcreader-worker は single-env (staging = prod = hcreader.ippoan.org)。
