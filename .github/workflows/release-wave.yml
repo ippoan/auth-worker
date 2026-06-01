@@ -15,6 +15,8 @@ on:
       - release-wave-stage
       - release-wave-flip
       - release-wave-rollback
+      - release-wave-traffic-rollback   # frontend 単独 rollback (cloudflare-workers)
+      - release-wave-backend-rollback    # backend 単独 rollback (cloudrun)
 
 permissions:
   contents: write     # tag push (stage 時)
