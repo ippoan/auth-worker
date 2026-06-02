@@ -35,16 +35,14 @@ MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"
 
-# MCP OAuth Provider 用 — device_codes / sessions / refresh tokens / OAT→github
-# pairing を保持。**top-level (prod) に欠落していた**ため prod auth.ippoan.org の
-# `/mcp/pair/grant-via-oat` が `MCP_OAUTH_KV not bound` で 503 を返していた
-# (handlers/mcp-elevate.ts:78 ほか)。`[env.staging]` と **同一 namespace を共有**
-# する (AUTH_CONFIG と同じ方針)。staging で pair した OAT binding を prod の
-# grant-via-oat も引けるようにし、prod/staging のデータ不整合を防ぐ。別 namespace
-# を新規割当すると prod 側が空になり既存 pairing が 404 になるため共有が正。
-[[kv_namespaces]]
-binding = "MCP_OAUTH_KV"
-id = "0498e6057b8c4d7fbca92e9de41524ee"
+# ⚠️ MCP_OAUTH_KV は top-level (prod) には **意図的に bind しない**。
+# これは欠落ではなく guardrail: prod `auth.ippoan.org/mcp/pair/grant-via-oat`
+# を `MCP_OAUTH_KV not bound` (503) で無効化し、OAT→JWT mint を
+# staging (`auth-staging.ippoan.org`) 経由に限定する設計。MCP スタックは
+# staging を実運用として扱う (staging=prod)。staging には
+# `[[env.staging.kv_namespaces]]` で bind 済み。
+# 「prod に binding が無い＝欠落」と勘違いして AUTH_CONFIG と同様に
+# 再追加しないこと。過去に誤って追加 → revert した経緯あり (Refs #241 / #242)。
 
 # ─── INTERNAL_SHARED_SECRET (Secrets Store binding) ─────────────────────────
 # `ref-files-worker` と同じ account-level Secrets Store entry を bind し、
