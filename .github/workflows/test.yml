@@ -42,16 +42,3 @@ jobs:
       compat_backend_repo: 'ippoan/rust-alc-api'
       compat_backend_image_env: 'API_IMAGE'
     secrets: inherit
-
-  # cross-repo symbol index: main push 時に symbol を抽出し ci-dashboard の D1 に
-  # 投入する。鮮度比較 / 横断 query の source。ctags ベースで依存ビルド不要 =
-  # test と独立に並列実行。初回は full スキャン、以後は前回 head からの
-  # git 差分 incremental (変更ファイルだけ ctags) なので 2 回目以降は数十秒。
-  # 設計: ippoan/claude-skills の cross-repo-symbol-index skill。
-  symbol-index:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-    uses: ippoan/ci-workflows/.github/workflows/symbol-index.yml@main
-    secrets:
-      ingest_secret: ${{ secrets.SYMBOL_INDEX_INGEST_SECRET }}
