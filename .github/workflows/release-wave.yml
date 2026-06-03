@@ -12,7 +12,6 @@ name: Release Wave
 on:
   repository_dispatch:
     types:
-      - release-wave-stage
       - release-wave-flip
       - release-wave-rollback
       - release-wave-traffic-rollback   # frontend 単独 rollback (cloudflare-workers)
