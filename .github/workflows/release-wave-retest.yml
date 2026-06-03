@@ -1,0 +1,44 @@
+name: Release Wave Retest
+
+# ci-dashboard の Compatibility グラフの retest ボタンから飛んでくる
+# repository_dispatch (event: release-wave-retest) を受け、payload の
+# backend_image (= ghcr.io/ippoan/rust-alc-api:<sha>) を相手に integration
+# test を回し直して compat report を送り直す経路 (Refs ippoan/ci-dashboard#157)。
+#
+# frontend-ci.yml はこの retest 経路を想定済み:
+#   - report-compatibility job は github.event_name で gate されず、
+#     compat_backend_image (= dispatch payload の image) を優先採用する。
+#   - deploy / auto-merge / pr-limit / publish は github.event_name が
+#     pull_request / push の時だけ走るので repository_dispatch では skip。
+# has_deploy: false で deploy/publish 系もダブルで止める。
+
+on:
+  repository_dispatch:
+    types:
+      - release-wave-retest
+
+permissions:
+  contents: write
+  packages: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  retest:
+    uses: ippoan/ci-workflows/.github/workflows/frontend-ci.yml@main
+    with:
+      has_integration: true
+      has_deploy: false
+      # dispatch payload の backend image を test 相手に明示指定する。
+      # frontend-ci の report-compatibility がこの image をそのまま記録する。
+      compat_backend_repo: ippoan/rust-alc-api
+      compat_backend_image: ${{ github.event.client_payload.backend_image }}
+      compat_backend_image_env: API_IMAGE
+      # 以下は test.yml の ci job の with をそのまま流用 (同一 integration 構成)。
+      install_command: 'npm install'
+      typecheck_command: 'npx tsc --noEmit && npx tsc -p test/tsconfig.json --noEmit'
+      post_install_script: |
+        npx wrangler types
+        bash scripts/export-ts-bindings.sh src/types
+      npm_scope: '@ippoan'
+    secrets: inherit
