@@ -22,6 +22,16 @@ import type {
 const GITHUB_API = "https://api.github.com";
 const GITHUB_UA = "ippoan-auth-worker";
 
+/**
+ * Max repos processed concurrently in {@link fetchProtectionRows}. Each repo
+ * issues up to ~8 GitHub fetches, so the old unbounded `Promise.all(repos.map)`
+ * fired ~25×8 ≈ 200 subrequests at once, blowing past the Workers
+ * concurrent-subrequest window. Bounding the pool keeps in-flight fetches
+ * small enough that they drain in order instead of stalling and getting
+ * force-canceled (which burned ~90s CPU per page load in observability).
+ */
+const REPO_FETCH_CONCURRENCY = 4;
+
 function ghHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -29,6 +39,47 @@ function ghHeaders(token: string): Record<string, string> {
     "User-Agent": GITHUB_UA,
     "X-GitHub-Api-Version": "2022-11-28",
   };
+}
+
+/**
+ * Cancel an unread response body. Cloudflare Workers cap the number of
+ * concurrent in-flight subrequests; a `fetch()` whose body is never read keeps
+ * occupying a slot until the runtime force-cancels it ("A stalled HTTP response
+ * was canceled to prevent deadlock"). Every early-return path that drops a
+ * Response without reading it must drain the body here.
+ */
+async function drainBody(resp: Response): Promise<void> {
+  try {
+    await resp.body?.cancel();
+  } catch {
+    // Body already consumed or canceled — nothing to do.
+  }
+}
+
+/**
+ * Run `fn` over `items` with at most `limit` promises in flight at once,
+ * preserving input order in the result array. Replaces the unbounded
+ * `Promise.all(items.map(fn))` fan-out that overran the subrequest cap.
+ */
+async function mapPool<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      // index is bounded above; `noUncheckedIndexedAccess` still widens to
+      // `T | undefined`, so assert the element is present.
+      results[index] = await fn(items[index] as T);
+    }
+  }
+  const size = Math.min(Math.max(1, limit), items.length || 1);
+  await Promise.all(Array.from({ length: size }, () => worker()));
+  return results;
 }
 
 /**
@@ -235,6 +286,8 @@ export async function getBranchRulesetRules(
         }
       }
     }
+  } else {
+    await drainBody(rulesResp);
   }
 
   // Endpoint 2: list of repo-level rulesets (used as a fallback for the
@@ -259,6 +312,7 @@ export async function getBranchRulesetRules(
         }
       }
     } else {
+      await drainBody(listResp);
       console.warn(JSON.stringify({
         event: "ruleset_list_probe_failed",
         owner, repo, branch,
@@ -325,7 +379,10 @@ export async function getRepoSettings(
     `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
     { headers: ghHeaders(token) },
   );
-  if (!resp.ok) return null;
+  if (!resp.ok) {
+    await drainBody(resp);
+    return null;
+  }
   const body = (await resp.json()) as Record<string, unknown>;
   return {
     allow_auto_merge: Boolean(body["allow_auto_merge"]),
@@ -472,8 +529,10 @@ async function fetchTextFile(
   } catch {
     return null;
   }
-  if (resp.status === 404) return null;
-  if (!resp.ok) return null;
+  if (resp.status === 404 || !resp.ok) {
+    await drainBody(resp);
+    return null;
+  }
   const body = (await resp.json()) as {
     content?: string;
     encoding?: string;
@@ -587,8 +646,7 @@ export async function fetchProtectionRows(
   token: string,
   repos: RepoSummary[],
 ): Promise<RepoProtectionRow[]> {
-  return Promise.all(
-    repos.map(async (r): Promise<RepoProtectionRow> => {
+  return mapPool(repos, REPO_FETCH_CONCURRENCY, async (r): Promise<RepoProtectionRow> => {
       const [classicRes, ruleset, settings, projectType] = await Promise.all([
         getBranchProtection(token, r.owner, r.name, r.default_branch),
         getBranchRulesetRules(token, r.owner, r.name, r.default_branch),
@@ -664,6 +722,5 @@ export async function fetchProtectionRows(
         repo_settings: settings,
         project_type: projectType,
       };
-    }),
-  );
+  });
 }
