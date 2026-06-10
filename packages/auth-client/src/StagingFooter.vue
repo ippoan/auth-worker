@@ -6,6 +6,18 @@
     <span class="font-bold">STAGING</span>
     <span>{{ backendInfo || apiLabel }}</span>
 
+    <!-- Plan summary (staging は毎日新しい plan が動く可能性が高いので常設表示) -->
+    <a
+      v-if="activePlans.length"
+      class="underline hover:no-underline"
+      :href="plansLink || 'https://github.com/ippoan/ippoan-dev-plans/issues'"
+      target="_blank"
+      rel="noopener"
+      :title="plansTooltip"
+    >
+      Plans: {{ plansSummary }}
+    </a>
+
     <div class="flex items-center gap-2">
       <!-- Export -->
       <button
@@ -44,6 +56,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 
+interface ActivePlan {
+  id: string
+  stage: string
+  scope?: string
+}
+
 const props = defineProps<{
   apiBase: string
   tenantId?: string
@@ -52,6 +70,14 @@ const props = defineProps<{
    * 未指定なら従来どおりヘッダ無しで呼ぶ (backend 側も env 未設定なら無認証)。
    */
   stagingApiKey?: string
+  /**
+   * auth-worker の /api/version URL。指定すると適用済み plan のサマリを表示する。
+   * 取得失敗時は従来表示のみで継続 (graceful degradation)。
+   * Refs ippoan/auth-worker#253
+   */
+  versionUrl?: string
+  /** plan サマリクリック時の遷移先。デフォルトは ippoan-dev-plans の issue リスト。 */
+  plansLink?: string
 }>()
 
 /** X-Staging-Key を opt-in で付与する fetch ヘッダを組み立てる */
@@ -65,6 +91,8 @@ const isStaging = computed(() => props.apiBase.includes('staging'))
 const apiLabel = computed(() => props.apiBase.replace('https://', '').split('.')[0] ?? '')
 const backendInfo = ref('')
 
+const activePlans = ref<ActivePlan[]>([])
+
 // /api/health から SHA + PR 名を取得
 if (typeof window !== 'undefined') {
   ;(async () => {
@@ -77,7 +105,33 @@ if (typeof window !== 'undefined') {
       if (parts.length) backendInfo.value = parts.join(' — ')
     } catch { /* ignore */ }
   })()
+
+  // auth-worker /api/version から適用済み plan を取得 (#253)
+  if (props.versionUrl) {
+    ;(async () => {
+      try {
+        const res = await fetch(props.versionUrl as string)
+        const v = await res.json() as { active_plans?: ActivePlan[] }
+        if (Array.isArray(v.active_plans)) activePlans.value = v.active_plans
+      } catch { /* ignore — 従来表示のみで継続 */ }
+    })()
+  }
 }
+
+/** footer 内に出す短いサマリ (先頭 plan + 残数)。全件は title tooltip で見る */
+const plansSummary = computed(() => {
+  const first = activePlans.value[0]
+  if (!first) return ''
+  const head = `${first.id} (${first.stage})`
+  const rest = activePlans.value.length - 1
+  return rest > 0 ? `${head} +${rest}` : head
+})
+
+const plansTooltip = computed(() =>
+  activePlans.value
+    .map((p: ActivePlan) => (p.scope ? `${p.id} (${p.stage}, ${p.scope})` : `${p.id} (${p.stage})`))
+    .join('\n')
+)
 
 const busy = ref(false)
 const action = ref<'export' | 'import' | null>(null)

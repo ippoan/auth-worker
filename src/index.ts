@@ -22,6 +22,7 @@ import {
 import { handleAdminRichMenuPage, handleAdminRichMenuCallback } from "./handlers/admin-rich-menu";
 import { handleTopPage } from "./handlers/top-page";
 import { handleHealthProxy } from "./handlers/health";
+import { handleVersion } from "./handlers/version";
 import { handleHealthOAuth } from "./handlers/health-oauth";
 import {
   handleUsersList, handleInvitationsList, handleInviteUser,
@@ -381,6 +382,10 @@ export default {
         switch (url.pathname) {
           case "/api/health":
             return await handleHealthProxy(env);
+          // issue #253: auth-worker version + 適用済み plan snapshot。
+          // /api/health (ALC proxy) と違い upstream 非依存の独立ハンドラ。
+          case "/api/version":
+            return await handleVersion(env);
           // issue #209: OAuth client_id 死活チェック (Bearer JWT 必須)。
           // /api/health (ALC proxy) と分離した独立ハンドラ。
           case "/health/oauth":
