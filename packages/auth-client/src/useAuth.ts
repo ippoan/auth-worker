@@ -10,6 +10,7 @@
  */
 import { computed } from 'vue'
 import { useRuntimeConfig, useState } from '#imports'
+import { decodeJwtClaims, decodeJwtPayloadFromToken } from './jwt'
 
 const AUTH_STORAGE_KEY = 'logi_auth'
 const AUTH_COOKIE_NAME = 'logi_auth_token'
@@ -37,20 +38,6 @@ export interface OrgInfo {
   name: string
   slug: string
   role: string
-}
-
-/** JWT payload から username と provider を安全に取り出す */
-function decodeJwtClaims(token: string): { username?: string; provider?: string; orgSlug?: string } {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1] ?? ''))
-    return {
-      username: payload.username || payload.email || undefined,
-      provider: payload.provider || undefined,
-      orgSlug: payload.org_slug || undefined,
-    }
-  } catch {
-    return {}
-  }
 }
 
 function readStorage(): AuthState | null {
@@ -164,9 +151,8 @@ export const useAuth = () => {
 
     if (!token) return false
 
-    // JWT から claims を取得
-    let payload: Record<string, unknown> = {}
-    try { payload = JSON.parse(atob(token.split('.')[1] ?? '')) } catch { /* ignore */ }
+    // JWT から claims を取得（マルチバイト安全）
+    const payload: Record<string, unknown> = decodeJwtPayloadFromToken(token)
 
     // org_id: fragment パラメータ or JWT の tenant_id/org
     const orgId = params.get('org_id') || (payload.tenant_id as string) || (payload.org as string) || ''
@@ -213,16 +199,21 @@ export const useAuth = () => {
     if (!tokenCookie) return false
     const token = tokenCookie.split('=').slice(1).join('=')
     try {
-      const payload = JSON.parse(atob(token.split('.')[1] ?? ''))
+      const payload = decodeJwtPayloadFromToken(token)
+      const exp = payload.exp as number | undefined
       const now = Math.floor(Date.now() / 1000)
-      if (payload.exp <= now) return false
+      if (!exp || exp <= now) return false
       const state: AuthState = {
         token,
-        orgId: payload.tenant_id || payload.org,
-        expiresAt: payload.exp,
-        username: payload.username || payload.email || payload.name || undefined,
-        provider: payload.provider || undefined,
-        orgSlug: payload.org_slug || undefined,
+        orgId: (payload.tenant_id as string) || (payload.org as string),
+        expiresAt: exp,
+        username:
+          (payload.username as string) ||
+          (payload.email as string) ||
+          (payload.name as string) ||
+          undefined,
+        provider: (payload.provider as string) || undefined,
+        orgSlug: (payload.org_slug as string) || undefined,
       }
       authState.value = state
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(state))

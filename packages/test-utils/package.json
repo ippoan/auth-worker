@@ -11,6 +11,10 @@
     "src",
     "bin"
   ],
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
   "peerDependencies": {
     "vitest": ">=2.0.0"
   }

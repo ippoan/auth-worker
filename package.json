@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:check100": "node scripts/check_coverage_100.mjs",
+    "test:check100": "node packages/test-utils/bin/check-coverage-100.mjs",
     "check:secrets": "bash scripts/check-secrets-preflight.sh"
   },
   "dependencies": {
