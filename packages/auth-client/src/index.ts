@@ -2,6 +2,12 @@ export { useAuth } from './useAuth'
 export type { AuthState } from './useAuth'
 export { createAuthFetch } from './createAuthFetch'
 export type { AuthFetchOptions } from './createAuthFetch'
+export {
+  decodeJwtPayload,
+  decodeJwtPayloadFromToken,
+  decodeJwtClaims,
+  extractTenantIdFromAuth,
+} from './jwt'
 export { authMiddleware } from './authMiddleware'
 export type { AuthMiddlewareOptions } from './authMiddleware'
 export { default as AuthToolbar } from './AuthToolbar.vue'
