@@ -1,6 +1,7 @@
 # 100% カバレッジ達成済みファイル登録簿 (Lines + Branches 基準)
 # CI で coverage-summary.json と照合してリグレッション検出
-# 確認: npm run test:coverage → node scripts/check_coverage_100.mjs
+# 確認: npm run test:coverage → npm run test:check100
+#       (= node packages/test-utils/bin/check-coverage-100.mjs)
 #
 # branches = true のファイルは Branches 100% もチェックする
 
