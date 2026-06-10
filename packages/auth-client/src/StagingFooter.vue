@@ -47,7 +47,19 @@ import { ref, computed } from 'vue'
 const props = defineProps<{
   apiBase: string
   tenantId?: string
+  /**
+   * staging export/import の X-Staging-Key (rust-alc-api#391 の opt-in 認証)。
+   * 未指定なら従来どおりヘッダ無しで呼ぶ (backend 側も env 未設定なら無認証)。
+   */
+  stagingApiKey?: string
 }>()
+
+/** X-Staging-Key を opt-in で付与する fetch ヘッダを組み立てる */
+function stagingHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra ?? {}) }
+  if (props.stagingApiKey) headers['X-Staging-Key'] = props.stagingApiKey
+  return headers
+}
 
 const isStaging = computed(() => props.apiBase.includes('staging'))
 const apiLabel = computed(() => props.apiBase.replace('https://', '').split('.')[0] ?? '')
@@ -84,7 +96,7 @@ async function handleExport() {
   statusMsg.value = ''
   try {
     const url = `${props.apiBase}/staging/export?tenant_id=${props.tenantId}`
-    const res = await fetch(url)
+    const res = await fetch(url, { headers: stagingHeaders() })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
@@ -121,7 +133,7 @@ async function handleImport(event: Event) {
     const text = await file.text()
     const res = await fetch(`${props.apiBase}/staging/import`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: stagingHeaders({ 'Content-Type': 'application/json' }),
       body: text,
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
