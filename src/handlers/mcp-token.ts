@@ -29,6 +29,7 @@ import { verifyPkceS256 } from "../lib/mcp-pkce";
 import {
   consumeRefreshToken,
   issueRefreshToken,
+  markRefreshRotated,
 } from "../lib/mcp-refresh";
 
 /** access_token (JWT) の有効期間: 1 時間 */
@@ -228,32 +229,56 @@ async function handleRefreshGrant(form: FormData, env: Env, jwtSecret: string): 
     return oauthError("invalid_grant", "refresh_token is invalid, expired, or already used");
   }
 
+  // rotation 直後の旧 token 再使用 (並列 fan-out / 応答消失 retry / KV stale
+  // read)。新 pair を再発行すると refresh chain が枝分かれするので、grace record
+  // に保存済みの **同一 pair** をそのまま返す (Refs #270)。再使用は監視のため log。
+  if (consumed.kind === "grace") {
+    console.log(JSON.stringify({ msg: "mcp-refresh-grace-reuse", scope: consumed.grace.scope }));
+    return successResponse({
+      access_token: consumed.grace.access_token,
+      refresh_token: consumed.grace.refresh_token,
+      scope: consumed.grace.scope,
+    });
+  }
+
+  const rec = consumed.record;
   // 初回発行時の aud を継承する。RFC 8707 で resource 指定された Authorization
   // Code grant 発の refresh なら MCP server origin、device flow なら legacy 値。
   // 旧 KV record (本 PR 反映前に発行された refresh) に aud field が無い場合は
   // legacy にフォールバック。
-  const aud = consumed.aud ?? MCP_AUD;
+  const aud = rec.aud ?? MCP_AUD;
   const access_token = await signMcpJwt(
     {
-      sub: consumed.sub,
-      github_login: consumed.github_login,
-      scope: consumed.scope,
+      sub: rec.sub,
+      github_login: rec.github_login,
+      scope: rec.scope,
       aud,
     },
     jwtSecret,
     ACCESS_TOKEN_TTL_SEC,
   );
   const newRefresh = await issueRefreshToken(env, {
-    sub: consumed.sub,
-    scope: consumed.scope,
-    github_login: consumed.github_login,
+    sub: rec.sub,
+    scope: rec.scope,
+    github_login: rec.github_login,
     aud,
-    rotated_from: consumed.hash,
+    rotated_from: rec.hash,
+  });
+
+  // 旧 hash slot を grace record (60s) に置換。以降 grace 窓内の旧 token 再使用は
+  // 上の grace 分岐でこの同一 pair を返す。delete-first を廃したのでここまでの
+  // 間 (read→この put) に並走した consume は通常 record を読んで double-rotation
+  // し得るが、それは SDK single-flight (PR2) が消す。両者とも有効な新 pair を
+  // 得るので invalid_grant の永続死にはならない。
+  await markRefreshRotated(env, rec.hash, {
+    access_token,
+    refresh_token: newRefresh,
+    scope: rec.scope,
   });
 
   return successResponse({
     access_token,
     refresh_token: newRefresh,
-    scope: consumed.scope,
+    scope: rec.scope,
   });
 }

@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   issueRefreshToken,
   consumeRefreshToken,
+  markRefreshRotated,
   REFRESH_TTL_SEC,
+  GRACE_TTL_SEC,
 } from "../../src/lib/mcp-refresh";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
@@ -56,7 +58,7 @@ describe("mcp-refresh", () => {
   });
 
   describe("consumeRefreshToken", () => {
-    it("returns the record and deletes KV entry on success (rotation)", async () => {
+    it("resolves a normal token to {kind:record} WITHOUT deleting (grace rotation, Refs #270)", async () => {
       const { env, kv } = envWithKv();
       const tok = await issueRefreshToken(env, {
         sub: "github:carol",
@@ -65,23 +67,69 @@ describe("mcp-refresh", () => {
       });
       const consumed = await consumeRefreshToken(env, tok);
       expect(consumed).not.toBeNull();
-      expect(consumed!.sub).toBe("github:carol");
-      expect(consumed!.github_login).toBe("carol");
-      expect(consumed!.hash).toMatch(/^[0-9a-f]{64}$/);
-      // KV entry is gone (rotation)
+      expect(consumed!.kind).toBe("record");
+      if (consumed!.kind !== "record") throw new Error("unreachable");
+      expect(consumed!.record.sub).toBe("github:carol");
+      expect(consumed!.record.github_login).toBe("carol");
+      expect(consumed!.record.hash).toMatch(/^[0-9a-f]{64}$/);
+      // delete-first を廃したので consume だけでは KV entry は消えない
+      // (one-shot は markRefreshRotated の grace 置換で担保する)。
       const remaining = Object.keys(kv._data).filter((k) => k.startsWith("refresh:"));
-      expect(remaining).toHaveLength(0);
+      expect(remaining).toHaveLength(1);
     });
 
-    it("returns null on second consumption (rotation enforced)", async () => {
+    it("does not enforce one-shot by itself (rotation is via markRefreshRotated)", async () => {
       const { env } = envWithKv();
       const tok = await issueRefreshToken(env, {
-        sub: "github:dave",
-        scope: "",
-        github_login: "dave",
+        sub: "github:dave", scope: "", github_login: "dave",
       });
-      expect(await consumeRefreshToken(env, tok)).not.toBeNull();
+      // 通常 record は (rotation されるまで) 何度読んでも kind:record。
+      const a = await consumeRefreshToken(env, tok);
+      const b = await consumeRefreshToken(env, tok);
+      expect(a?.kind).toBe("record");
+      expect(b?.kind).toBe("record");
+    });
+
+    it("after markRefreshRotated, the OLD token resolves to {kind:grace} with the SAME pair", async () => {
+      const { env, kv } = envWithKv();
+      const tok = await issueRefreshToken(env, {
+        sub: "github:grace", scope: "mcp.read", github_login: "grace",
+      });
+      const consumed = await consumeRefreshToken(env, tok);
+      if (consumed?.kind !== "record") throw new Error("expected record");
+      // rotation: 新 pair を発行したことにして旧 hash を grace 置換。
+      await markRefreshRotated(env, consumed.record.hash, {
+        access_token: "AT_NEW", refresh_token: "RT_NEW", scope: "mcp.read",
+      });
+      const key = `refresh:${consumed.record.hash}`;
+      expect(kv._ttls[key]).toBe(GRACE_TTL_SEC);
+
+      const reused = await consumeRefreshToken(env, tok);
+      expect(reused?.kind).toBe("grace");
+      if (reused?.kind !== "grace") throw new Error("unreachable");
+      expect(reused.grace.access_token).toBe("AT_NEW");
+      expect(reused.grace.refresh_token).toBe("RT_NEW");
+      expect(reused.grace.scope).toBe("mcp.read");
+    });
+
+    it("returns null and clears the slot once the grace window has passed", async () => {
+      const { env, kv } = envWithKv();
+      const tok = await issueRefreshToken(env, {
+        sub: "github:heidi", scope: "", github_login: "heidi",
+      });
+      const consumed = await consumeRefreshToken(env, tok);
+      if (consumed?.kind !== "record") throw new Error("expected record");
+      await markRefreshRotated(env, consumed.record.hash, {
+        access_token: "AT", refresh_token: "RT", scope: "",
+      });
+      // grace_until を過去に倒す。
+      const key = `refresh:${consumed.record.hash}`;
+      const g = JSON.parse(kv._data[key]!) as { grace_until: number };
+      g.grace_until = Date.now() - 1000;
+      kv._data[key] = JSON.stringify(g);
+
       expect(await consumeRefreshToken(env, tok)).toBeNull();
+      expect(kv._data[key]).toBeUndefined(); // 超過 grace slot は掃除される
     });
 
     it("returns null for unknown token", async () => {
@@ -89,35 +137,22 @@ describe("mcp-refresh", () => {
       expect(await consumeRefreshToken(env, "not-a-real-token")).toBeNull();
     });
 
-    it("returns null and deletes KV when token is expired", async () => {
+    it("returns null when the normal record is expired", async () => {
       const { env, kv } = envWithKv();
-      // manually write an expired record bypassing issueRefreshToken
-      const fakeHash = "a".repeat(64);
-      // We need the token whose sha256 hex == fakeHash — impossible, so write a real
-      // token's hash but with expired expires_at.
       const tok = await issueRefreshToken(env, {
-        sub: "github:eve",
-        scope: "",
-        github_login: "eve",
+        sub: "github:eve", scope: "", github_login: "eve",
       });
-      // find its key
       const key = Object.keys(kv._data).find((k) => k.startsWith("refresh:"))!;
       const rec = JSON.parse(kv._data[key]!) as { expires_at: number };
       rec.expires_at = Date.now() - 1000;
       kv._data[key] = JSON.stringify(rec);
       expect(await consumeRefreshToken(env, tok)).toBeNull();
-      // delete-first means even expired entries are removed
-      expect(kv._data[key]).toBeUndefined();
-      // ensure fakeHash silenced lint (no use)
-      expect(fakeHash.length).toBe(64);
     });
 
     it("returns null when KV value is malformed JSON", async () => {
       const { env, kv } = envWithKv();
       const tok = await issueRefreshToken(env, {
-        sub: "github:frank",
-        scope: "",
-        github_login: "frank",
+        sub: "github:frank", scope: "", github_login: "frank",
       });
       const key = Object.keys(kv._data).find((k) => k.startsWith("refresh:"))!;
       kv._data[key] = "not-json{";
@@ -127,6 +162,15 @@ describe("mcp-refresh", () => {
     it("throws when KV not bound", async () => {
       const env = createMockEnv({ MCP_OAUTH_KV: undefined });
       await expect(consumeRefreshToken(env, "tok")).rejects.toThrow(/not bound/);
+    });
+  });
+
+  describe("markRefreshRotated", () => {
+    it("throws when KV not bound", async () => {
+      const env = createMockEnv({ MCP_OAUTH_KV: undefined });
+      await expect(
+        markRefreshRotated(env, "deadbeef", { access_token: "a", refresh_token: "r", scope: "" }),
+      ).rejects.toThrow(/not bound/);
     });
   });
 });

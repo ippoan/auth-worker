@@ -244,7 +244,7 @@ describe("POST /mcp/token — refresh_token grant", () => {
     expect(body.error).toBe("invalid_grant");
   });
 
-  it("200 with new tokens on success; rotation enforced (2nd use fails)", async () => {
+  it("200 with new tokens on success; grace re-use returns the SAME pair (Refs #270)", async () => {
     const { env } = envWithKv();
     const refresh = await issueRefreshToken(env, {
       sub: "github:bob",
@@ -270,13 +270,30 @@ describe("POST /mcp/token — refresh_token grant", () => {
     expect(payload!.sub).toBe("github:bob");
     expect(payload!.github_login).toBe("bob");
 
-    // second use of old refresh → invalid_grant
+    // rotation 直後に **旧 refresh を再提示** (並列 fan-out / 応答消失 retry を模す)。
+    // delete-first だった旧実装は invalid_grant で session を殺していたが、grace
+    // (60s) では **1 回目と同一の新 pair** をそのまま返す (divergence 防止、Refs #270)。
     const res2 = await handleMcpToken(
       postForm({ grant_type: "refresh_token", refresh_token: refresh }),
       env,
     );
-    expect(res2.status).toBe(400);
-    expect((await res2.json() as { error: string }).error).toBe("invalid_grant");
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json() as {
+      access_token: string;
+      refresh_token: string;
+      scope: string;
+    };
+    expect(body2.refresh_token).toBe(body.refresh_token);
+    expect(body2.access_token).toBe(body.access_token);
+    expect(body2.scope).toBe("read:user");
+
+    // 新 refresh_token は通常どおり rotate できる (grace は旧 token slot 専用)。
+    const res3 = await handleMcpToken(
+      postForm({ grant_type: "refresh_token", refresh_token: body.refresh_token }),
+      env,
+    );
+    expect(res3.status).toBe(200);
+    expect((await res3.json() as { refresh_token: string }).refresh_token).not.toBe(body.refresh_token);
   });
 });
 
