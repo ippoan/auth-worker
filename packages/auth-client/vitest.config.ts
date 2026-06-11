@@ -11,7 +11,12 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json-summary", "html"],
       reportsDirectory: "./coverage",
-      include: ["src/createAuthFetch.ts", "src/jwt.ts"],
+      include: [
+        "src/createAuthFetch.ts",
+        "src/jwt.ts",
+        "src/server/authLogic.ts",
+        "src/server/proxyCore.ts",
+      ],
     },
   },
 });
