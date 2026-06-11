@@ -199,3 +199,30 @@ describe('createAuthFetch', () => {
     })
   })
 })
+
+describe('errorLabel option', () => {
+  it('エラーメッセージのラベルを差し替えられる (日本語 UI 互換)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('boom', { status: 500 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const api = createAuthFetch({
+      baseUrl: 'https://api.example.com',
+      tokenGetter: () => 't',
+      errorLabel: 'API エラー',
+    })
+    await expect(api('/x')).rejects.toThrow('API エラー (500): boom')
+  })
+
+  it('default は API error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('boom', { status: 500 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const api = createAuthFetch({
+      baseUrl: 'https://api.example.com',
+      tokenGetter: () => 't',
+    })
+    await expect(api('/x')).rejects.toThrow('API error (500): boom')
+  })
+})

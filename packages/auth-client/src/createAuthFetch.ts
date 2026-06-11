@@ -19,10 +19,16 @@ export interface AuthFetchOptions {
    * (ログアウト誘導など)
    */
   onUnauthorized?: () => void
+  /**
+   * エラーメッセージの先頭ラベル (default: 'API error')。
+   * 日本語 UI でそのまま err.message を表示する app は 'API エラー' 等を渡す
+   * (alc-app / nuxt-dtako-admin の既存文言互換、Refs #257)。
+   */
+  errorLabel?: string
 }
 
 export function createAuthFetch(options: AuthFetchOptions) {
-  const { baseUrl, tokenGetter, tenantIdGetter, tokenRefresher, onUnauthorized } = options
+  const { baseUrl, tokenGetter, tenantIdGetter, tokenRefresher, onUnauthorized, errorLabel = 'API error' } = options
   const base = baseUrl.replace(/\/$/, '')
 
   // 同時 refresh 抑止（single-flight）。この factory インスタンスにスコープする。
@@ -47,7 +53,7 @@ export function createAuthFetch(options: AuthFetchOptions) {
   async function toResult<T>(res: Response): Promise<T> {
     if (!res.ok) {
       const body = await res.text().catch(() => '')
-      throw new Error(`API error (${res.status}): ${body || res.statusText}`)
+      throw new Error(`${errorLabel} (${res.status}): ${body || res.statusText}`)
     }
     if (res.status === 204) return undefined as T
     return res.json() as Promise<T>
