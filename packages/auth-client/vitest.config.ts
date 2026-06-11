@@ -14,8 +14,9 @@ export default defineConfig({
       include: [
         "src/createAuthFetch.ts",
         "src/jwt.ts",
-        "src/server/authLogic.ts",
-        "src/server/proxyCore.ts",
+        "src/jwt-core.mjs",
+        "src/server/authLogic.mjs",
+        "src/server/proxyCore.mjs",
       ],
     },
   },
