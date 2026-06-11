@@ -70,34 +70,60 @@ https://carins.mtamaramu.com/?lw=ohishi
 
 ### plugins/auth.client.ts での使い方
 
+共通フローは `initAuthSession()` に集約済み (Refs ippoan/auth-worker#257)。
+plugin は数行で済む:
+
 ```typescript
+import { initAuthSession } from '@ippoan/auth-client'
+
 export default defineNuxtPlugin({
   name: 'auth',
   enforce: 'pre',
   setup() {
-    const { consumeFragment, loadFromStorage, isAuthenticated, redirectToLogin, saveLwDomain } = useAuth()
-
-    // ?lw=<domain> パラメータを検出して保存
-    const urlParams = new URLSearchParams(window.location.search)
-    const lwParam = urlParams.get('lw')
-    if (lwParam) {
-      saveLwDomain(lwParam)
-      urlParams.delete('lw')
-      history.replaceState(null, '', window.location.pathname + (urlParams.toString() ? `?${urlParams}` : ''))
-    }
-
-    // JWT復元
-    const found = consumeFragment()
-    if (!found) loadFromStorage()
-
-    // 未認証 → ログイン（LWドメイン保存済みなら自動ログイン）
-    if (!isAuthenticated.value) {
-      redirectToLogin()
-      return
-    }
+    // ?lw= 保存 → fragment/localStorage/cookie 復元 → 未認証 redirect
+    // → 組織一覧取得 → 期限切れタイマー、まで一括
+    initAuthSession()
+    // 組織一覧が不要なら: initAuthSession({ fetchOrganizations: false })
   },
 })
 ```
+
+WOFF 認証や backend 種別ガード等のアプリ固有処理は、消費側 plugin で
+`initAuthSession()` の前に行う (自前で認証を確立したら呼ばない)。
+
+### pages/auth/callback.vue での使い方
+
+```vue
+<script setup lang="ts">
+definePageMeta({ layout: 'auth' })
+</script>
+
+<template>
+  <AuthCallback redirect-to="/operations" login-path="/login" />
+</template>
+```
+
+## server-side ヘルパー (`@ippoan/auth-client/server`)
+
+Nitro server route / middleware 向け。client バンドルに h3 import を
+漏らさないため subpath で公開している。
+
+```typescript
+// server/middleware/auth.ts — リダイレクト判定 (pure ロジック)
+import { resolveAuthAction, checkTenantId } from '@ippoan/auth-client/server'
+
+// server/api/proxy/[...path].ts — backend への REST プロキシ
+import { createApiProxyHandler } from '@ippoan/auth-client/server'
+export default createApiProxyHandler({
+  backendUrl: event =>
+    (useRuntimeConfig(event).alcApiUrl as string) || 'https://alc-api.ippoan.org',
+})
+```
+
+- `resolveAuthAction` — 未認証時の LINE WORKS / login リダイレクト判定 (WOFF 対応)
+- `checkTenantId` — JWT cookie のテナント制限チェック
+- `createApiProxyHandler` — Authorization 転送 + JWT→X-Tenant-ID 変換 + binary/JSON 透過
+- `extractTenantIdFromAuth` / `decodeJwtPayloadFromToken` — JWT util の再 export
 
 ## 使用先
 
