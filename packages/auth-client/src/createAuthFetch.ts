@@ -86,14 +86,15 @@ export function createAuthFetch(options: AuthFetchOptions) {
           const retryRes = await fetch(url, { ...init, headers: buildHeaders(init) })
           if (retryRes.status === 401) {
             onUnauthorized?.()
-            throw new Error('Unauthorized')
           }
+          // retry も 401 なら toResult が `${errorLabel} (401): ...` を throw する
+          // (= 自前実装時代の「元の 401 エラーにフォールスルー」と同形式)
           return toResult<T>(retryRes)
         }
       }
 
       onUnauthorized?.()
-      throw new Error('Unauthorized')
+      return toResult<T>(res)
     }
 
     return toResult<T>(res)

@@ -65,7 +65,7 @@ describe('createAuthFetch', () => {
   })
 
   describe('401 の挙動', () => {
-    it('refresher 無し: onUnauthorized を呼び Unauthorized を throw', async () => {
+    it('refresher 無し: onUnauthorized を呼び errorLabel (401) を throw', async () => {
       fetchMock.mockResolvedValueOnce(new Response(null, { status: 401 }))
       const onUnauthorized = vi.fn()
       const af = createAuthFetch({
@@ -73,7 +73,7 @@ describe('createAuthFetch', () => {
         tokenGetter: () => 'tok',
         onUnauthorized,
       })
-      await expect(af('/p')).rejects.toThrow('Unauthorized')
+      await expect(af('/p')).rejects.toThrow('API error (401)')
       expect(onUnauthorized).toHaveBeenCalledTimes(1)
       expect(fetchMock).toHaveBeenCalledTimes(1) // retry なし
     })
@@ -103,7 +103,7 @@ describe('createAuthFetch', () => {
       expect((retryInit.headers as Record<string, string>)['Authorization']).toBe('Bearer new')
     })
 
-    it('refresher あり: token が無ければ refresh せず即 Unauthorized', async () => {
+    it('refresher あり: token が無ければ refresh せず即 errorLabel (401)', async () => {
       fetchMock.mockResolvedValueOnce(new Response(null, { status: 401 }))
       const tokenRefresher = vi.fn()
       const onUnauthorized = vi.fn()
@@ -113,12 +113,12 @@ describe('createAuthFetch', () => {
         tokenRefresher,
         onUnauthorized,
       })
-      await expect(af('/p')).rejects.toThrow('Unauthorized')
+      await expect(af('/p')).rejects.toThrow('API error (401)')
       expect(tokenRefresher).not.toHaveBeenCalled()
       expect(onUnauthorized).toHaveBeenCalledTimes(1)
     })
 
-    it('refresh 後も 401: onUnauthorized 1回 + Unauthorized throw', async () => {
+    it('refresh 後も 401: onUnauthorized 1回 + errorLabel (401) throw', async () => {
       fetchMock
         .mockResolvedValueOnce(new Response(null, { status: 401 }))
         .mockResolvedValueOnce(new Response(null, { status: 401 }))
@@ -130,7 +130,7 @@ describe('createAuthFetch', () => {
         tokenRefresher,
         onUnauthorized,
       })
-      await expect(af('/p')).rejects.toThrow('Unauthorized')
+      await expect(af('/p')).rejects.toThrow('API error (401)')
       expect(onUnauthorized).toHaveBeenCalledTimes(1)
       expect(fetchMock).toHaveBeenCalledTimes(2)
     })
@@ -147,7 +147,7 @@ describe('createAuthFetch', () => {
         tokenRefresher,
         onUnauthorized,
       })
-      await expect(af('/p')).rejects.toThrow('Unauthorized')
+      await expect(af('/p')).rejects.toThrow('API error (401)')
       expect(onUnauthorized).toHaveBeenCalledTimes(1)
       expect(fetchMock).toHaveBeenCalledTimes(1) // retry なし
     })
