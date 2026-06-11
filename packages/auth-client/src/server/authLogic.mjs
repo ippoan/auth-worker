@@ -7,42 +7,19 @@
  * - WOFF SDK 分岐 (`?woff`) — nuxt-pwa-carins 由来。`?woff` を送らない
  *   アプリでは到達しないため無条件に含める
  * - `checkTenantId` — nuxt-ichibanboshi 由来のテナント制限チェック
+ *
+ * .mjs + JSDoc なのは Nitro (rollup) が node_modules の .ts を transpile
+ * しないため。型は ./index.d.mts。
  */
-import { decodeJwtPayloadFromToken } from '../jwt'
+import { decodeJwtPayloadFromToken } from '../jwt-core.mjs'
 
 /** ホスト名から親ドメインを取得（cross-subdomain cookie 用） */
-export function getParentDomainFromHost(hostname: string): string | undefined {
+export function getParentDomainFromHost(hostname) {
   const parts = hostname.split('.')
   return parts.length > 2 ? '.' + parts.slice(-2).join('.') : undefined
 }
 
-export interface AuthConfig {
-  apiBackend: string
-  authWorkerUrl: string
-}
-
-export interface AuthRequest {
-  pathname: string
-  origin: string
-  hostname: string
-  searchParams: URLSearchParams
-  cookie: string | undefined // logi_auth_token
-  lwDomainCookie: string | undefined // lw_domain
-}
-
-export type AuthAction =
-  | { type: 'pass' }
-  | { type: 'set-cookie-and-pass'; name: string; value: string; domain: string | undefined }
-  | {
-      type: 'set-cookie-and-redirect'
-      name: string
-      value: string
-      domain: string | undefined
-      redirectUrl: string
-    }
-  | { type: 'redirect'; redirectUrl: string }
-
-export function resolveAuthAction(config: AuthConfig, req: AuthRequest): AuthAction {
+export function resolveAuthAction(config, req) {
   if (config.apiBackend !== 'rust-logi' && config.apiBackend !== 'rust-alc-api') {
     return { type: 'pass' }
   }
@@ -94,8 +71,6 @@ export function resolveAuthAction(config: AuthConfig, req: AuthRequest): AuthAct
   }
 }
 
-export type TenantCheckResult = { type: 'pass' } | { type: 'forbidden'; reason: string }
-
 /**
  * JWT cookie の tenant_id チェック。
  *
@@ -106,10 +81,7 @@ export type TenantCheckResult = { type: 'pass' } | { type: 'forbidden'; reason: 
  * - JWT.tenant_id が `allowedTenantId` と一致: pass
  * - それ以外: forbidden
  */
-export function checkTenantId(
-  cookie: string | undefined,
-  allowedTenantId: string,
-): TenantCheckResult {
+export function checkTenantId(cookie, allowedTenantId) {
   if (!allowedTenantId) return { type: 'pass' }
   if (!cookie) return { type: 'pass' }
   const payload = decodeJwtPayloadFromToken(cookie)

@@ -15,6 +15,7 @@
  * ```
  *
  * `useRuntimeConfig` は消費側で解決して渡す (本 lib は `#imports` 非依存)。
+ * .mjs なのは Nitro (rollup) が node_modules の .ts を transpile しないため。
  */
 import {
   defineEventHandler,
@@ -24,26 +25,18 @@ import {
   readBody,
   setHeader,
   setResponseStatus,
-  type H3Event,
 } from 'h3'
 import {
   buildProxyHeaders,
   buildTargetUrl,
   classifyProxyResponse,
   parseJsonBody,
-} from './proxyCore'
+} from './proxyCore.mjs'
 
-export interface ApiProxyOptions {
-  /** backend の origin。文字列 or event から解決する関数 (runtimeConfig 参照用) */
-  backendUrl: string | ((event: H3Event) => string)
-  /** 転送先 path prefix (default: '/api/') */
-  pathPrefix?: string
-}
-
-export function createApiProxyHandler(options: ApiProxyOptions) {
+export function createApiProxyHandler(options) {
   const pathPrefix = options.pathPrefix ?? '/api/'
 
-  return defineEventHandler(async (event: H3Event) => {
+  return defineEventHandler(async (event) => {
     const path = getRouterParam(event, 'path') || ''
     const backendUrl =
       typeof options.backendUrl === 'function' ? options.backendUrl(event) : options.backendUrl
@@ -58,12 +51,12 @@ export function createApiProxyHandler(options: ApiProxyOptions) {
     const method = event.method
     const url = buildTargetUrl(backendUrl, pathPrefix, path, getQuery(event))
 
-    const fetchOptions: RequestInit = { method, headers }
+    const fetchOptions = { method, headers }
 
     // POST/PUT/PATCH の場合は body を転送
     if (['POST', 'PUT', 'PATCH'].includes(method)) {
       try {
-        const body: unknown = await readBody(event)
+        const body = await readBody(event)
         if (body) {
           fetchOptions.body = JSON.stringify(body)
           headers['Content-Type'] = 'application/json'

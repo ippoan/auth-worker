@@ -4,31 +4,21 @@
  * nuxt-pwa-carins ↔ nuxt_dtako_logs が `server/api/proxy/[...path].ts` に
  * 相互コピーしていた転送ロジックのうち、ヘッダー構築とレスポンス分類を
  * 切り出したもの (Refs ippoan/auth-worker#257)。h3 handler 側は
- * `./proxy` の `createApiProxyHandler` を参照。
+ * ./proxy.mjs の `createApiProxyHandler` を参照。型は ./index.d.mts。
  */
-import { decodeJwtPayloadFromToken } from '../jwt'
+import { decodeJwtPayloadFromToken } from '../jwt-core.mjs'
 
-export interface ProxyHeaderInput {
-  contentType?: string
-  /** `Authorization: Bearer <jwt>` */
-  authorization?: string
-  /** `x-auth-token` ヘッダー (gRPC 時代の互換、nuxt_dtako_logs) */
-  xAuthToken?: string
-  /** 明示的な `X-Tenant-ID` ヘッダー (JWT 抽出より優先) */
-  xTenantId?: string
-}
-
-function tenantIdFromToken(token: string): string | undefined {
+function tenantIdFromToken(token) {
   const payload = decodeJwtPayloadFromToken(token)
-  return (payload.tenant_id as string) || (payload.org as string) || undefined
+  return payload.tenant_id || payload.org || undefined
 }
 
 /**
  * backend へ転送するヘッダーを構築する。
  * JWT から tenant_id を抽出し、フォールバック用に `X-Tenant-ID` にも載せる。
  */
-export function buildProxyHeaders(input: ProxyHeaderInput): Record<string, string> {
-  const headers: Record<string, string> = {}
+export function buildProxyHeaders(input) {
+  const headers = {}
   if (input.contentType) headers['Content-Type'] = input.contentType
 
   if (input.authorization) {
@@ -48,19 +38,13 @@ export function buildProxyHeaders(input: ProxyHeaderInput): Record<string, strin
   return headers
 }
 
-export type ProxyResponseKind = 'binary' | 'empty' | 'json'
-
 /**
  * backend レスポンスの転送方法を分類する。
  * - `/download` を含む path / 非 JSON content-type → binary パススルー
  * - 204 → empty
  * - それ以外 → JSON (parse 失敗時は `{ error: <text> }` に包む)
  */
-export function classifyProxyResponse(
-  status: number,
-  contentType: string | null,
-  path: string,
-): ProxyResponseKind {
+export function classifyProxyResponse(status, contentType, path) {
   if (path.includes('/download')) return 'binary'
   if (contentType && !contentType.includes('application/json')) return 'binary'
   if (status === 204) return 'empty'
@@ -68,7 +52,7 @@ export function classifyProxyResponse(
 }
 
 /** JSON レスポンス本文を parse する。空なら null、parse 失敗は `{ error }` に包む。 */
-export function parseJsonBody(text: string): unknown {
+export function parseJsonBody(text) {
   if (!text) return null
   try {
     return JSON.parse(text)
@@ -78,12 +62,7 @@ export function parseJsonBody(text: string): unknown {
 }
 
 /** クエリパラメータを転送先 URL に付与する。 */
-export function buildTargetUrl(
-  backendUrl: string,
-  pathPrefix: string,
-  path: string,
-  query: Record<string, unknown>,
-): string {
+export function buildTargetUrl(backendUrl, pathPrefix, path, query) {
   const url = new URL(`${backendUrl.replace(/\/$/, '')}${pathPrefix}${path}`)
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== null) {

@@ -5,7 +5,7 @@ import {
   checkTenantId,
   type AuthConfig,
   type AuthRequest,
-} from '../src/server/authLogic'
+} from '../src/server/authLogic.mjs'
 
 /** base64url エンコード（UTF-8 safe）でテスト用 JWT payload を作る */
 function b64url(obj: Record<string, unknown>): string {

@@ -4,7 +4,7 @@ import {
   buildTargetUrl,
   classifyProxyResponse,
   parseJsonBody,
-} from '../src/server/proxyCore'
+} from '../src/server/proxyCore.mjs'
 
 /** base64url エンコード（UTF-8 safe）でテスト用 JWT payload を作る */
 function b64url(obj: Record<string, unknown>): string {
