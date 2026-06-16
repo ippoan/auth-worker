@@ -42,3 +42,22 @@ jobs:
       compat_backend_repo: 'ippoan/rust-alc-api'
       compat_backend_image_env: 'API_IMAGE'
     secrets: inherit
+
+  # PR run: staging deploy 直後に、CF Secrets Store binding 経由で auth-worker が
+  # 実際に解決した INTERNAL_SHARED_SECRET と GCP Secret Manager の値が一致するかを
+  # 突き合わせる (= cross-store drift の自動検出)。詳細は
+  # ippoan/auth-worker#274 / ippoan/email-receiver#1。
+  # PR でしか走らない (= tag push の release deploy は対象外)。
+  drift-check-staging:
+    needs: [ci]
+    if: github.event_name == 'pull_request'
+    uses: ippoan/ci-workflows/.github/workflows/drift-check.yml@main
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      consumer_url: 'https://auth-worker-staging.m-tama-ramu.workers.dev/health/secret-fingerprint'
+      secret_name: 'INTERNAL_SHARED_SECRET'
+      gcp_project: 'cloudsql-sv'
+      gcp_wif_provider: ${{ vars.GCP_WIF_PROVIDER }}
+      gcp_wif_service_account: ${{ vars.GCP_WIF_SERVICE_ACCOUNT_STAGING }}

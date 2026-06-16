@@ -23,7 +23,7 @@ import { handleAdminRichMenuPage, handleAdminRichMenuCallback } from "./handlers
 import { handleTopPage } from "./handlers/top-page";
 import { handleHealthProxy } from "./handlers/health";
 import { handleHealthOAuth } from "./handlers/health-oauth";
-import { handleHealthFingerprints } from "./handlers/health-fingerprints";
+import { handleSecretFingerprint } from "./handlers/health-fingerprints";
 import {
   handleUsersList, handleInvitationsList, handleInviteUser,
   handleDeleteInvitation, handleDeleteUser,
@@ -386,10 +386,12 @@ export default {
           // /api/health (ALC proxy) と分離した独立ハンドラ。
           case "/health/oauth":
             return await handleHealthOAuth(request, env);
-          // Refs ippoan/email-receiver#1: cross-store drift 切り分け用。
-          // 全 INTERNAL_SHARED_SECRET* binding の sha256[0..8] を返す (値は不可逆)。
-          case "/health/internal-secret-fingerprints":
-            return await handleHealthFingerprints(env);
+          // Refs ippoan/auth-worker#274 / ippoan/email-receiver#1: 任意 env /
+          // Secrets Store binding の sha256[0..8] が `expected` と一致するかを
+          // {match: bool} で返す。CI drift-check (ippoan/ci-workflows
+          // drift-check.yml) が GCP SM 値の hash を投げてくる入口。
+          case "/health/secret-fingerprint":
+            return await handleSecretFingerprint(request, env);
           case "/login":
             return await handleLoginPage(request, env);
           case "/top":
