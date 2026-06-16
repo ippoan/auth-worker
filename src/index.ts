@@ -23,6 +23,7 @@ import { handleAdminRichMenuPage, handleAdminRichMenuCallback } from "./handlers
 import { handleTopPage } from "./handlers/top-page";
 import { handleHealthProxy } from "./handlers/health";
 import { handleHealthOAuth } from "./handlers/health-oauth";
+import { handleHealthFingerprints } from "./handlers/health-fingerprints";
 import {
   handleUsersList, handleInvitationsList, handleInviteUser,
   handleDeleteInvitation, handleDeleteUser,
@@ -385,6 +386,10 @@ export default {
           // /api/health (ALC proxy) と分離した独立ハンドラ。
           case "/health/oauth":
             return await handleHealthOAuth(request, env);
+          // Refs ippoan/email-receiver#1: cross-store drift 切り分け用。
+          // 全 INTERNAL_SHARED_SECRET* binding の sha256[0..8] を返す (値は不可逆)。
+          case "/health/internal-secret-fingerprints":
+            return await handleHealthFingerprints(env);
           case "/login":
             return await handleLoginPage(request, env);
           case "/top":
