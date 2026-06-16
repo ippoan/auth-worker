@@ -1,45 +1,57 @@
 import type { Env } from "../index";
 
 /**
- * `GET /health/internal-secret-fingerprints` — auth-worker isolate が runtime に
- * 解決した全 `INTERNAL_SHARED_SECRET*` binding の非可逆 fingerprint を返す。
+ * `GET /health/secret-fingerprint?name=<binding>&expected=<8hex>` —
+ * auth-worker isolate が runtime に解決した任意 env / Secrets Store binding の
+ * 値の sha256 prefix が `expected` と一致するかを `{ "match": bool }` で返す。
  *
- * 用途: cross-store drift (= CF Secrets Store と GCP Secret Manager で同名 secret
- * の値が乖離しているケース) の切り分け。consumer (email-receiver / rust-alc-api
- * 等) が同じ binding の sha256 prefix を log に出せば、auth-worker のこの endpoint
- * の prefix と突き合わせて runtime レベルで一致/不一致を判定できる。
+ * 用途: cross-store drift (= CF Secrets Store と GCP Secret Manager で同名
+ * secret の値が乖離) の CI 自動検出。caller 側 (`ippoan/ci-workflows`
+ * `drift-check.yml`) が GCP SM から値を読んで `sha256[0..8]` を計算し、本
+ * endpoint を叩いて `match: true` を assert する。
  *
- * 値そのものは context にも response にも一切載せない:
- *   - hex 8 文字 = 32 bit、SHA-256 の prefix なので不可逆 (preimage 不可能)
- *   - length / head / tail は出さない (partial leak になるため)
+ * 値の hex を返さない (oracle 防止):
+ *   - env 不在 / 値違い / typo を全て `match: false` に集約 → name 列挙不可
+ *   - timing-safe compare (`crypto.subtle.timingSafeEqual`)
  *
- * 認証なし (公開) で問題ないか:
- *   - prefix 8 文字単独では値復元できない
- *   - binding 名 (`INTERNAL_SHARED_SECRET` etc.) は wrangler.toml に書かれており既に公開
+ * 認証なし (= CCoW / CI runner から curl 一発で叩ける):
+ *   - `expected` は 32 bit の sha256 prefix なので preimage 不可
+ *   - binding 名は `wrangler.toml` で既に公開
  *   - 攻撃者にとっての追加情報は実質ゼロ
  *
- * Refs ippoan/email-receiver#1 (epic の 401 切り分けで drift 検知に使用)。
+ * Refs ippoan/auth-worker#274 / ippoan/email-receiver#1.
  */
-export async function handleHealthFingerprints(env: Env): Promise<Response> {
-  const bindings: Record<string, string> = {};
+export async function handleSecretFingerprint(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const name = url.searchParams.get("name");
+  const expected = url.searchParams.get("expected");
 
-  for (const key of Object.keys(env)) {
-    if (!key.startsWith("INTERNAL_SHARED_SECRET")) continue;
-    const value = await resolveSecretBinding(
-      (env as unknown as Record<string, unknown>)[key],
-    );
-    if (value) {
-      bindings[key] = await sha256Prefix(value);
-    }
+  // input validation。形式違反は 400 で reject (= 200/match:false に丸めない)。
+  // 不正 query は drift とは別の class of bug なので CI に切り分けさせたい。
+  if (!name || !/^[A-Za-z][A-Za-z0-9_]{0,254}$/.test(name)) {
+    return jsonResponse({ error: "invalid name" }, 400);
+  }
+  if (!expected || !/^[0-9a-f]{8}$/.test(expected)) {
+    return jsonResponse({ error: "invalid expected" }, 400);
   }
 
-  const body = {
-    auth_worker_version: env.VERSION || "dev",
-    bindings,
-  };
+  const value = await resolveSecretBinding(
+    (env as unknown as Record<string, unknown>)[name],
+  );
+  const actual = value ? await sha256Prefix(value) : "";
 
+  // env 不在 / 値違い / typo を全て match:false に集約 (= oracle 不可)。
+  // 8 文字 hex の constant-time 比較。
+  const match = actual !== "" && timingSafeEqualHex(actual, expected);
+  return jsonResponse({ match }, 200);
+}
+
+function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
@@ -71,4 +83,18 @@ async function sha256Prefix(input: string): Promise<string> {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
   return hex.slice(0, 8);
+}
+
+/**
+ * Timing-safe equality on two pre-validated 8-char hex strings.
+ * Both args are required to be `/^[0-9a-f]{8}$/` so length is constant by
+ * construction; we only need to defeat short-circuit byte comparison.
+ */
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
