@@ -190,6 +190,41 @@ describe("listOwnedRepos", () => {
     );
     await expect(listOwnedRepos(TOKEN, ["ippoan"])).rejects.toThrow(/502/);
   });
+
+  it("marks repos with size=0 and pushed_at==created_at as is_empty", async () => {
+    mockReposResponse([
+      {
+        owner: { login: "ippoan" },
+        name: "empty",
+        default_branch: "main",
+        size: 0,
+        created_at: "2026-06-16T23:36:24Z",
+        pushed_at: "2026-06-16T23:36:24Z",
+      },
+      {
+        owner: { login: "ippoan" },
+        name: "has-readme",
+        default_branch: "main",
+        size: 1,
+        created_at: "2026-06-16T23:36:24Z",
+        pushed_at: "2026-06-16T23:36:30Z",
+      },
+      {
+        owner: { login: "ippoan" },
+        name: "zero-size-but-pushed",
+        default_branch: "main",
+        size: 0,
+        created_at: "2026-06-16T23:36:24Z",
+        pushed_at: "2026-06-17T00:00:00Z",
+      },
+    ]);
+    const out = await listOwnedRepos(TOKEN, ["ippoan"]);
+    expect(out).toEqual([
+      { owner: "ippoan", name: "empty", default_branch: "main", is_empty: true },
+      { owner: "ippoan", name: "has-readme", default_branch: "main" },
+      { owner: "ippoan", name: "zero-size-but-pushed", default_branch: "main" },
+    ]);
+  });
 });
 
 describe("getRepoSettings", () => {
@@ -811,5 +846,16 @@ describe("fetchProtectionRows", () => {
       { owner: "ippoan", name: "e", default_branch: "main" },
     ]);
     expect(rows[0]?.project_type).toBe("unknown");
+  });
+
+  it("propagates is_empty from RepoSummary into RepoProtectionRow", async () => {
+    stubFetch({ k: {}, m: {} });
+    const rows = await fetchProtectionRows(TOKEN, [
+      { owner: "ippoan", name: "k", default_branch: "main", is_empty: true },
+      { owner: "ippoan", name: "m", default_branch: "main" },
+    ]);
+    const byName = Object.fromEntries(rows.map((r) => [r.name, r]));
+    expect(byName.k?.is_empty).toBe(true);
+    expect(byName.m?.is_empty).toBe(false);
   });
 });

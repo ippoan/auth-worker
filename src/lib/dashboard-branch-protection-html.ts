@@ -217,17 +217,33 @@ export function renderBranchProtectionPage(opts: {
         ? presets
         : presets.filter(function (p) { return p.project_type === rowType || p.project_type === "any"; });
       var presetsToShow = matchedPresets.length > 0 ? matchedPresets : presets;
-      var actions = presetsToShow.map(function (p) {
-        var btnClass = rowType === "unknown" ? "" : "primary";
-        return '<button class="' + btnClass + '" data-action="apply" data-owner="' + escapeHtml(row.owner)
-          + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
-          + '" data-preset="' + escapeHtml(p.id) + '" title="' + escapeHtml(p.description) + '">'
-          + escapeHtml(p.label) + '</button>';
-      }).join("");
-      if (isProtected) {
-        actions += ' <button class="danger" data-action="remove" data-owner="' + escapeHtml(row.owner)
-          + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
-          + '">Remove</button>';
+      // Empty repo (no commits) → the GitHub-declared default branch does
+      // not physically exist, so PUT /branches/:b/protection returns 404
+      // and the worker wraps it as a 502 the user cannot act on. Hide the
+      // Apply buttons and surface a hint linking to the repo so the
+      // operator pushes an initial commit first.
+      var isEmptyRepo = row.is_empty === true;
+      var actions;
+      if (isEmptyRepo) {
+        actions = '<span class="branch-warn"'
+          + ' title="This repo has no commits yet. Push an initial commit to create the default branch, then re-Apply a preset.">'
+          + 'empty repo &mdash; '
+          + '<a href="https://github.com/' + escapeHtml(row.owner) + '/' + escapeHtml(row.name)
+          + '" target="_blank" rel="noopener">push initial commit first</a>'
+          + '</span>';
+      } else {
+        actions = presetsToShow.map(function (p) {
+          var btnClass = rowType === "unknown" ? "" : "primary";
+          return '<button class="' + btnClass + '" data-action="apply" data-owner="' + escapeHtml(row.owner)
+            + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
+            + '" data-preset="' + escapeHtml(p.id) + '" title="' + escapeHtml(p.description) + '">'
+            + escapeHtml(p.label) + '</button>';
+        }).join("");
+        if (isProtected) {
+          actions += ' <button class="danger" data-action="remove" data-owner="' + escapeHtml(row.owner)
+            + '" data-repo="' + escapeHtml(row.name) + '" data-branch="' + escapeHtml(row.default_branch)
+            + '">Remove</button>';
+        }
       }
       // Project-type badge surfaces the auto-detection so the operator can
       // sanity-check why a particular preset is offered. The unknown state
