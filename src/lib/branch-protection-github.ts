@@ -549,6 +549,12 @@ export interface RepoSummary {
   owner: string;
   name: string;
   default_branch: string;
+  /** True when the repo has no commits — `size === 0` and `pushed_at`
+   *  equals `created_at`. GitHub still returns `default_branch: "main"`
+   *  on such repos, but the branch does not physically exist so
+   *  `PUT /branches/:b/protection` returns 404. Surface it in the UI
+   *  instead of letting Apply fail silently with a 502. */
+  is_empty?: boolean;
 }
 
 interface GithubRepoListItem {
@@ -558,6 +564,9 @@ interface GithubRepoListItem {
   owner?: { login?: string };
   archived?: boolean;
   fork?: boolean;
+  size?: number;
+  pushed_at?: string;
+  created_at?: string;
 }
 
 /**
@@ -588,7 +597,16 @@ export async function listOwnedRepos(
     if (!owner || !name || !defaultBranch) continue;
     if (item.archived || item.fork) continue;
     if (!ownerAllowlist.includes(owner)) continue;
-    out.push({ owner, name, default_branch: defaultBranch });
+    const isEmpty =
+      item.size === 0 &&
+      typeof item.pushed_at === "string" &&
+      item.pushed_at === item.created_at;
+    out.push({
+      owner,
+      name,
+      default_branch: defaultBranch,
+      ...(isEmpty ? { is_empty: true } : {}),
+    });
   }
   // Stable sort by owner/name for deterministic UI.
   out.sort((a, b) => {
@@ -634,6 +652,12 @@ export interface RepoProtectionRow {
   /** Detected project type (`worker` / `rust` / `unknown`). The dashboard
    *  uses this to show only the matching preset's Apply button. */
   project_type: ProjectType;
+  /** True when the repo has no commits (= no physical default branch).
+   *  Propagated from `RepoSummary.is_empty`. The dashboard hides Apply
+   *  buttons and shows a "push initial commit first" hint instead, since
+   *  `PUT /branches/:b/protection` on an empty repo returns 404 and the
+   *  worker wraps it as a 502 the user can't act on. */
+  is_empty: boolean;
 }
 
 /**
@@ -721,6 +745,7 @@ export async function fetchProtectionRows(
         protection_status: classicRes.status,
         repo_settings: settings,
         project_type: projectType,
+        is_empty: r.is_empty === true,
       };
   });
 }
