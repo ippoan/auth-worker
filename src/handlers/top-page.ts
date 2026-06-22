@@ -25,6 +25,10 @@ const APP_PATTERNS: Array<{
   { match: (o) => o.includes("dtako-admin") || o.includes("dtako"), name: "DTako 管理", icon: "DVR", description: "ドライブレコーダーログ" },
   { match: (o) => o.includes("nuxt-items") || o.includes("items"), name: "物品管理", icon: "箱", description: "組織・個人の物品管理" },
   { match: (o) => o.includes("alc-app") || (o.includes("alc") && !o.includes("alc-api")), name: "アルコールチェック", icon: "🍺", description: "アルコール検知・管理" },
+  // ichibanboshi-seikyu (燃料サーチャージ請求) は一番星本体 (売上分析) と別アプリ。
+  // 「一番星」より前に置いて先にマッチさせる (= "ichibanboshi" 部分一致で
+  // 「一番星」に吸収され、name dedup で消えるのを防ぐ)。
+  { match: (o) => o.includes("ichibanboshi-seikyu"), name: "一番星 請求", icon: "🧾", description: "燃料サーチャージ請求" },
   { match: (o) => o.includes("nuxt-ichibanboshi") || o.includes("ichibanboshi"), name: "一番星", icon: "⭐", description: "一番星管理" },
   { match: (o) => o.includes("nuxt-notify") || o.includes("notify"), name: "通知管理", icon: "📨", description: "メッセージ配信" },
   { match: (o) => o.includes("nuxt-trouble") || o.includes("trouble"), name: "トラブル管理", icon: "🚨", description: "トラブル・事故管理" },
