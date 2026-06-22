@@ -48,6 +48,8 @@ jobs:
   # 突き合わせる (= cross-store drift の自動検出)。詳細は
   # ippoan/auth-worker#274 / ippoan/email-receiver#1。
   # PR でしか走らない (= tag push の release deploy は対象外)。
+  # NOTE: reusable 側の EXPECTED env-var 配置バグ (KeyError) は
+  # ippoan/ci-workflows#140 で修正済み (それ以前は全 PR で必ず fail していた)。
   drift-check-staging:
     needs: [ci]
     if: github.event_name == 'pull_request'
