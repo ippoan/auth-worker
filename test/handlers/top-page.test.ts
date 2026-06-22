@@ -148,6 +148,27 @@ describe("handleTopPage", () => {
     );
   });
 
+  it("maps ichibanboshi-seikyu to its own tile (not collapsed into 一番星)", async () => {
+    const env = createMockEnv({
+      allowedOrigins:
+        "https://ichibanboshi.ippoan.org,https://ichibanboshi-seikyu.ippoan.org",
+    });
+    const req = new Request("https://auth.test.example/top", {
+      headers: { Cookie: await authedCookie() },
+    });
+
+    await handleTopPage(req, env);
+
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [
+        { name: "一番星", url: "https://ichibanboshi.ippoan.org", icon: "⭐", description: "一番星管理" },
+        { name: "一番星 請求", url: "https://ichibanboshi-seikyu.ippoan.org", icon: "🧾", description: "燃料サーチャージ請求" },
+      ],
+      "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+    );
+  });
+
   it("falls back to generic app entry for unknown origins", async () => {
     const env = createMockEnv({
       allowedOrigins: "https://unknown.example",
