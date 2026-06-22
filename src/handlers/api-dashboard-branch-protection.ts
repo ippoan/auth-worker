@@ -9,8 +9,7 @@
  * (`authenticateDashboard`). API path なので 401/403 を JSON で返す
  * (HTML redirect は frontend 側で `window.location` に飛ばす)。
  *
- * `:owner` は Phase 1 では `ippoan` 固定だが、admin-exec の `ALLOWED_ADMIN_ORGS`
- * を import して同じ allowlist を共有する。
+ * `:owner` は `ALLOWED_DASHBOARD_OWNERS` (`ippoan` / `ohishi-exp`) で絞り込む。
  *
  * GitHub API は `src/lib/branch-protection-github.ts` の helper 経由で叩く。
  * preset 適用は `branch-protection-presets.ts` の payload を `set_branch_protection`
@@ -37,8 +36,8 @@ import {
   setBranchProtection,
 } from "../lib/branch-protection-github";
 
-/** Phase 1: owner allowlist は admin-exec と揃える (hard-code `ippoan` のみ)。 */
-export const ALLOWED_DASHBOARD_OWNERS = ["ippoan"] as const;
+/** owner allowlist。dashboard が branch protection を操作できる org。 */
+export const ALLOWED_DASHBOARD_OWNERS = ["ippoan", "ohishi-exp"] as const;
 
 /**
  * In-process cache for `/api/dashboard/repos` results. Cloudflare Workers
