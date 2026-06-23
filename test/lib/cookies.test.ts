@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { setAuthCookie, clearAuthCookie, getAuthCookie } from "../../src/lib/cookies";
+import {
+  setAuthCookie,
+  clearAuthCookie,
+  getAuthCookie,
+  authCookieReachesHost,
+} from "../../src/lib/cookies";
 
 describe("cookies", () => {
   describe("setAuthCookie", () => {
@@ -57,6 +62,29 @@ describe("cookies", () => {
         headers: { Cookie: "logi_auth_token=abc=def; other=value" },
       });
       expect(getAuthCookie(req)).toBe("abc=def");
+    });
+  });
+
+  describe("authCookieReachesHost", () => {
+    it("同一親ドメイン配下 (.ippoan.org) は true → cookie 配布可", () => {
+      expect(authCookieReachesHost("auth.ippoan.org", "ichibanboshi-seikyu.ippoan.org")).toBe(true);
+      expect(authCookieReachesHost("auth.ippoan.org", "auth.ippoan.org")).toBe(true);
+      expect(authCookieReachesHost("auth.ippoan.org", "ippoan.org")).toBe(true);
+    });
+
+    it("親ドメインが public suffix (.workers.dev) は false → fragment 必須", () => {
+      expect(
+        authCookieReachesHost("auth-staging.m-tama-ramu.workers.dev", "app.m-tama-ramu.workers.dev"),
+      ).toBe(false);
+    });
+
+    it("親ドメインが異なる host は false", () => {
+      expect(authCookieReachesHost("auth.ippoan.org", "app.example.com")).toBe(false);
+      expect(authCookieReachesHost("auth.ippoan.org", "evil-ippoan.org")).toBe(false);
+    });
+
+    it("単一ラベル host (localhost 等) は false", () => {
+      expect(authCookieReachesHost("localhost", "localhost")).toBe(false);
     });
   });
 });
