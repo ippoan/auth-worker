@@ -24,6 +24,9 @@
 /**
  * auth-worker リダイレクト後の callback ページ本体。
  * URL fragment の token を consumeFragment() で保存し、成功なら redirectTo へ遷移する。
+ * fragment が無い場合 (auth-worker が `.ippoan.org` 宛で token を URL に載せず
+ * `logi_auth_token` cookie だけで配布するケース、Refs ippoan/auth-worker#284) は
+ * storage / cookie から復元してから遷移する。
  * nuxt-dtako-admin ↔ nuxt-trouble の `pages/auth/callback.vue` コピーを 1 本化
  * (Refs ippoan/auth-worker#257)。消費側 page:
  *
@@ -54,15 +57,24 @@ const props = withDefaults(
   },
 )
 
-const { consumeFragment } = useAuth()
+const { consumeFragment, loadFromStorage, recoverFromCookie, isAuthenticated } = useAuth()
 const error = ref<string | null>(null)
 
 onMounted(() => {
-  const success = consumeFragment()
-  if (success) {
+  // 1. URL fragment (#token=...) を消費 (従来フロー)
+  if (consumeFragment()) {
     void navigateTo(props.redirectTo)
-  } else {
-    error.value = props.errorMessage
+    return
   }
+  // 2. fragment が無い場合: storage / cookie から復元 (cookie 配布フロー)
+  loadFromStorage()
+  if (!isAuthenticated.value) {
+    recoverFromCookie()
+  }
+  if (isAuthenticated.value) {
+    void navigateTo(props.redirectTo)
+    return
+  }
+  error.value = props.errorMessage
 })
 </script>
