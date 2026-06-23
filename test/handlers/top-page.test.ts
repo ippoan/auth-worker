@@ -131,6 +131,28 @@ describe("handleTopPage", () => {
     );
   });
 
+  it("maps dtako-logs.ippoan.org to 車両位置 and prefers it over old ohishi2 on dedup", async () => {
+    const env = createMockEnv({
+      // 移行期間: 旧 ohishi2 が先、新 dtako-logs.ippoan.org が後。
+      allowedOrigins:
+        "https://ohishi2.mtamaramu.com,https://dtako-logs.ippoan.org",
+    });
+    const req = new Request("https://auth.test.example/top", {
+      headers: { Cookie: await authedCookie() },
+    });
+
+    await handleTopPage(req, env);
+
+    // 同名 (車両位置) は 1 タイルに統合され、リンク先は canonical な ippoan ドメイン。
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [
+        { name: "車両位置", url: "https://dtako-logs.ippoan.org", icon: "🚛", description: "GPS トラック位置" },
+      ],
+      "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+    );
+  });
+
   it("maps nuxt-items origin correctly", async () => {
     const env = createMockEnv({
       allowedOrigins: "https://nuxt-items.example",

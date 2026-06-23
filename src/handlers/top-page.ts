@@ -18,10 +18,11 @@ const APP_PATTERNS: Array<{
   description: string;
 }> = [
   { match: (o) => o.includes("nuxt-pwa-carins") || o.includes("carins"), name: "車検証管理", icon: "車", description: "車検証・ファイル管理" },
-  // ohishi2.mtamaramu.com (nuxt-dtako-logs) は GPS トラック位置を表示する別アプリ。
-  // dtako.ippoan.org (運行管理) と分離して独立タイルにする。
-  // 配列順 = dedup priority なので、ここで定義した「車両位置」は ohishi2 専用 origin 用。
-  { match: (o) => o.includes("ohishi2"), name: "車両位置", icon: "🚛", description: "GPS トラック位置" },
+  // nuxt-dtako-logs (GPS トラック位置) は dtako.ippoan.org (運行管理) と別アプリ。
+  // 旧 ohishi2.mtamaramu.com / 新 dtako-logs.ippoan.org のどちらの origin でも
+  // 「車両位置」に分類する。"dtako-logs" は下の "dtako" パターンより前で
+  // マッチさせる必要がある (= "DTako 管理" に吸われない)。配列順 = dedup priority。
+  { match: (o) => o.includes("ohishi2") || o.includes("dtako-logs"), name: "車両位置", icon: "🚛", description: "GPS トラック位置" },
   { match: (o) => o.includes("dtako-admin") || o.includes("dtako"), name: "DTako 管理", icon: "DVR", description: "ドライブレコーダーログ" },
   { match: (o) => o.includes("nuxt-items") || o.includes("items"), name: "物品管理", icon: "箱", description: "組織・個人の物品管理" },
   { match: (o) => o.includes("alc-app") || (o.includes("alc") && !o.includes("alc-api")), name: "アルコールチェック", icon: "🍺", description: "アルコール検知・管理" },
@@ -104,13 +105,22 @@ export async function handleTopPage(
     )
     .map(originToApp);
 
-  // Deduplicate by app name (ippoan.org URLs come first, so they take priority)
-  const seen = new Set<string>();
-  const uniqueApps = apps.filter((app) => {
-    if (seen.has(app.name)) return false;
-    seen.add(app.name);
-    return true;
-  });
+  // Deduplicate by app name. 同名衝突時は `.ippoan.org` の canonical URL を優先
+  // (例: 車両位置 = 旧 ohishi2.mtamaramu.com と 新 dtako-logs.ippoan.org が両方
+  // allowlist に居る移行期間中、リンク先を ippoan ドメインに寄せる)。
+  // Map は挿入順を保持するので、初出位置 = タイル表示順は変わらない。
+  const byName = new Map<string, AppEntry>();
+  for (const app of apps) {
+    const existing = byName.get(app.name);
+    if (!existing) {
+      byName.set(app.name, app);
+      continue;
+    }
+    if (!existing.url.includes(".ippoan.org") && app.url.includes(".ippoan.org")) {
+      byName.set(app.name, app); // canonical (ippoan) を優先、表示位置は維持
+    }
+  }
+  const uniqueApps = [...byName.values()];
 
   // Drop ohishi-exp tiles unless the cookie JWT's tenant_id is in TENANT_ACL.
   const visibleApps: AppEntry[] = [];
