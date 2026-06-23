@@ -5,7 +5,7 @@ import { createMockEnv } from "../helpers/mock-env";
 describe("handleRedirect", () => {
   const env = createMockEnv();
 
-  it("returns HTML with sessionStorage redirect for valid target", async () => {
+  it("returns HTML that reads the token (sessionStorage / cookie)", async () => {
     const req = new Request("https://auth.test.example/redirect?to=https://app1.test.example");
     const res = await handleRedirect(req, env);
     expect(res.status).toBe(200);
@@ -15,15 +15,34 @@ describe("handleRedirect", () => {
     expect(html).toContain("https://app1.test.example");
   });
 
-  it("redirects to target with token fragment when token exists", async () => {
-    const req = new Request("https://auth.test.example/redirect?to=https://app2.test.example");
+  it("uses cookie handoff (no token fragment) for a same-parent-domain target", async () => {
+    // app1.test.example shares parent .test.example with auth.test.example, so the
+    // shared cookie reaches it → no #token= in the URL, redirect to the bare target.
+    const req = new Request("https://auth.test.example/redirect?to=https://app1.test.example");
     const res = await handleRedirect(req, env);
     const html = await res.text();
+    // 両ブランチが静的 HTML に含まれるため、実行時にどちらを走らせるかは
+    // cookieHandoff フラグで決まる。フラグ値と cookie 配布コードを検査する。
+    expect(html).toContain("var cookieHandoff = true");
+    expect(html).toContain("document.cookie =");
+    expect(html).toContain("window.location.replace(target)");
+  });
+
+  it("falls back to token fragment for a target the shared cookie cannot reach", async () => {
+    // *.workers.dev is a public suffix → Domain cookie cannot be set → fragment handoff.
+    const wdEnv = createMockEnv({
+      allowedOrigins:
+        "https://app1.test.example,https://app2.test.example,https://auth.test.example,https://my-app.workers.dev",
+    });
+    const req = new Request("https://auth.test.example/redirect?to=https://my-app.workers.dev");
+    const res = await handleRedirect(req, wdEnv);
+    const html = await res.text();
+    expect(html).toContain("var cookieHandoff = false");
     expect(html).toContain("#token=");
     expect(html).toContain("window.location.replace");
   });
 
-  it("falls back to /login when no token in sessionStorage", async () => {
+  it("falls back to /login when no token is available", async () => {
     const req = new Request("https://auth.test.example/redirect?to=https://app1.test.example");
     const res = await handleRedirect(req, env);
     const html = await res.text();
