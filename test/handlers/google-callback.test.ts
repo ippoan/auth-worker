@@ -121,7 +121,9 @@ describe("handleGoogleCallback", () => {
     expect(location).toContain("User+not+found");
   });
 
-  it("302 redirects with #token=xxx on success (normal flow)", async () => {
+  it("302 redirects with cookie only (no token in URL) when target shares the auth cookie domain", async () => {
+    // redirect 先 (app1.test.example) は auth host (auth.test.example) と同じ親ドメイン
+    // (.test.example) 配下 → 共有 cookie が届くので token を URL に載せず cookie だけで渡す。
     mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
     mockIsAllowed.mockReturnValue(true);
     // JWT: {"alg":"HS256"}.{"tenant_id":"test-org"}.sig
@@ -143,6 +145,40 @@ describe("handleGoogleCallback", () => {
         ),
     );
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
+    const res = await handleGoogleCallback(req, env);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("Location")!;
+    expect(location).toBe("https://app1.test.example/page"); // クリーン (fragment/lw_callback なし)
+    expect(location).not.toContain("#token=");
+    expect(location).not.toContain("lw_callback");
+    expect(res.headers.get("Set-Cookie")).toContain(`logi_auth_token=${jwt}`);
+  });
+
+  it("302 redirects with #token= fragment when cookie domain is a public suffix (workers.dev)", async () => {
+    // auth host が *.workers.dev (public suffix → Domain cookie 不可) の場合は従来どおり
+    // fragment で配布する。
+    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
+    mockIsAllowed.mockReturnValue(true);
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJ0ZXN0LW9yZyJ9.sig";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+    );
+    const req = new Request(
+      "https://auth-staging.m-tama-ramu.workers.dev/oauth/google/callback?code=abc&state=valid",
+    );
     const res = await handleGoogleCallback(req, env);
     expect(res.status).toBe(302);
     const location = res.headers.get("Location")!;
