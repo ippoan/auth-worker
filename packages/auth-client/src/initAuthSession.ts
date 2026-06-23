@@ -78,13 +78,14 @@ export function initAuthSession(options: InitAuthSessionOptions = {}): void {
       const domain = decodeURIComponent(lwCookie.split('=')[1] || '')
       if (domain) saveLwDomain(domain)
     }
-    // ?lw_callback パラメータを URL からクリーンアップ
+    // token を消費したら URL を必ずクリーンアップする（ログイン情報をアドレスバー/履歴に残さない）。
+    // auth-worker は `#token=...&expires_at=...&org_id=...`（+ 場合により `?lw_callback=1`）で
+    // 返すため、fragment と lw_callback を除去する。cleanPath に hash を含めない＝ fragment 除去。
+    // `?lw_callback` の有無に関わらず常に実行する（lw_callback を付けないアプリでも token を消す）。
     const currentUrl = new URL(window.location.href)
-    if (currentUrl.searchParams.has('lw_callback')) {
-      currentUrl.searchParams.delete('lw_callback')
-      const cleanPath = currentUrl.pathname + (currentUrl.search || '')
-      history.replaceState(null, '', cleanPath)
-    }
+    currentUrl.searchParams.delete('lw_callback')
+    const cleanPath = currentUrl.pathname + (currentUrl.search || '')
+    history.replaceState(null, '', cleanPath)
   } else {
     // 2. localStorage から復元
     loadFromStorage()
