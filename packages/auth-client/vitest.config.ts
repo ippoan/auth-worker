@@ -17,6 +17,7 @@ export default defineConfig({
         "src/jwt-core.mjs",
         "src/server/authLogic.mjs",
         "src/server/proxyCore.mjs",
+        "src/server/introspectCore.mjs",
       ],
     },
   },

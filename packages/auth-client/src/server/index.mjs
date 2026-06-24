@@ -14,6 +14,20 @@ export { getParentDomainFromHost, resolveAuthAction, checkTenantId } from './aut
 
 export { createApiProxyHandler } from './proxy.mjs'
 
+// issue #290 Phase 2: introspect ベースの認証 (署名検証 + APP_TENANT_ACL 判定を
+// auth-worker に集約)。`requireAuth` は h3 ガード、core は h3 非依存で再利用可。
+export { requireAuth } from './auth.mjs'
+
+export {
+  introspectToken,
+  buildIntrospectRequest,
+  normalizeIntrospectResult,
+  cacheKey,
+  computeCacheExpiryMs,
+  DEFAULT_TTL_MS,
+  _clearIntrospectCache,
+} from './introspectCore.mjs'
+
 export {
   buildProxyHeaders,
   buildTargetUrl,
