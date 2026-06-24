@@ -45,6 +45,76 @@ export declare function checkTenantId(
   allowedTenantId: string,
 ): TenantCheckResult
 
+// ----- introspect (issue #290 Phase 2) -----
+
+/** auth-worker `/auth/introspect` の正規化済み結果。 */
+export type IntrospectResult =
+  | { active: false }
+  | { active: true; tenant_id: string; role: string; email: string; exp?: number }
+
+export interface IntrospectTokenOptions {
+  /** auth-worker origin (例: https://auth.ippoan.org) */
+  authWorkerUrl: string
+  /** INTERNAL_SHARED_SECRET (raw) */
+  sharedSecret: string
+  /** 検証対象の browser JWT */
+  token: string
+  /** 呼び出しアプリの origin (APP_TENANT_ACL 分割用) */
+  origin: string
+  /** fetch 実装 (test 用に注入可) */
+  fetchImpl?: typeof fetch
+  /** cache 実装 (test 用に注入可) */
+  cache?: Map<string, { result: IntrospectResult; expiresAtMs: number }>
+  /** cache TTL cap (ms, default 30000) */
+  ttlMs?: number
+  /** 現在時刻 (ms epoch, test 用に注入可) */
+  nowMs?: number
+}
+
+export interface RequireAuthOptions {
+  authWorkerUrl: string
+  sharedSecret: string
+  /** 明示 origin (proxy 環境で getRequestURL が内部 origin になる時) */
+  origin?: string
+  /** cookie 名 (default 'logi_auth_token') */
+  cookieName?: string
+  /** introspect cache TTL cap (ms) */
+  ttlMs?: number
+}
+
+export declare const DEFAULT_TTL_MS: number
+
+export declare function introspectToken(opts: IntrospectTokenOptions): Promise<IntrospectResult>
+
+export declare function buildIntrospectRequest(opts: {
+  authWorkerUrl: string
+  sharedSecret: string
+  token: string
+  origin: string
+}): { url: string; init: RequestInit }
+
+export declare function normalizeIntrospectResult(data: unknown): IntrospectResult
+
+export declare function cacheKey(token: string, origin: string): string
+
+export declare function computeCacheExpiryMs(
+  result: IntrospectResult,
+  nowMs: number,
+  ttlMs: number,
+): number
+
+export declare function _clearIntrospectCache(): void
+
+/**
+ * introspect ベースの h3 認証ガード。token を auth-worker `/auth/introspect`
+ * で検証し、active なら結果を `event.context.auth` に載せて返す。inactive は
+ * 401 (createError) を throw する。
+ */
+export declare function requireAuth(
+  event: H3Event,
+  options: RequireAuthOptions,
+): Promise<{ active: true; tenant_id: string; role: string; email: string; exp?: number }>
+
 // ----- proxy -----
 
 export interface ApiProxyOptions {
