@@ -507,6 +507,8 @@ export function renderTopPage(
               orgId: payload.tenant_id || payload.org || '',
               expiresAt: payload.exp
             }));
+            // Write the shared parent-domain cookie so sibling subdomains can SSO.
+            setCookie(AUTH_COOKIE, fragmentToken, 86400);
           } catch (e) {}
           // Clean fragment from URL
           history.replaceState(null, '', window.location.pathname + window.location.search);
@@ -544,6 +546,12 @@ export function renderTopPage(
       // 1. Already authenticated? Show menu immediately
       var existing = getValidToken();
       if (existing) {
+        // Ensure the shared parent-domain cookie (Domain=.ippoan.org) is (re)written
+        // on every load when a valid token exists. Without this, a token recovered
+        // only from sessionStorage / a host-only cookie never propagates to sibling
+        // subdomains (notify/trouble/dtako-logs), so their recoverFromCookie finds
+        // nothing and bounces to /login (cross-app re-login bug).
+        setCookie(AUTH_COOKIE, existing.token, 86400);
         // Also save to localStorage for consistency
         localStorage.setItem(AUTH_STORAGE, JSON.stringify(existing));
         // Clean URL
