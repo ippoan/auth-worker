@@ -49,6 +49,7 @@ import { handleMcpDeviceProceed } from "./handlers/mcp-device-proceed";
 import { handleMcpDeviceCallback } from "./handlers/mcp-device-callback";
 import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
+import { handleAuthIntrospect } from "./handlers/auth-introspect";
 import { handleMcpJwtPickup } from "./handlers/mcp-jwt-pickup";
 import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
@@ -552,6 +553,10 @@ export default {
           // Password login
           case "/auth/login":
             return await handleAuthLogin(request, env);
+          // Browser JWT introspection (issue #290) — server-proxy consumer 用に
+          // 署名検証 + APP_TENANT_ACL 判定を auth-worker に集約する。
+          case "/auth/introspect":
+            return await handleAuthIntrospect(request, env);
           // Rich Menu API
           case "/api/richmenu/list":
             return await handleRichMenuList(request, env);
