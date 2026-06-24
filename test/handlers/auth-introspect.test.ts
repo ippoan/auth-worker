@@ -95,17 +95,18 @@ describe("POST /auth/introspect — authentication", () => {
 
 describe("POST /auth/introspect — token validation", () => {
   it("active:true for a valid JWT on an unrestricted origin", async () => {
-    const token = await jwt({ tenant_id: PROD_TENANT, email: "a@b.com", role: "viewer", exp: Math.floor(Date.now() / 1000) + 3600 });
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "a@b.com", role: "viewer", sub: "github:alice", exp: Math.floor(Date.now() / 1000) + 3600 });
     const res = await handleAuthIntrospect(
       req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token, origin: APP_ORIGIN }) }),
       makeEnv(),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { active: boolean; tenant_id: string; role: string; email: string };
+    const body = (await res.json()) as { active: boolean; tenant_id: string; role: string; email: string; sub: string };
     expect(body.active).toBe(true);
     expect(body.tenant_id).toBe(PROD_TENANT);
     expect(body.role).toBe("viewer");
     expect(body.email).toBe("a@b.com");
+    expect(body.sub).toBe("github:alice");
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 

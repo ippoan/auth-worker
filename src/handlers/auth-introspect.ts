@@ -35,7 +35,7 @@
  *      で origin × tenant_id を判定 (OAuth callback と同じ gate)。
  *
  * Response (RFC 7662 風):
- *   - 有効          : 200 `{ active: true, tenant_id, role, email, exp }`
+ *   - 有効          : 200 `{ active: true, tenant_id, role, email, sub, exp }`
  *   - 署名不正 / exp 切れ / env 不一致 / アプリ不許可テナント / origin 欠落:
  *                     200 `{ active: false }` (情報リーク回避)
  *   - 認証失敗      : 401 `{ error: "unauthorized" }`
@@ -122,6 +122,7 @@ export async function handleAuthIntrospect(
     "";
   const email = (payload.email as string | undefined) || "";
   const role = (payload.role as string | undefined) || "";
+  const sub = (payload.sub as string | undefined) || "";
 
   // ② origin × tenant_id の ACL 判定 (OAuth callback と同じ二段 gate)。
   //    org-level が primary defense、app-level が同 org 内のテナント分割。
@@ -137,6 +138,10 @@ export async function handleAuthIntrospect(
     tenant_id: tenantId,
     role,
     email,
+    // sub (user_id) — WebSocket consumer 等が verified な per-user 識別子で
+    // intra-org の per-user 絞り込み (例 items-sync の personal broadcast) を
+    // server 側で安全に行うために返す (Refs #290)。
+    sub,
     exp: payload.exp,
   });
 }
