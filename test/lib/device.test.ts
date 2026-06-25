@@ -5,8 +5,10 @@ import {
   revokeDeviceCredential,
   verifyDeviceCredential,
   mintDeviceJwt,
+  normalizeDeviceRole,
   sha256Hex,
   DEVICE_ROLE,
+  DEVICE_ROLE_KIOSK,
   DEVICE_JWT_TTL_SECONDS,
   type DeviceRecord,
 } from "../../src/lib/device";
@@ -30,6 +32,23 @@ describe("sha256Hex", () => {
   });
 });
 
+describe("normalizeDeviceRole", () => {
+  it("passes allowlisted roles through", () => {
+    expect(normalizeDeviceRole(DEVICE_ROLE)).toBe(DEVICE_ROLE);
+    expect(normalizeDeviceRole(DEVICE_ROLE_KIOSK)).toBe(DEVICE_ROLE_KIOSK);
+  });
+
+  it("falls back to the default role for unknown strings", () => {
+    expect(normalizeDeviceRole("admin")).toBe(DEVICE_ROLE);
+    expect(normalizeDeviceRole("")).toBe(DEVICE_ROLE);
+  });
+
+  it("falls back to the default role for non-string input", () => {
+    expect(normalizeDeviceRole(undefined)).toBe(DEVICE_ROLE);
+    expect(normalizeDeviceRole(123)).toBe(DEVICE_ROLE);
+  });
+});
+
 describe("createDeviceCredential", () => {
   it("issues id+secret, stores hash-only record (no plaintext secret)", async () => {
     const kv = createMockKV();
@@ -42,6 +61,7 @@ describe("createDeviceCredential", () => {
     expect(cred.record.label).toBe("ohishi-data");
     expect(cred.record.created_at).toBe(NOW);
     expect(cred.record.revoked).toBe(false);
+    expect(cred.record.role).toBe(DEVICE_ROLE); // role 省略 → 既定
     expect(cred.record.secret_hash).toBe(await sha256Hex(cred.device_secret));
 
     // KV stored value never contains the plaintext secret.
@@ -57,6 +77,14 @@ describe("createDeviceCredential", () => {
     const b = await createDeviceCredential(env, "t", "l", NOW);
     expect(a.device_id).not.toBe(b.device_id);
     expect(a.device_secret).not.toBe(b.device_secret);
+  });
+
+  it("stores an allowlisted role and normalizes unknown ones", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const kiosk = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_KIOSK);
+    expect(kiosk.record.role).toBe(DEVICE_ROLE_KIOSK);
+    const bad = await createDeviceCredential(env, "t", "l", NOW, "admin");
+    expect(bad.record.role).toBe(DEVICE_ROLE); // 未知 role は既定に倒す
   });
 });
 
@@ -154,6 +182,13 @@ describe("mintDeviceJwt", () => {
     expect(payload!.env).toBe("staging");
     expect(payload!.iat).toBe(NOW);
     expect(payload!.exp).toBe(NOW + DEVICE_JWT_TTL_SECONDS);
+  });
+
+  it("carries the record's role when set (kiosk)", async () => {
+    const kioskRecord: DeviceRecord = { ...record, role: DEVICE_ROLE_KIOSK };
+    const token = await mintDeviceJwt({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, kioskRecord, NOW);
+    const payload = await verifyJwt(token, SECRET, "staging");
+    expect(payload!.role).toBe(DEVICE_ROLE_KIOSK);
   });
 
   it("honors a custom ttl", async () => {

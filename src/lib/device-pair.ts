@@ -16,6 +16,7 @@
 import { base64Encode } from "./lineworks-crypto";
 import {
   createDeviceCredential,
+  normalizeDeviceRole,
   type DeviceKvEnv,
   type NewDeviceCredential,
 } from "./device";
@@ -41,6 +42,8 @@ export interface PairState {
   tenant_id: string;
   /** box が運用識別用に渡すラベル (例: hostname)。 */
   label: string;
+  /** 発行する device JWT の role (allowlist 済み)。`createDeviceCredential` に渡す。 */
+  role: string;
   status: PairingStatus;
   created_at: number;
   /** unix 秒。これを過ぎたら expired 扱い (KV TTL でも消える)。 */
@@ -81,6 +84,7 @@ export async function startPairing(
   env: DeviceKvEnv,
   label: string,
   now: number,
+  role: string = "",
   ttlSeconds: number = PAIRING_TTL_SECONDS,
 ): Promise<NewPairing> {
   const device_code = randomDeviceCode();
@@ -90,6 +94,7 @@ export async function startPairing(
     user_code,
     tenant_id: "",
     label: label || "headless device",
+    role: normalizeDeviceRole(role),
     status: "pending",
     created_at: now,
     expires_at: now + ttlSeconds,
@@ -177,7 +182,14 @@ export async function redeemPairing(
   if (state.status === "consumed") return { status: "consumed" };
 
   // status === "approved": credential を発行して consumed に倒す。
-  const credential = await createDeviceCredential(env, state.tenant_id, state.label, now);
+  // role は startPairing 時に allowlist 済み。旧 state (role 無し) は normalize で既定に倒れる。
+  const credential = await createDeviceCredential(
+    env,
+    state.tenant_id,
+    state.label,
+    now,
+    normalizeDeviceRole(state.role),
+  );
   state.status = "consumed";
   const remaining = Math.max(1, state.expires_at - now);
   await env.AUTH_CONFIG.put(DC_PREFIX + deviceCode, JSON.stringify(state), {

@@ -25,6 +25,7 @@ import {
   approvePairing,
   redeemPairing,
 } from "../lib/device-pair";
+import { normalizeDeviceRole } from "../lib/device";
 
 function jsonNoStore(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -86,9 +87,10 @@ function normalizeUserCode(raw: string): string {
 export async function handleDevicePairStart(request: Request, env: Env): Promise<Response> {
   const body = await readJsonBody(request);
   const label = typeof body.label === "string" ? body.label : "";
+  const role = typeof body.role === "string" ? body.role : "";
 
   const now = Math.floor(Date.now() / 1000);
-  const p = await startPairing(env, label, now);
+  const p = await startPairing(env, label, now, role);
 
   const issuer = issuerOf(env);
   const verificationUri = `${issuer}/device/pair/approve`;
@@ -115,7 +117,13 @@ h1{font-size:1.3rem}.muted{color:#666;font-size:.9rem}</style></head>
 <p class="muted">${escapeHtml(issuer)}</p></body></html>`;
 }
 
-function approveForm(issuer: string, userCode: string, label: string, email: string): string {
+function approveForm(
+  issuer: string,
+  userCode: string,
+  label: string,
+  email: string,
+  role: string,
+): string {
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>デバイスを承認</title>
@@ -128,6 +136,7 @@ button{font-size:1rem;padding:.6rem 1.2rem;border-radius:.4rem;border:0;cursor:p
 <dl>
 <dt class="muted">確認コード</dt><dd><code>${escapeHtml(userCode)}</code></dd>
 <dt class="muted">デバイス名</dt><dd>${escapeHtml(label)}</dd>
+<dt class="muted">権限</dt><dd><code>${escapeHtml(role)}</code></dd>
 <dt class="muted">承認者</dt><dd>${escapeHtml(email || "(unknown)")}</dd>
 </dl>
 <p class="muted">承認すると、このデバイスはあなたのテナントにアップロードできるようになります。
@@ -174,7 +183,9 @@ export async function handleDevicePairApprovePage(request: Request, env: Env): P
     );
   }
 
-  return htmlNoStore(approveForm(issuer, userCode, state.label, session.email));
+  return htmlNoStore(
+    approveForm(issuer, userCode, state.label, session.email, normalizeDeviceRole(state.role)),
+  );
 }
 
 /** POST /device/pair/approve — 承認フォーム送信を処理する。 */
