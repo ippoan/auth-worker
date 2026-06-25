@@ -26,6 +26,10 @@ path = "src/handlers/device.ts"
 branches = true
 
 [[files]]
+path = "src/handlers/device-pair.ts"
+branches = true
+
+[[files]]
 path = "src/handlers/health.ts"
 branches = true
 
