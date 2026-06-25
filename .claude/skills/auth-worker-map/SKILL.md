@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:977c813e1342e795d86e7dc51af5cb2578b462ac
+generated-from: auth-worker:d4f712e5f0a86a27bb21790ac91cae1f22f23d53
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」等。
 ---
@@ -24,6 +24,7 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
 | **組織管理 (admin)** | `admin-*` | config / users / requests / rich-menu / sso / notify (管理者向け) |
 | **API (dashboard)** | `api-*` | my-orgs / switch-org / users / sso / rich-menu / access-requests / bot-config / branch-protection |
 | **login / join / 雑** | `login-page` `login-api` `join-*` `logout` `top-page` `redirect` | ブラウザ login フロー |
+| **device token** (無人 box / キオスク) | `device` `device-pair` + `src/lib/device{,-pair}.ts` | smb-watch 等の無人 box / alc-app キオスク向け。pairing (`/device/pair`・headless `/device/pair/start·approve·token`) で `device_id`+`device_secret` 発行 → `/device/token` で短命 device JWT (HS256・`JWT_SECRET` 共有・`/auth/introspect` 検証可) を mint。role は allowlist (`device-uploader` = carins upload / `device-kiosk` = alc-app、Refs rust-alc-api#434)。`/device/revoke` で失効 |
 | **health** | `health` `health-oauth` | ヘルスチェック (health-oauth は Bearer JWT 要、Refs auth-worker#209) |
 | **Durable Objects** | `src/durable_objects/{mcp-session-do,lineworks-webhook-do}.ts` | MCP session 状態 / LINE WORKS webhook |
 
