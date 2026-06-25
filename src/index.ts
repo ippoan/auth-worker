@@ -55,6 +55,7 @@ import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
 import { handleMcpRegister } from "./handlers/mcp-register";
 import { handleMcpAuthorize } from "./handlers/mcp-authorize";
+import { handleDevicePair, handleDeviceToken, handleDeviceRevoke } from "./handlers/device";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
@@ -557,6 +558,14 @@ export default {
           // 署名検証 + APP_TENANT_ACL 判定を auth-worker に集約する。
           case "/auth/introspect":
             return await handleAuthIntrospect(request, env);
+          // Phase 2 (ohishi-exp/smb-watch#1): 無人デバイス向け device-token。
+          // pair/revoke は operator の Bearer session、token は box の device credential。
+          case "/device/pair":
+            return await handleDevicePair(request, env);
+          case "/device/token":
+            return await handleDeviceToken(request, env);
+          case "/device/revoke":
+            return await handleDeviceRevoke(request, env);
           // Rich Menu API
           case "/api/richmenu/list":
             return await handleRichMenuList(request, env);
