@@ -204,6 +204,18 @@ vi.mock("../../src/handlers/device", () => ({
   handleDeviceToken: vi.fn(() => new Response("device-token")),
   handleDeviceRevoke: vi.fn(() => new Response("device-revoke")),
 }));
+vi.mock("../../src/handlers/device-pair", () => ({
+  handleDevicePairStart: vi.fn(() => new Response("device-pair-start")),
+  handleDevicePairApprovePage: vi.fn(() => new Response("device-pair-approve-page")),
+  handleDevicePairApprove: vi.fn(() => new Response("device-pair-approve")),
+  handleDevicePairToken: vi.fn(() => new Response("device-pair-token")),
+}));
+vi.mock("../../src/handlers/auth-introspect", () => ({
+  handleAuthIntrospect: vi.fn(() => new Response("auth-introspect")),
+}));
+vi.mock("../../src/handlers/health-fingerprints", () => ({
+  handleSecretFingerprint: vi.fn(() => new Response("secret-fingerprint")),
+}));
 vi.mock("../../src/handlers/mcp-pair-claim", () => ({
   handleMcpPairClaim: vi.fn((_req, _env, code: string) =>
     new Response(`mcp-pair-claim:${code}`),
@@ -553,6 +565,17 @@ describe("Router (index.ts)", () => {
     expect(await res.text()).toBe("mcp-pair-new");
   });
 
+  it("GET /health/secret-fingerprint → secret-fingerprint", async () => {
+    const req = new Request("https://auth.ippoan.org/health/secret-fingerprint", { method: "GET" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("secret-fingerprint");
+  });
+  it("POST /auth/introspect → auth-introspect", async () => {
+    const req = new Request("https://auth.ippoan.org/auth/introspect", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("auth-introspect");
+  });
+
   // --- Phase 2 (ohishi-exp/smb-watch#1): device-token endpoints ---
   it("POST /device/pair → device-pair", async () => {
     const req = new Request("https://auth.ippoan.org/device/pair", { method: "POST" });
@@ -568,6 +591,28 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://auth.ippoan.org/device/revoke", { method: "POST" });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("device-revoke");
+  });
+
+  // --- Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing endpoints ---
+  it("POST /device/pair/start → device-pair-start", async () => {
+    const req = new Request("https://auth.ippoan.org/device/pair/start", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-pair-start");
+  });
+  it("GET /device/pair/approve → device-pair-approve-page", async () => {
+    const req = new Request("https://auth.ippoan.org/device/pair/approve", { method: "GET" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-pair-approve-page");
+  });
+  it("POST /device/pair/approve → device-pair-approve", async () => {
+    const req = new Request("https://auth.ippoan.org/device/pair/approve", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-pair-approve");
+  });
+  it("POST /device/pair/token → device-pair-token", async () => {
+    const req = new Request("https://auth.ippoan.org/device/pair/token", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-pair-token");
   });
 
   // --- issue #157 Phase B: 30-day refresh_token grant ---

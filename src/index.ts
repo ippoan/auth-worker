@@ -56,6 +56,12 @@ import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-br
 import { handleMcpRegister } from "./handlers/mcp-register";
 import { handleMcpAuthorize } from "./handlers/mcp-authorize";
 import { handleDevicePair, handleDeviceToken, handleDeviceRevoke } from "./handlers/device";
+import {
+  handleDevicePairStart,
+  handleDevicePairApprovePage,
+  handleDevicePairApprove,
+  handleDevicePairToken,
+} from "./handlers/device-pair";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
@@ -455,6 +461,9 @@ export default {
           // MCP OAuth Provider — Device authorization page (RFC 8628 §3.3)
           case "/device":
             return handleMcpDevicePage(request, env);
+          // Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing 承認ページ。
+          case "/device/pair/approve":
+            return await handleDevicePairApprovePage(request, env);
           // MCP OAuth Provider — GitHub OAuth callback (Phase 3, RFC 8628 §3.4)
           case "/mcp/device_callback":
             return await handleMcpDeviceCallback(request, env);
@@ -566,6 +575,13 @@ export default {
             return await handleDeviceToken(request, env);
           case "/device/revoke":
             return await handleDeviceRevoke(request, env);
+          // Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing (box ↔ operator)。
+          case "/device/pair/start":
+            return await handleDevicePairStart(request, env);
+          case "/device/pair/approve":
+            return await handleDevicePairApprove(request, env);
+          case "/device/pair/token":
+            return await handleDevicePairToken(request, env);
           // Rich Menu API
           case "/api/richmenu/list":
             return await handleRichMenuList(request, env);
