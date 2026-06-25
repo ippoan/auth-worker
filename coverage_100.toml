@@ -11,6 +11,10 @@
 path = "src/lib/errors.ts"
 branches = true
 
+[[files]]
+path = "src/lib/device.ts"
+branches = true
+
 # --- handlers ---
 
 [[files]]
