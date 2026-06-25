@@ -15,6 +15,10 @@ branches = true
 path = "src/lib/device.ts"
 branches = true
 
+[[files]]
+path = "src/lib/device-pair.ts"
+branches = true
+
 # --- handlers ---
 
 [[files]]
