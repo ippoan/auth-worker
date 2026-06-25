@@ -199,6 +199,11 @@ vi.mock("../../src/handlers/github-webhook", () => ({
 vi.mock("../../src/handlers/mcp-pair-new", () => ({
   handleMcpPairNew: vi.fn(() => new Response("mcp-pair-new")),
 }));
+vi.mock("../../src/handlers/device", () => ({
+  handleDevicePair: vi.fn(() => new Response("device-pair")),
+  handleDeviceToken: vi.fn(() => new Response("device-token")),
+  handleDeviceRevoke: vi.fn(() => new Response("device-revoke")),
+}));
 vi.mock("../../src/handlers/mcp-pair-claim", () => ({
   handleMcpPairClaim: vi.fn((_req, _env, code: string) =>
     new Response(`mcp-pair-claim:${code}`),
@@ -546,6 +551,23 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://mcp.ippoan.org/mcp/pair/new", { method: "POST" });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("mcp-pair-new");
+  });
+
+  // --- Phase 2 (ohishi-exp/smb-watch#1): device-token endpoints ---
+  it("POST /device/pair → device-pair", async () => {
+    const req = new Request("https://auth.ippoan.org/device/pair", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-pair");
+  });
+  it("POST /device/token → device-token", async () => {
+    const req = new Request("https://auth.ippoan.org/device/token", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-token");
+  });
+  it("POST /device/revoke → device-revoke", async () => {
+    const req = new Request("https://auth.ippoan.org/device/revoke", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-revoke");
   });
 
   // --- issue #157 Phase B: 30-day refresh_token grant ---
