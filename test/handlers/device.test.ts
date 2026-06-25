@@ -4,7 +4,11 @@ import {
   handleDeviceToken,
   handleDeviceRevoke,
 } from "../../src/handlers/device";
-import { createDeviceCredential } from "../../src/lib/device";
+import {
+  createDeviceCredential,
+  DEVICE_ROLE,
+  DEVICE_ROLE_KIOSK,
+} from "../../src/lib/device";
 import { verifyJwt } from "../../src/lib/jwt";
 import { createMockKV } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
@@ -71,6 +75,18 @@ describe("handleDevicePair", () => {
     expect(body.device_secret).toBeTruthy();
     expect(body.tenant_id).toBe("tenant-1");
     expect(body.label).toBe("ohishi-data");
+    expect(body.role).toBe(DEVICE_ROLE); // role 省略 → 既定
+  });
+
+  it("honors an allowlisted role (kiosk)", async () => {
+    const env = makeEnv();
+    const res = await handleDevicePair(
+      post("/device/pair", { label: "tablet", role: DEVICE_ROLE_KIOSK }, bearer(await opToken())),
+      env,
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, string>;
+    expect(body.role).toBe(DEVICE_ROLE_KIOSK);
   });
 
   it("defaults the label and accepts the org claim as tenant", async () => {

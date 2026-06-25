@@ -7,7 +7,12 @@ import {
   PAIRING_TTL_SECONDS,
   PAIRING_POLL_INTERVAL_SECONDS,
 } from "../../src/lib/device-pair";
-import { getDeviceRecord, verifyDeviceCredential } from "../../src/lib/device";
+import {
+  getDeviceRecord,
+  verifyDeviceCredential,
+  DEVICE_ROLE,
+  DEVICE_ROLE_KIOSK,
+} from "../../src/lib/device";
 import { createMockKV } from "../helpers/mock-env";
 
 const NOW = 1_700_000_000;
@@ -32,6 +37,7 @@ describe("startPairing", () => {
     expect(state.status).toBe("pending");
     expect(state.tenant_id).toBe("");
     expect(state.label).toBe("ohishi-data");
+    expect(state.role).toBe(DEVICE_ROLE); // role 省略 → 既定
     expect(kv._data[UC + p.user_code]).toBe(p.device_code);
   });
 
@@ -40,6 +46,13 @@ describe("startPairing", () => {
     const p = await startPairing(e, "", NOW);
     const kv = e.AUTH_CONFIG as unknown as { _data: Record<string, string> };
     expect(JSON.parse(kv._data[DC + p.device_code]!).label).toBe("headless device");
+  });
+
+  it("stores an allowlisted role (kiosk)", async () => {
+    const e = env();
+    const p = await startPairing(e, "tablet", NOW, DEVICE_ROLE_KIOSK);
+    const kv = e.AUTH_CONFIG as unknown as { _data: Record<string, string> };
+    expect(JSON.parse(kv._data[DC + p.device_code]!).role).toBe(DEVICE_ROLE_KIOSK);
   });
 });
 
@@ -146,5 +159,14 @@ describe("redeemPairing", () => {
 
     // 2 回目は consumed (再発行しない)。
     expect(await redeemPairing(e, p.device_code, NOW)).toEqual({ status: "consumed" });
+  });
+
+  it("carries the pairing role into the issued credential (kiosk)", async () => {
+    const e = env();
+    const p = await startPairing(e, "tablet", NOW, DEVICE_ROLE_KIOSK);
+    await approvePairing(e, p.user_code, "tenant-k", NOW);
+    const r = await redeemPairing(e, p.device_code, NOW);
+    if (r.status !== "approved") throw new Error("unreachable");
+    expect(r.credential.record.role).toBe(DEVICE_ROLE_KIOSK);
   });
 });

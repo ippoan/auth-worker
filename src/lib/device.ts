@@ -26,10 +26,28 @@ const KV_PREFIX = "device:";
 export const DEVICE_JWT_TTL_SECONDS = 3600;
 
 /**
- * device JWT の role。carins ファイル upload 専用の最小権限。
+ * device JWT の既定 role。carins ファイル upload 専用の最小権限。
  * admin / 他 API を含めない (= 盗難時も「1 tenant の車検証 upload」に限定)。
  */
 export const DEVICE_ROLE = "device-uploader";
+
+/**
+ * alc-app キオスク端末用 role。kiosk が叩く最小 route (measurements / tenko /
+ * timecard 等) のみを許可する想定で、consumer (rust-alc-api) 側が route 許可を判定する。
+ * carins upload (`device-uploader`) とは blast radius を用途別に分離する (Refs rust-alc-api#434)。
+ */
+export const DEVICE_ROLE_KIOSK = "device-kiosk";
+
+/** pairing / credential 発行で受理する device role の allowlist。 */
+export const DEVICE_ROLES: ReadonlySet<string> = new Set([DEVICE_ROLE, DEVICE_ROLE_KIOSK]);
+
+/**
+ * 受け取った role 文字列を allowlist で検証して返す。未知 / 空は既定 (`DEVICE_ROLE`)。
+ * device JWT の role は blast radius を決めるので、外部入力をそのまま信用せず必ず通す。
+ */
+export function normalizeDeviceRole(raw: unknown): string {
+  return typeof raw === "string" && DEVICE_ROLES.has(raw) ? raw : DEVICE_ROLE;
+}
 
 /** KV に保管する device レコード。平文 secret は持たない。 */
 export interface DeviceRecord {
@@ -39,6 +57,11 @@ export interface DeviceRecord {
   secret_hash: string;
   /** 運用識別用ラベル (例: "ohishi-data smb-watch")。 */
   label: string;
+  /**
+   * device JWT に載せる role (blast radius)。旧レコードには無いので
+   * `mintDeviceJwt` は `?? DEVICE_ROLE` で後方互換に倒す。
+   */
+  role?: string;
   /** 発行時刻 (unix 秒)。 */
   created_at: number;
   /** revoke 済みフラグ。true なら検証は常に失敗する。 */
@@ -87,6 +110,7 @@ export async function createDeviceCredential(
   tenantId: string,
   label: string,
   now: number,
+  role: string = DEVICE_ROLE,
 ): Promise<NewDeviceCredential> {
   const device_id = randomToken(16);
   const device_secret = randomToken(32);
@@ -95,6 +119,7 @@ export async function createDeviceCredential(
     tenant_id: tenantId,
     secret_hash: await sha256Hex(device_secret),
     label,
+    role: normalizeDeviceRole(role),
     created_at: now,
     revoked: false,
   };
@@ -181,7 +206,7 @@ export async function mintDeviceJwt(
   const claims: DeviceJwtClaims = {
     sub: record.device_id,
     tenant_id: record.tenant_id,
-    role: DEVICE_ROLE,
+    role: record.role ?? DEVICE_ROLE,
     env: env.WORKER_ENV,
     iat: now,
     exp: now + ttlSeconds,

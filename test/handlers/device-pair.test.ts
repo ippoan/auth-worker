@@ -74,6 +74,19 @@ describe("handleDevicePairStart", () => {
     const kv = env.AUTH_CONFIG as unknown as { _data: Record<string, string> };
     const state = JSON.parse(kv._data[`devpair:dc:${body.device_code}`]!);
     expect(state.label).toBe("headless device");
+    expect(state.role).toBe("device-uploader"); // role 省略 → 既定
+  });
+
+  it("threads a requested role into the pairing state (kiosk)", async () => {
+    const env = makeEnv();
+    const res = await handleDevicePairStart(
+      postJson("/device/pair/start", { label: "tablet", role: "device-kiosk" }),
+      env,
+    );
+    const body = (await res.json()) as Record<string, string>;
+    const kv = env.AUTH_CONFIG as unknown as { _data: Record<string, string> };
+    const state = JSON.parse(kv._data[`devpair:dc:${body.device_code}`]!);
+    expect(state.role).toBe("device-kiosk");
   });
 });
 

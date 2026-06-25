@@ -22,6 +22,7 @@ import {
   revokeDeviceCredential,
   getDeviceRecord,
   mintDeviceJwt,
+  normalizeDeviceRole,
   DEVICE_JWT_TTL_SECONDS,
 } from "../lib/device";
 
@@ -68,9 +69,10 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
 
   const body = await readJsonBody(request);
   const label = typeof body.label === "string" && body.label ? body.label : "device";
+  const role = normalizeDeviceRole(body.role);
 
   const now = Math.floor(Date.now() / 1000);
-  const cred = await createDeviceCredential(env, session.tenantId, label, now);
+  const cred = await createDeviceCredential(env, session.tenantId, label, now, role);
 
   return jsonNoStore(
     {
@@ -78,6 +80,7 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
       device_secret: cred.device_secret,
       tenant_id: cred.record.tenant_id,
       label: cred.record.label,
+      role: cred.record.role,
       note: "store device_secret now; it is not retrievable later",
     },
     201,
