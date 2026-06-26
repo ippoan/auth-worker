@@ -25,6 +25,7 @@ import {
   getRequestURL,
   getRouterParam,
   readBody,
+  readRawBody,
   setHeader,
   setResponseStatus,
 } from 'h3'
@@ -34,6 +35,7 @@ import {
   buildProxyHeaders,
   buildTargetUrl,
   classifyProxyResponse,
+  isJsonContentType,
   parseJsonBody,
 } from './proxyCore.mjs'
 import { introspectToken } from './introspectCore.mjs'
@@ -157,14 +159,24 @@ export function createAuthWorkerProxyHandler(options) {
     const method = event.method
     const fetchOptions = { method, headers }
     if (['POST', 'PUT', 'PATCH'].includes(method)) {
-      try {
-        const body = await readBody(event)
-        if (body) {
-          fetchOptions.body = JSON.stringify(body)
-          headers['Content-Type'] = 'application/json'
+      const contentType = getHeader(event, 'content-type')
+      if (isJsonContentType(contentType)) {
+        try {
+          const body = await readBody(event)
+          if (body) {
+            fetchOptions.body = JSON.stringify(body)
+            headers['Content-Type'] = 'application/json'
+          }
+        } catch {
+          // body なし（DELETE 等）
         }
-      } catch {
-        // body なし（DELETE 等）
+      } else {
+        // multipart / binary は raw passthrough (JSON.stringify すると
+        // boundary 付き multipart が壊れる)。Content-Type は buildAlcProxyHeaders が
+        // 元の値 (boundary 込み) を載せ済みなので上書きしない。auth-worker
+        // `/alc-proxy` 側は body を arrayBuffer で raw 転送するため無傷で届く。
+        const raw = await readRawBody(event, false)
+        if (raw) fetchOptions.body = raw
       }
     }
 
