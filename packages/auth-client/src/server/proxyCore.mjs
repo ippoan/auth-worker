@@ -85,6 +85,19 @@ export function buildAlcProxyHeaders(input) {
 }
 
 /**
+ * request body を JSON として読み直して再 serialize すべき content-type か判定する
+ * (Refs ippoan/rust-alc-api#434)。`undefined` / `application/json` のときだけ JSON
+ * 経路。`multipart/form-data` (= ファイルアップロード、boundary 込み) や任意の
+ * binary は raw passthrough にしないと壊れる (auth-worker `/alc-proxy` は
+ * `request.arrayBuffer()` で raw 転送するため、consumer が raw で渡せば boundary 付き
+ * multipart も無傷で届く)。
+ */
+export function isJsonContentType(contentType) {
+  if (!contentType) return true
+  return contentType.includes('application/json')
+}
+
+/**
  * backend レスポンスの転送方法を分類する。
  * - `/download` を含む path / 非 JSON content-type → binary パススルー
  * - 204 → empty

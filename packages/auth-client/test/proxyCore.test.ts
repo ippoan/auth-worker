@@ -5,6 +5,7 @@ import {
   buildProxyHeaders,
   buildTargetUrl,
   classifyProxyResponse,
+  isJsonContentType,
   parseJsonBody,
 } from '../src/server/proxyCore.mjs'
 
@@ -168,6 +169,24 @@ describe('classifyProxyResponse', () => {
   it('JSON は json (content-type 不明も json 扱い)', () => {
     expect(classifyProxyResponse(200, 'application/json; charset=utf-8', 'items')).toBe('json')
     expect(classifyProxyResponse(500, null, 'items')).toBe('json')
+  })
+})
+
+describe('isJsonContentType', () => {
+  it('undefined / null は JSON 扱い (既定の JSON 経路を維持)', () => {
+    expect(isJsonContentType(undefined)).toBe(true)
+    expect(isJsonContentType(null)).toBe(true)
+  })
+
+  it('application/json (charset 付き含む) は true', () => {
+    expect(isJsonContentType('application/json')).toBe(true)
+    expect(isJsonContentType('application/json; charset=utf-8')).toBe(true)
+  })
+
+  it('multipart / binary は false (raw passthrough 対象)', () => {
+    expect(isJsonContentType('multipart/form-data; boundary=----abc')).toBe(false)
+    expect(isJsonContentType('application/octet-stream')).toBe(false)
+    expect(isJsonContentType('image/png')).toBe(false)
   })
 })
 
