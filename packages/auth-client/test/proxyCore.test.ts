@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  buildAlcProxyHeaders,
   buildIdentityHeaders,
   buildProxyHeaders,
   buildTargetUrl,
@@ -46,6 +47,33 @@ describe('buildIdentityHeaders', () => {
     expect(
       buildIdentityHeaders({ active: true, tenant_id: '', role: '', email: '', sub: '' }),
     ).toEqual({})
+  })
+})
+
+describe('buildAlcProxyHeaders', () => {
+  it('X-Alc-Proxy-Secret + Origin + Bearer + Content-Type を載せる', () => {
+    expect(
+      buildAlcProxyHeaders({
+        sharedSecret: 's3cr3t',
+        origin: 'https://alc.ippoan.org',
+        token: 'jwt-abc',
+        contentType: 'application/json',
+      }),
+    ).toEqual({
+      'X-Alc-Proxy-Secret': 's3cr3t',
+      'X-Alc-Proxy-Origin': 'https://alc.ippoan.org',
+      Authorization: 'Bearer jwt-abc',
+      'Content-Type': 'application/json',
+    })
+  })
+
+  it('token / contentType が無ければ省略する (secret + origin は必須)', () => {
+    expect(
+      buildAlcProxyHeaders({ sharedSecret: 's', origin: 'https://x.example' }),
+    ).toEqual({
+      'X-Alc-Proxy-Secret': 's',
+      'X-Alc-Proxy-Origin': 'https://x.example',
+    })
   })
 })
 

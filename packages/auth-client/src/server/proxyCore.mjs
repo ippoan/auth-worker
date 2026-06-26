@@ -61,6 +61,30 @@ export function buildIdentityHeaders(result, opts = {}) {
 }
 
 /**
+ * auth-worker `/alc-proxy/*` (rust-alc-api#434 step 3 方式 B) へ thin-forward
+ * する時のヘッダーを構築する。consumer worker は SA key / OIDC mint を持たず、
+ * **service binding (`AUTH_WORKER`) でこの route に丸投げ**する。auth-worker が
+ * introspect (= local JWT 検証) + ACL + OIDC mint + 注入を 1 箇所で行う。
+ *
+ * consumer が付ける header は 2 つだけ:
+ *   - `X-Alc-Proxy-Secret` — consumer worker proof (INTERNAL_SHARED_SECRET、
+ *     auth-worker 側が constant-time 検証する。公開 route での直叩き / origin
+ *     詐称を弾く関門。空だと auth-worker が 401)
+ *   - `X-Alc-Proxy-Origin` — APP_TENANT_ACL 判定用の元アプリ origin
+ *     (service binding 越しでは request.url が auth-worker のものになり消えるため)
+ * これに browser JWT (`Authorization: Bearer`) と content-type を素通しする。
+ */
+export function buildAlcProxyHeaders(input) {
+  const headers = {
+    'X-Alc-Proxy-Secret': input.sharedSecret,
+    'X-Alc-Proxy-Origin': input.origin,
+  }
+  if (input.token) headers['Authorization'] = `Bearer ${input.token}`
+  if (input.contentType) headers['Content-Type'] = input.contentType
+  return headers
+}
+
+/**
  * backend レスポンスの転送方法を分類する。
  * - `/download` を含む path / 非 JSON content-type → binary パススルー
  * - 204 → empty

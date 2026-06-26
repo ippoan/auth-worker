@@ -29,6 +29,7 @@ import {
   setResponseStatus,
 } from 'h3'
 import {
+  buildAlcProxyHeaders,
   buildIdentityHeaders,
   buildProxyHeaders,
   buildTargetUrl,
@@ -99,6 +100,75 @@ export function createApiProxyHandler(options) {
     }
 
     const response = await fetch(url, fetchOptions)
+    return streamBackendResponse(event, response, path)
+  })
+}
+
+/**
+ * auth-worker `/alc-proxy/*` への thin-forward proxy handler
+ * (Refs ippoan/rust-alc-api#434 step 3 方式 B)。`createIdentityProxyHandler`
+ * (= consumer が自前で introspect + OIDC mint する方式 A) と違い、SA key /
+ * OIDC mint / introspect を **すべて auth-worker 側に集約**する。consumer は:
+ *
+ *   1. browser JWT (cookie / Bearer) と元 origin・consumer proof secret を
+ *      `X-Alc-Proxy-Secret` / `X-Alc-Proxy-Origin` に載せ
+ *   2. **service binding (`AUTH_WORKER`)** で `/alc-proxy/<api path>` に丸投げ
+ *
+ * するだけ。方式変更 (OIDC mint の有無等) が auth-worker 1 repo に閉じる。
+ *
+ * 消費側:
+ * ```ts
+ * // server/api/proxy/[...path].ts
+ * export default createAuthWorkerProxyHandler({
+ *   sharedSecret:    e => useRuntimeConfig(e).internalSharedSecret, // INTERNAL_SHARED_SECRET
+ *   authWorkerFetch: e => e.context.cloudflare.env.AUTH_WORKER.fetch.bind(
+ *     e.context.cloudflare.env.AUTH_WORKER),  // ★ service binding 必須
+ * })
+ * ```
+ */
+export function createAuthWorkerProxyHandler(options) {
+  const pathPrefix = options.pathPrefix ?? '/api/'
+  const proxyPrefix = options.proxyPrefix ?? '/alc-proxy'
+
+  return defineEventHandler(async (event) => {
+    const resolve = (v) => (typeof v === 'function' ? v(event) : v)
+    const sharedSecret = resolve(options.sharedSecret)
+    const proxyFetch = options.authWorkerFetch(event)
+    const origin = options.origin ?? getRequestURL(event).origin
+
+    const token =
+      getCookie(event, options.cookieName ?? DEFAULT_COOKIE_NAME) ??
+      bearerToken(getHeader(event, 'authorization'))
+
+    const path = getRouterParam(event, 'path') || ''
+    const headers = buildAlcProxyHeaders({
+      sharedSecret,
+      origin,
+      token,
+      contentType: getHeader(event, 'content-type'),
+    })
+
+    // service binding fetch には絶対 URL が要る (host は binding が無視するが
+    // **path が `/alc-proxy/...` で始まる**必要がある — auth-worker 側が
+    // ROUTE_PREFIX を slice して rust-alc-api に転送するため)。
+    const base = resolve(options.authWorkerUrl) ?? 'https://alc-proxy.internal'
+    const url = buildTargetUrl(`${base.replace(/\/$/, '')}${proxyPrefix}`, pathPrefix, path, getQuery(event))
+
+    const method = event.method
+    const fetchOptions = { method, headers }
+    if (['POST', 'PUT', 'PATCH'].includes(method)) {
+      try {
+        const body = await readBody(event)
+        if (body) {
+          fetchOptions.body = JSON.stringify(body)
+          headers['Content-Type'] = 'application/json'
+        }
+      } catch {
+        // body なし（DELETE 等）
+      }
+    }
+
+    const response = await proxyFetch(url, fetchOptions)
     return streamBackendResponse(event, response, path)
   })
 }
