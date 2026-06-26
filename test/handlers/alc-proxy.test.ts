@@ -15,6 +15,7 @@ vi.mock("../../src/lib/oidc", () => ({
 import { handleAlcProxy } from "../../src/handlers/alc-proxy";
 
 const ORIGIN = "https://alc.ippoan.org";
+const PROXY_SECRET = "test-internal-shared-secret-32!!";
 const originalFetch = globalThis.fetch;
 afterAll(() => {
   globalThis.fetch = originalFetch;
@@ -23,18 +24,24 @@ afterAll(() => {
 function env(overrides: Record<string, unknown> = {}) {
   return createMockEnv({
     ALC_API_PROXY_SA_KEY: "{}", // resolveSecret が非空を返せばよい (oidc は mock)
+    INTERNAL_SHARED_SECRET: PROXY_SECRET, // consumer worker proof 用 (resolveAllSharedSecrets)
     ...overrides,
   });
 }
 
 function req(
   path: string,
-  init: RequestInit & { token?: string | null; origin?: string | null } = {},
+  init: RequestInit & {
+    token?: string | null;
+    origin?: string | null;
+    proxySecret?: string | null;
+  } = {},
 ) {
   const headers: Record<string, string> = {};
   const token = init.token === undefined ? makeJwt(TEST_JWT_SECRET) : init.token;
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (init.origin !== null) headers["X-Alc-Proxy-Origin"] = init.origin ?? ORIGIN;
+  if (init.proxySecret !== null) headers["X-Alc-Proxy-Secret"] = init.proxySecret ?? PROXY_SECRET;
   return new Request(`https://auth.test.example${path}`, {
     method: init.method ?? "GET",
     headers: { ...headers, ...(init.headers as Record<string, string>) },
@@ -44,6 +51,30 @@ function req(
 
 describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it("X-Alc-Proxy-Secret 欠落は 401 (consumer worker proof 不能 → 直叩き/origin 詐称を弾く)", async () => {
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees", { proxySecret: null }),
+      env(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("X-Alc-Proxy-Secret 不一致は 401", async () => {
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees", { proxySecret: "wrong-secret" }),
+      env(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("INTERNAL_SHARED_SECRET 未 bind は 503 (fail-closed で route 無効化)", async () => {
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees"),
+      env({ INTERNAL_SHARED_SECRET: undefined }),
+    );
+    expect(res.status).toBe(503);
+  });
 
   it("token 無しは 401", async () => {
     const res = await handleAlcProxy(req("/alc-proxy/api/employees", { token: null }), env());

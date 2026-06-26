@@ -3,17 +3,23 @@
  *
  * consumer (alc-app / carins / items …) の CF Worker が **service binding**
  * (`AUTH_WORKER`) でこの route に forward する。auth-worker が:
- *   ① cookie / Bearer の browser JWT を **ローカル検証** (JWT_SECRET 所有) + ACL
+ *   ① consumer worker proof — `X-Alc-Proxy-Secret` を `INTERNAL_SHARED_SECRET*`
+ *      と constant-time 比較 (fail-closed)。`/alc-proxy/*` は service binding
+ *      だけでなく `auth.ippoan.org` 上の **公開 route** でもあるため、これが
+ *      無いと「正当な JWT + 詐称した `X-Alc-Proxy-Origin`」で直叩きされ
+ *      `checkAppTenant` の app 単位 ACL を回避できる (handoff #434)。
+ *      secret を握る consumer worker からの forward だけを通す関門。
+ *   ② cookie / Bearer の browser JWT を **ローカル検証** (JWT_SECRET 所有) + ACL
  *      (origin × tenant、`X-Alc-Proxy-Origin` ヘッダの consumer origin で判定)
- *   ② `run.invoker` SA key (`ALC_API_PROXY_SA_KEY`、auth-worker のみ bind) で
+ *   ③ `run.invoker` SA key (`ALC_API_PROXY_SA_KEY`、auth-worker のみ bind) で
  *      Google OIDC ID token を mint
- *   ③ `ALC_API_ORIGIN` (= rust-alc-api、Cloud Run IAM lockdown 後) へ
+ *   ④ `ALC_API_ORIGIN` (= rust-alc-api、Cloud Run IAM lockdown 後) へ
  *      `Authorization: Bearer <OIDC>` + `X-Tenant-ID` / `X-User-ID/Email/Role`
  *      を注入して forward
  * を 1 箇所で行う。SA key + OIDC mint を auth-worker に集約し、方式変更時の
  * 再配線を 1 repo に閉じる。
  *
- * 値 (token / SA key / OIDC) は log / response に出さない。
+ * 値 (token / SA key / OIDC / shared secret) は log / response に出さない。
  */
 import type { Env } from "../index";
 import { getAuthCookie } from "../lib/cookies";
@@ -22,8 +28,20 @@ import { verifyJwt } from "../lib/jwt";
 import { checkAppTenant, checkOrgAccess } from "../lib/acl";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
+import { resolveAllSharedSecrets } from "./mcp-introspect";
 
 const ROUTE_PREFIX = "/alc-proxy";
+
+/** consumer worker proof を運ぶ header。`INTERNAL_SHARED_SECRET*` の生値を載せる。 */
+const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
+
+/** 定数時間比較。短絡せず全文字を XOR して合算 (mcp-introspect.ts と同実装)。 */
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
 function jsonError(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
@@ -40,6 +58,19 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   if (!saKey) return jsonError(503, "alc-proxy not configured"); // SA key binding 未設定
   const apiOrigin = env.ALC_API_ORIGIN;
   if (!apiOrigin) return jsonError(503, "server_error");
+  // consumer worker proof 用の shared secret。1 つも bind されていなければ
+  // proxy であることを検証できない = fail-closed で route ごと無効化 (503)。
+  const sharedSecrets = await resolveAllSharedSecrets(env);
+  if (!sharedSecrets) return jsonError(503, "alc-proxy not configured");
+
+  // ── ① consumer worker proof (公開 route での直叩き / origin 詐称を弾く関門) ─
+  // service binding 越しに consumer worker が付与した `X-Alc-Proxy-Secret` を
+  // `INTERNAL_SHARED_SECRET*` と constant-time 比較する。これを通らない限り
+  // この後で読む `X-Alc-Proxy-Origin` (caller が詐称可能) を一切信用しない。
+  const proxySecret = request.headers.get(PROXY_SECRET_HEADER) ?? "";
+  if (!proxySecret || !sharedSecrets.some((s) => constantTimeEquals(proxySecret, s))) {
+    return jsonError(401, "Unauthorized");
+  }
 
   // ── 認証: browser JWT (cookie / Bearer) を auth-worker がローカル検証 ───────
   const token = getAuthCookie(request) ?? extractToken(request) ?? "";

@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:5c14979
+generated-from: auth-worker:9cd72f9
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」等。
 ---
@@ -23,6 +23,7 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
 | **SSO provider (login)** | `google-*` `ghapi-*` `lineworks-*` `egov-*` `woff-auth` `github-webhook` | 各 IdP の redirect/callback。`ghapi-*` = Google Health API OAuth pass-through (`/oauth/ghapi/*`、HealthConnectReaderWorker 連携用) |
 | **組織管理 (admin)** | `admin-*` | config / users / requests / rich-menu / sso / notify (管理者向け) |
 | **API (dashboard)** | `api-*` | my-orgs / switch-org / users / sso / rich-menu / access-requests / bot-config / branch-protection。**`api-my-orgs` / `api-switch-org` は rust-alc-api への前段 proxy 役**: Bearer JWT を `verifiedIdentityHeaders` (`src/lib/identity-headers.ts`) で検証し `X-Tenant-ID` + `X-User-ID/Email/Role` を注入してから `ALC_API_ORIGIN` に転送 (rust-alc-api#434、dumb backend 対応) |
+| **alc-proxy** (data-proxy) | `src/handlers/alc-proxy.ts` (`/alc-proxy/*`) | consumer worker が service binding で forward する汎用 data-proxy (rust-alc-api#434 step 3 方式 B)。**① consumer proof**: `X-Alc-Proxy-Secret` を `INTERNAL_SHARED_SECRET*` と constant-time 比較 (fail-closed、未 bind/不一致は 401/503) → ② browser JWT ローカル検証 + ACL (`X-Alc-Proxy-Origin`) → ③ `ALC_API_PROXY_SA_KEY` で OIDC mint → ④ `X-Tenant-ID`/`X-User-*` 注入で `ALC_API_ORIGIN` 転送。**①が無いと公開 route なので「正当 JWT + 詐称 origin」で `checkAppTenant` を回避できる** (handoff の MEDIUM 修正) |
 | **login / join / 雑** | `login-page` `login-api` `join-*` `logout` `top-page` `redirect` | ブラウザ login フロー |
 | **device token** (無人 box / キオスク) | `device` `device-pair` + `src/lib/device{,-pair}.ts` | smb-watch 等の無人 box / alc-app キオスク向け。pairing (`/device/pair`・headless `/device/pair/start·approve·token`) で `device_id`+`device_secret` 発行 → `/device/token` で短命 device JWT (HS256・`JWT_SECRET` 共有・`/auth/introspect` 検証可) を mint。role は allowlist (`device-uploader` = carins upload / `device-kiosk` = alc-app、Refs rust-alc-api#434)。`/device/revoke` で失効 |
 | **health** | `health` `health-oauth` | ヘルスチェック (health-oauth は Bearer JWT 要、Refs auth-worker#209) |
