@@ -7,7 +7,9 @@ import {
   restoreFetch,
   waitIfLive,
   isLive,
+  assertMock,
 } from "../helpers/stub-or-real";
+import { makeJwt, TEST_TENANT_ID, TEST_USER_ID } from "../helpers/live-env";
 import { handleSwitchOrg } from "../../src/handlers/api-switch-org";
 
 afterAll(() => restoreFetch());
@@ -97,5 +99,48 @@ describe("handleSwitchOrg", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
     const data = (await res.json()) as { error: string };
     expect(typeof data.error).toBe("string");
+  });
+
+  // rust-alc-api#434: 署名不正な JWT は backend に投げず 401 (前段検証)。
+  // organizationId が有効でも token が無効なら通さない。
+  it("returns 401 when JWT signature is invalid", async () => {
+    const forged = makeJwt("wrong-secret-not-matching-env");
+    const req = new Request("https://auth.test.example/api/switch-org", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${forged}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ organizationId: "org-uuid-123" }),
+    });
+    const res = await handleSwitchOrg(req, env);
+    expect(res.status).toBe(401);
+  });
+
+  // rust-alc-api#434: raw Bearer ではなく検証済み X-Tenant-ID + X-User-* を注入する。
+  it("injects verified identity headers (not raw Bearer) to backend", async () => {
+    stubOrReal(
+      new Response(
+        JSON.stringify({
+          token: "t",
+          expires_at: "2026-01-01T00:00:00Z",
+          organization_id: "org-uuid-123",
+        }),
+        { status: 200 },
+      ),
+    );
+    await handleSwitchOrg(
+      authJsonRequest("/api/switch-org", { organizationId: "org-uuid-123" }),
+      env,
+    );
+    assertMock(() => {
+      const call = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const headers = (call[1] as RequestInit).headers as Record<string, string>;
+      expect(headers["X-Tenant-ID"]).toBe(TEST_TENANT_ID);
+      expect(headers["X-User-ID"]).toBe(TEST_USER_ID);
+      expect(headers["X-User-Email"]).toBe("test@example.com");
+      expect(headers["X-User-Role"]).toBe("admin");
+      expect(headers["Authorization"]).toBeUndefined();
+    });
   });
 });

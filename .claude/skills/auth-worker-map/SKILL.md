@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:2363a77e1ab949e0135b45be6b72d07275b3361c
+generated-from: auth-worker:b2a0e2a1e43026fd673f827228853a139b765113
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」等。
 ---
@@ -22,7 +22,7 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
 | **MCP OAuth Provider** (主役・26 handler) | `src/handlers/mcp-*` | DCR / authorize / token / introspect / device flow / pairing / elevate。下表参照 |
 | **SSO provider (login)** | `google-*` `ghapi-*` `lineworks-*` `egov-*` `woff-auth` `github-webhook` | 各 IdP の redirect/callback。`ghapi-*` = Google Health API OAuth pass-through (`/oauth/ghapi/*`、HealthConnectReaderWorker 連携用) |
 | **組織管理 (admin)** | `admin-*` | config / users / requests / rich-menu / sso / notify (管理者向け) |
-| **API (dashboard)** | `api-*` | my-orgs / switch-org / users / sso / rich-menu / access-requests / bot-config / branch-protection |
+| **API (dashboard)** | `api-*` | my-orgs / switch-org / users / sso / rich-menu / access-requests / bot-config / branch-protection。**`api-my-orgs` / `api-switch-org` は rust-alc-api への前段 proxy 役**: Bearer JWT を `verifiedIdentityHeaders` (`src/lib/identity-headers.ts`) で検証し `X-Tenant-ID` + `X-User-ID/Email/Role` を注入してから `ALC_API_ORIGIN` に転送 (rust-alc-api#434、dumb backend 対応) |
 | **login / join / 雑** | `login-page` `login-api` `join-*` `logout` `top-page` `redirect` | ブラウザ login フロー |
 | **device token** (無人 box / キオスク) | `device` `device-pair` + `src/lib/device{,-pair}.ts` | smb-watch 等の無人 box / alc-app キオスク向け。pairing (`/device/pair`・headless `/device/pair/start·approve·token`) で `device_id`+`device_secret` 発行 → `/device/token` で短命 device JWT (HS256・`JWT_SECRET` 共有・`/auth/introspect` 検証可) を mint。role は allowlist (`device-uploader` = carins upload / `device-kiosk` = alc-app、Refs rust-alc-api#434)。`/device/revoke` で失効 |
 | **health** | `health` `health-oauth` | ヘルスチェック (health-oauth は Bearer JWT 要、Refs auth-worker#209) |
@@ -55,6 +55,7 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
 - **`MCP_OAUTH_KV` は prod に意図的に bind しない (guardrail)**。prod の `/mcp/pair/grant-via-oat` を 503 で無効化し OAT→JWT mint を staging 経由に限定する設計。「欠落」と勘違いして再追加しない (Refs auth-worker#241/#242/#243)。`AUTH_CONFIG` は両 env で同 id 共有。
 - **`mcp.admin` は AS metadata の `scopes_supported` に出さない** (internal only、`/mcp/elevate` の browser 昇格でのみ付与)。漏れと勘違いして足さない。
 - **`INTERNAL_SHARED_SECRET` multi-binding**: `/mcp/introspect` は `INTERNAL_SHARED_SECRET` で始まる全 binding を `resolveAllSharedSecrets` で prefix match accept。新 consumer 追加は binding + Secrets Store entry だけ (コード変更不要)。
+- **`/api/my-orgs` / `/api/switch-org` で raw Bearer を rust-alc-api に素通ししない** (rust-alc-api#434)。rust-alc-api 側は `require_tenant_header` (dumb backend) で **Bearer を読まず X-Tenant-ID + X-User-ID/Email/Role を要求**するため、素通しすると 401 になる (= org 一覧/切替が無言で空になる)。auth-worker が `verifiedIdentityHeaders` で JWT を検証して 4 ヘッダを注入する。JWT には `tenant_id`(UUID) しか無いので tenant 名/slug は rust-alc-api lookup で取る (= この pass-through は必須、auth-worker → rust-alc-api の一方向)。
 
 ## CCoW から見た auth-worker
 

@@ -5,6 +5,7 @@
 
 import type { Env } from "../index";
 import { corsJsonResponse, extractToken } from "../lib/errors";
+import { verifiedIdentityHeaders } from "../lib/identity-headers";
 
 export async function handleMyOrgs(
   request: Request,
@@ -13,9 +14,19 @@ export async function handleMyOrgs(
   const token = extractToken(request);
   if (!token) return corsJsonResponse({ error: "Unauthorized" }, 401);
 
+  // rust-alc-api#434: rust-alc-api /api/my-orgs は require_tenant_header (dumb
+  // backend) の後ろにあり raw Bearer を読まない。ここで JWT を検証して
+  // X-Tenant-ID + X-User-* を注入する (前段 proxy 役)。検証失敗は 401。
+  const identity = await verifiedIdentityHeaders(
+    token,
+    env.JWT_SECRET,
+    env.WORKER_ENV,
+  );
+  if (!identity) return corsJsonResponse({ error: "Unauthorized" }, 401);
+
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/my-orgs`, {
     method: "POST",
-    headers: { "Authorization": `Bearer ${token}` },
+    headers: identity,
   });
 
   if (!resp.ok) {

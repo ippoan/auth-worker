@@ -9,7 +9,7 @@
  */
 import { vi, beforeAll } from "vitest";
 import { isLive, ALC_API_URL, waitForApi, makeJwt } from "./live-env";
-import { createMockEnv } from "./mock-env";
+import { createMockEnv, TEST_JWT_SECRET } from "./mock-env";
 import type { Env } from "../../src/index";
 
 const originalFetch = globalThis.fetch;
@@ -26,12 +26,16 @@ export function testEnv(): Env {
   return createMockEnv(isLive ? { ALC_API_ORIGIN: ALC_API_URL } : {});
 }
 
-/** Bearer token 付きリクエスト */
+/**
+ * Bearer token 付きリクエスト。token は `testEnv()` の `JWT_SECRET`
+ * (= `TEST_JWT_SECRET`、mock/live 共通) で署名し、auth-worker 側の JWT 検証
+ * (handleMyOrgs / handleSwitchOrg の identity 注入, rust-alc-api#434) を通す。
+ */
 export function authRequest(path: string, init: RequestInit = {}): Request {
   return new Request(`https://auth.test.example${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${makeJwt()}`,
+      Authorization: `Bearer ${makeJwt(TEST_JWT_SECRET)}`,
       "Content-Type": "application/json",
       ...init.headers,
     },
