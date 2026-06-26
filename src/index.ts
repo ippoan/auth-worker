@@ -14,6 +14,7 @@ import { handleSsoList, handleSsoUpsert, handleSsoDelete } from "./handlers/api-
 import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete, handleBotConfigExport, handleBotConfigImport } from "./handlers/api-bot-config";
 import { handleWoffAuth, handleWoffConfig } from "./handlers/woff-auth";
 import { handleMyOrgs } from "./handlers/api-my-orgs";
+import { handleAlcProxy } from "./handlers/alc-proxy";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
   handleRichMenuList, handleRichMenuCreate, handleRichMenuDelete,
@@ -24,6 +25,7 @@ import { handleTopPage } from "./handlers/top-page";
 import { handleHealthProxy } from "./handlers/health";
 import { handleHealthOAuth } from "./handlers/health-oauth";
 import { handleSecretFingerprint } from "./handlers/health-fingerprints";
+import { handleHealthWif } from "./handlers/health-wif";
 import {
   handleUsersList, handleInvitationsList, handleInviteUser,
   handleDeleteInvitation, handleDeleteUser,
@@ -108,6 +110,11 @@ export interface Env {
    *  redirects everyone to /login (fail-closed).
    *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */
   JWT_SECRET: SecretBinding;
+  /** rust-alc-api#434 step 3 (方式 B): run.invoker SA key (JSON)。`/alc-proxy/*`
+   *  が Google OIDC ID token を mint して Cloud Run IAM lockdown 後の
+   *  rust-alc-api に到達するために使う。Secrets Store binding、未設定なら
+   *  `/alc-proxy` は 503 (fail-closed)。auth-worker のみ bind (SA key 集約)。 */
+  ALC_API_PROXY_SA_KEY?: SecretBinding;
   /** e-Gov (Keycloak) OAuth — all optional; handlers return 503 if unset. */
   EGOV_CLIENT_ID?: string;
   EGOV_CLIENT_SECRET?: string;
@@ -350,6 +357,13 @@ export default {
       const relay = await dispatchMcpRelay(request, env, url);
       if (relay) return relay;
 
+      // rust-alc-api#434 step 3 (方式 B): consumer の CF Worker が service binding
+      // (AUTH_WORKER) で forward する rust-alc-api data-proxy。全 method・全 host
+      // (binding 越し) で到達させたいので host 別 routing より前に置く。
+      if (url.pathname.startsWith("/alc-proxy/")) {
+        return handleAlcProxy(request, env);
+      }
+
       if (request.method === "GET") {
         // issue #144: 1-click pair の claim endpoint。`/mcp/pair/<code>` を
         // ブラウザが踏むと cookie verify → KV approve → success HTML。
@@ -400,6 +414,11 @@ export default {
           // drift-check.yml) が GCP SM 値の hash を投げてくる入口。
           case "/health/secret-fingerprint":
             return await handleSecretFingerprint(request, env);
+          // Refs ippoan/rust-alc-api#434 step 3: OIDC mint (run.invoker SA key)
+          // が生きているかの死活チェック (Bearer JWT 必須)。Cloud Run IAM
+          // lockdown 後に data-proxy が backend へ到達できるかと等価。
+          case "/health/wif":
+            return await handleHealthWif(request, env);
           case "/login":
             return await handleLoginPage(request, env);
           case "/top":
