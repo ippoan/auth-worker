@@ -61,6 +61,36 @@ export async function verifyJwt(
   return payload;
 }
 
+/**
+ * Sign an HS256 JWT (Web Crypto)。`verifyJwt` が受理する形式と対。
+ *
+ * Refs rust-alc-api#434: rust-alc-api は #441 で JWT 検証をやめた dumb backend に
+ * なったため、/top + introspect が検証する cookie JWT は auth-worker が署名・所有
+ * する。payload に `env` claim (= WORKER_ENV) を入れると cross-env replay を弾ける
+ * (#218)。`exp` は呼び出し側が payload に含めて渡す。
+ */
+export async function signJwt(payload: JwtPayload, secret: string): Promise<string> {
+  const headerB64 = base64UrlEncodeStr(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payloadB64 = base64UrlEncodeStr(JSON.stringify(payload));
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const signature = await hmacSign(signingInput, secret);
+  return `${signingInput}.${signature}`;
+}
+
+/**
+ * JWT の payload を **署名検証せず** に decode する (UTF-8 safe)。再署名時に
+ * 元 token の claims を取り出す用途 (検証自体は別途 `verifyJwt`)。malformed は null。
+ */
+export function decodeJwtPayload(token: string): JwtPayload | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    return JSON.parse(base64UrlDecodeUtf8(parts[1]!)) as JwtPayload;
+  } catch {
+    return null;
+  }
+}
+
 async function hmacSign(data: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -81,6 +111,19 @@ function base64UrlEncodeBytes(bytes: Uint8Array): string {
   let s = "";
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** UTF-8 文字列 → base64url (signJwt の header/payload encode 用)。 */
+function base64UrlEncodeStr(s: string): string {
+  return base64UrlEncodeBytes(new TextEncoder().encode(s));
+}
+
+/** base64url → UTF-8 文字列 (decodeJwtPayload 用、多バイト claim を保つ)。 */
+function base64UrlDecodeUtf8(data: string): string {
+  const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
 }
 
 function base64UrlDecode(data: string): string {

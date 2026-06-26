@@ -9,6 +9,7 @@ import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { resolveSecret } from "../lib/secret";
 import { verifyOAuthState, isAllowedRedirectUri } from "../lib/security";
 import { setAuthCookie, authCookieReachesHost } from "../lib/cookies";
+import { signJwt, decodeJwtPayload } from "../lib/jwt";
 
 export async function handleGoogleCallback(
   request: Request,
@@ -92,29 +93,35 @@ export async function handleGoogleCallback(
     refresh_token?: string;
   };
 
-  const token = authData.access_token;
+  const rustToken = authData.access_token;
   const expiresAt = String(Math.floor(Date.now() / 1000) + authData.expires_in);
 
-  // Build JWT fragment
+  // rust-alc-api の access_token は rust の鍵で署名されている。rust は #441 で JWT
+  // 検証をやめた dumb backend になったので、/top + introspect が検証する cookie JWT は
+  // auth-worker が署名・所有する (Refs rust-alc-api#434)。元 token の claims を取り出し、
+  // auth-worker の JWT_SECRET + env=WORKER_ENV (#218 cross-env 保護) で再署名する。
+  // これで staging でも prod でも auth-worker 自身の鍵で検証一致する (= rust と
+  // auth-worker の鍵不整合による login 無限ループの根治)。再署名できない場合
+  // (JWT_SECRET 欠落 / claims 欠落) は rust token のまま fallback (従来動作、非破壊)。
+  let tenantId = "";
+  let email = "";
+  let token = rustToken;
+  const claims = decodeJwtPayload(rustToken);
+  if (claims) {
+    tenantId = (claims.tenant_id as string) || (claims.org as string) || "";
+    email = (claims.email as string) || "";
+    const jwtSecret = await resolveSecret(env.JWT_SECRET);
+    if (jwtSecret && typeof claims.exp === "number") {
+      token = await signJwt({ ...claims, env: env.WORKER_ENV }, jwtSecret);
+    }
+  }
+
+  // Build JWT fragment (再署名後の token を載せる。cookie が届かない host へ fragment 配布)
   const fragment = new URLSearchParams({
     token,
     expires_at: expiresAt,
   });
-
-  // Extract org_id + email from JWT payload
-  let tenantId = "";
-  let email = "";
-  const payloadB64 = token.split(".")[1];
-  if (payloadB64) {
-    try {
-      const payload = JSON.parse(atob(payloadB64));
-      tenantId = payload.tenant_id || payload.org || "";
-      email = payload.email || "";
-      fragment.set("org_id", tenantId);
-    } catch {
-      // ignore decode error
-    }
-  }
+  if (tenantId) fragment.set("org_id", tenantId);
 
   // Enforce per-org ACL for the final redirect target.
   const redirectOrigin = new URL(redirectUri).origin;

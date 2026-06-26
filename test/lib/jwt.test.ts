@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { verifyJwt } from "../../src/lib/jwt";
+import { verifyJwt, signJwt, decodeJwtPayload } from "../../src/lib/jwt";
 import { signTestJwt } from "../helpers/test-jwt";
 
 const SECRET = "verify-jwt-test-secret-32chars!!";
@@ -135,5 +135,43 @@ describe("verifyJwt", () => {
     const token = await signTestJwt({ sub: "u1", env: "staging" }, SECRET);
     // expectedEnv 未指定 → env 不一致でも accept
     expect(await verifyJwt(token, SECRET)).not.toBeNull();
+  });
+});
+
+// Refs rust-alc-api#434: auth-worker が cookie JWT を再署名 (rust の鍵不整合による
+// staging login 無限ループの根治) するための signJwt / decodeJwtPayload。
+describe("signJwt + decodeJwtPayload", () => {
+  const now = Math.floor(Date.now() / 1000);
+
+  it("round-trips with verifyJwt (auth-worker 自身の鍵で検証一致)", async () => {
+    const token = await signJwt({ sub: "u1", tenant_id: "t1", exp: now + 3600 }, SECRET);
+    const payload = await verifyJwt(token, SECRET);
+    expect(payload).not.toBeNull();
+    expect(payload!.sub).toBe("u1");
+    expect(payload!.tenant_id).toBe("t1");
+  });
+
+  it("preserves a multi-byte (UTF-8) claim through sign → decode", async () => {
+    const token = await signJwt({ sub: "u1", name: "山田太郎", exp: now + 3600 }, SECRET);
+    const decoded = decodeJwtPayload(token);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.name).toBe("山田太郎");
+  });
+
+  it("env claim is enforced by verifyJwt (#218 cross-env)", async () => {
+    const token = await signJwt({ sub: "u1", env: "staging", exp: now + 3600 }, SECRET);
+    expect(await verifyJwt(token, SECRET, "staging")).not.toBeNull();
+    expect(await verifyJwt(token, SECRET, "prod")).toBeNull();
+  });
+
+  it("decodeJwtPayload returns claims without verifying the signature", async () => {
+    const token = await signJwt({ sub: "u1", role: "admin", exp: now + 3600 }, SECRET);
+    const decoded = decodeJwtPayload(token);
+    expect(decoded!.role).toBe("admin");
+  });
+
+  it("decodeJwtPayload returns null for malformed tokens", () => {
+    expect(decodeJwtPayload("only.two")).toBeNull();
+    expect(decodeJwtPayload("a.@@@.c")).toBeNull();
   });
 });
