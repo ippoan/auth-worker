@@ -39,8 +39,15 @@ describe('buildIntrospectRequest', () => {
 describe('normalizeIntrospectResult', () => {
   it('active:true with all claims', () => {
     expect(
-      normalizeIntrospectResult({ active: true, tenant_id: 't', role: 'admin', email: 'a@b', exp: 10 }),
-    ).toEqual({ active: true, tenant_id: 't', role: 'admin', email: 'a@b', exp: 10 })
+      normalizeIntrospectResult({
+        active: true,
+        tenant_id: 't',
+        role: 'admin',
+        email: 'a@b',
+        sub: 'u1',
+        exp: 10,
+      }),
+    ).toEqual({ active: true, tenant_id: 't', role: 'admin', email: 'a@b', sub: 'u1', exp: 10 })
   })
   it('coerces missing/wrong-typed claims to empty/undefined', () => {
     expect(normalizeIntrospectResult({ active: true })).toEqual({
@@ -48,13 +55,15 @@ describe('normalizeIntrospectResult', () => {
       tenant_id: '',
       role: '',
       email: '',
+      sub: '',
       exp: undefined,
     })
-    expect(normalizeIntrospectResult({ active: true, tenant_id: 1, exp: 'x' })).toEqual({
+    expect(normalizeIntrospectResult({ active: true, tenant_id: 1, sub: 2, exp: 'x' })).toEqual({
       active: true,
       tenant_id: '',
       role: '',
       email: '',
+      sub: '',
       exp: undefined,
     })
   })
@@ -102,10 +111,10 @@ describe('introspectToken', () => {
   })
 
   it('fetches, normalizes and caches an active result', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(okResponse({ active: true, tenant_id: 't', role: 'viewer', email: 'a@b', exp: 9999999999 }))
+    const fetchImpl = vi.fn().mockResolvedValue(okResponse({ active: true, tenant_id: 't', role: 'viewer', email: 'a@b', sub: 'u1', exp: 9999999999 }))
     const cache = new Map()
     const res = await introspectToken({ authWorkerUrl: AUTH, sharedSecret: SECRET, token: 'jwt', origin: ORIGIN, fetchImpl, cache, nowMs: 0 })
-    expect(res).toEqual({ active: true, tenant_id: 't', role: 'viewer', email: 'a@b', exp: 9999999999 })
+    expect(res).toEqual({ active: true, tenant_id: 't', role: 'viewer', email: 'a@b', sub: 'u1', exp: 9999999999 })
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(cache.has(cacheKey('jwt', ORIGIN))).toBe(true)
   })

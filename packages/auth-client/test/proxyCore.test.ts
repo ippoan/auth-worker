@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  buildIdentityHeaders,
   buildProxyHeaders,
   buildTargetUrl,
   classifyProxyResponse,
@@ -18,6 +19,35 @@ function b64url(obj: Record<string, unknown>): string {
 function makeToken(payload: Record<string, unknown>): string {
   return `header.${b64url(payload)}.sig`
 }
+
+describe('buildIdentityHeaders', () => {
+  it('injects X-Tenant-ID + X-User-* + Content-Type from a verified result', () => {
+    expect(
+      buildIdentityHeaders(
+        { active: true, tenant_id: 't1', role: 'admin', email: 'a@b.com', sub: 'u1' },
+        { contentType: 'application/json' },
+      ),
+    ).toEqual({
+      'Content-Type': 'application/json',
+      'X-Tenant-ID': 't1',
+      'X-User-ID': 'u1',
+      'X-User-Email': 'a@b.com',
+      'X-User-Role': 'admin',
+    })
+  })
+
+  it('omits empty fields (kiosk: tenant only, no AuthUser) and Content-Type when absent', () => {
+    expect(
+      buildIdentityHeaders({ active: true, tenant_id: 't1', role: '', email: '', sub: '' }),
+    ).toEqual({ 'X-Tenant-ID': 't1' })
+  })
+
+  it('omits everything when all fields empty', () => {
+    expect(
+      buildIdentityHeaders({ active: true, tenant_id: '', role: '', email: '', sub: '' }),
+    ).toEqual({})
+  })
+})
 
 describe('buildProxyHeaders', () => {
   it('Authorization から tenant_id を抽出して X-Tenant-ID に載せる', () => {
