@@ -163,6 +163,38 @@ export interface IdentityProxyOptions {
 export declare function createIdentityProxyHandler(options: IdentityProxyOptions): EventHandler
 
 /**
+ * auth-worker `/alc-proxy/*` への thin-forward proxy のオプション
+ * (rust-alc-api#434 step 3 方式 B)。consumer は SA key / OIDC mint / introspect
+ * を持たず、service binding で auth-worker に丸投げする。
+ */
+export interface AuthWorkerProxyOptions {
+  /** INTERNAL_SHARED_SECRET (raw)。`X-Alc-Proxy-Secret` に載せて consumer proof
+   *  にする。値 or event 解決関数。 */
+  sharedSecret: string | ((event: H3Event) => string)
+  /** auth-worker `/alc-proxy/*` を叩く fetch。**CF service binding 必須**
+   *  (`env.AUTH_WORKER.fetch.bind(env.AUTH_WORKER)`)。 */
+  authWorkerFetch: (event: H3Event) => typeof fetch
+  /** service binding fetch 用の絶対 URL base (host は binding が無視するので
+   *  任意、path が `/alc-proxy/...` になればよい)。default: 内部 placeholder。 */
+  authWorkerUrl?: string | ((event: H3Event) => string)
+  /** 明示 origin (default: request URL の origin)。`X-Alc-Proxy-Origin` に載る。 */
+  origin?: string
+  /** rust-alc-api 側 path prefix (default: '/api/') */
+  pathPrefix?: string
+  /** auth-worker 側 route prefix (default: '/alc-proxy') */
+  proxyPrefix?: string
+  /** cookie 名 (default 'logi_auth_token') */
+  cookieName?: string
+}
+
+/**
+ * browser JWT + consumer proof secret + origin を `/alc-proxy/*` に service
+ * binding で thin-forward する h3 handler。introspect / OIDC mint は auth-worker
+ * 側で行われる。
+ */
+export declare function createAuthWorkerProxyHandler(options: AuthWorkerProxyOptions): EventHandler
+
+/**
  * service account key で Google OIDC ID token を mint する (Cloud Run IAM 用)。
  * audience 単位で exp 手前まで cache。
  */
@@ -193,6 +225,18 @@ export interface ProxyHeaderInput {
 export type ProxyResponseKind = 'binary' | 'empty' | 'json'
 
 export declare function buildProxyHeaders(input: ProxyHeaderInput): Record<string, string>
+
+/**
+ * auth-worker `/alc-proxy/*` への thin-forward 用ヘッダーを構築する
+ * (rust-alc-api#434 step 3 方式 B)。`X-Alc-Proxy-Secret` (consumer proof) +
+ * `X-Alc-Proxy-Origin` を必ず載せ、browser JWT / content-type を素通しする。
+ */
+export declare function buildAlcProxyHeaders(input: {
+  sharedSecret: string
+  origin: string
+  token?: string
+  contentType?: string
+}): Record<string, string>
 
 /**
  * introspect 検証済み結果から `X-Tenant-ID` + `X-User-ID/Email/Role` を構築する
