@@ -44,3 +44,6 @@ export {
   decodeJwtPayloadFromToken,
   extractTenantIdFromAuth,
 } from '../jwt-core.mjs'
+
+// rust-alc-api#434 step 3: Cloud Run IAM lockdown 用の OIDC ID token mint。
+export { mintGoogleIdToken } from './oidc.mjs'

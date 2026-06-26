@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:b2a0e2a1e43026fd673f827228853a139b765113
+generated-from: auth-worker:5c14979
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」等。
 ---
@@ -67,6 +67,11 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
   `X-Tenant-ID` + `X-User-ID/Email/Role` 注入 → backend 転送。rust-alc-api#434 step 2、AuthUser
   復元対応。`introspectFetch` に CF service binding を渡せば Worker→Worker in-process)。
   pure core は `introspectCore.mjs` / `proxyCore.mjs` (`buildIdentityHeaders` 等、Vitest で test)。
+  **`oidc.mjs` の `mintGoogleIdToken`** (rust-alc-api#434 step 3) — `run.invoker` SA key で
+  Google OIDC ID token を mint (jwt-bearer assertion → token endpoint で交換、audience 単位
+  cache)。`createIdentityProxyHandler` の `oidcServiceAccountKey` option を渡すと
+  `Authorization: Bearer <id_token>` を付けて Cloud Run IAM lockdown 下の rust-alc-api に到達
+  (未設定なら非破壊・無効)。`./server` の named export。
 
 ## CI / publish
 
