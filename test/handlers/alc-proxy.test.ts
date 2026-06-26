@@ -72,7 +72,10 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
   });
 
   it("正常: OIDC Bearer + X-Tenant-ID/X-User-* を注入して ALC_API_ORIGIN に forward", async () => {
-    const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const res = await handleAlcProxy(req("/alc-proxy/api/employees?x=1"), env());
@@ -91,7 +94,10 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
   });
 
   it("POST は body を forward する", async () => {
-    const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     await handleAlcProxy(
