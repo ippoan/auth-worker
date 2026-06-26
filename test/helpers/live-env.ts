@@ -22,8 +22,12 @@ export const JWT_SECRET = "test-jwt-secret-for-integration";
 export const DEL_INVITATION_ID = "dddddddd-0001-0001-0001-dddddddddddd";
 export const DEL_USER_ID = "dddddddd-0002-0002-0002-dddddddddddd";
 
-/** HS256 JWT — rust-alc-api の require_jwt ミドルウェアが検証する */
-export function makeJwt(): string {
+/**
+ * HS256 JWT。auth-worker (handleMyOrgs / handleSwitchOrg) が `env.JWT_SECRET`
+ * で署名検証して X-Tenant-ID + X-User-* を注入する (rust-alc-api#434)。検証鍵と
+ * 一致させたい呼び出し側のため `secret` を渡せる (default は live 用 JWT_SECRET)。
+ */
+export function makeJwt(secret: string = JWT_SECRET): string {
   const header = { alg: "HS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
   const payload = {
@@ -38,7 +42,7 @@ export function makeJwt(): string {
   const b64 = (obj: unknown) =>
     Buffer.from(JSON.stringify(obj)).toString("base64url");
   const unsigned = `${b64(header)}.${b64(payload)}`;
-  const sig = createHmac("sha256", JWT_SECRET)
+  const sig = createHmac("sha256", secret)
     .update(unsigned)
     .digest("base64url");
   return `${unsigned}.${sig}`;
