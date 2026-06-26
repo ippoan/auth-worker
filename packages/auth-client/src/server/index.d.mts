@@ -144,6 +144,16 @@ export interface IdentityProxyOptions {
   cookieName?: string
   /** introspect cache TTL cap (ms) */
   ttlMs?: number
+  /**
+   * rust-alc-api#434 step 3: Cloud Run IAM lockdown 用の run.invoker SA key
+   * (JSON 文字列、resolve 済み)。設定時のみ Google OIDC ID token を mint して
+   * `Authorization: Bearer <id_token>` を付与する (未設定なら非破壊・無効)。
+   */
+  oidcServiceAccountKey?: string | ((event: H3Event) => string | undefined)
+  /** OIDC `aud` (= 叩く Cloud Run service URL)。default: backendUrl の origin */
+  oidcAudience?: string | ((event: H3Event) => string)
+  /** OIDC token endpoint 用 fetch (test 注入)。default: global fetch */
+  oidcFetch?: (event: H3Event) => typeof fetch
 }
 
 /**
@@ -151,6 +161,22 @@ export interface IdentityProxyOptions {
  * 1 本化した h3 handler。inactive は 401。
  */
 export declare function createIdentityProxyHandler(options: IdentityProxyOptions): EventHandler
+
+/**
+ * service account key で Google OIDC ID token を mint する (Cloud Run IAM 用)。
+ * audience 単位で exp 手前まで cache。
+ */
+export declare function mintGoogleIdToken(
+  saKeyJson: string | object,
+  audience: string,
+  opts?: {
+    fetchImpl?: typeof fetch
+    subtle?: SubtleCrypto
+    now?: number
+    nowMs?: number
+    noCache?: boolean
+  },
+): Promise<string>
 
 // ----- proxyCore -----
 

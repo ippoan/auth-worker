@@ -36,6 +36,7 @@ import {
   parseJsonBody,
 } from './proxyCore.mjs'
 import { introspectToken } from './introspectCore.mjs'
+import { mintGoogleIdToken } from './oidc.mjs'
 
 /** logi_auth_token cookie の既定名 (auth.mjs と同じ)。 */
 const DEFAULT_COOKIE_NAME = 'logi_auth_token'
@@ -157,6 +158,21 @@ export function createIdentityProxyHandler(options) {
     const headers = buildIdentityHeaders(result, {
       contentType: getHeader(event, 'content-type'),
     })
+
+    // rust-alc-api#434 step 3: Cloud Run IAM lockdown 用の OIDC mint。
+    // `oidcServiceAccountKey` (run.invoker SA key) がある時だけ Google 署名の
+    // ID token を mint し Authorization に載せる (= binding 未設定なら非破壊・無効)。
+    // aud は明示 `oidcAudience` 優先、無ければ backendUrl の origin
+    // (Cloud Run service URL を backendUrl に向けている前提)。
+    const saKey = resolve(options.oidcServiceAccountKey)
+    if (saKey) {
+      const audience = resolve(options.oidcAudience) || new URL(backendUrl).origin
+      const idToken = await mintGoogleIdToken(saKey, audience, {
+        fetchImpl: options.oidcFetch ? options.oidcFetch(event) : undefined,
+      })
+      headers['Authorization'] = `Bearer ${idToken}`
+    }
+
     const method = event.method
     const url = buildTargetUrl(backendUrl, pathPrefix, path, getQuery(event))
     const fetchOptions = { method, headers }
