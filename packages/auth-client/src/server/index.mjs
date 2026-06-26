@@ -12,7 +12,10 @@
  */
 export { getParentDomainFromHost, resolveAuthAction, checkTenantId } from './authLogic.mjs'
 
-export { createApiProxyHandler } from './proxy.mjs'
+// createApiProxyHandler = 署名なし decode で X-Tenant-ID だけ載せる旧 proxy。
+// createIdentityProxyHandler = introspect 検証 + X-Tenant-ID/X-User-* 注入
+// (rust-alc-api#434 step 2、AuthUser 復元対応)。
+export { createApiProxyHandler, createIdentityProxyHandler } from './proxy.mjs'
 
 // issue #290 Phase 2: introspect ベースの認証 (署名検証 + APP_TENANT_ACL 判定を
 // auth-worker に集約)。`requireAuth` は h3 ガード、core は h3 非依存で再利用可。

@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:d4f712e5f0a86a27bb21790ac91cae1f22f23d53
+generated-from: auth-worker:2363a77e1ab949e0135b45be6b72d07275b3361c
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」等。
 ---
@@ -60,6 +60,12 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
 
 - CCoW container の OAT (`/home/claude/.claude/remote/.oauth_token`) → `POST {auth}/mcp/pair/grant-via-oat` で `binding_jwt` を mint (install.sh の silent bootstrap、`secret-inject` skill も同経路)。
 - consumer (alc-app / nuxt-trouble / nuxt-pwa-carins) は `@ippoan/auth-client` を使う。
+- **`@ippoan/auth-client/server`** (`packages/auth-client/src/server/`) — Nitro server route 向け
+  helper (`.mjs`+`.d.mts`)。`requireAuth` (introspect ガード) / `createApiProxyHandler` (署名なし
+  decode で X-Tenant-ID だけ載せる旧 proxy) / **`createIdentityProxyHandler`** (introspect 検証 →
+  `X-Tenant-ID` + `X-User-ID/Email/Role` 注入 → backend 転送。rust-alc-api#434 step 2、AuthUser
+  復元対応。`introspectFetch` に CF service binding を渡せば Worker→Worker in-process)。
+  pure core は `introspectCore.mjs` / `proxyCore.mjs` (`buildIdentityHeaders` 等、Vitest で test)。
 
 ## CI / publish
 

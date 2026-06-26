@@ -39,6 +39,28 @@ export function buildProxyHeaders(input) {
 }
 
 /**
+ * introspect 検証済み結果から backend へ注入する identity ヘッダーを構築する
+ * (Refs ippoan/rust-alc-api#434)。`buildProxyHeaders` (= 署名なし decode で
+ * X-Tenant-ID だけ載せる旧経路) と違い、auth-worker `/auth/introspect` で
+ * 検証済みの identity を **X-Tenant-ID + X-User-ID/Email/Role** として載せる。
+ *
+ * rust-alc-api の `require_tenant_header` は X-Tenant-ID で tenant を、
+ * X-User-ID/Email/Role が **3 つ揃って初めて** AuthUser を復元する。よって
+ * 空フィールドは省略する (= kiosk 等で user 情報が無い時は X-User-* を出さず、
+ * tenant scoping だけ通す)。Authorization は **載せない** (rust は JWT を
+ * 検証しないため不要、かつ転送面を最小化)。
+ */
+export function buildIdentityHeaders(result, opts = {}) {
+  const headers = {}
+  if (opts.contentType) headers['Content-Type'] = opts.contentType
+  if (result.tenant_id) headers['X-Tenant-ID'] = result.tenant_id
+  if (result.sub) headers['X-User-ID'] = result.sub
+  if (result.email) headers['X-User-Email'] = result.email
+  if (result.role) headers['X-User-Role'] = result.role
+  return headers
+}
+
+/**
  * backend レスポンスの転送方法を分類する。
  * - `/download` を含む path / 非 JSON content-type → binary パススルー
  * - 204 → empty

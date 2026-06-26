@@ -50,7 +50,7 @@ export declare function checkTenantId(
 /** auth-worker `/auth/introspect` の正規化済み結果。 */
 export type IntrospectResult =
   | { active: false }
-  | { active: true; tenant_id: string; role: string; email: string; exp?: number }
+  | { active: true; tenant_id: string; role: string; email: string; sub: string; exp?: number}
 
 export interface IntrospectTokenOptions {
   /** auth-worker origin (例: https://auth.ippoan.org) */
@@ -113,7 +113,7 @@ export declare function _clearIntrospectCache(): void
 export declare function requireAuth(
   event: H3Event,
   options: RequireAuthOptions,
-): Promise<{ active: true; tenant_id: string; role: string; email: string; exp?: number }>
+): Promise<{ active: true; tenant_id: string; role: string; email: string; sub: string; exp?: number}>
 
 // ----- proxy -----
 
@@ -125,6 +125,32 @@ export interface ApiProxyOptions {
 }
 
 export declare function createApiProxyHandler(options: ApiProxyOptions): EventHandler
+
+/** introspect 検証 + identity 注入 proxy のオプション (rust-alc-api#434 step 2)。 */
+export interface IdentityProxyOptions {
+  /** backend (rust-alc-api) の origin。値 or event から解決する関数 */
+  backendUrl: string | ((event: H3Event) => string)
+  /** auth-worker origin (introspect 先)。値 or event 解決関数 */
+  authWorkerUrl: string | ((event: H3Event) => string)
+  /** INTERNAL_SHARED_SECRET (raw)。値 or event 解決関数 */
+  sharedSecret: string | ((event: H3Event) => string)
+  /** introspect 用 fetch。CF service binding 推奨 (env.AUTH_WORKER.fetch)。 */
+  introspectFetch?: (event: H3Event) => typeof fetch
+  /** 明示 origin (default: request URL の origin) */
+  origin?: string
+  /** 転送先 path prefix (default: '/api/') */
+  pathPrefix?: string
+  /** cookie 名 (default 'logi_auth_token') */
+  cookieName?: string
+  /** introspect cache TTL cap (ms) */
+  ttlMs?: number
+}
+
+/**
+ * introspect 検証 → X-Tenant-ID + X-User-ID/Email/Role 注入 → backend 転送を
+ * 1 本化した h3 handler。inactive は 401。
+ */
+export declare function createIdentityProxyHandler(options: IdentityProxyOptions): EventHandler
 
 // ----- proxyCore -----
 
@@ -141,6 +167,15 @@ export interface ProxyHeaderInput {
 export type ProxyResponseKind = 'binary' | 'empty' | 'json'
 
 export declare function buildProxyHeaders(input: ProxyHeaderInput): Record<string, string>
+
+/**
+ * introspect 検証済み結果から `X-Tenant-ID` + `X-User-ID/Email/Role` を構築する
+ * (rust-alc-api#434)。空フィールドは省略する。
+ */
+export declare function buildIdentityHeaders(
+  result: { active: true; tenant_id: string; role: string; email: string; sub: string; exp?: number },
+  opts?: { contentType?: string },
+): Record<string, string>
 
 export declare function classifyProxyResponse(
   status: number,

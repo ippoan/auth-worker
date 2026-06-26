@@ -58,6 +58,9 @@ export function normalizeIntrospectResult(data) {
     tenant_id: typeof data.tenant_id === 'string' ? data.tenant_id : '',
     role: typeof data.role === 'string' ? data.role : '',
     email: typeof data.email === 'string' ? data.email : '',
+    // sub (= user_id) を保持する。rust-alc-api#434 で proxy が X-User-ID に載せ、
+    // require_tenant_header が AuthUser を復元するのに使う。
+    sub: typeof data.sub === 'string' ? data.sub : '',
     exp: typeof data.exp === 'number' ? data.exp : undefined,
   }
 }
