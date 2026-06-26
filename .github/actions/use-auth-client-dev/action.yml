@@ -1,5 +1,5 @@
 name: 'Use auth-client dev'
-description: 'Install @ippoan/auth-client@dev for PR testing'
+description: 'Overlay @ippoan/auth-client@dev for staging (PR / branch push); skip on v* tag so prod uses the pinned stable version'
 inputs:
   working-directory:
     description: 'npm project directory'
@@ -11,8 +11,15 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # staging チャネル = dev / prod (v* tag) = package.json の stable pin、という
+    # 二系統運用 (Refs rust-alc-api#434)。tag push 以外 (= PR / main 等の branch
+    # push、いずれも staging 文脈) では @dev を overlay install して staging を
+    # bleeding-edge dev チャネルで検証する。v* tag push (= prod deploy) では
+    # overlay せず package.json の `^x.y.z` 固定版 (= 直近 release tag) を使う。
+    # 旧条件は `pull_request` のみだったため main push の検証が古い dev (npm#7562)
+    # で typecheck 赤になっていた (= これを解消)。
     - name: Install auth-client@dev
-      if: github.event_name == 'pull_request'
+      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: npm install @ippoan/auth-client@dev
