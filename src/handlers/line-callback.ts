@@ -153,7 +153,9 @@ export async function handleLineCallback(request: Request, env: Env): Promise<Re
     { line_user_id: lineUserId, line_name: name },
     env.OAUTH_STATE_SECRET,
   );
+  // line_name は表示用 (auth には使わない、select-tenant は token 内の値を使う) なので
+  // fragment に同梱して front-end の「<name> さん」表示に供する。line_user_id は token 内のみ。
   const tenantList = JSON.stringify(tenants.map((t) => ({ id: t.tenant_id, name: t.name })));
-  const frag = new URLSearchParams({ select_token: selectToken, tenants: tenantList });
+  const frag = new URLSearchParams({ select_token: selectToken, line_name: name, tenants: tenantList });
   return new Response(null, { status: 302, headers: { Location: `${redirectUri}#${frag.toString()}` } });
 }
