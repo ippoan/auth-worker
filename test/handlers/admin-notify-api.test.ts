@@ -52,7 +52,7 @@ describe("handleAdminNotifyApi (rust-alc-api#434 admin/notify forward)", () => {
 
   it("正常 GET: X-Tenant-ID/X-User-* を注入して ALC_API_ORIGIN/api/notify/* に forward", async () => {
     const fetchMock = vi.fn(
-      async (): Promise<Response> =>
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response(JSON.stringify([{ id: "u1" }]), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -77,7 +77,7 @@ describe("handleAdminNotifyApi (rust-alc-api#434 admin/notify forward)", () => {
 
   it("POST は method/body/Content-Type を forward する", async () => {
     const fetchMock = vi.fn(
-      async (): Promise<Response> => new Response("{}", { status: 200 }),
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => new Response("{}", { status: 200 }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
@@ -98,7 +98,7 @@ describe("handleAdminNotifyApi (rust-alc-api#434 admin/notify forward)", () => {
 
   it("rust が非 2xx を返したら status を透過する", async () => {
     const fetchMock = vi.fn(
-      async (): Promise<Response> => new Response("nope", { status: 404 }),
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => new Response("nope", { status: 404 }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
