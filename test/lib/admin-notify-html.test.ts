@@ -59,9 +59,12 @@ describe("renderAdminNotifyPage", () => {
     expect(html).toContain("recipient_ids: [id]");
   });
 
-  it("prepends /api prefix when building fetch URLs (rust-alc-api routes are nested under /api)", () => {
+  it("routes fetch through same-origin /admin/notify/api forward proxy (#434, rust 直叩きを廃止)", () => {
     const html = renderAdminNotifyPage(ORIGIN);
-    expect(html).toContain("ALC_API + '/api' + path");
+    // #434: rust 直叩き (ALC_API + '/api') は tenant header 不在で 401 になるため、
+    // 同一オリジンの forward proxy 経由 (auth-worker が JWT 検証 + X-Tenant-ID 注入) に変更。
+    expect(html).toContain("'/admin/notify/api' + path");
+    expect(html).not.toContain("ALC_API + '/api' + path");
   });
 
   it("shows directory.read scope guidance when LINE WORKS returns 403", () => {
