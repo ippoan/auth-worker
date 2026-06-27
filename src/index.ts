@@ -8,6 +8,9 @@ import { handleGhapiRedirect } from "./handlers/ghapi-redirect";
 import { handleGhapiCallback } from "./handlers/ghapi-callback";
 import { handleLineworksRedirect } from "./handlers/lineworks-redirect";
 import { handleLineworksCallback } from "./handlers/lineworks-callback";
+import { handleLineRedirect } from "./handlers/line-redirect";
+import { handleLineCallback } from "./handlers/line-callback";
+import { handleLineSelectTenant } from "./handlers/line-select-tenant";
 import { handleAdminSsoPage, handleAdminSsoCallback } from "./handlers/admin-sso";
 import { handleAdminUsersPage, handleAdminUsersCallback } from "./handlers/admin-users";
 import { handleSsoList, handleSsoUpsert, handleSsoDelete } from "./handlers/api-sso";
@@ -154,6 +157,10 @@ export interface Env {
   LOGIN_DELEGATE_TO?: string;
   /** AES-256-GCM 鍵素材 (rust-alc-api と共有)。bot_secret_encrypted の復号で SHA-256(SSO_ENCRYPTION_KEY) を 32B 鍵として使う。 */
   SSO_ENCRYPTION_KEY: string;
+  /** LINE Login (notify recipient OAuth) のグローバル channel (rust-alc-api#434 Phase 3)。
+   *  未設定なら `/oauth/line/*` は 503。wrangler vars / secret は運用 step で投入する。 */
+  LINE_LOGIN_CHANNEL_ID?: string;
+  LINE_LOGIN_CHANNEL_SECRET?: SecretBinding;
   /** LINE WORKS webhook 受信用 Durable Object Namespace (bot_id ごとに 1 instance)。 */
   LINEWORKS_WEBHOOK_DO: DurableObjectNamespace;
   /** MCP OAuth Provider 用 GitHub OAuth App credentials.
@@ -441,6 +448,12 @@ export default {
             return await handleLineworksRedirect(request, env);
           case "/oauth/lineworks/callback":
             return await handleLineworksCallback(request, env);
+          case "/oauth/line/redirect":
+            return await handleLineRedirect(request, env);
+          case "/oauth/line/callback":
+            return await handleLineCallback(request, env);
+          case "/oauth/line/select-tenant":
+            return await handleLineSelectTenant(request, env);
           case "/auth/woff-config":
             return await handleWoffConfig(request, env);
           case "/admin/sso":

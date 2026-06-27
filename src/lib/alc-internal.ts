@@ -79,3 +79,50 @@ export async function saveRefreshToken(
   });
   if (!res.ok) throw new Error(`internal refresh-token failed: ${res.status}`);
 }
+
+/** line_user_id で user を逆引きする (未登録は null)。 */
+export async function findUserByLineId(
+  env: Env,
+  lineUserId: string,
+): Promise<InternalUserWithSlug | null> {
+  const qs = `line_user_id=${encodeURIComponent(lineUserId)}`;
+  const res = await internalFetch(env, `/api/internal/auth/users/by-line-id?${qs}`);
+  if (!res.ok) throw new Error(`internal by-line-id failed: ${res.status}`);
+  return (await res.json()) as InternalUserWithSlug | null;
+}
+
+/** line_user_id で user を find-or-create する。 */
+export async function upsertLineUser(
+  env: Env,
+  body: { tenant_id: string; line_user_id: string; name: string },
+): Promise<InternalUserWithSlug> {
+  const res = await internalFetch(env, `/api/internal/auth/users/upsert-line`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`internal upsert-line failed: ${res.status}`);
+  return (await res.json()) as InternalUserWithSlug;
+}
+
+/** LINE recipient を自動登録する (QR 招待フロー)。 */
+export async function registerLineRecipient(
+  env: Env,
+  body: { tenant_id: string; name: string; line_user_id: string },
+): Promise<void> {
+  const res = await internalFetch(env, `/api/internal/auth/recipients/register-line`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`internal register-line failed: ${res.status}`);
+}
+
+/** notify_recipients から line_user_id で tenant を逆引きする (複数テナント対応)。 */
+export async function recipientsByLineId(
+  env: Env,
+  lineUserId: string,
+): Promise<Array<{ tenant_id: string; name: string }>> {
+  const qs = `line_user_id=${encodeURIComponent(lineUserId)}`;
+  const res = await internalFetch(env, `/api/internal/auth/recipients/by-line-id?${qs}`);
+  if (!res.ok) throw new Error(`internal recipients-by-line-id failed: ${res.status}`);
+  return (await res.json()) as Array<{ tenant_id: string; name: string }>;
+}
