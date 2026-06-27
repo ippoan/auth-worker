@@ -34,6 +34,7 @@
 import type { Env } from "../index";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwtSignatureOnly } from "../lib/mcp-jwt";
+import { resolveSecret } from "../lib/secret";
 
 function jsonNoStore(data: unknown, status = 200): Response {
   const res = new Response(JSON.stringify(data), {
@@ -56,10 +57,11 @@ export async function handleMcpJwtPickup(
   env: Env,
 ): Promise<Response> {
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
   if (
     !env.MCP_OAUTH_KV ||
     !jwtSecret ||
-    !env.SSO_ENCRYPTION_KEY
+    !ssoKey
   ) {
     return jsonNoStore({ error: "server_error" }, 503);
   }
@@ -88,7 +90,7 @@ export async function handleMcpJwtPickup(
 
   let plaintext: string;
   try {
-    plaintext = await decryptWithKey(ciphertext, env.SSO_ENCRYPTION_KEY);
+    plaintext = await decryptWithKey(ciphertext, ssoKey);
   } catch {
     // Decrypt failed (key rotated, corrupted entry). Surface as no_pickup —
     // the binary will fall through to the device-URL error and the user

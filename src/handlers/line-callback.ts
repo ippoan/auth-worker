@@ -84,7 +84,7 @@ export async function handleLineCallback(request: Request, env: Env): Promise<Re
     return new Response("Invalid redirect_uri in state", { status: 400 });
   }
 
-  const channelId = env.LINE_LOGIN_CHANNEL_ID;
+  const channelId = await resolveSecret(env.LINE_LOGIN_CHANNEL_ID);
   const channelSecret = await resolveSecret(env.LINE_LOGIN_CHANNEL_SECRET);
   if (!channelId || !channelSecret) {
     return new Response("line login not configured", { status: 503 });

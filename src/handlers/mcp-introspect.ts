@@ -39,6 +39,7 @@ import { getLiteralAudAllowlist } from "../lib/mcp-aud";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
+import { resolveSecret } from "../lib/secret";
 
 /**
  * binding_jwt の aud claim 受理 predicate を構築する。
@@ -154,9 +155,13 @@ async function respondWithGithubToken(
   if (!encrypted) {
     return jsonNoStore({ active: false });
   }
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
+  if (!ssoKey) {
+    return jsonNoStore({ active: false });
+  }
   let github_token: string;
   try {
-    github_token = await decryptWithKey(encrypted, env.SSO_ENCRYPTION_KEY!);
+    github_token = await decryptWithKey(encrypted, ssoKey);
   } catch {
     return jsonNoStore({ active: false });
   }
@@ -183,10 +188,11 @@ export async function handleMcpIntrospect(
   // 503 を出して mode 2 を実質無効化する。
   const sharedSecrets = await resolveAllSharedSecrets(env);
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
   if (
     !env.MCP_OAUTH_KV ||
     !jwtSecret ||
-    !env.SSO_ENCRYPTION_KEY ||
+    !ssoKey ||
     !sharedSecrets
   ) {
     return jsonNoStore({ active: false, error: "server_error" }, 503);

@@ -61,7 +61,7 @@ export async function handleLineworksCallback(request: Request, env: Env): Promi
   if (!jwtSecret) {
     return new Response("server_error", { status: 503 });
   }
-  const ssoKey = env.SSO_ENCRYPTION_KEY || jwtSecret;
+  const ssoKey = (await resolveSecret(env.SSO_ENCRYPTION_KEY)) || jwtSecret;
   let clientSecret: string;
   try {
     clientSecret = await decryptBotSecret(config.client_secret_encrypted, ssoKey);

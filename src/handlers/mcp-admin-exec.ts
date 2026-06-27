@@ -24,6 +24,7 @@ import type { Env } from "../index";
 import { resolveMcpJwtSecret, verifyMcpJwt } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 import { decryptWithKey } from "../lib/mcp-crypto";
+import { resolveSecret } from "../lib/secret";
 
 const MCP_AUD_LEGACY = "github-mcp-server-rs";
 const GITHUB_API = "https://api.github.com";
@@ -87,10 +88,11 @@ export async function handleMcpAdminExec(
   env: Env,
 ): Promise<Response> {
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
   if (
     !env.MCP_OAUTH_KV ||
     !jwtSecret ||
-    !env.SSO_ENCRYPTION_KEY ||
+    !ssoKey ||
     !env.AUTH_WORKER_ORIGIN
   ) {
     return jsonResponse(
@@ -189,7 +191,7 @@ export async function handleMcpAdminExec(
   }
   let userGithubToken: string;
   try {
-    userGithubToken = await decryptWithKey(encrypted, env.SSO_ENCRYPTION_KEY);
+    userGithubToken = await decryptWithKey(encrypted, ssoKey);
   } catch {
     return jsonResponse(
       {

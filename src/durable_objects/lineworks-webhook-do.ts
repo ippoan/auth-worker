@@ -15,7 +15,7 @@
 
 import { decryptBotSecret, signWebhookBody, constantTimeEqual, base64Decode } from "../lib/lineworks-crypto";
 import { signInternalJWT } from "../lib/internal-jwt";
-import type { SecretBinding } from "../lib/secret";
+import { resolveSecret, type SecretBinding } from "../lib/secret";
 
 interface DOEnv {
   ALC_API_ORIGIN: string;
@@ -25,7 +25,9 @@ interface DOEnv {
   /** Refs #218: internal JWT の `env` claim 用 ("staging"/"prod")。
    *  `signInternalJWT()` が要求する。 */
   WORKER_ENV: string;
-  SSO_ENCRYPTION_KEY: string;
+  /** Refs #206: Secrets Store binding 化済。`getBotSecret()` 内部で
+   *  `resolveSecret()` 経由で string 化される。 */
+  SSO_ENCRYPTION_KEY: SecretBinding;
 }
 
 /** WebhookEvent: rust-alc-api 側 `InternalEventBody` と互換 */
@@ -141,7 +143,9 @@ export class LineworksWebhookDO {
       enc = await this.fetchBotSecretEncrypted(botId);
       await this.state.storage.put(STORAGE_KEY_BOT_SECRET, enc);
     }
-    this.decryptedSecret = await decryptBotSecret(enc, this.env.SSO_ENCRYPTION_KEY);
+    const ssoKey = await resolveSecret(this.env.SSO_ENCRYPTION_KEY);
+    if (!ssoKey) throw new Error("SSO_ENCRYPTION_KEY not bound");
+    this.decryptedSecret = await decryptBotSecret(enc, ssoKey);
     return this.decryptedSecret;
   }
 

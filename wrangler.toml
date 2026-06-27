@@ -150,6 +150,24 @@ binding = "INTERNAL_SHARED_SECRET_CI_DASHBOARD"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "JWT_FOR_CI_DASHBOARD"
 
+# rust-alc-api#434 Phase 2/3: GCP source-of-truth から sync した secret を bind。
+# rust の cloudrun/render.sh が同名 GCP secret を使うので、CF 側も同一値 = parity 担保。
+# SSO_ENCRYPTION_KEY は MCP github-token 暗号化 + LINE WORKS client_secret 復号で共用。
+[[secrets_store_secrets]]
+binding = "SSO_ENCRYPTION_KEY"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "sso-encryption-key"
+
+[[secrets_store_secrets]]
+binding = "LINE_LOGIN_CHANNEL_ID"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "line-login-channel-id"
+
+[[secrets_store_secrets]]
+binding = "LINE_LOGIN_CHANNEL_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "line-login-channel-secret"
+
 # LINE WORKS webhook 受信用 Durable Object (bot_id ごとに 1 instance)
 [[durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
@@ -368,6 +386,22 @@ secret_name = "GITHUB_MCP_USER_ALLOWLIST"
 binding = "GITHUB_WEBHOOK_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "GITHUB_WEBHOOK_SECRET"
+
+# rust-alc-api#434 Phase 2/3: GCP source-of-truth から sync した secret を bind (staging)。
+[[env.staging.secrets_store_secrets]]
+binding = "SSO_ENCRYPTION_KEY"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "sso-encryption-key"
+
+[[env.staging.secrets_store_secrets]]
+binding = "LINE_LOGIN_CHANNEL_ID"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "line-login-channel-id"
+
+[[env.staging.secrets_store_secrets]]
+binding = "LINE_LOGIN_CHANNEL_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "line-login-channel-secret"
 
 # Google Health API OAuth Client — hcreader-worker 連携用 (`/oauth/ghapi/*`)。
 # Google Cloud Console で `https://auth-staging.ippoan.org/oauth/ghapi/callback`

@@ -63,12 +63,13 @@ export async function handleMcpDeviceCallback(
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
   const githubClientSecret = await resolveSecret(env.GITHUB_MCP_CLIENT_SECRET);
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
   if (
     !env.MCP_OAUTH_KV ||
     !githubClientId ||
     !githubClientSecret ||
     !jwtSecret ||
-    !env.SSO_ENCRYPTION_KEY ||
+    !ssoKey ||
     !env.OAUTH_STATE_SECRET
   ) {
     return htmlResponse(
@@ -207,7 +208,7 @@ export async function handleMcpDeviceCallback(
 
   // ── success: KV 状態更新 + github_token 暗号化保管 ─────────────────────
   const sub = `github:${login}`;
-  const encrypted = await encryptWithKey(ghToken, env.SSO_ENCRYPTION_KEY);
+  const encrypted = await encryptWithKey(ghToken, ssoKey);
   await env.MCP_OAUTH_KV.put(`github_token:${sub}`, encrypted, {
     expirationTtl: GITHUB_TOKEN_TTL_SEC,
   });
