@@ -363,6 +363,13 @@ binding = "JWT_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "JWT_SECRET"
 
+# Bot Config Import (developer 専用) が staging の /api/staging/import を叩く際の
+# X-Staging-Key (rust-alc-api#391)。GCP ALC_STAGING_API_KEY から sync 済み。staging 専用。
+[[env.staging.secrets_store_secrets]]
+binding = "ALC_STAGING_API_KEY"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "ALC_STAGING_API_KEY"
+
 # rust-alc-api#434 step 3 (方式 B): run.invoker SA key (staging。3a で staging の
 # backend/gateway に run.invoker 付与 + ALC_API_PROXY_SA_KEY を GCP/CF 投入済み)。
 [[env.staging.secrets_store_secrets]]
