@@ -26,6 +26,7 @@ vi.mock("../../src/lib/alc-internal", () => ({
 import { handleLineRedirect } from "../../src/handlers/line-redirect";
 import { handleLineCallback } from "../../src/handlers/line-callback";
 import { handleLineSelectTenant } from "../../src/handlers/line-select-tenant";
+import { signSelectToken, verifySelectToken } from "../../src/lib/line-select-token";
 import { isAllowedRedirectUri, verifyOAuthState } from "../../src/lib/security";
 import { exchangeCode, fetchProfile } from "../../src/lib/line-oauth";
 import {
@@ -170,8 +171,11 @@ describe("handleLineCallback", () => {
     const res = await handleLineCallback(req("/oauth/line/callback?code=abc&state=x"), env);
     expect(res.status).toBe(302);
     const loc = res.headers.get("Location")!;
-    expect(loc).toContain("line_user_id=Uxxxx");
+    // 生 line_user_id ではなく署名済み select_token を fragment で渡す。
+    expect(loc).toContain("#");
+    expect(loc).toContain("select_token=");
     expect(loc).toContain("tenants=");
+    expect(loc).not.toContain("Uxxxx");
   });
 });
 
@@ -183,25 +187,57 @@ describe("handleLineSelectTenant", () => {
     });
   }
 
+  const SECRET = "test-oauth-state-secret-32chars!"; // createMockEnv の OAUTH_STATE_SECRET
+
   it("400 on missing fields", async () => {
-    const res = await handleLineSelectTenant(post({ line_user_id: "U" }), env);
+    const res = await handleLineSelectTenant(post({ select_token: "x" }), env);
     expect(res.status).toBe(400);
   });
 
+  it("401 on invalid/garbage select_token", async () => {
+    const res = await handleLineSelectTenant(post({ select_token: "garbage.sig", tenant_id: "t1" }), env);
+    expect(res.status).toBe(401);
+  });
+
   it("403 when not a recipient of tenant", async () => {
+    const token = await signSelectToken({ line_user_id: "U", line_name: "N" }, SECRET);
     mockRecipients.mockResolvedValue([{ tenant_id: "other", name: "O" }]);
-    const res = await handleLineSelectTenant(post({ line_user_id: "U", tenant_id: "t1", line_name: "N" }), env);
+    const res = await handleLineSelectTenant(post({ select_token: token, tenant_id: "t1" }), env);
     expect(res.status).toBe(403);
   });
 
-  it("200 JSON on success", async () => {
+  it("200 JSON on success (line_user_id from token, not body)", async () => {
+    const token = await signSelectToken({ line_user_id: "U", line_name: "N" }, SECRET);
     mockRecipients.mockResolvedValue([{ tenant_id: "t1", name: "T1" }]);
     mockFindUser.mockResolvedValue(null);
     mockUpsert.mockResolvedValue(user);
-    const res = await handleLineSelectTenant(post({ line_user_id: "U", tenant_id: "t1", line_name: "N" }), env);
+    const res = await handleLineSelectTenant(post({ select_token: token, tenant_id: "t1" }), env);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { access_token: string; refresh_token: string; expires_in: number };
     expect(json.refresh_token).toContain("rt_");
     expect(json.expires_in).toBe(3600);
+    // token から復元した line_user_id "U" で recipient/upsert された。
+    expect(mockRecipients).toHaveBeenCalledWith(env, "U");
+  });
+});
+
+describe("line-select-token sign/verify", () => {
+  const SECRET = "secret-32chars-padding-aaaaaaaaaa";
+
+  it("roundtrips line_user_id / line_name", async () => {
+    const t = await signSelectToken({ line_user_id: "U1", line_name: "田中" }, SECRET, 1000);
+    const v = await verifySelectToken(t, SECRET, 1000);
+    expect(v).toEqual({ line_user_id: "U1", line_name: "田中" });
+  });
+
+  it("rejects expired token (>600s)", async () => {
+    const t = await signSelectToken({ line_user_id: "U1", line_name: "N" }, SECRET, 1000);
+    expect(await verifySelectToken(t, SECRET, 1000 + 601)).toBeNull();
+  });
+
+  it("rejects tampered signature / wrong secret", async () => {
+    const t = await signSelectToken({ line_user_id: "U1", line_name: "N" }, SECRET, 1000);
+    expect(await verifySelectToken(t, "another-secret-padding-bbbbbbbb", 1000)).toBeNull();
+    expect(await verifySelectToken(t.slice(0, -2) + "xx", SECRET, 1000)).toBeNull();
   });
 });
