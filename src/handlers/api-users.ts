@@ -4,6 +4,10 @@
  */
 
 import type { Env } from "../index";
+import {
+  buildAdminForwardHeaders,
+  debugRustResponse,
+} from "../lib/admin-proxy";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -27,12 +31,16 @@ export async function handleUsersList(
   const token = extractToken(request);
   if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
 
+  const headers = await buildAdminForwardHeaders(token, env, "users_list");
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
+
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/users`, {
-    headers: { "Authorization": `Bearer ${token}` },
+    headers,
   });
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "users_list", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 
@@ -46,12 +54,21 @@ export async function handleInvitationsList(
   const token = extractToken(request);
   if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/users/invitations`, {
-    headers: { "Authorization": `Bearer ${token}` },
-  });
+  const headers = await buildAdminForwardHeaders(
+    token,
+    env,
+    "users_invitations",
+  );
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const resp = await fetch(
+    `${env.ALC_API_ORIGIN}/api/admin/users/invitations`,
+    { headers },
+  );
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "users_invitations", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 
@@ -70,17 +87,20 @@ export async function handleInviteUser(
     return jsonResponse({ error: "email is required" }, 400);
   }
 
+  const headers = await buildAdminForwardHeaders(token, env, "users_invite", {
+    "Content-Type": "application/json",
+  });
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
+
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/users/invite`, {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({ email: body.email, role: body.role || "admin" }),
   });
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "users_invite", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 
@@ -99,13 +119,24 @@ export async function handleDeleteInvitation(
     return jsonResponse({ error: "id is required" }, 400);
   }
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/users/invite/${body.id}`, {
-    method: "DELETE",
-    headers: { "Authorization": `Bearer ${token}` },
-  });
+  const headers = await buildAdminForwardHeaders(
+    token,
+    env,
+    "users_invite_delete",
+  );
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const resp = await fetch(
+    `${env.ALC_API_ORIGIN}/api/admin/users/invite/${body.id}`,
+    {
+      method: "DELETE",
+      headers,
+    },
+  );
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "users_invite_delete", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 
@@ -124,13 +155,17 @@ export async function handleDeleteUser(
     return jsonResponse({ error: "id is required" }, 400);
   }
 
+  const headers = await buildAdminForwardHeaders(token, env, "users_delete");
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
+
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/users/${body.id}`, {
     method: "DELETE",
-    headers: { "Authorization": `Bearer ${token}` },
+    headers,
   });
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "users_delete", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 

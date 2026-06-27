@@ -291,6 +291,9 @@ AUTH_WORKER_ORIGIN = "https://auth-staging.ippoan.org"
 ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "staging"
+# admin proxy 等の網羅ログ (verify 結果 / 注入 claims / rust 応答) を有効化。
+# staging 専用 (prod top-level [vars] には入れない、Refs rust-alc-api#434 admin 401 調査)。
+DEBUG = "true"
 EGOV_AUTH_BASE = "https://account2.sbx.e-gov.go.jp/auth"
 EGOV_CLIENT_ID = "K26XGOmbDusxfKsp"
 # See top-level [vars] for rationale. Same value on staging + prod per

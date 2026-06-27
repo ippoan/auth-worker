@@ -4,7 +4,14 @@
  */
 
 import type { Env } from "../index";
-import type { BotConfigListResponse, BotConfigResponse } from "../types/alc-api";
+import type {
+  BotConfigListResponse,
+  BotConfigResponse,
+} from "../types/alc-api";
+import {
+  buildAdminForwardHeaders,
+  debugRustResponse,
+} from "../lib/admin-proxy";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -30,16 +37,20 @@ export async function handleBotConfigList(
 
   console.log(JSON.stringify({ event: "bot_config_list" }));
 
+  const headers = await buildAdminForwardHeaders(token, env, "bot_config_list");
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
+
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/bot/configs`, {
-    headers: { "Authorization": `Bearer ${token}` },
+    headers,
   });
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "bot_config_list", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 
-  const data = await resp.json() as BotConfigListResponse;
+  const data = (await resp.json()) as BotConfigListResponse;
 
   return jsonResponse({
     configs: data.configs.map((c) => ({
@@ -84,14 +95,27 @@ export async function handleBotConfigUpsert(
     );
   }
 
-  console.log(JSON.stringify({ event: "bot_config_upsert", name: body.name, botId: body.botId }));
+  console.log(
+    JSON.stringify({
+      event: "bot_config_upsert",
+      name: body.name,
+      botId: body.botId,
+    }),
+  );
+
+  const headers = await buildAdminForwardHeaders(
+    token,
+    env,
+    "bot_config_upsert",
+    {
+      "Content-Type": "application/json",
+    },
+  );
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
 
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/bot/configs`, {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       id: body.id || null,
       provider: body.provider || "lineworks",
@@ -107,10 +131,11 @@ export async function handleBotConfigUpsert(
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "bot_config_upsert", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 
-  const c = await resp.json() as BotConfigResponse;
+  const c = (await resp.json()) as BotConfigResponse;
 
   return jsonResponse({
     id: c.id,
@@ -136,15 +161,25 @@ export async function handleBotConfigExport(
   const tenantId = url.searchParams.get("tenant_id");
   if (!tenantId) return jsonResponse({ error: "tenant_id is required" }, 400);
 
-  console.log(JSON.stringify({ event: "bot_config_export", tenant_id: tenantId }));
+  console.log(
+    JSON.stringify({ event: "bot_config_export", tenant_id: tenantId }),
+  );
+
+  const headers = await buildAdminForwardHeaders(
+    token,
+    env,
+    "bot_config_export",
+  );
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
 
   const resp = await fetch(
     `${env.ALC_API_ORIGIN}/api/admin/bot/configs/export?tenant_id=${encodeURIComponent(tenantId)}`,
-    { headers: { "Authorization": `Bearer ${token}` } },
+    { headers },
   );
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "bot_config_export", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 
@@ -170,7 +205,9 @@ export async function handleBotConfigImport(
   const body = await request.text();
   if (!body) return jsonResponse({ error: "body is empty" }, 400);
 
-  console.log(JSON.stringify({ event: "bot_config_import", bytes: body.length }));
+  console.log(
+    JSON.stringify({ event: "bot_config_import", bytes: body.length }),
+  );
 
   // staging endpoint は STAGING_MODE=true でガードされた public route なので
   // Authorization は付けない (むしろ付けると JWT 検証で弾かれる可能性あり)
@@ -183,7 +220,9 @@ export async function handleBotConfigImport(
   const text = await resp.text();
   return new Response(text, {
     status: resp.status,
-    headers: { "Content-Type": resp.headers.get("Content-Type") ?? "application/json" },
+    headers: {
+      "Content-Type": resp.headers.get("Content-Type") ?? "application/json",
+    },
   });
 }
 
@@ -201,17 +240,25 @@ export async function handleBotConfigDelete(
 
   console.log(JSON.stringify({ event: "bot_config_delete", id: body.id }));
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/bot/configs`, {
-    method: "DELETE",
-    headers: {
-      "Authorization": `Bearer ${token}`,
+  const headers = await buildAdminForwardHeaders(
+    token,
+    env,
+    "bot_config_delete",
+    {
       "Content-Type": "application/json",
     },
+  );
+  if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/bot/configs`, {
+    method: "DELETE",
+    headers,
     body: JSON.stringify({ id: body.id }),
   });
 
   if (!resp.ok) {
     const text = await resp.text();
+    debugRustResponse(env, "bot_config_delete", resp.status, text);
     return jsonResponse({ error: text }, resp.status);
   }
 
