@@ -107,6 +107,9 @@ export interface Env {
   ALC_API_STAGING_ORIGIN?: string;
   VERSION: string;
   WORKER_ENV: string;
+  /** `"true"` のとき admin proxy 等が網羅ログ (verify 結果 / 注入 claims / rust 応答) を
+   *  emit する。staging の [vars] でのみ有効化 (Refs rust-alc-api#434 admin 401 調査)。 */
+  DEBUG?: string;
   AUTH_CONFIG: KVNamespace;
   /** HS256 JWT secret, shared with rust-alc-api. Used by /top to verify the
    *  `logi_auth_token` cookie before serving the page. Missing → /top
