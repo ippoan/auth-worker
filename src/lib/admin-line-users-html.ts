@@ -103,6 +103,17 @@ export function renderAdminLineUsersPage(
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  // JWT payload は base64url + UTF-8。atob だけだと日本語名が文字化けするので
+  // base64url → base64 変換 + percent-decode で UTF-8 を正しく復元する。
+  function decodeJwtPayload(tok) {
+    var b64 = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    var bin = atob(b64);
+    var json = decodeURIComponent(bin.split('').map(function (c) {
+      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+    return JSON.parse(json);
+  }
+
   function initAuth() {
     token = sessionStorage.getItem('auth_token');
     if (!token) {
@@ -111,7 +122,7 @@ export function renderAdminLineUsersPage(
     }
     if (!token) { window.location.replace('/login?redirect_uri=' + encodeURIComponent(window.location.href)); return false; }
     try {
-      var payload = JSON.parse(atob(token.split('.')[1]));
+      var payload = decodeJwtPayload(token);
       tenantId = payload.tenant_id || payload.org || '';
       var el = document.getElementById('user-info');
       if (el) el.textContent = (payload.name || payload.email || '') + (payload.org_slug ? ' (' + payload.org_slug + ')' : '');
