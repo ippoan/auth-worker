@@ -155,11 +155,15 @@ export interface Env {
    *  running OAuth locally. Used by /wt-quick worktree tunnels whose random
    *  `*.trycloudflare.com` URLs cannot be registered in Google OAuth console. */
   LOGIN_DELEGATE_TO?: string;
-  /** AES-256-GCM 鍵素材 (rust-alc-api と共有)。bot_secret_encrypted の復号で SHA-256(SSO_ENCRYPTION_KEY) を 32B 鍵として使う。 */
-  SSO_ENCRYPTION_KEY: string;
-  /** LINE Login (notify recipient OAuth) のグローバル channel (rust-alc-api#434 Phase 3)。
-   *  未設定なら `/oauth/line/*` は 503。wrangler vars / secret は運用 step で投入する。 */
-  LINE_LOGIN_CHANNEL_ID?: string;
+  /** AES-256-GCM 鍵素材 (rust-alc-api と共有、GCP `sso-encryption-key` を Secrets Store
+   *  binding として注入)。bot_secret_encrypted / LINE WORKS client_secret 復号 + MCP
+   *  github-token 暗号化で SHA-256(SSO_ENCRYPTION_KEY) を 32B 鍵に使う。値は
+   *  `resolveSecret()` で解決すること (legacy plain string でも Secrets Store でも可)。 */
+  SSO_ENCRYPTION_KEY: SecretBinding;
+  /** LINE Login (notify recipient OAuth) のグローバル channel (rust-alc-api#434 Phase 3、
+   *  GCP `line-login-channel-{id,secret}` を Secrets Store binding として注入)。
+   *  未設定なら `/oauth/line/*` は 503。`resolveSecret()` で解決する。 */
+  LINE_LOGIN_CHANNEL_ID?: SecretBinding;
   LINE_LOGIN_CHANNEL_SECRET?: SecretBinding;
   /** LINE WORKS webhook 受信用 Durable Object Namespace (bot_id ごとに 1 instance)。 */
   LINEWORKS_WEBHOOK_DO: DurableObjectNamespace;

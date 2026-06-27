@@ -78,7 +78,8 @@ async function mintJwtPickup(env: Env, login: string): Promise<void> {
   if (!env.MCP_OAUTH_KV) throw new Error("MCP_OAUTH_KV not bound");
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (!jwtSecret) throw new Error("MCP_JWT_SECRET not bound");
-  if (!env.SSO_ENCRYPTION_KEY) throw new Error("SSO_ENCRYPTION_KEY not bound");
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
+  if (!ssoKey) throw new Error("SSO_ENCRYPTION_KEY not bound");
   const sub = `github:${login}`;
   const accessToken = await signMcpJwt(
     { sub, github_login: login, scope: PICKUP_SCOPE, aud: PICKUP_AUD },
@@ -97,7 +98,7 @@ async function mintJwtPickup(env: Env, login: string): Promise<void> {
     scope: PICKUP_SCOPE,
     expires_in: PICKUP_TTL_SEC,
   });
-  const ciphertext = await encryptWithKey(blob, env.SSO_ENCRYPTION_KEY);
+  const ciphertext = await encryptWithKey(blob, ssoKey);
   await env.MCP_OAUTH_KV.put(`mcp_jwt_pickup:${sub}`, ciphertext, {
     expirationTtl: PICKUP_TTL_SEC,
   });

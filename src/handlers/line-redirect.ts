@@ -8,6 +8,7 @@
 import type { Env } from "../index";
 import { getAllowedOrigins } from "../lib/config";
 import { isAllowedRedirectUri, generateOAuthState } from "../lib/security";
+import { resolveSecret } from "../lib/secret";
 import { authorizeUrl } from "../lib/line-oauth";
 
 export async function handleLineRedirect(request: Request, env: Env): Promise<Response> {
@@ -19,7 +20,7 @@ export async function handleLineRedirect(request: Request, env: Env): Promise<Re
     return new Response("Invalid or missing redirect_uri", { status: 400 });
   }
 
-  const channelId = env.LINE_LOGIN_CHANNEL_ID;
+  const channelId = await resolveSecret(env.LINE_LOGIN_CHANNEL_ID);
   if (!channelId) {
     return new Response("line login not configured", { status: 503 });
   }

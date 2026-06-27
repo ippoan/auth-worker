@@ -33,6 +33,7 @@ import type { Env } from "../index";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import { mcpRelayOrigin, wwwAuthenticateValue } from "../lib/mcp-origins";
+import { resolveSecret } from "../lib/secret";
 
 const MCP_AUD_LEGACY = "github-mcp-server-rs";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
@@ -320,10 +321,11 @@ type AuthGate =
 
 async function authenticate(request: Request, env: Env): Promise<AuthGate> {
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
   if (
     !env.MCP_OAUTH_KV ||
     !jwtSecret ||
-    !env.SSO_ENCRYPTION_KEY
+    !ssoKey
   ) {
     return {
       kind: "error",
@@ -364,7 +366,7 @@ async function authenticate(request: Request, env: Env): Promise<AuthGate> {
   }
   let ghToken: string;
   try {
-    ghToken = await decryptWithKey(encrypted, env.SSO_ENCRYPTION_KEY);
+    ghToken = await decryptWithKey(encrypted, ssoKey);
   } catch {
     return {
       kind: "error",

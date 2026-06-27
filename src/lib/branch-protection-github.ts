@@ -14,6 +14,7 @@
 
 import type { Env } from "../index";
 import { decryptWithKey } from "./mcp-crypto";
+import { resolveSecret } from "./secret";
 import type {
   BranchProtectionPayload,
   ProjectType,
@@ -91,11 +92,13 @@ export async function loadGithubToken(
   env: Env,
   sub: string,
 ): Promise<string | null> {
-  if (!env.MCP_OAUTH_KV || !env.SSO_ENCRYPTION_KEY) return null;
+  if (!env.MCP_OAUTH_KV) return null;
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
+  if (!ssoKey) return null;
   const encrypted = await env.MCP_OAUTH_KV.get(`github_token:${sub}`);
   if (!encrypted) return null;
   try {
-    return await decryptWithKey(encrypted, env.SSO_ENCRYPTION_KEY);
+    return await decryptWithKey(encrypted, ssoKey);
   } catch {
     return null;
   }
