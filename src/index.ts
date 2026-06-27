@@ -14,6 +14,8 @@ import { handleLineSelectTenant } from "./handlers/line-select-tenant";
 import { handleAdminSsoPage, handleAdminSsoCallback } from "./handlers/admin-sso";
 import { handleAdminUsersPage, handleAdminUsersCallback } from "./handlers/admin-users";
 import { handleSsoList, handleSsoUpsert, handleSsoDelete } from "./handlers/api-sso";
+import { handleAdminLineUsersPage, handleAdminLineUsersCallback } from "./handlers/admin-line-users";
+import { handleLineUsersList, handleLineUserDelete } from "./handlers/api-line-users";
 import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete, handleBotConfigExport, handleBotConfigImport } from "./handlers/api-bot-config";
 import { handleWoffAuth, handleWoffConfig } from "./handlers/woff-auth";
 import { handleMyOrgs } from "./handlers/api-my-orgs";
@@ -487,6 +489,10 @@ export default {
             return await handleAdminNotifyPage(request, env);
           case "/admin/notify/callback":
             return await handleAdminNotifyCallback();
+          case "/admin/line-users":
+            return await handleAdminLineUsersPage(request, env);
+          case "/admin/line-users/callback":
+            return await handleAdminLineUsersCallback();
           case "/api/bot-config/export":
             return await handleBotConfigExport(request, env);
           case "/redirect":
@@ -580,6 +586,10 @@ export default {
             return await handleSsoUpsert(request, env);
           case "/api/sso/delete":
             return await handleSsoDelete(request, env);
+          case "/api/line-users/list":
+            return await handleLineUsersList(request, env);
+          case "/api/line-users/delete":
+            return await handleLineUserDelete(request, env);
           // Bot Config API
           case "/api/bot-config/list":
             return await handleBotConfigList(request, env);
