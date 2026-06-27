@@ -365,6 +365,9 @@ export function renderTopPage(
         <a href="/admin/notify" class="nav-item">
           <div class="nav-item-icon">🔔</div>通知管理
         </a>
+        <a href="/admin/line-users" class="nav-item">
+          <div class="nav-item-icon">💬</div>LINE ユーザー管理
+        </a>
       </div>
     </div>
     <div id="nav-overlay" class="nav-overlay" onclick="toggleNav(false)"></div>
