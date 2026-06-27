@@ -20,6 +20,7 @@ import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete, hand
 import { handleWoffAuth, handleWoffConfig } from "./handlers/woff-auth";
 import { handleMyOrgs } from "./handlers/api-my-orgs";
 import { handleAlcProxy } from "./handlers/alc-proxy";
+import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
   handleRichMenuList, handleRichMenuCreate, handleRichMenuDelete,
@@ -382,6 +383,12 @@ export default {
       // (binding 越し) で到達させたいので host 別 routing より前に置く。
       if (url.pathname.startsWith("/alc-proxy/")) {
         return handleAlcProxy(request, env);
+      }
+
+      // admin/notify ページ用 rust forward proxy (#434)。ページ client JS が
+      // 同一オリジンで叩き、ここで JWT 検証 + X-Tenant-ID 注入して rust へ転送する。
+      if (url.pathname.startsWith("/admin/notify/api/")) {
+        return handleAdminNotifyApi(request, env);
       }
 
       if (request.method === "GET") {

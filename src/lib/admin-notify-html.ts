@@ -124,7 +124,10 @@ export function renderAdminNotifyPage(alcApiOrigin: string): string {
       'Authorization': 'Bearer ' + token,
       'Content-Type': opts.body ? 'application/json' : undefined,
     });
-    return fetch(ALC_API + '/api' + path, opts);
+    // #434: rust 直叩きは tenant header 不在で 401 になる。同一オリジンの
+    // /admin/notify/api/* forward proxy 経由で叩く (auth-worker が JWT 検証 +
+    // X-Tenant-ID 注入して rust へ転送する)。
+    return fetch('/admin/notify/api' + path, opts);
   }
   function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function showAlert(kind, msg) {
