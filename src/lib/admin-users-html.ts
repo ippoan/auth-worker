@@ -142,6 +142,23 @@ export function renderAdminUsersPage(): string {
     window.location.href = '/logout';
   }
 
+  // 401 リカバリ。よくある原因は prod 署名の logi_auth_token が Domain=.ippoan.org
+  // 共有で staging にも残るクロス環境衝突 (staging rust が別 JWT_SECRET で弾く)。
+  // 単に /login へ跳ぶと腐った cookie を読み直して永久に弾かれるので、/logout で
+  // stale cookie を消してから admin に戻す。直近で reauth 済みでも 401 なら無限
+  // ループを避け、エラー表示で停止する。
+  function reauth() {
+    var last = +(localStorage.getItem('admin_reauth_ts') || 0);
+    if (Date.now() - last < 30000) {
+      sessionStorage.removeItem('auth_token');
+      showMsg('セッションが無効です。右上のログアウトで一度サインアウトしてから、この環境でログインし直してください。', 'error');
+      return;
+    }
+    localStorage.setItem('admin_reauth_ts', String(Date.now()));
+    var cb = location.origin + '/admin/users/callback';
+    window.location.href = '/logout?redirect_uri=' + encodeURIComponent('/login?redirect_uri=' + encodeURIComponent(cb));
+  }
+
   function showMsg(text, type) {
     const el = document.getElementById('msg');
     el.className = type;
@@ -165,8 +182,10 @@ export function renderAdminUsersPage(): string {
     };
     if (body) opts.body = JSON.stringify(body);
     const resp = await fetch(path, opts);
-    if (resp.status === 401) { window.location.href = '/login'; return null; }
+    if (resp.status === 401) { reauth(); return null; }
     if (resp.status === 403) { showMsg('権限がありません', 'error'); return null; }
+    // 認証が通ったら reauth ガードを解除 (次の本物の 401 で再度 reauth できるように)。
+    localStorage.removeItem('admin_reauth_ts');
     return resp.json();
   }
 
