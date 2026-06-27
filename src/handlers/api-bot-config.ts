@@ -12,6 +12,7 @@ import {
   buildAdminForwardHeaders,
   debugRustResponse,
 } from "../lib/admin-proxy";
+import { resolveSecret } from "../lib/secret";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -209,11 +210,27 @@ export async function handleBotConfigImport(
     JSON.stringify({ event: "bot_config_import", bytes: body.length }),
   );
 
-  // staging endpoint は STAGING_MODE=true でガードされた public route なので
-  // Authorization は付けない (むしろ付けると JWT 検証で弾かれる可能性あり)
+  // staging endpoint は STAGING_MODE=true でガードされた public route。Authorization は
+  // 付けない (JWT 検証経路ではない) が、rust-alc-api#391 で `X-Staging-Key` が必須化された
+  // ので ALC_STAGING_API_KEY を付ける (未設定だと rust が 401)。
+  const importHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  const stagingKey = await resolveSecret(env.ALC_STAGING_API_KEY);
+  if (stagingKey) importHeaders["X-Staging-Key"] = stagingKey;
+  else if (env.DEBUG === "true") {
+    console.log(
+      JSON.stringify({
+        debug: "bot_config_import",
+        stage: "staging_key",
+        present: false,
+      }),
+    );
+  }
+
   const resp = await fetch(`${env.ALC_API_STAGING_ORIGIN}/api/staging/import`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: importHeaders,
     body,
   });
 

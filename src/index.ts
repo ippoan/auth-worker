@@ -105,6 +105,10 @@ export interface Env {
   /** staging Cloud Run の rust-alc-api。Bot Config Import (developer 専用) 用 proxy 先。
    *  未設定なら handler 内で本番 staging URL に fallback する。 */
   ALC_API_STAGING_ORIGIN?: string;
+  /** staging `/api/staging/import` の `X-Staging-Key` (rust-alc-api#391)。
+   *  GCP `ALC_STAGING_API_KEY` から sync した Secrets Store binding (staging 専用)。
+   *  未設定なら Bot Config Import は key 無しで投げ rust が 401 を返す。 */
+  ALC_STAGING_API_KEY?: SecretBinding;
   VERSION: string;
   WORKER_ENV: string;
   /** `"true"` のとき admin proxy 等が網羅ログ (verify 結果 / 注入 claims / rust 応答) を
