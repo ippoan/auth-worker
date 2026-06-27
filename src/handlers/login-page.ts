@@ -41,11 +41,11 @@ export async function handleLoginPage(
 
   const googleEnabled = !!(await resolveSecret(env.GOOGLE_CLIENT_ID));
   const authOrigin = requestOrigin;
-  const alcApiOrigin = env.ALC_API_ORIGIN || '';
   const googleRedirectUrl = googleEnabled
     ? `${authOrigin}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
     : "";
-  const lineLoginRedirectUrl = `${alcApiOrigin}/api/auth/line/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`;
+  // #434 Phase 4: LINE Login は auth-worker 自身の /oauth/line/redirect を向く (旧: rust)。
+  const lineLoginRedirectUrl = `${authOrigin}/oauth/line/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`;
 
   console.log(JSON.stringify({ event: "login_page", redirectUri, orgId, error }));
 

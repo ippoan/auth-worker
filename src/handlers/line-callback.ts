@@ -13,6 +13,7 @@ import { verifyOAuthState, isAllowedRedirectUri } from "../lib/security";
 import { setAuthCookie } from "../lib/cookies";
 import { resolveSecret } from "../lib/secret";
 import { exchangeCode, fetchProfile } from "../lib/line-oauth";
+import { signSelectToken } from "../lib/line-select-token";
 import {
   findUserByLineId,
   upsertLineUser,
@@ -146,10 +147,15 @@ export async function handleLineCallback(request: Request, env: Env): Promise<Re
     });
     return issueLineJwt(env, jwtSecret, user, redirectUri, url.hostname);
   }
-  // 複数 → テナント選択画面へ。
+  // 複数 → テナント選択画面へ。生 line_user_id を URL に晒さず、署名済み短命
+  // select_token に封入して **fragment** で渡す (auth bypass / Referer leak 防止、Refs #434)。
+  const selectToken = await signSelectToken(
+    { line_user_id: lineUserId, line_name: name },
+    env.OAUTH_STATE_SECRET,
+  );
+  // line_name は表示用 (auth には使わない、select-tenant は token 内の値を使う) なので
+  // fragment に同梱して front-end の「<name> さん」表示に供する。line_user_id は token 内のみ。
   const tenantList = JSON.stringify(tenants.map((t) => ({ id: t.tenant_id, name: t.name })));
-  const loc =
-    `${redirectUri}${sep}line_user_id=${encodeURIComponent(lineUserId)}` +
-    `&line_name=${encodeURIComponent(name)}&tenants=${encodeURIComponent(tenantList)}`;
-  return new Response(null, { status: 302, headers: { Location: loc } });
+  const frag = new URLSearchParams({ select_token: selectToken, line_name: name, tenants: tenantList });
+  return new Response(null, { status: 302, headers: { Location: `${redirectUri}#${frag.toString()}` } });
 }

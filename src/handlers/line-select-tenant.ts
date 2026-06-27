@@ -7,6 +7,7 @@
  */
 import type { Env } from "../index";
 import { resolveSecret } from "../lib/secret";
+import { verifySelectToken } from "../lib/line-select-token";
 import {
   findUserByLineId,
   upsertLineUser,
@@ -21,18 +22,25 @@ import {
 } from "../lib/access-token";
 
 export async function handleLineSelectTenant(request: Request, env: Env): Promise<Response> {
-  let body: { line_user_id?: string; line_name?: string; tenant_id?: string };
+  let body: { select_token?: string; tenant_id?: string };
   try {
     body = (await request.json()) as typeof body;
   } catch {
     return new Response("invalid body", { status: 400 });
   }
-  const lineUserId = body.line_user_id;
+  const selectToken = body.select_token;
   const tenantId = body.tenant_id;
-  const lineName = body.line_name ?? "";
-  if (!lineUserId || !tenantId) {
-    return new Response("missing line_user_id or tenant_id", { status: 400 });
+  if (!selectToken || !tenantId) {
+    return new Response("missing select_token or tenant_id", { status: 400 });
   }
+
+  // line_user_id は **body ではなく署名済み select_token から**取り出す (auth bypass 防止)。
+  const verified = await verifySelectToken(selectToken, env.OAUTH_STATE_SECRET);
+  if (!verified) {
+    return new Response("invalid or expired select_token", { status: 401 });
+  }
+  const lineUserId = verified.line_user_id;
+  const lineName = verified.line_name;
 
   const jwtSecret = await resolveSecret(env.JWT_SECRET);
   if (!jwtSecret) {
