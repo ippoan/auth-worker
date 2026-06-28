@@ -20,6 +20,7 @@ import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete, hand
 import { handleWoffAuth, handleWoffConfig } from "./handlers/woff-auth";
 import { handleMyOrgs } from "./handlers/api-my-orgs";
 import { handleAlcProxy } from "./handlers/alc-proxy";
+import { handleAlcInternalProxy } from "./handlers/alc-internal-proxy";
 import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
@@ -383,6 +384,13 @@ export default {
       // (binding 越し) で到達させたいので host 別 routing より前に置く。
       if (url.pathname.startsWith("/alc-proxy/")) {
         return handleAlcProxy(request, env);
+      }
+
+      // rust-alc-api#434 step 3d (caller #4): browser JWT を持たない server-to-server
+      // 内部呼び出し (email-receiver 等) 向け。shared-secret proof + path allowlist で
+      // ingest 経路だけを OIDC mint して forward する (data 経路は /alc-proxy 専用)。
+      if (url.pathname.startsWith("/alc-internal-proxy/")) {
+        return handleAlcInternalProxy(request, env);
       }
 
       // admin/notify ページ用 rust forward proxy (#434)。ページ client JS が
