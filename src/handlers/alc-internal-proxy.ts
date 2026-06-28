@@ -1,0 +1,112 @@
+/**
+ * `/alc-internal-proxy/*` — rust-alc-api の **internal ingest 経路**向け data-proxy
+ * (rust-alc-api#434 step 3d、caller #4 email-receiver / 将来の server-to-server caller)。
+ *
+ * `/alc-proxy` (handlers/alc-proxy.ts) は **browser JWT を伴うユーザー経路**だが、
+ * email-receiver 等の **server-to-server 内部呼び出しは browser JWT を持たない**。
+ * これらは rust の `require_internal_shared_secret` 経路 (`X-Internal-Shared-Secret`)
+ * を叩く。lockdown (`allUsers` 削除) 後は Cloud Run IAM が OIDC を要求するため、内部
+ * worker は **このハンドラ経由 (service binding 推奨)** で OIDC mint を委譲する。
+ *
+ *   ① consumer worker proof — `X-Alc-Proxy-Secret` を `INTERNAL_SHARED_SECRET*` と
+ *      constant-time 比較 (fail-closed)。`/alc-proxy` と同じ関門 (公開 route でもあるため必須)。
+ *   ② **path allowlist** — `require_internal_shared_secret` で守られた ingest 経路のみ
+ *      forward する。data 経路 (`require_tenant_header`) を通すと shared secret だけで
+ *      `X-Tenant-ID` を詐称でき **#434 の脆弱性そのものの再現**になるため、必ず allowlist
+ *      で塞ぐ (data 経路は browser JWT 経路 = `/alc-proxy` 専用)。
+ *   ③ `X-Tenant-ID` 必須 — 内部呼び出し元が明示する (欠落 → 400)。
+ *   ④ OIDC mint — `ALC_API_PROXY_SA_KEY` (run.invoker) で aud=service URL を mint。
+ *   ⑤ forward — `ALC_API_ORIGIN` + path に `Authorization: Bearer <OIDC>` (transport) +
+ *      `X-Internal-Shared-Secret` (= base secret、rust の app 認証) + `X-Tenant-ID` を付与。
+ *
+ * 値 (OIDC / SA key / shared secret) は log / response に出さない。
+ */
+import type { Env } from "../index";
+import { resolveSecret } from "../lib/secret";
+import { mintGoogleIdToken } from "../lib/oidc";
+import { resolveAllSharedSecrets } from "./mcp-introspect";
+
+const ROUTE_PREFIX = "/alc-internal-proxy";
+
+/** consumer worker proof を運ぶ header (`/alc-proxy` と共通)。 */
+const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
+
+/**
+ * rust の `require_internal_shared_secret` で守られた ingest 経路だけを許可する。
+ * data 経路 (`require_tenant_header`) を許すと shared secret だけで X-Tenant-ID 詐称が
+ * 成立し #434 の再現になるため、ここを通すパスは厳密に列挙する。
+ */
+function isAllowedInternalPath(path: string): boolean {
+  if (path === "/api/dtako/tickets") return true; // POST 起票
+  if (/^\/api\/dtako\/tickets\/[^/]+\/scraped$/.test(path)) return true; // PATCH 結果反映
+  return false;
+}
+
+/** 定数時間比較 (alc-proxy.ts / mcp-introspect.ts と同実装)。 */
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function jsonError(status: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+export async function handleAlcInternalProxy(request: Request, env: Env): Promise<Response> {
+  // ── env guard ────────────────────────────────────────────────────────────
+  const saKey = await resolveSecret(env.ALC_API_PROXY_SA_KEY);
+  if (!saKey) return jsonError(503, "alc-internal-proxy not configured"); // SA key 未設定
+  const apiOrigin = env.ALC_API_ORIGIN;
+  if (!apiOrigin) return jsonError(503, "server_error");
+  const sharedSecrets = await resolveAllSharedSecrets(env);
+  if (!sharedSecrets) return jsonError(503, "alc-internal-proxy not configured");
+  // rust の require_internal_shared_secret が期待する base secret (forward 用)。
+  const baseSecret = await resolveSecret(env.INTERNAL_SHARED_SECRET);
+  if (!baseSecret) return jsonError(503, "alc-internal-proxy not configured");
+
+  // ── ① consumer worker proof ───────────────────────────────────────────────
+  const proxySecret = request.headers.get(PROXY_SECRET_HEADER) ?? "";
+  if (!proxySecret || !sharedSecrets.some((s) => constantTimeEquals(proxySecret, s))) {
+    return jsonError(401, "Unauthorized");
+  }
+
+  // ── ② path allowlist (data 経路への X-Tenant-ID 詐称を塞ぐ) ─────────────────
+  const url = new URL(request.url);
+  const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
+  if (!isAllowedInternalPath(backendPath)) return jsonError(403, "forbidden");
+
+  // ── ③ tenant 必須 (内部呼び出し元が明示) ───────────────────────────────────
+  const tenantId = request.headers.get("X-Tenant-ID") ?? "";
+  if (!tenantId) return jsonError(400, "X-Tenant-ID required");
+
+  // ── ④ OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) ────────────────
+  let idToken: string;
+  try {
+    idToken = await mintGoogleIdToken(saKey, apiOrigin);
+  } catch {
+    return jsonError(502, "upstream auth error"); // 詳細は log のみ
+  }
+
+  // ── ⑤ forward ─────────────────────────────────────────────────────────────
+  const target = `${apiOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
+  const fwdHeaders: Record<string, string> = {
+    Authorization: `Bearer ${idToken}`,
+    "X-Internal-Shared-Secret": baseSecret,
+    "X-Tenant-ID": tenantId,
+  };
+  const contentType = request.headers.get("content-type");
+  if (contentType) fwdHeaders["Content-Type"] = contentType;
+
+  const method = request.method;
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const body = hasBody ? await request.arrayBuffer() : undefined;
+
+  return fetch(target, { method, headers: fwdHeaders, body });
+}
+
+export { ROUTE_PREFIX as ALC_INTERNAL_PROXY_PREFIX };
