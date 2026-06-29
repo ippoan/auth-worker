@@ -134,6 +134,11 @@ export interface Env {
    *  rust-alc-api に到達するために使う。Secrets Store binding、未設定なら
    *  `/alc-proxy` は 503 (fail-closed)。auth-worker のみ bind (SA key 集約)。 */
   ALC_API_PROXY_SA_KEY?: SecretBinding;
+  /** rust-alc-api#434 lockdown cutover フラグ。`"1"` で internal-auth 呼び出し
+   *  (`lib/alc-internal.ts`) を HS256 internal JWT → Google OIDC (aud=alc-api-internal) mint に
+   *  切替える。allUsers 削除 + Cloud Run `--add-custom-audiences=alc-api-internal` + rust 側
+   *  dual-accept deploy が揃ってから立てる (それまでは未設定 = HS256 のまま、非破壊)。 */
+  INTERNAL_AUTH_OIDC?: string;
   /** e-Gov (Keycloak) OAuth — all optional; handlers return 503 if unset. */
   EGOV_CLIENT_ID?: string;
   EGOV_CLIENT_SECRET?: string;
