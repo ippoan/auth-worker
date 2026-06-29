@@ -5,12 +5,33 @@
  * まま保持し、auth-worker は `signInternalJWT` (`aud=alc-api-internal`) を付けて internal
  * endpoint 越しに叩く。rust 側は `require_internal_jwt` で検証する。
  *
- * lockdown (`allUsers` 削除) 後は Cloud Run IAM が OIDC を要求するため、ここに
- * `mintGoogleIdToken(aud=alc-api-internal)` を併用する cutover が入る (Refs #434)。
- * 移行中 (Cloud Run が allUsers のまま) は internal-JWT だけで到達する。
+ * lockdown (`allUsers` 削除) 後は Cloud Run IAM が OIDC を要求するため、`INTERNAL_AUTH_OIDC=1`
+ * で `internalAuthToken` が `mintGoogleIdToken(aud=alc-api-internal)` に切替わる (Refs #434)。
+ * 移行前 (flag 未設定 or SA key 無し) は従来の HS256 internal-JWT で到達する (非破壊)。
  */
 import type { Env } from "../index";
 import { signInternalJWT } from "./internal-jwt";
+import { resolveSecret } from "./secret";
+import { mintGoogleIdToken } from "./oidc";
+
+/** rust の `aud=alc-api-internal` (alc-auth-jwt の INTERNAL_AUD と同値)。 */
+const INTERNAL_AUD = "alc-api-internal";
+
+/**
+ * internal-auth 呼び出しの Authorization token を返す。
+ *
+ * - lockdown cutover 後 (`INTERNAL_AUTH_OIDC=1` + `ALC_API_PROXY_SA_KEY` 設定): Google OIDC
+ *   (aud=alc-api-internal) を mint。Cloud Run IAM (`--add-custom-audiences=alc-api-internal`) が
+ *   検証し、rust 側は dual-accept で aud を確認する。
+ * - それ以外 (移行前): 従来の HS256 internal JWT (`signInternalJWT`)。
+ */
+export async function internalAuthToken(env: Env): Promise<string> {
+  if (env.INTERNAL_AUTH_OIDC === "1") {
+    const saKey = await resolveSecret(env.ALC_API_PROXY_SA_KEY);
+    if (saKey) return mintGoogleIdToken(saKey, INTERNAL_AUD);
+  }
+  return signInternalJWT(env);
+}
 
 /** `/api/internal/auth/sso-config` のレスポンス。 */
 export interface SsoConfig {
@@ -35,7 +56,7 @@ export interface InternalUserWithSlug {
 }
 
 async function internalFetch(env: Env, path: string, init?: RequestInit): Promise<Response> {
-  const token = await signInternalJWT(env);
+  const token = await internalAuthToken(env);
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${token}`);
   if (init?.body !== undefined) headers.set("Content-Type", "application/json");
