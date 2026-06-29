@@ -22,6 +22,10 @@ branches = true
 # --- handlers ---
 
 [[files]]
+path = "src/handlers/line-webhook.ts"
+branches = true
+
+[[files]]
 path = "src/handlers/device.ts"
 branches = true
 

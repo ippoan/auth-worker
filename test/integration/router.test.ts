@@ -126,6 +126,9 @@ vi.mock("../../src/handlers/lineworks-webhook", () => ({
     new Response(`lw-refresh:${botId}`),
   ),
 }));
+vi.mock("../../src/handlers/line-webhook", () => ({
+  handleLineWebhook: vi.fn(() => new Response("line-webhook")),
+}));
 vi.mock("../../src/handlers/mcp-as-metadata", () => ({
   handleMcpAsMetadata: vi.fn(() => new Response("mcp-as-metadata")),
 }));
@@ -446,6 +449,12 @@ describe("Router (index.ts)", () => {
     });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("lw-refresh:bot-xyz");
+  });
+
+  it("POST /line/webhook → line-webhook forwarder (#434)", async () => {
+    const req = new Request("https://auth.test.example/line/webhook", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("line-webhook");
   });
 
   // --- MCP relay host dispatcher (mcp.ippoan.org / mcp-staging.ippoan.org) ---
