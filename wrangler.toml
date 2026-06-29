@@ -291,6 +291,12 @@ AUTH_WORKER_ORIGIN = "https://auth-staging.ippoan.org"
 ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "staging"
+# #434 Phase D step 1: internal call (/alc-internal-proxy 等) の認証 token を
+# HS256 共有 JWT → Google OIDC ID token (aud=alc-api-internal) に切替える。
+# ALC_API_PROXY_SA_KEY (env.staging binding) で mint する。rust 側は
+# INTERNAL_AUTH_TRUST_OIDC=1 で dual-accept 済みなので無停止。prod top-level
+# [vars] には lockdown 本flip まで入れない。
+INTERNAL_AUTH_OIDC = "1"
 # admin proxy 等の網羅ログ (verify 結果 / 注入 claims / rust 応答) を有効化。
 # staging 専用 (prod top-level [vars] には入れない、Refs rust-alc-api#434 admin 401 調査)。
 DEBUG = "true"
