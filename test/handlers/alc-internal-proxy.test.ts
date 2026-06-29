@@ -198,6 +198,43 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(res.status).toBe(401);
   });
 
+  it("public-ingest (fcm-dismiss-test) も X-Tenant-ID を strip する", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/devices/fcm-dismiss-test", { method: "POST" }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Tenant-ID"]).toBeUndefined();
+  });
+
+  it("internal-secret (trigger-update-dev): caller の X-Internal-Secret を pass-through、tenant/base-secret は載せない", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/devices/trigger-update-dev", {
+        method: "POST",
+        headers: { "X-Internal-Secret": "fcm-secret-xyz" },
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Internal-Secret"]).toBe("fcm-secret-xyz");
+    expect(h["X-Tenant-ID"]).toBeUndefined();
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
+  });
+
   it("OIDC mint 失敗は 502 (詳細は出さない)", async () => {
     const { mintGoogleIdToken } = await import("../../src/lib/oidc");
     (mintGoogleIdToken as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
