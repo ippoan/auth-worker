@@ -9,6 +9,23 @@ import {
   waitIfLive,
   isLive,
 } from "../helpers/stub-or-real";
+import { TEST_TENANT_ID, TEST_USER_ID } from "../helpers/live-env";
+
+// #434 lockdown: handler は alcIdentityHeaders で browser JWT 検証 → OIDC mint +
+// X-Tenant-ID/X-User-* 注入してから rust を叩く。OIDC mint (Google token endpoint) は
+// CI で実行できないので helper を mock し、検証済み identity 相当の header を返す
+// (helper 本体の検証は test/lib/alc-data-fetch.test.ts)。live でも有効な値を返すため
+// seed の TEST_TENANT_ID / TEST_USER_ID を使う。
+vi.mock("../../src/lib/alc-data-fetch", () => ({
+  alcIdentityHeaders: vi.fn(async () => ({
+    Authorization: "Bearer test-oidc",
+    "X-Tenant-ID": TEST_TENANT_ID,
+    "X-User-ID": TEST_USER_ID,
+    "X-User-Email": "test@example.com",
+    "X-User-Role": "admin",
+  })),
+}));
+
 import {
   handleAccessRequestCreate,
   handleAccessRequestList,
