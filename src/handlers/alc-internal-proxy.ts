@@ -43,7 +43,7 @@ const ROUTE_PREFIX = "/alc-internal-proxy";
 const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
 
 /** allowlist の分類。`null` は不許可 (403)。 */
-type InternalPathClass = "shared-secret" | "public-ingest";
+type InternalPathClass = "shared-secret" | "public-ingest" | "internal-secret";
 
 /**
  * forward 可能な ingest 経路だけを許可し、そのクラスを返す。
@@ -54,6 +54,10 @@ type InternalPathClass = "shared-secret" | "public-ingest";
  *   = X-Tenant-ID を honor しない) パスだけ**を入れること。`require_tenant_header` の
  *   data 経路を絶対に入れない (入れても X-Tenant-ID は strip されるので 401 になるが、
  *   そもそも data 経路は `/alc-proxy` 専用)。
+ * - `internal-secret` は rust が **caller 由来の `X-Internal-Secret` (= FCM_INTERNAL_SECRET)
+ *   で自前認証する dev 経路**用。OIDC transport を付けつつ caller の `X-Internal-Secret` を
+ *   pass-through し、X-Tenant-ID は forward しない。rust 側で secret 検証されるので proxy は
+ *   素通しでよい (consumer proof は X-Alc-Proxy-Secret で別途取れている)。
  */
 function classifyInternalPath(path: string): InternalPathClass | null {
   // ── shared-secret: rust の require_internal_shared_secret ingest ──
@@ -64,6 +68,10 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   if (path === "/api/tenko-call/register") return "public-ingest"; // TenkoCall 端末登録
   if (path === "/api/tenko-call/tenko") return "public-ingest"; // TenkoCall 点呼送信
   if (path === "/api/devices/register/claim") return "public-ingest"; // AlcoholChecker 端末登録 (pairing 前)
+  if (path === "/api/devices/fcm-dismiss-test") return "public-ingest"; // FCM dismiss test (device_id lookup)
+
+  // ── internal-secret: rust が X-Internal-Secret (FCM_INTERNAL_SECRET) で自前認証する dev 経路 ──
+  if (path === "/api/devices/trigger-update-dev") return "internal-secret"; // CI/dev OTA push
 
   return null;
 }
@@ -129,9 +137,14 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
     // rust の app 認証 (require_internal_shared_secret) + 明示 tenant。
     fwdHeaders["X-Internal-Shared-Secret"] = baseSecret;
     fwdHeaders["X-Tenant-ID"] = tenantId;
+  } else if (pathClass === "internal-secret") {
+    // rust が caller 由来の X-Internal-Secret (FCM_INTERNAL_SECRET) で自前認証する dev 経路。
+    // caller (alc-app) が中継した値をそのまま pass-through する (無ければ rust 側で 401/403)。
+    const callerSecret = request.headers.get("X-Internal-Secret");
+    if (callerSecret) fwdHeaders["X-Internal-Secret"] = callerSecret;
   }
-  // public-ingest は OIDC transport だけを付け、X-Tenant-ID / X-Internal-Shared-Secret は
-  // forward しない (rust public_router は honor しない + 誤分類時の詐称防止)。
+  // public-ingest / internal-secret は X-Tenant-ID を forward しない (rust は honor しない +
+  // 誤分類時の詐称防止)。public-ingest は OIDC transport だけ。
   const contentType = request.headers.get("content-type");
   if (contentType) fwdHeaders["Content-Type"] = contentType;
 
