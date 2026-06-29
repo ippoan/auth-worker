@@ -200,7 +200,8 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
 
   it("public-ingest (fcm-dismiss-test) も X-Tenant-ID を strip する", async () => {
     const fetchMock = vi.fn(
-      async (): Promise<Response> => new Response("ok", { status: 200 }),
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     const res = await handleAlcInternalProxy(
@@ -215,7 +216,8 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
 
   it("internal-secret (trigger-update-dev): caller の X-Internal-Secret を pass-through、tenant/base-secret は載せない", async () => {
     const fetchMock = vi.fn(
-      async (): Promise<Response> => new Response("ok", { status: 200 }),
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     const res = await handleAlcInternalProxy(
