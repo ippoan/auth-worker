@@ -16,6 +16,7 @@ import type { Env } from "../index";
 import { extractToken } from "../lib/errors";
 import { resolveSecret } from "../lib/secret";
 import { verifyJwt } from "../lib/jwt";
+import { resolveAllSharedSecrets } from "./mcp-introspect";
 import {
   createDeviceCredential,
   verifyDeviceCredential,
@@ -25,6 +26,17 @@ import {
   normalizeDeviceRole,
   DEVICE_JWT_TTL_SECONDS,
 } from "../lib/device";
+
+/** consumer proof を運ぶ header (alc-internal-proxy / rust の app 認証と同名)。 */
+const INTERNAL_SECRET_HEADER = "X-Internal-Shared-Secret";
+
+/** 定数時間比較 (alc-internal-proxy.ts と同実装)。 */
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
 function jsonNoStore(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -80,6 +92,52 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
       device_secret: cred.device_secret,
       tenant_id: cred.record.tenant_id,
       label: cred.record.label,
+      role: cred.record.role,
+      note: "store device_secret now; it is not retrievable later",
+    },
+    201,
+  );
+}
+
+/**
+ * POST /device/pair-internal — **server-to-server** で device credential を発行する
+ * (rust-alc-api#434 caller #5、AlcoholChecker provisioning)。
+ *
+ * `/device/pair` は operator session JWT 限定だが、AlcoholChecker の端末登録 (claim) は
+ * **operator が同席しない**ため使えない。代わりに alc-app Worker (INTERNAL_SHARED_SECRET
+ * 保持) が claim 中に server-to-server で本 endpoint を叩いて credential を mint し、
+ * claim レスポンスで端末に届ける (settings_token と同じ配送経路)。
+ *
+ *   ① X-Internal-Shared-Secret を `INTERNAL_SHARED_SECRET*` と constant-time 比較 (fail-closed)。
+ *   ② tenant_id は呼び出し元 (alc-app) が rust の claim レスポンスから渡す (明示・必須)。
+ *   ③ createDeviceCredential で credential 発行。device_secret は応答 1 回限り。
+ *
+ * secret が漏れると任意 tenant の device credential を mint できてしまうため、本 endpoint を
+ * 叩けるのは secret を持つ Worker (alc-app) のみ。端末には secret を焼かない。
+ */
+export async function handleDevicePairInternal(request: Request, env: Env): Promise<Response> {
+  const sharedSecrets = await resolveAllSharedSecrets(env);
+  if (!sharedSecrets) return jsonNoStore({ error: "not_configured" }, 503);
+
+  const provided = request.headers.get(INTERNAL_SECRET_HEADER) ?? "";
+  if (!provided || !sharedSecrets.some((s) => constantTimeEquals(provided, s))) {
+    return jsonNoStore({ error: "unauthorized" }, 401);
+  }
+
+  const body = await readJsonBody(request);
+  const tenantId = typeof body.tenant_id === "string" ? body.tenant_id : "";
+  if (!tenantId) return jsonNoStore({ error: "tenant_id required" }, 400);
+  const label = typeof body.label === "string" && body.label ? body.label : "device";
+  const role = normalizeDeviceRole(body.role);
+
+  const now = Math.floor(Date.now() / 1000);
+  const cred = await createDeviceCredential(env, tenantId, label, now, role);
+
+  return jsonNoStore(
+    {
+      device_id: cred.device_id,
+      device_secret: cred.device_secret,
+      tenant_id: cred.record.tenant_id,
       role: cred.record.role,
       note: "store device_secret now; it is not retrievable later",
     },
