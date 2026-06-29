@@ -5,6 +5,7 @@
 
 import type { Env } from "../index";
 import { resolveSecret } from "../lib/secret";
+import { alcOidcToken } from "../lib/alc-data-fetch";
 import { renderJoinPage, renderJoinNotFoundPage } from "../lib/join-html";
 
 export async function handleJoinPage(
@@ -13,9 +14,14 @@ export async function handleJoinPage(
   slug: string,
 ): Promise<Response> {
   try {
-    // Look up tenant by slug via REST
+    // Look up tenant by slug via REST。#434 lockdown 後は Cloud Run IAM が OIDC を
+    // 要求するため Google OIDC token (aud=ALC_API_ORIGIN) を付ける。by-slug は public
+    // route なので identity 注入は不要、transport 用の OIDC だけ。mint 不可 (SA 未設定)
+    // の場合は header 無しで継続 (lockdown 前は allUsers で素通り)。
+    const oidc = await alcOidcToken(env);
     const resp = await fetch(
       `${env.ALC_API_ORIGIN}/api/tenants/by-slug/${encodeURIComponent(slug)}`,
+      oidc ? { headers: { Authorization: `Bearer ${oidc}` } } : undefined,
     );
 
     if (resp.status === 404) {
