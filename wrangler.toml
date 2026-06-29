@@ -12,6 +12,11 @@ AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
 ALC_API_ORIGIN = "https://alc-api.ippoan.org"
 ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "prod"
+# #434 Phase D: prod でも internal call の認証 token を Google OIDC ID token
+# (aud=alc-api-internal、ALC_API_PROXY_SA_KEY で mint) にする。staging で実証済み。
+# rust prod が INTERNAL_AUTH_TRUST_OIDC=1 + custom-audiences で受理できる状態に
+# なってから (= rust 先 deploy 後に) このまま prod deploy すること。allUsers 削除の前提。
+INTERNAL_AUTH_OIDC = "1"
 # e-Gov (Keycloak) OAuth — sbx (sandbox) endpoint; same on prod + staging since
 # we only integrate with e-Gov's sbx environment.
 EGOV_AUTH_BASE = "https://account2.sbx.e-gov.go.jp/auth"
