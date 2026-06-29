@@ -49,6 +49,7 @@ import {
 } from "./handlers/api-access-requests";
 import { corsPreflight } from "./lib/errors";
 import { handleLineworksWebhook, handleLineworksRefresh } from "./handlers/lineworks-webhook";
+import { handleLineWebhook } from "./handlers/line-webhook";
 import { handleMcpAsMetadata } from "./handlers/mcp-as-metadata";
 import { handleMcpResourceMetadata } from "./handlers/mcp-resource-metadata";
 import { handleMcpDeviceAuthorization } from "./handlers/mcp-device-authorization";
@@ -602,6 +603,12 @@ export default {
         if (url.pathname.startsWith("/lineworks/refresh/")) {
           const botId = url.pathname.slice("/lineworks/refresh/".length);
           return await handleLineworksRefresh(request, env, botId);
+        }
+        // LINE Messaging inbound webhook (#434 lockdown): LINE platform → auth-worker
+        // public 受け口 → OIDC mint で rust internal (/api/internal/notify/line/webhook)
+        // へ raw body + x-line-signature を forward。署名検証は rust 側。
+        if (url.pathname === "/line/webhook" && request.method === "POST") {
+          return await handleLineWebhook(request, env);
         }
 
         switch (url.pathname) {
