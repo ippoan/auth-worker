@@ -145,6 +145,59 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect((init as RequestInit).method).toBe("PATCH");
   });
 
+  it("public-ingest (tenko-call/register): X-Tenant-ID なしでも 200、tenant/secret は forward しない", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/tenko-call/register", {
+        method: "POST",
+        tenant: null, // public-ingest は X-Tenant-ID 不要
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ call_number: "001", driver_name: "x" }),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/tenko-call/register");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Tenant-ID"]).toBeUndefined();
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
+  });
+
+  it("public-ingest: 送られてきた X-Tenant-ID は strip して forward しない (詐称防止)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/devices/register/claim", {
+        method: "POST",
+        tenant: "99999999-9999-9999-9999-999999999999", // 攻撃者が混入しても
+        body: JSON.stringify({ registration_code: "abc" }),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBeUndefined(); // strip される
+  });
+
+  it("public-ingest も consumer proof は必須 (X-Alc-Proxy-Secret 欠落は 401)", async () => {
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/tenko-call/tenko", { method: "POST", proxySecret: null }),
+      env(),
+    );
+    expect(res.status).toBe(401);
+  });
+
   it("OIDC mint 失敗は 502 (詳細は出さない)", async () => {
     const { mintGoogleIdToken } = await import("../../src/lib/oidc");
     (mintGoogleIdToken as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
