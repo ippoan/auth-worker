@@ -64,7 +64,12 @@ import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
 import { handleMcpRegister } from "./handlers/mcp-register";
 import { handleMcpAuthorize } from "./handlers/mcp-authorize";
-import { handleDevicePair, handleDeviceToken, handleDeviceRevoke } from "./handlers/device";
+import {
+  handleDevicePair,
+  handleDevicePairInternal,
+  handleDeviceToken,
+  handleDeviceRevoke,
+} from "./handlers/device";
 import {
   handleDevicePairStart,
   handleDevicePairApprovePage,
@@ -639,6 +644,10 @@ export default {
           // pair/revoke は operator の Bearer session、token は box の device credential。
           case "/device/pair":
             return await handleDevicePair(request, env);
+          // rust-alc-api#434 caller #5: alc-app が claim 中に server-to-server で
+          // device credential を発行する (operator session 不要、shared-secret 認証)。
+          case "/device/pair-internal":
+            return await handleDevicePairInternal(request, env);
           case "/device/token":
             return await handleDeviceToken(request, env);
           case "/device/revoke":

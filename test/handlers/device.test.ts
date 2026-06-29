@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   handleDevicePair,
+  handleDevicePairInternal,
   handleDeviceToken,
   handleDeviceRevoke,
 } from "../../src/handlers/device";
@@ -98,6 +99,83 @@ describe("handleDevicePair", () => {
     expect(body.label).toBe("device");
   });
 });
+
+describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
+  const INTERNAL = "internal-shared-secret-32chars!!";
+
+  function internalEnv(overrides: Record<string, unknown> = {}): Env {
+    return makeEnv({ INTERNAL_SHARED_SECRET: INTERNAL, ...overrides })
+  }
+
+  it("503 when no INTERNAL_SHARED_SECRET is bound", async () => {
+    const res = await handleDevicePairInternal(
+      post("/device/pair-internal", { tenant_id: "t1" }, { "X-Internal-Shared-Secret": INTERNAL }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("401 without the shared secret header", async () => {
+    const res = await handleDevicePairInternal(
+      post("/device/pair-internal", { tenant_id: "t1" }),
+      internalEnv(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("401 on a wrong shared secret", async () => {
+    const res = await handleDevicePairInternal(
+      post("/device/pair-internal", { tenant_id: "t1" }, { "X-Internal-Shared-Secret": "wrong" }),
+      internalEnv(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("400 when tenant_id is missing", async () => {
+    const res = await handleDevicePairInternal(
+      post("/device/pair-internal", {}, { "X-Internal-Shared-Secret": INTERNAL }),
+      internalEnv(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("issues a credential for the explicit tenant (201), no operator session needed", async () => {
+    const env = internalEnv();
+    const res = await handleDevicePairInternal(
+      post(
+        "/device/pair-internal",
+        { tenant_id: "tenant-9", label: "alc-tablet" },
+        { "X-Internal-Shared-Secret": INTERNAL },
+      ),
+      env,
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, string>;
+    expect(body.device_id).toBeTruthy();
+    expect(body.device_secret).toBeTruthy();
+    expect(body.tenant_id).toBe("tenant-9");
+    expect(body.role).toBe(DEVICE_ROLE);
+    // 発行した credential が /device/token で device JWT に交換できる (= 実用可能)。
+    const tok = await handleDeviceToken(
+      post("/device/token", { device_id: body.device_id, device_secret: body.device_secret }),
+      env,
+    );
+    expect(tok.status).toBe(200);
+  });
+
+  it("honors an allowlisted role (kiosk)", async () => {
+    const res = await handleDevicePairInternal(
+      post(
+        "/device/pair-internal",
+        { tenant_id: "t", role: DEVICE_ROLE_KIOSK },
+        { "X-Internal-Shared-Secret": INTERNAL },
+      ),
+      internalEnv(),
+    );
+    const body = (await res.json()) as Record<string, string>;
+    expect(body.role).toBe(DEVICE_ROLE_KIOSK);
+  });
+})
 
 describe("handleDeviceToken", () => {
   it("400 when fields are missing (empty object)", async () => {
