@@ -21,6 +21,7 @@ import { handleWoffAuth, handleWoffConfig } from "./handlers/woff-auth";
 import { handleMyOrgs } from "./handlers/api-my-orgs";
 import { handleAlcProxy } from "./handlers/alc-proxy";
 import { handleAlcInternalProxy } from "./handlers/alc-internal-proxy";
+import { handleDeviceDataProxy } from "./handlers/device-data-proxy";
 import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
@@ -402,6 +403,13 @@ export default {
       // ingest 経路だけを OIDC mint して forward する (data 経路は /alc-proxy 専用)。
       if (url.pathname.startsWith("/alc-internal-proxy/")) {
         return handleAlcInternalProxy(request, env);
+      }
+
+      // rust-alc-api#434 followup: 無人デバイス (browser-render-rust の Kagoya VPS
+      // cron 等) が device JWT (`/device/token` 発行) で data 経路 (require_tenant_header)
+      // を叩く経路。tenant は device pairing 時に確定済み (client からは詐称不能)。
+      if (url.pathname.startsWith("/device-data-proxy/")) {
+        return handleDeviceDataProxy(request, env);
       }
 
       // admin/notify ページ用 rust forward proxy (#434)。ページ client JS が
