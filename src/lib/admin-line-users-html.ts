@@ -212,7 +212,10 @@ export function renderAdminLineUsersPage(
     if (!initAuth()) return;
     var sel = document.getElementById('redirect-select');
     sel.innerHTML = redirectOrigins.map(function (o) {
-      var v = o + '/top';
+      // 遷移先は各アプリの /auth/callback (auth-client の AuthCallback ルート規約)。
+      // 旧 /top はアプリ側に存在せず 404 になっていた (auth-worker 自身のみ /top を持つ)。
+      // consumer app は pages/auth/callback.vue で AuthCallback を描画し #token を消費する。
+      var v = o + '/auth/callback';
       return '<option value="' + escapeHtmlJs(v) + '">' + escapeHtmlJs(v) + '</option>';
     }).join('');
     rebuildInvite();
