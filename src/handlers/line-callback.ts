@@ -63,11 +63,28 @@ async function issueLineJwt(
   if (!finalUrl.searchParams.has("lw_callback")) {
     finalUrl.searchParams.set("lw_callback", "1");
   }
+  const setCookie = setAuthCookie(token, hostname);
+  // 診断ログ (login ループ調査): token 本体は出さず、redirect 先の host/path/query と
+  // cookie 属性 (Domain/SameSite) だけを構造化ログに出す。
+  const domainMatch = setCookie.match(/Domain=([^;]+)/);
+  console.log(
+    JSON.stringify({
+      event: "line_issue_jwt",
+      hostname,
+      redirectHost: finalUrl.hostname,
+      redirectPath: finalUrl.pathname,
+      redirectQuery: finalUrl.search,
+      cookieDomain: domainMatch?.[1] ?? null,
+      cookieLen: setCookie.length,
+      tenantId: user.tenant_id,
+      role: user.role,
+    }),
+  );
   return new Response(null, {
     status: 302,
     headers: {
       Location: `${finalUrl.toString()}#${fragment.toString()}`,
-      "Set-Cookie": setAuthCookie(token, hostname),
+      "Set-Cookie": setCookie,
     },
   });
 }
@@ -119,6 +136,14 @@ export async function handleLineCallback(request: Request, env: Env): Promise<Re
 
   // 1) 既存ユーザー → そのテナントでログイン。
   const existing = await findUserByLineId(env, lineUserId);
+  console.log(
+    JSON.stringify({
+      event: "line_callback_resolve",
+      hasExisting: !!existing,
+      hasExternalOrgId: !!externalOrgId,
+      redirectUri,
+    }),
+  );
   if (existing) {
     return issueLineJwt(env, jwtSecret, existing, redirectUri, url.hostname);
   }
@@ -140,6 +165,7 @@ export async function handleLineCallback(request: Request, env: Env): Promise<Re
 
   // 3) recipients 逆引き。
   const tenants = await recipientsByLineId(env, lineUserId);
+  console.log(JSON.stringify({ event: "line_callback_recipients", count: tenants.length }));
   const sep = redirectUri.includes("?") ? "&" : "?";
   if (tenants.length === 0) {
     const msg = encodeURIComponent("招待 QR コードからログインしてください");

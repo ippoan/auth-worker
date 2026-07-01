@@ -7,7 +7,7 @@ import { renderTopPage, type AppEntry } from "../lib/top-html";
 import { getAuthCookie } from "../lib/cookies";
 import { classifyOrigin, getDisplayOrigins } from "../lib/config";
 import { isTenantInOrgAllowlist } from "../lib/acl";
-import { verifyJwt, type JwtPayload } from "../lib/jwt";
+import { verifyJwt, decodeJwtPayload, type JwtPayload } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 
 /** Known app patterns — matches both production and staging URLs */
@@ -82,11 +82,46 @@ export async function handleTopPage(
   const payload = cookieToken && jwtSecret
     ? await verifyJwt(cookieToken, jwtSecret, env.WORKER_ENV)
     : null;
-  if (
-    !url.searchParams.has("woff") &&
-    !url.searchParams.has("lw_callback") &&
-    !payload
-  ) {
+  const hasWoff = url.searchParams.has("woff");
+  const hasLwCallback = url.searchParams.has("lw_callback");
+  // 診断ログ (login ループ調査): token 本体は出さず、cookie 有無 / 検証成否 /
+  // 失敗理由 (exp/env/alg) と query gate の状態だけを構造化ログに出す。
+  let jwtDiag: Record<string, unknown> = {};
+  if (cookieToken && !payload) {
+    const raw = decodeJwtPayload(cookieToken);
+    const parts = cookieToken.split(".");
+    let alg: unknown;
+    if (parts.length === 3) {
+      try {
+        alg = (JSON.parse(atob(parts[0]!.replace(/-/g, "+").replace(/_/g, "/"))) as { alg?: string }).alg;
+      } catch {
+        alg = "decode_err";
+      }
+    }
+    jwtDiag = {
+      jwtParts: parts.length,
+      alg,
+      hasJwtSecret: !!jwtSecret,
+      claimExp: raw?.exp ?? null,
+      nowSec: Math.floor(Date.now() / 1000),
+      expired: typeof raw?.exp === "number" ? raw.exp <= Math.floor(Date.now() / 1000) : null,
+      claimEnv: (raw?.env as string | undefined) ?? null,
+      workerEnv: env.WORKER_ENV ?? null,
+    };
+  }
+  console.log(
+    JSON.stringify({
+      event: "top_gate",
+      hasCookie: !!cookieToken,
+      cookieLen: cookieToken?.length ?? 0,
+      payloadValid: !!payload,
+      hasWoff,
+      hasLwCallback,
+      willRedirectToLogin: !hasWoff && !hasLwCallback && !payload,
+      ...jwtDiag,
+    }),
+  );
+  if (!hasWoff && !hasLwCallback && !payload) {
     const loginUrl = `${url.origin}/login?redirect_uri=${encodeURIComponent(url.origin + "/top")}`;
     return Response.redirect(loginUrl, 302);
   }
