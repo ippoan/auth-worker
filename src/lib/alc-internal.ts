@@ -11,11 +11,25 @@
  */
 import type { Env } from "../index";
 import { signInternalJWT } from "./internal-jwt";
-import { resolveSecret } from "./secret";
+import { resolveSecret, type SecretBinding } from "./secret";
 import { mintGoogleIdToken } from "./oidc";
 
 /** rust の `aud=alc-api-internal` (alc-auth-jwt の INTERNAL_AUD と同値)。 */
 const INTERNAL_AUD = "alc-api-internal";
+
+/**
+ * `internalAuthToken` が必要とする最小 env。worker 本体の `Env` に加えて、
+ * Durable Object の narrow な env interface (lineworks-webhook-do の `DOEnv` 等)
+ * からも構造的に満たせるようにしておく (Refs ippoan/rust-alc-api#479 — HS256
+ * dual-accept 撤去の前提として、全 internal 呼び出し元をこの helper に集約する)。
+ */
+export interface InternalAuthEnv {
+  /** lockdown cutover flag (wrangler.toml vars)。"1" で OIDC mint を試す。 */
+  INTERNAL_AUTH_OIDC?: string;
+  ALC_API_PROXY_SA_KEY?: SecretBinding;
+  JWT_SECRET: SecretBinding;
+  WORKER_ENV: string;
+}
 
 /**
  * internal-auth 呼び出しの Authorization token を返す。
@@ -25,7 +39,7 @@ const INTERNAL_AUD = "alc-api-internal";
  *   検証し、rust 側は dual-accept で aud を確認する。
  * - それ以外 (移行前): 従来の HS256 internal JWT (`signInternalJWT`)。
  */
-export async function internalAuthToken(env: Env): Promise<string> {
+export async function internalAuthToken(env: InternalAuthEnv): Promise<string> {
   if (env.INTERNAL_AUTH_OIDC === "1") {
     const saKey = await resolveSecret(env.ALC_API_PROXY_SA_KEY);
     if (saKey) return mintGoogleIdToken(saKey, INTERNAL_AUD);
