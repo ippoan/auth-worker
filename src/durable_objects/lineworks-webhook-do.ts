@@ -14,17 +14,22 @@
  */
 
 import { decryptBotSecret, signWebhookBody, constantTimeEqual, base64Decode } from "../lib/lineworks-crypto";
-import { signInternalJWT } from "../lib/internal-jwt";
+import { internalAuthToken } from "../lib/alc-internal";
 import { resolveSecret, type SecretBinding } from "../lib/secret";
 
 interface DOEnv {
   ALC_API_ORIGIN: string;
-  /** Refs #206: Secrets Store binding 化済。`signInternalJWT()` 内部で
-   *  `resolveSecret()` 経由で string 化される。 */
+  /** Refs #206: Secrets Store binding 化済。HS256 fallback (`signInternalJWT`)
+   *  内部で `resolveSecret()` 経由で string 化される。 */
   JWT_SECRET: SecretBinding;
   /** Refs #218: internal JWT の `env` claim 用 ("staging"/"prod")。
-   *  `signInternalJWT()` が要求する。 */
+   *  HS256 fallback (`signInternalJWT`) が要求する。 */
   WORKER_ENV: string;
+  /** Refs ippoan/rust-alc-api#479: internal 呼び出しを `internalAuthToken`
+   *  (OIDC-aware) に統一。lockdown cutover 済み env では OIDC
+   *  (aud=alc-api-internal) を mint し、未設定なら HS256 に fallback する。 */
+  INTERNAL_AUTH_OIDC?: string;
+  ALC_API_PROXY_SA_KEY?: SecretBinding;
   /** Refs #206: Secrets Store binding 化済。`getBotSecret()` 内部で
    *  `resolveSecret()` 経由で string 化される。 */
   SSO_ENCRYPTION_KEY: SecretBinding;
@@ -150,7 +155,7 @@ export class LineworksWebhookDO {
   }
 
   private async fetchBotSecretEncrypted(botId: string): Promise<string> {
-    const jwt = await signInternalJWT(this.env);
+    const jwt = await internalAuthToken(this.env);
     const url = `${this.env.ALC_API_ORIGIN}/api/internal/lineworks/bot-secret/${encodeURIComponent(botId)}`;
     const resp = await fetch(url, {
       method: "GET",
@@ -197,7 +202,7 @@ export class LineworksWebhookDO {
   }
 
   private async postToBackend(item: QueueItem): Promise<boolean> {
-    const jwt = await signInternalJWT(this.env);
+    const jwt = await internalAuthToken(this.env);
     try {
       const resp = await fetch(`${this.env.ALC_API_ORIGIN}/api/internal/lineworks/event`, {
         method: "POST",
