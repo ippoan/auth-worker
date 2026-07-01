@@ -144,13 +144,32 @@ describe("handleLineCallback", () => {
     expect(mockUpsert).toHaveBeenCalledWith(env, { tenant_id: "t-qr", line_user_id: "Uxxxx", name: "User" });
   });
 
-  it("0 recipients → error redirect", async () => {
+  it("0 recipients (SPA origin) → error on redirect target", async () => {
     setupTokenProfile();
     mockFindUser.mockResolvedValue(null);
     mockRecipients.mockResolvedValue([]);
     const res = await handleLineCallback(req("/oauth/line/callback?code=abc&state=x"), env);
     expect(res.status).toBe(302);
-    expect(res.headers.get("Location")).toContain("error=");
+    const loc = res.headers.get("Location")!;
+    // REDIRECT は auth-worker と別 origin (app1.test.example) なので従来どおり target に error。
+    expect(loc).toContain(`${REDIRECT}?error=`);
+  });
+
+  it("0 recipients (self /top origin) → error on /login, not gated /top (loop 回避)", async () => {
+    const selfTop = "https://auth.test.example/top";
+    mockVerify.mockResolvedValue({ redirect_uri: selfTop, provider: "line", external_org_id: "" });
+    mockIsAllowed.mockReturnValue(true);
+    mockExchange.mockResolvedValue({ access_token: "at" });
+    mockProfile.mockResolvedValue({ userId: "Uxxxx", displayName: "User" });
+    mockFindUser.mockResolvedValue(null);
+    mockRecipients.mockResolvedValue([]);
+    const res = await handleLineCallback(req("/oauth/line/callback?code=abc&state=x"), env);
+    expect(res.status).toBe(302);
+    const loc = res.headers.get("Location")!;
+    // gated な /top ではなく /login に error 付きで返す (無限ループ回避)。
+    expect(loc).toContain("https://auth.test.example/login?redirect_uri=");
+    expect(loc).toContain("error=");
+    expect(loc).not.toMatch(/\/top\?error=/);
   });
 
   it("1 recipient → auto login", async () => {
