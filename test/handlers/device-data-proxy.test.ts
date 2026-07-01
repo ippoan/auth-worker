@@ -151,6 +151,30 @@ describe("handleDeviceDataProxy (rust-alc-api#434 followup, browser-render-rust 
     expect((init as RequestInit).body).toBeDefined();
   });
 
+  it("device-dtako-ingest role で /api/upload も forward できる (dtako-scraper 共用、Refs dtako-scraper#14)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/upload", {
+        token: await deviceToken(),
+        headers: { "content-type": "multipart/form-data; boundary=x" },
+        body: "dummy-multipart-body",
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/upload");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
   it("OIDC mint 失敗は 502 (詳細は出さない)", async () => {
     const { mintGoogleIdToken } = await import("../../src/lib/oidc");
     (mintGoogleIdToken as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
