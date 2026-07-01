@@ -52,12 +52,21 @@ async function issueLineJwt(
     token,
     refresh_token: refresh.raw,
     expires_in: String(ACCESS_TOKEN_EXPIRY_SECS),
-    lw_callback: "1",
   });
+  // `lw_callback` は **query string** に置く。auth-worker 自身の server-rendered
+  // /top ゲート (top-page.ts) は `url.searchParams` しか読めず、fragment (# 以降) は
+  // サーバに送られないため、query に無いと cookie 未反映タイミングで /login に戻り
+  // ログインループになる (LINE ログイン成功 → /top へ戻るが /login に飛ぶ症状の根治)。
+  // google-callback / redirect.ts と同じ規約。SPA consumer は fragment の
+  // token/refresh_token を consumeFragment で読む。
+  const finalUrl = new URL(redirectUri);
+  if (!finalUrl.searchParams.has("lw_callback")) {
+    finalUrl.searchParams.set("lw_callback", "1");
+  }
   return new Response(null, {
     status: 302,
     headers: {
-      Location: `${redirectUri}#${fragment.toString()}`,
+      Location: `${finalUrl.toString()}#${fragment.toString()}`,
       "Set-Cookie": setAuthCookie(token, hostname),
     },
   });
