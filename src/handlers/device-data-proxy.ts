@@ -39,7 +39,7 @@ const ROUTE_PREFIX = "/device-data-proxy";
  * 割り当てない device は何も転送できない (デフォルト拒否)。
  */
 const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
-  [DEVICE_ROLE_DTAKO_INGEST]: new Set(["/api/dtako-logs/bulk"]),
+  [DEVICE_ROLE_DTAKO_INGEST]: new Set(["/api/dtako-logs/bulk", "/api/upload"]),
 };
 
 function jsonError(status: number, error: string): Response {

@@ -39,10 +39,17 @@ export const DEVICE_ROLE = "device-uploader";
 export const DEVICE_ROLE_KIOSK = "device-kiosk";
 
 /**
- * browser-render-rust (Kagoya VPS の無人 cron) 用 role。`/device-data-proxy/api/
- * dtako-logs/bulk` の ingest のみを許可する最小権限 (盗難時も dtako ログ投入
- * 1 経路に限定)。他 role と混ぜず単独で追加する (Refs rust-alc-api#434 followup、
- * browser-render-rust の Vehicle fetch cron 403 対応)。
+ * Kagoya VPS 上の無人 dtako データ投入系サービス (browser-render-rust の
+ * dtakolog cron / dtako-scraper の CSV アップロード) 共用 role。同一 VPS・同一
+ * 運用チーム・同一機能ドメイン (dtako データの rust-alc-api への ingest) なので、
+ * サービスごとに role を分けず 1 role に統一する (2026-07-01、dtako-scraper#14
+ * 対応時に device-dtako-upload 単独 role 新設案から方針転換)。
+ *
+ * 許可 path は `device-data-proxy.ts` の `ROLE_PATH_ALLOWLIST` 側で管理
+ * (`/api/dtako-logs/bulk` + `/api/upload`)。device credential (device_id/
+ * device_secret) 自体はサービス・テナントごとに個別発行するため、rotate/revoke
+ * の粒度は role 統一後も維持される (role は「できること」、credential は
+ * 「誰が」の軸で直交する)。
  */
 export const DEVICE_ROLE_DTAKO_INGEST = "device-dtako-ingest";
 
