@@ -38,8 +38,20 @@ export const DEVICE_ROLE = "device-uploader";
  */
 export const DEVICE_ROLE_KIOSK = "device-kiosk";
 
+/**
+ * browser-render-rust (Kagoya VPS の無人 cron) 用 role。`/device-data-proxy/api/
+ * dtako-logs/bulk` の ingest のみを許可する最小権限 (盗難時も dtako ログ投入
+ * 1 経路に限定)。他 role と混ぜず単独で追加する (Refs rust-alc-api#434 followup、
+ * browser-render-rust の Vehicle fetch cron 403 対応)。
+ */
+export const DEVICE_ROLE_DTAKO_INGEST = "device-dtako-ingest";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
-export const DEVICE_ROLES: ReadonlySet<string> = new Set([DEVICE_ROLE, DEVICE_ROLE_KIOSK]);
+export const DEVICE_ROLES: ReadonlySet<string> = new Set([
+  DEVICE_ROLE,
+  DEVICE_ROLE_KIOSK,
+  DEVICE_ROLE_DTAKO_INGEST,
+]);
 
 /**
  * 受け取った role 文字列を allowlist で検証して返す。未知 / 空は既定 (`DEVICE_ROLE`)。

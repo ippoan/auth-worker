@@ -9,6 +9,7 @@ import {
   sha256Hex,
   DEVICE_ROLE,
   DEVICE_ROLE_KIOSK,
+  DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_JWT_TTL_SECONDS,
   type DeviceRecord,
 } from "../../src/lib/device";
@@ -36,6 +37,7 @@ describe("normalizeDeviceRole", () => {
   it("passes allowlisted roles through", () => {
     expect(normalizeDeviceRole(DEVICE_ROLE)).toBe(DEVICE_ROLE);
     expect(normalizeDeviceRole(DEVICE_ROLE_KIOSK)).toBe(DEVICE_ROLE_KIOSK);
+    expect(normalizeDeviceRole(DEVICE_ROLE_DTAKO_INGEST)).toBe(DEVICE_ROLE_DTAKO_INGEST);
   });
 
   it("falls back to the default role for unknown strings", () => {
