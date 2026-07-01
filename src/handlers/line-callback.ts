@@ -168,11 +168,18 @@ export async function handleLineCallback(request: Request, env: Env): Promise<Re
   console.log(JSON.stringify({ event: "line_callback_recipients", count: tenants.length }));
   const sep = redirectUri.includes("?") ? "&" : "?";
   if (tenants.length === 0) {
-    const msg = encodeURIComponent("招待 QR コードからログインしてください");
-    return new Response(null, {
-      status: 302,
-      headers: { Location: `${redirectUri}${sep}error=${msg}` },
-    });
+    const msg = "この LINE アカウントはどのテナントにも登録されていません。招待 QR コードから登録してください";
+    // redirect 先が auth-worker 自身の gated ページ (例: /top) の場合、そこへ error 付きで
+    // 返すと /top ゲートが未ログイン判定で /login に戻し、error が失われて無限ログイン
+    // ループになる (recipient 0 件の LINE アカウントで発生)。login ページ (error 表示可) に
+    // 直接返してループを断ち、原因メッセージを見せる。SPA フロントエンド向け (別 origin) は
+    // 従来どおり redirect 先に error を載せて返す (SPA 側で表示)。
+    const isSelfOrigin = new URL(redirectUri).origin === url.origin;
+    const loc = isSelfOrigin
+      ? `${url.origin}/login?redirect_uri=${encodeURIComponent(redirectUri)}&error=${encodeURIComponent(msg)}`
+      : `${redirectUri}${sep}error=${encodeURIComponent(msg)}`;
+    console.log(JSON.stringify({ event: "line_callback_no_recipient", isSelfOrigin }));
+    return new Response(null, { status: 302, headers: { Location: loc } });
   }
   if (tenants.length === 1) {
     const user = await upsertLineUser(env, {
