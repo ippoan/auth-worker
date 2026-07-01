@@ -124,8 +124,10 @@ describe("handleLineCallback", () => {
     mockFindUser.mockResolvedValue(user);
     const res = await handleLineCallback(req("/oauth/line/callback?code=abc&state=x"), env);
     expect(res.status).toBe(302);
-    expect(res.headers.get("Location")).toContain(`${REDIRECT}#`);
-    expect(res.headers.get("Location")).toContain("refresh_token=rt_");
+    const loc = res.headers.get("Location")!;
+    // lw_callback は server-side /top ゲート用に query string、token は fragment。
+    expect(loc).toContain(`${REDIRECT}?lw_callback=1#`);
+    expect(loc).toContain("refresh_token=rt_");
     expect(res.headers.get("Set-Cookie")).toContain("logi_auth_token=");
   });
 
