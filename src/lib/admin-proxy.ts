@@ -11,9 +11,16 @@
  * 注入する 4 ヘッダは rust gateway `inject_auth_headers` と同じ:
  *   X-Tenant-ID / X-User-ID / X-User-Email / X-User-Role
  *
+ * lockdown (`allUsers` 削除) 後は Cloud Run IAM が Google OIDC ID token
+ * (aud=ALC_API_ORIGIN) を要求するため、`Authorization` は browser JWT の素通しではなく
+ * `alcOidcToken` で mint した OIDC に置き換える (browser JWT はそもそも rust に検証され
+ * ない値なので transport として意味を持たない)。mint 不可 (SA key 未設定 = lockdown 前)
+ * は Authorization を付けずに fail-open する。
+ *
  * `env.DEBUG === "true"` のとき網羅ログ (verify 結果 / 注入 claims / rust 応答) を emit する。
  */
 import type { Env } from "../index";
+import { alcOidcToken } from "./alc-data-fetch";
 import { verifyJwt } from "./jwt";
 import { resolveSecret } from "./secret";
 
@@ -42,14 +49,15 @@ export async function buildAdminForwardHeaders(
     }
     return null;
   }
+  const oidc = await alcOidcToken(env);
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
     "X-Tenant-ID": String(claims.tenant_id ?? ""),
     "X-User-ID": String(claims.sub ?? ""),
     "X-User-Email": String(claims.email ?? ""),
     "X-User-Role": String(claims.role ?? ""),
     ...(extra ?? {}),
   };
+  if (oidc) headers.Authorization = `Bearer ${oidc}`;
   if (env.DEBUG === "true") {
     console.log(
       JSON.stringify({

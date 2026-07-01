@@ -4,6 +4,7 @@
  */
 
 import type { Env } from "../index";
+import { alcOidcToken } from "../lib/alc-data-fetch";
 import { getAllowedOrigins } from "../lib/config";
 import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { resolveSecret } from "../lib/secret";
@@ -75,9 +76,14 @@ export async function handleGoogleCallback(
   }
 
   // Call rust-alc-api to authenticate with Google ID token
+  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=ALC_API_ORIGIN) を要求する。
+  // mint 不可 (SA key 未設定 = lockdown 前) は Authorization 無しで fail-open。
+  const oidc = await alcOidcToken(env);
+  const authHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (oidc) authHeaders.Authorization = `Bearer ${oidc}`;
   const authResp = await fetch(`${env.ALC_API_ORIGIN}/api/auth/google`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders,
     body: JSON.stringify({ id_token: tokenData.id_token }),
   });
 

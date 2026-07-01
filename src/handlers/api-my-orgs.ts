@@ -17,11 +17,7 @@ export async function handleMyOrgs(
   // rust-alc-api#434: rust-alc-api /api/my-orgs は require_tenant_header (dumb
   // backend) の後ろにあり raw Bearer を読まない。ここで JWT を検証して
   // X-Tenant-ID + X-User-* を注入する (前段 proxy 役)。検証失敗は 401。
-  const identity = await verifiedIdentityHeaders(
-    token,
-    env.JWT_SECRET,
-    env.WORKER_ENV,
-  );
+  const identity = await verifiedIdentityHeaders(env, token);
   if (!identity) return corsJsonResponse({ error: "Unauthorized" }, 401);
 
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/my-orgs`, {

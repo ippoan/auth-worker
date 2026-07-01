@@ -7,15 +7,24 @@
  * ブラウザ JWT を検証して検証済み identity をヘッダ注入する必要がある。
  * 旧実装は raw `Authorization: Bearer` を素通ししていたが、require_tenant_header
  * は Bearer を読まないため X-Tenant-ID 欠落で 401 になっていた (= 本 helper で解消)。
+ *
+ * lockdown (`allUsers` 削除) 後は上記に加え、Cloud Run IAM が Google OIDC ID token
+ * (aud=ALC_API_ORIGIN) を要求する。`alcOidcToken` で mint し `Authorization` に載せる
+ * (`alc-data-fetch.ts` の `alcIdentityHeaders` と同方針)。mint 不可 (SA key 未設定 =
+ * lockdown 前) でも X-Tenant-ID 系ヘッダはそのまま返す (fail-open、allUsers が残って
+ * いる間は Authorization 無しで素通りする従来動作を維持)。
  */
+import type { Env } from "../index";
+import { alcOidcToken } from "./alc-data-fetch";
 import { verifyJwt } from "./jwt";
-import { resolveSecret, type SecretBinding } from "./secret";
+import { resolveSecret } from "./secret";
 
 /**
  * ブラウザ JWT を `JWT_SECRET` で検証し、rust-alc-api の `require_tenant_header`
  * 向け identity ヘッダ (`X-Tenant-ID` / `X-User-ID` / `X-User-Email` /
- * `X-User-Role`) を組み立てて返す。検証失敗 / 必須 claim 欠落なら `null`
- * (= 呼び出し側で 401)。
+ * `X-User-Role`) + lockdown 後の transport 用 OIDC (`Authorization`) を組み立てて
+ * 返す。検証失敗 / 必須 claim 欠落なら `null` (= 呼び出し側で 401)。OIDC mint 失敗時は
+ * Authorization を付けずに fail-open する (lockdown 前の非破壊)。
  *
  * `require_tenant_header` は `X-Tenant-ID` (UUID) を必須とし、`X-User-ID` (UUID)
  * + `X-User-Email` + `X-User-Role` が **揃って初めて** AuthUser を復元する。
@@ -25,14 +34,13 @@ import { resolveSecret, type SecretBinding } from "./secret";
  * 値 (token / secret) は引数とローカルだけを通り、log / response には出さない。
  */
 export async function verifiedIdentityHeaders(
+  env: Env,
   token: string,
-  jwtSecretBinding: SecretBinding,
-  expectedEnv?: string,
 ): Promise<Record<string, string> | null> {
-  const jwtSecret = await resolveSecret(jwtSecretBinding);
+  const jwtSecret = await resolveSecret(env.JWT_SECRET);
   if (!jwtSecret) return null;
 
-  const payload = await verifyJwt(token, jwtSecret, expectedEnv);
+  const payload = await verifyJwt(token, jwtSecret, env.WORKER_ENV);
   if (!payload) return null;
 
   const tenantId =
@@ -44,10 +52,13 @@ export async function verifiedIdentityHeaders(
 
   if (!tenantId || !sub || !email || !role) return null;
 
-  return {
+  const oidc = await alcOidcToken(env);
+  const headers: Record<string, string> = {
     "X-Tenant-ID": tenantId,
     "X-User-ID": sub,
     "X-User-Email": email,
     "X-User-Role": role,
   };
+  if (oidc) headers.Authorization = `Bearer ${oidc}`;
+  return headers;
 }
