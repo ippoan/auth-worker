@@ -25,7 +25,8 @@
  *   - 1 つでも `ok: false` → overall = "degraded" (HTTP 503)。
  */
 import type { Env } from "../index";
-import { signInternalJWT } from "../lib/internal-jwt";
+import { alcOidcToken } from "../lib/alc-data-fetch";
+import { internalAuthToken } from "../lib/alc-internal";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 
@@ -376,15 +377,20 @@ async function probeJwtDrift(env: Env): Promise<ProbeResult> {
   if (!env.ALC_API_ORIGIN) return { configured: false };
 
   // JWT_SECRET の null チェックは handler 入口の auth guard が既に弾いて
-  // いるので、probe 到達時点で `signInternalJWT` が throw する経路は無い。
-  // signInternalJWT の resolveSecret が race で null を返す ev は同 handler
-  // の verifyJwt も同様に落ちて 500 になるので、ここでは throw させて
-  // /health/oauth 全体の 500 で異常検知させる (二重 try/catch を書かない)。
+  // いるので、probe 到達時点で `resolveSecret` が null を返す経路は無い。
+  // race で null になる ev は同 handler の verifyJwt も同様に落ちて 500 になる
+  // ので、ここでは throw させて /health/oauth 全体の 500 で異常検知させる
+  // (二重 try/catch を書かない)。
   const jwtSecret = (await resolveSecret(env.JWT_SECRET))!;
   const challengeBytes = new Uint8Array(32);
   crypto.getRandomValues(challengeBytes);
   const challengeHex = bytesToHex(challengeBytes);
-  const internalJwt = await signInternalJWT(env, 30);
+  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=alc-api-internal) を
+  // 要求する。`internalAuthToken` は INTERNAL_AUTH_OIDC=1 の時 OIDC を、それ以外は
+  // 従来の internal JWT (HS256) を返す (`alc-internal.ts` と同ロジックを共有)。
+  // canary endpoint 自体の HMAC 計算は JWT_SECRET のみに依存するため、transport が
+  // OIDC に変わっても drift 検知の意味は変わらない。
+  const internalJwt = await internalAuthToken(env);
 
   const url =
     `${env.ALC_API_ORIGIN}/api/internal/health/jwt-canary?challenge=${challengeHex}`;
@@ -397,14 +403,15 @@ async function probeJwtDrift(env: Env): Promise<ProbeResult> {
     return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
   }
 
-  // 401 → require_internal_jwt が JWT を弾いた = 鍵が違う = drift。
+  // 401 → require_internal_jwt が拒否した (JWT_SECRET drift、または OIDC の
+  // aud/custom-audiences 未設定)。
   if (res.status === 401) {
     return {
       configured: true,
       ok: false,
       status: 401,
       mode,
-      hint: "internal JWT rejected by rust-alc-api — JWT_SECRET drift",
+      hint: "internal auth rejected by rust-alc-api — JWT_SECRET drift or OIDC audience mismatch",
     };
   }
   // 404 → rust-alc-api が canary endpoint を持たない旧版 (= deploy 順序)。
@@ -494,8 +501,15 @@ async function probeLineworks(env: Env): Promise<ProbeResult> {
   // 400 を返すかを確認する (404 や 5xx なら rust-alc-api 側の障害)。
   if (!env.ALC_API_ORIGIN) return { configured: false };
 
+  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=ALC_API_ORIGIN) を
+  // 要求する。mint 不可 (SA key 未設定 = lockdown 前) は Authorization 無しで
+  // fail-open する。
+  const oidc = await alcOidcToken(env);
   const url = `${env.ALC_API_ORIGIN}/api/auth/lineworks/redirect`;
-  const res = await timedFetch(url);
+  const res = await timedFetch(
+    url,
+    oidc ? { headers: { Authorization: `Bearer ${oidc}` } } : undefined,
+  );
   if (isFetchError(res)) {
     return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
   }
