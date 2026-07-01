@@ -4,6 +4,7 @@
  */
 
 import type { Env } from "../index";
+import { alcOidcToken } from "../lib/alc-data-fetch";
 import { getAllowedOrigins } from "../lib/config";
 import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { isAllowedRedirectUri } from "../lib/security";
@@ -33,9 +34,14 @@ export async function handleAuthLogin(
   console.log(JSON.stringify({ event: "login_attempt", username, orgId: organizationId }));
 
   // Call rust-alc-api password login endpoint
+  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=ALC_API_ORIGIN) を要求する。
+  // mint 不可 (SA key 未設定 = lockdown 前) は Authorization 無しで fail-open。
+  const oidc = await alcOidcToken(env);
+  const loginHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (oidc) loginHeaders.Authorization = `Bearer ${oidc}`;
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/auth/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: loginHeaders,
     body: JSON.stringify({
       organization_id: organizationId || "",
       username,

@@ -5,6 +5,7 @@
  */
 
 import type { Env } from "../index";
+import { alcOidcToken } from "../lib/alc-data-fetch";
 import { getAllowedOrigins } from "../lib/config";
 import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { corsJsonResponse } from "../lib/errors";
@@ -40,9 +41,14 @@ export async function handleWoffAuth(
 
   console.log(JSON.stringify({ event: "woff_auth", domainId }));
 
+  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=ALC_API_ORIGIN) を要求する。
+  // mint 不可 (SA key 未設定 = lockdown 前) は Authorization 無しで fail-open。
+  const oidc = await alcOidcToken(env);
+  const woffHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (oidc) woffHeaders.Authorization = `Bearer ${oidc}`;
   const resp = await fetch(`${env.ALC_API_ORIGIN}/api/auth/woff`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: woffHeaders,
     body: JSON.stringify({
       access_token: accessToken,
       domain_id: domainId,
@@ -110,8 +116,12 @@ export async function handleWoffConfig(
 
   console.log(JSON.stringify({ event: "woff_config", domain }));
 
+  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=ALC_API_ORIGIN) を要求する。
+  // mint 不可 (SA key 未設定 = lockdown 前) は Authorization 無しで fail-open。
+  const configOidc = await alcOidcToken(env);
   const resp = await fetch(
     `${env.ALC_API_ORIGIN}/api/auth/woff-config?domain=${encodeURIComponent(domain)}`,
+    configOidc ? { headers: { Authorization: `Bearer ${configOidc}` } } : undefined,
   );
 
   if (!resp.ok) {

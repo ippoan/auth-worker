@@ -22,11 +22,7 @@ export async function handleSwitchOrg(
   // rust-alc-api#434: rust-alc-api /api/auth/switch-org は require_tenant_header
   // (dumb backend) の後ろ。JWT を検証して X-Tenant-ID + X-User-* を注入する
   // (switch_org は auth_user.user_id=sub で対象テナントの同一 identity を引く)。
-  const identity = await verifiedIdentityHeaders(
-    token,
-    env.JWT_SECRET,
-    env.WORKER_ENV,
-  );
+  const identity = await verifiedIdentityHeaders(env, token);
   if (!identity) return corsJsonResponse({ error: "Unauthorized" }, 401);
 
   console.log(JSON.stringify({ event: "switch_org", organizationId: body.organizationId }));
