@@ -479,7 +479,7 @@ export default {
           case "/top":
             return await handleTopPage(request, env);
           case "/auth/callback":
-            return handleAuthCallback(request);
+            return handleAuthCallback();
           case "/oauth/google/redirect":
             return await handleGoogleRedirect(request, env);
           case "/oauth/google/callback":
