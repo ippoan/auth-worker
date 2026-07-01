@@ -30,6 +30,7 @@ import {
 } from "./handlers/api-rich-menu";
 import { handleAdminRichMenuPage, handleAdminRichMenuCallback } from "./handlers/admin-rich-menu";
 import { handleTopPage } from "./handlers/top-page";
+import { handleAuthCallback } from "./handlers/auth-callback";
 import { handleHealthProxy } from "./handlers/health";
 import { handleHealthOAuth } from "./handlers/health-oauth";
 import { handleSecretFingerprint } from "./handlers/health-fingerprints";
@@ -477,6 +478,8 @@ export default {
             return await handleLoginPage(request, env);
           case "/top":
             return await handleTopPage(request, env);
+          case "/auth/callback":
+            return handleAuthCallback(request);
           case "/oauth/google/redirect":
             return await handleGoogleRedirect(request, env);
           case "/oauth/google/callback":
