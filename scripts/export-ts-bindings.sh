@@ -38,8 +38,10 @@ if [ -n "$SHA" ]; then
     exit 1
   fi
 else
-  # Find latest ts-bindings artifact (check job runs on PR, not main push)
-  ARTIFACT_NAME=$(gh api "repos/$REPO/actions/artifacts?per_page=20" \
+  # Find latest ts-bindings artifact (Tests(lib) job が PR/main push で upload する)。
+  # 1 run あたり ~9 artifact (coverage×7 + llvm-cov + ts-bindings) 積まれるため、
+  # 窓が狭いと run が立て込んだ時に押し出されて見つからない (v0.2.91 release 失敗の実害)。
+  ARTIFACT_NAME=$(gh api "repos/$REPO/actions/artifacts?per_page=100" \
     --jq '[.artifacts[] | select(.name | startswith("ts-bindings-")) | select(.expired == false)] | .[0].name' 2>/dev/null)
   if [ -z "$ARTIFACT_NAME" ] || [ "$ARTIFACT_NAME" = "null" ]; then
     echo "ERROR: No ts-bindings artifact found" >&2
