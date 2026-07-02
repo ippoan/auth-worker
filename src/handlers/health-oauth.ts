@@ -11,8 +11,9 @@
  *                  `/signin/oauth/error?authError=...`。
  *   - github_mcp : client_id 正否に関わらず 302 → `github.com/login` を
  *                  返すため、probe では生死を区別できない。**reachability** のみ。
- *   - lineworks  : worker に client_id 無し (rust-alc-api 委譲)。
- *                  `ALC_API_ORIGIN/api/auth/lineworks/redirect` の到達性のみ。
+ *   - lineworks  : credentials は rust の DB に暗号化保存 (worker env に無し)。
+ *                  rust internal `sso-config` lookup の到達性のみ (旧
+ *                  `/api/auth/lineworks/*` は rust-alc-api#479 で撤去済み)。
  *   - egov       : Keycloak 依存。`EGOV_AUTH_BASE/.well-known/openid-configuration`
  *                  の到達性 + JSON 整合性。
  *
@@ -25,7 +26,6 @@
  *   - 1 つでも `ok: false` → overall = "degraded" (HTTP 503)。
  */
 import type { Env } from "../index";
-import { alcOidcToken } from "../lib/alc-data-fetch";
 import { internalAuthToken } from "../lib/alc-internal";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
@@ -33,12 +33,12 @@ import { resolveSecret } from "../lib/secret";
 /** 外部 provider への probe 1 回のタイムアウト (ms)。 */
 const PROBE_TIMEOUT_MS = 5000;
 
-/** `jwt_secret_drift` probe (rust-alc-api canary) 専用の長めタイムアウト。
+/** rust internal 到達性 probe (lineworks) 専用の長めタイムアウト。
  *  staging Cloud Run は minScale=0 + PostgreSQL sidecar + migration 全件再適用で
- *  cold-start に 15-30s かかる。5s timeout だと毎回 `unknown` で返ってしまい
- *  drift 検知 probe が機能しないため、本 probe だけ 30s 許容する (Refs #218)。
+ *  cold-start に 15-30s かかる。5s timeout だと毎回 `unknown` で返ってしまうため、
+ *  rust を叩く probe だけ 30s 許容する (Refs #218)。
  *  prod は常時稼働で数百 ms 応答なので max 値を増やしても実行時間は伸びない。 */
-const CANARY_PROBE_TIMEOUT_MS = 30000;
+const RUST_PROBE_TIMEOUT_MS = 30000;
 
 type ProbeMode = "client_id_check" | "reachability" | "secret_check";
 
@@ -352,181 +352,58 @@ async function probeGithubMcpSecret(env: Env): Promise<ProbeResult> {
   };
 }
 
+// NOTE: 旧 `jwt_secret_drift` probe (rust-alc-api の jwt-canary と HMAC 突き合わせ、
+// Refs #218) は撤去した。rust-alc-api#479 で rust から `JWT_SECRET` が全撤去され
+// (JWT の署名・検証は auth-worker のみ)、鍵を物理共有しないので drift という
+// 概念自体が消滅したため。canary endpoint も rust 側で削除済み。
+
 // ---------------------------------------------------------------------------
-// jwt_secret_drift — secret_check (Refs #218)
-//
-// auth-worker と rust-alc-api は HS256 鍵 `JWT_SECRET` を物理共有している。
-// 片方だけ rotate された / Secrets Store 移行漏れで drift すると、ユーザー
-// ログイン後の cookie verify が silent fail して redirect loop に陥る。
-//
-// rust-alc-api 側の `GET /api/internal/health/jwt-canary?challenge=<hex>` に
-// 32-byte random challenge を投げ、返ってきた HMAC-SHA256(challenge) を
-// auth-worker 側の `JWT_SECRET` で再計算した値と比較する:
-//
-//   一致      → ok (両者の JWT_SECRET が一致)
-//   不一致    → degraded (drift 検知)
-//   401       → degraded (internal JWT 自体が拒否される = drift の典型)
-//   404       → unknown (rust-alc-api がまだ canary endpoint を持たない旧版)
-//   その他    → unknown (上流障害 / 仕様変更)
-//
-// secret 値そのものは body / log / response に echo されない。HMAC tag のみ。
+// lineworks — reachability only (credentials は rust の DB に暗号化保存)
 // ---------------------------------------------------------------------------
 
-async function probeJwtDrift(env: Env): Promise<ProbeResult> {
-  const mode: ProbeMode = "secret_check";
+async function probeLineworks(env: Env): Promise<ProbeResult> {
+  const mode: ProbeMode = "reachability";
+  // LINE WORKS の OAuth オーケストレーションは auth-worker 自身が担い、rust に
+  // 残る依存は internal の sso-config lookup のみ (旧 `/api/auth/lineworks/*` は
+  // rust-alc-api#479 で撤去済み)。**reachability** として実在しない domain で
+  // sso-config を引き、404 (sso_config_not_found) が返れば「rust 生きてる +
+  // internal route 登録済み + internal auth 通過」の証拠とする。
   if (!env.ALC_API_ORIGIN) return { configured: false };
 
-  // JWT_SECRET の null チェックは handler 入口の auth guard が既に弾いて
-  // いるので、probe 到達時点で `resolveSecret` が null を返す経路は無い。
-  // race で null になる ev は同 handler の verifyJwt も同様に落ちて 500 になる
-  // ので、ここでは throw させて /health/oauth 全体の 500 で異常検知させる
-  // (二重 try/catch を書かない)。
-  const jwtSecret = (await resolveSecret(env.JWT_SECRET))!;
-  const challengeBytes = new Uint8Array(32);
-  crypto.getRandomValues(challengeBytes);
-  const challengeHex = bytesToHex(challengeBytes);
-  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=alc-api-internal) を
-  // 要求する。`internalAuthToken` は INTERNAL_AUTH_OIDC=1 の時 OIDC を、それ以外は
-  // 従来の internal JWT (HS256) を返す (`alc-internal.ts` と同ロジックを共有)。
-  // canary endpoint 自体の HMAC 計算は JWT_SECRET のみに依存するため、transport が
-  // OIDC に変わっても drift 検知の意味は変わらない。
-  const internalJwt = await internalAuthToken(env);
-
+  const token = await internalAuthToken(env);
   const url =
-    `${env.ALC_API_ORIGIN}/api/internal/health/jwt-canary?challenge=${challengeHex}`;
+    `${env.ALC_API_ORIGIN}/api/internal/auth/sso-config?provider=lineworks&domain=__health_probe__`;
   const res = await timedFetch(url, {
-    headers: { Authorization: `Bearer ${internalJwt}` },
+    headers: { Authorization: `Bearer ${token}` },
     // staging cold-start (15-30s) を踏み倒すため default 5s timeout を override
-    signal: AbortSignal.timeout(CANARY_PROBE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(RUST_PROBE_TIMEOUT_MS),
   });
   if (isFetchError(res)) {
     return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
   }
 
-  // 401 → require_internal_jwt が拒否した (JWT_SECRET drift、または OIDC の
-  // aud/custom-audiences 未設定)。
+  // 実在しない domain なので 404 (sso_config_not_found) が期待値。200 は
+  // 万一 `__health_probe__` が登録されていた場合で、これも到達の証拠。
+  if (res.status === 404 || res.status === 200) {
+    return { configured: true, ok: true, status: res.status, mode };
+  }
+  // 401 → require_internal_jwt が拒否 (OIDC audience 設定ミス等)。
   if (res.status === 401) {
     return {
       configured: true,
       ok: false,
       status: 401,
       mode,
-      hint: "internal auth rejected by rust-alc-api — JWT_SECRET drift or OIDC audience mismatch",
+      hint: "internal auth rejected by rust-alc-api — OIDC audience mismatch?",
     };
   }
-  // 404 → rust-alc-api が canary endpoint を持たない旧版 (= deploy 順序)。
-  if (res.status === 404) {
-    return {
-      configured: true,
-      unknown: true,
-      mode,
-      hint: "canary endpoint not deployed on rust-alc-api (pre #218 build)",
-    };
-  }
-  if (res.status !== 200) {
-    return { configured: true, unknown: true, mode, hint: `unexpected status ${res.status}` };
-  }
-
-  let json: { signature?: unknown } = {};
-  try {
-    json = (await res.json()) as { signature?: unknown };
-  } catch {
-    /* swallow */
-  }
-  const sig = typeof json.signature === "string" ? json.signature : "";
-  if (!/^[0-9a-f]{64}$/.test(sig)) {
-    return {
-      configured: true,
-      unknown: true,
-      mode,
-      hint: "canary response missing/invalid signature",
-    };
-  }
-
-  const expected = await hmacSha256Hex(jwtSecret, challengeBytes);
-  if (timingSafeHexEqual(sig, expected)) {
-    return { configured: true, ok: true, status: 200, mode };
-  }
-  return {
-    configured: true,
-    ok: false,
-    status: 200,
-    mode,
-    hint: "signature mismatch — JWT_SECRET drift between auth-worker and rust-alc-api",
-  };
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let s = "";
-  for (const b of bytes) {
-    s += b.toString(16).padStart(2, "0");
-  }
-  return s;
-}
-
-async function hmacSha256Hex(secret: string, data: Uint8Array): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, data);
-  return bytesToHex(new Uint8Array(sig));
-}
-
-/** lowercase hex 文字列同士の constant-time 比較。
- *  caller が同一長 (HMAC-SHA256 hex = 64 chars) を保証する前提。 */
-function timingSafeHexEqual(a: string, b: string): boolean {
-  // 呼び出し元 (probeJwtDrift) は事前に `/^[0-9a-f]{64}$/.test(sig)` で
-  // sig 側を 64 chars に固定し、expected 側も hmacSha256Hex で必ず 64 chars
-  // 返るので length チェックは不要 (= dead branch を作らない)。
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
-}
-
-// ---------------------------------------------------------------------------
-// lineworks — reachability only (client_id は rust-alc-api 側)
-// ---------------------------------------------------------------------------
-
-async function probeLineworks(env: Env): Promise<ProbeResult> {
-  const mode: ProbeMode = "reachability";
-  // LINE WORKS の credentials は rust-alc-api 側の `bot_secret_encrypted` に
-  // 暗号化保存されており、worker env には無い。**reachability** として
-  // rust-alc-api の lineworks redirect endpoint がパラメータ不足で正規に
-  // 400 を返すかを確認する (404 や 5xx なら rust-alc-api 側の障害)。
-  if (!env.ALC_API_ORIGIN) return { configured: false };
-
-  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=ALC_API_ORIGIN) を
-  // 要求する。mint 不可 (SA key 未設定 = lockdown 前) は Authorization 無しで
-  // fail-open する。
-  const oidc = await alcOidcToken(env);
-  const url = `${env.ALC_API_ORIGIN}/api/auth/lineworks/redirect`;
-  const res = await timedFetch(
-    url,
-    oidc ? { headers: { Authorization: `Bearer ${oidc}` } } : undefined,
-  );
-  if (isFetchError(res)) {
-    return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
-  }
-
-  // パラメータ無しなので 400/422 (Bad Request) が期待される — これは
-  // 「rust-alc-api 生きてて lineworks route が登録されてる」の証拠。
-  // 5xx → backend 障害。404 → route 未登録 (deploy 破損)。
-  if (res.status === 400 || res.status === 422) {
-    return { configured: true, ok: true, status: res.status, mode };
-  }
-  if (res.status >= 500 || res.status === 404) {
+  if (res.status >= 500) {
     return {
       configured: true,
       ok: false,
       status: res.status,
       mode,
-      hint: `rust-alc-api lineworks route returned ${res.status}`,
+      hint: `rust-alc-api internal sso-config returned ${res.status}`,
     };
   }
   return {
@@ -694,14 +571,14 @@ export async function handleHealthOAuth(
     return new Response("unauthorized", { status: 401 });
   }
 
-  // 8 probe 並列実行 (Promise.all)。1 つの probe の latency が全体を
-  // 引っ張らないように、各々が 5s timeout 内で完結する。
+  // 7 probe 並列実行 (Promise.all)。1 つの probe の latency が全体を
+  // 引っ張らないように、各々が timeout 内で完結する。
   // *_secret probe は token endpoint に invalid code を投げて
   // client_secret 正否を判定する (Refs #217)。
-  // jwt_secret_drift は rust-alc-api の canary endpoint と HMAC を突き合わせ
-  // て JWT_SECRET の drift を検知する (Refs #218)。
   // secrets_format は Secrets Store binding の値の format (末尾 whitespace /
   // JSON 整合) を値非開示で検査する (Refs #208)。
+  // 旧 jwt_secret_drift probe は rust の JWT_SECRET 全撤去 (rust-alc-api#479)
+  // に伴い削除。
   const [
     google,
     google_secret,
@@ -709,7 +586,6 @@ export async function handleHealthOAuth(
     github_mcp_secret,
     lineworks,
     egov,
-    jwt_secret_drift,
     secrets_format,
   ] = await Promise.all([
     probeGoogle(env),
@@ -718,7 +594,6 @@ export async function handleHealthOAuth(
     probeGithubMcpSecret(env),
     probeLineworks(env),
     probeEgov(env),
-    probeJwtDrift(env),
     probeSecretsFormat(env),
   ]);
   const providers: Record<string, ProbeResult> = {
@@ -728,7 +603,6 @@ export async function handleHealthOAuth(
     github_mcp_secret,
     lineworks,
     egov,
-    jwt_secret_drift,
     secrets_format,
   };
   const overall = computeOverall(providers);
