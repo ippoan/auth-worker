@@ -22,6 +22,17 @@ const TEXT_ENCODER = new TextEncoder();
 /** KV key prefix。`device:<device_id>` に DeviceRecord(JSON) を格納する。 */
 const KV_PREFIX = "device:";
 
+/**
+ * label 二次索引の KV key prefix。`device-label:<tenant_id>:<label>` →
+ * device_id (プレーン文字列)。`createDeviceCredentialReplacingLabel` が
+ * 同一 tenant+label の再発行時に旧 credential を引くために使う (Refs #495 PR2)。
+ */
+const LABEL_INDEX_PREFIX = "device-label:";
+
+function labelIndexKey(tenantId: string, label: string): string {
+  return `${LABEL_INDEX_PREFIX}${tenantId}:${label}`;
+}
+
 /** device JWT の既定 TTL (1h)。box は run のたびに mint する。 */
 export const DEVICE_JWT_TTL_SECONDS = 3600;
 
@@ -144,6 +155,35 @@ export async function createDeviceCredential(
   };
   await env.AUTH_CONFIG.put(KV_PREFIX + device_id, JSON.stringify(record));
   return { device_id, device_secret, record };
+}
+
+/**
+ * `createDeviceCredential` の label-aware 版 (Refs #495 PR2、kiosk 端末
+ * re-pair 用)。同一 (tenant_id, label) で過去に発行した credential が
+ * label 二次索引にあれば、新規 mint 前に revoke する。
+ *
+ * これにより「re-pair の度に旧 credential が dormant のまま残り続ける」
+ * 問題を解消する — 索引が無かった旧 `createDeviceCredential` 単体呼び出し
+ * (`/device/pair` browser flow 等) では蓄積していた。
+ *
+ * revoke 対象が既に無い/revoke 済みでも新規発行は続行する (冪等)。
+ */
+export async function createDeviceCredentialReplacingLabel(
+  env: DeviceKvEnv,
+  tenantId: string,
+  label: string,
+  now: number,
+  role: string = DEVICE_ROLE,
+): Promise<NewDeviceCredential> {
+  const indexKey = labelIndexKey(tenantId, label);
+  const previousDeviceId = await env.AUTH_CONFIG.get(indexKey);
+  if (previousDeviceId) {
+    await revokeDeviceCredential(env, previousDeviceId);
+  }
+
+  const cred = await createDeviceCredential(env, tenantId, label, now, role);
+  await env.AUTH_CONFIG.put(indexKey, cred.device_id);
+  return cred;
 }
 
 /** device レコードを KV から読む。不在 / JSON 破損は null。 */

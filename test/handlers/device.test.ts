@@ -175,6 +175,121 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
     const body = (await res.json()) as Record<string, string>;
     expect(body.role).toBe(DEVICE_ROLE_KIOSK);
   });
+
+  describe("replace_label (Refs #495 PR2, kiosk re-pair)", () => {
+    it("without replace_label, repeated calls mint independent (dormant) credentials", async () => {
+      const env = internalEnv();
+      const res1 = await handleDevicePairInternal(
+        post(
+          "/device/pair-internal",
+          { tenant_id: "tenant-9", label: "kiosk-1" },
+          { "X-Internal-Shared-Secret": INTERNAL },
+        ),
+        env,
+      );
+      const res2 = await handleDevicePairInternal(
+        post(
+          "/device/pair-internal",
+          { tenant_id: "tenant-9", label: "kiosk-1" },
+          { "X-Internal-Shared-Secret": INTERNAL },
+        ),
+        env,
+      );
+      const body1 = (await res1.json()) as Record<string, string>;
+      const body2 = (await res2.json()) as Record<string, string>;
+      expect(body1.device_id).not.toBe(body2.device_id);
+
+      // 旧 credential は revoke されず生き残る (dormant credential 問題) —
+      // 正しい secret のままなお有効であることで証明する
+      const oldTok = await handleDeviceToken(
+        post("/device/token", { device_id: body1.device_id, device_secret: body1.device_secret }),
+        env,
+      );
+      expect(oldTok.status).toBe(200);
+    });
+
+    it("replace_label=true revokes the previous credential for the same tenant+label", async () => {
+      const env = internalEnv();
+      const res1 = await handleDevicePairInternal(
+        post(
+          "/device/pair-internal",
+          { tenant_id: "tenant-9", label: "kiosk-1", replace_label: true },
+          { "X-Internal-Shared-Secret": INTERNAL },
+        ),
+        env,
+      );
+      const body1 = (await res1.json()) as Record<string, string>;
+
+      const res2 = await handleDevicePairInternal(
+        post(
+          "/device/pair-internal",
+          { tenant_id: "tenant-9", label: "kiosk-1", replace_label: true },
+          { "X-Internal-Shared-Secret": INTERNAL },
+        ),
+        env,
+      );
+      expect(res2.status).toBe(201);
+      const body2 = (await res2.json()) as Record<string, string>;
+      expect(body2.device_id).not.toBe(body1.device_id);
+
+      // 新 credential は使える
+      const newTok = await handleDeviceToken(
+        post("/device/token", { device_id: body2.device_id, device_secret: body2.device_secret }),
+        env,
+      );
+      expect(newTok.status).toBe(200);
+
+      // 旧 credential は revoke 済みで使えない
+      const oldTok = await handleDeviceToken(
+        post("/device/token", { device_id: body1.device_id, device_secret: body1.device_secret }),
+        env,
+      );
+      expect(oldTok.status).toBe(401);
+    });
+
+    it("replace_label=true with no prior credential for the label still mints (idempotent)", async () => {
+      const res = await handleDevicePairInternal(
+        post(
+          "/device/pair-internal",
+          { tenant_id: "tenant-fresh", label: "first-pair", replace_label: true },
+          { "X-Internal-Shared-Secret": INTERNAL },
+        ),
+        internalEnv(),
+      );
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as Record<string, string>;
+      expect(body.device_id).toBeTruthy();
+    });
+
+    it("replace_label only replaces credentials with the same tenant+label (different label untouched)", async () => {
+      const env = internalEnv();
+      const res1 = await handleDevicePairInternal(
+        post(
+          "/device/pair-internal",
+          { tenant_id: "tenant-9", label: "kiosk-A", replace_label: true },
+          { "X-Internal-Shared-Secret": INTERNAL },
+        ),
+        env,
+      );
+      const body1 = (await res1.json()) as Record<string, string>;
+
+      // 別 label で replace_label=true を呼んでも kiosk-A の credential には影響しない
+      await handleDevicePairInternal(
+        post(
+          "/device/pair-internal",
+          { tenant_id: "tenant-9", label: "kiosk-B", replace_label: true },
+          { "X-Internal-Shared-Secret": INTERNAL },
+        ),
+        env,
+      );
+
+      const stillValid = await handleDeviceToken(
+        post("/device/token", { device_id: body1.device_id, device_secret: body1.device_secret }),
+        env,
+      );
+      expect(stillValid.status).toBe(200);
+    });
+  });
 })
 
 describe("handleDeviceToken", () => {
