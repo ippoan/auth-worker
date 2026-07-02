@@ -214,6 +214,22 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(h["X-Tenant-ID"]).toBeUndefined();
   });
 
+  it("public-ingest (re-pair): 端末の再認証を forward し X-Tenant-ID を strip する (Refs rust-alc-api#495)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/devices/re-pair", { method: "POST" }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Tenant-ID"]).toBeUndefined();
+  });
+
   it("internal-secret (trigger-update-dev): caller の X-Internal-Secret を pass-through、tenant/base-secret は載せない", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
