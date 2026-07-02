@@ -8,9 +8,64 @@ vi.mock("../../src/lib/security", () => ({
 
 import { handleGoogleCallback } from "../../src/handlers/google-callback";
 import { verifyOAuthState, isAllowedRedirectUri } from "../../src/lib/security";
+import type { InternalUserWithSlug } from "../../src/lib/alc-internal";
 
 const mockVerify = vi.mocked(verifyOAuthState);
 const mockIsAllowed = vi.mocked(isAllowedRedirectUri);
+
+/** base64url で JWT 形式の id_token を組む (署名はダミー — handler は decode のみ)。 */
+function makeIdToken(payload: Record<string, unknown>): string {
+  const b64 = (o: unknown) =>
+    btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${b64({ alg: "RS256" })}.${b64(payload)}.sig`;
+}
+
+const GOOGLE_ID_TOKEN = makeIdToken({
+  sub: "google-sub-1",
+  email: "user@example.com",
+  name: "Test User",
+  email_verified: true,
+});
+
+function mockUser(overrides: Partial<InternalUserWithSlug> = {}): InternalUserWithSlug {
+  return {
+    id: "11111111-1111-1111-1111-111111111111",
+    tenant_id: "test-org",
+    email: "user@example.com",
+    name: "Test User",
+    role: "admin",
+    google_sub: "google-sub-1",
+    lineworks_id: null,
+    line_user_id: null,
+    slug: "test-slug",
+    ...overrides,
+  };
+}
+
+/** 1st fetch = Google token 交換 (id_token) / 2nd fetch = internal upsert-google。 */
+function stubLoginFetches(
+  secondResponse: Response,
+  idToken: string = GOOGLE_ID_TOKEN,
+): ReturnType<typeof vi.fn> {
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ id_token: idToken }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+    .mockResolvedValueOnce(secondResponse);
+  vi.stubGlobal("fetch", mockFetch);
+  return mockFetch;
+}
+
+function userResponse(user: InternalUserWithSlug = mockUser()): Response {
+  return new Response(JSON.stringify(user), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 describe("handleGoogleCallback", () => {
   const env = createMockEnv();
@@ -99,26 +154,73 @@ describe("handleGoogleCallback", () => {
     expect(location).toContain("No+ID+token");
   });
 
-  it("redirects to /login on rust-alc-api auth failure", async () => {
+  it("redirects to /login when id_token is not decodable", async () => {
     mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
     mockIsAllowed.mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(new Response("User not found", { status: 401 })),
+      vi.fn().mockResolvedValueOnce(
+        new Response(JSON.stringify({ id_token: "not-a-jwt" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
+    const res = await handleGoogleCallback(req, env);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toContain("Invalid+ID+token");
+  });
+
+  it("redirects to /login when Google email is not verified", async () => {
+    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
+    mockIsAllowed.mockReturnValue(true);
+    const unverified = makeIdToken({
+      sub: "google-sub-1",
+      email: "user@example.com",
+      email_verified: false,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(JSON.stringify({ id_token: unverified }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
     );
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, env);
     expect(res.status).toBe(302);
     const location = res.headers.get("Location")!;
     expect(location).toContain("/login");
-    expect(location).toContain("User+not+found");
+    expect(location).toContain(encodeURIComponent("未確認"));
+  });
+
+  it("redirects to /login on internal upsert-google failure (5xx)", async () => {
+    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
+    mockIsAllowed.mockReturnValue(true);
+    stubLoginFetches(new Response("boom", { status: 500 }));
+    const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
+    const res = await handleGoogleCallback(req, env);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("Location")!;
+    expect(location).toContain("/login");
+    expect(location).toContain(encodeURIComponent("ログイン処理に失敗しました"));
+  });
+
+  it("redirects to /login when no tenant matches (internal 403)", async () => {
+    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
+    mockIsAllowed.mockReturnValue(true);
+    stubLoginFetches(
+      new Response(JSON.stringify({ error: "no_tenant_for_email" }), { status: 403 }),
+    );
+    const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
+    const res = await handleGoogleCallback(req, env);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("Location")!;
+    expect(location).toContain("/login");
+    expect(location).toContain(encodeURIComponent("どのテナントにも登録されていません"));
   });
 
   it("302 redirects with cookie only (no token in URL) when target shares the auth cookie domain", async () => {
@@ -126,24 +228,7 @@ describe("handleGoogleCallback", () => {
     // (.test.example) 配下 → 共有 cookie が届くので token を URL に載せず cookie だけで渡す。
     mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
     mockIsAllowed.mockReturnValue(true);
-    // JWT: {"alg":"HS256"}.{"tenant_id":"test-org"}.sig
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJ0ZXN0LW9yZyJ9.sig";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-    );
+    stubLoginFetches(userResponse());
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, env);
     expect(res.status).toBe(302);
@@ -151,7 +236,8 @@ describe("handleGoogleCallback", () => {
     expect(location).toBe("https://app1.test.example/page"); // クリーン (fragment/lw_callback なし)
     expect(location).not.toContain("#token=");
     expect(location).not.toContain("lw_callback");
-    expect(res.headers.get("Set-Cookie")).toContain(`logi_auth_token=${jwt}`);
+    // auth-worker 自身が署名した HS256 JWT が cookie に載る
+    expect(res.headers.get("Set-Cookie")).toContain("logi_auth_token=eyJ");
   });
 
   it("302 redirects with #token= fragment when cookie domain is a public suffix (workers.dev)", async () => {
@@ -159,23 +245,7 @@ describe("handleGoogleCallback", () => {
     // fragment で配布する。
     mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
     mockIsAllowed.mockReturnValue(true);
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJ0ZXN0LW9yZyJ9.sig";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-    );
+    stubLoginFetches(userResponse());
     const req = new Request(
       "https://auth-staging.m-tama-ramu.workers.dev/oauth/google/callback?code=abc&state=valid",
     );
@@ -184,7 +254,6 @@ describe("handleGoogleCallback", () => {
     const location = res.headers.get("Location")!;
     expect(location).toContain("https://app1.test.example/page");
     expect(location).toContain("#token=");
-    expect(location).toContain(jwt);
     expect(location).toContain("org_id=test-org");
     expect(location).toContain("lw_callback=1");
   });
@@ -195,30 +264,13 @@ describe("handleGoogleCallback", () => {
       join_org: "my-company",
     });
     mockIsAllowed.mockReturnValue(true);
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJ0ZXN0LW9yZyJ9.sig";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-    );
+    stubLoginFetches(userResponse());
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, env);
     expect(res.status).toBe(302);
     const location = res.headers.get("Location")!;
     expect(location).toContain("/join/my-company/done");
     expect(location).toContain("#token=");
-    expect(location).toContain(jwt);
     // Should NOT contain lw_callback for join flow
     expect(location).not.toContain("lw_callback");
   });
@@ -226,26 +278,10 @@ describe("handleGoogleCallback", () => {
   it("sets logi_auth_token cookie on success (normal flow)", async () => {
     mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
     mockIsAllowed.mockReturnValue(true);
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJ0ZXN0LW9yZyJ9.sig";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-    );
+    stubLoginFetches(userResponse());
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, env);
-    expect(res.headers.get("Set-Cookie")).toContain(`logi_auth_token=${jwt}`);
+    expect(res.headers.get("Set-Cookie")).toContain("logi_auth_token=eyJ");
   });
 
   it("sets logi_auth_token cookie on join flow", async () => {
@@ -254,45 +290,16 @@ describe("handleGoogleCallback", () => {
       join_org: "my-company",
     });
     mockIsAllowed.mockReturnValue(true);
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJ0ZXN0LW9yZyJ9.sig";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-    );
+    stubLoginFetches(userResponse());
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, env);
-    expect(res.headers.get("Set-Cookie")).toContain(`logi_auth_token=${jwt}`);
+    expect(res.headers.get("Set-Cookie")).toContain("logi_auth_token=eyJ");
   });
 
-  it("calls Google token endpoint with correct params", async () => {
+  it("calls Google token endpoint and internal upsert-google with correct params", async () => {
     mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
     mockIsAllowed.mockReturnValue(true);
-    const mockFetch = vi.fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ access_token: "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJ0ZXN0LW9yZyJ9.sig", expires_in: 3600 }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-    vi.stubGlobal("fetch", mockFetch);
+    const mockFetch = stubLoginFetches(userResponse());
     const req = new Request("https://auth.test.example/oauth/google/callback?code=test-code&state=valid");
     await handleGoogleCallback(req, env);
 
@@ -307,49 +314,17 @@ describe("handleGoogleCallback", () => {
     expect(body.get("client_secret")).toBe("test-google-client-secret");
     expect(body.get("redirect_uri")).toBe("https://auth.test.example/oauth/google/callback");
 
-    // Second call: rust-alc-api auth
+    // Second call: internal upsert-google (旧 /api/auth/google は撤去済み)
     const alcCall = mockFetch.mock.calls[1]!;
-    const [alcUrl] = alcCall;
-    expect(alcUrl).toBe("https://alc-api.test.example/api/auth/google");
-  });
-
-  it("handles token without payload segment (no dot)", async () => {
-    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
-    mockIsAllowed.mockReturnValue(true);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock" }), { status: 200, headers: { "Content-Type": "application/json" } }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: "no-dots-token", expires_in: 3600 }), { status: 200, headers: { "Content-Type": "application/json" } }),
-        ),
-    );
-    const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
-    const res = await handleGoogleCallback(req, env);
-    expect(res.status).toBe(302);
-    const location = res.headers.get("Location")!;
-    // org_id should not be in fragment since token has no payload
-    expect(location).not.toContain("org_id=");
-  });
-
-  it("handles invalid base64 in JWT payload gracefully", async () => {
-    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
-    mockIsAllowed.mockReturnValue(true);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock" }), { status: 200, headers: { "Content-Type": "application/json" } }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: "header.!!!invalid-base64!!!.sig", expires_in: 3600 }), { status: 200, headers: { "Content-Type": "application/json" } }),
-        ),
-    );
-    const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
-    const res = await handleGoogleCallback(req, env);
-    expect(res.status).toBe(302);
+    const [alcUrl, alcOpts] = alcCall;
+    expect(alcUrl).toBe("https://alc-api.test.example/api/internal/auth/users/upsert-google");
+    const headers = new Headers(alcOpts.headers);
+    expect(headers.get("Authorization")).toContain("Bearer ");
+    expect(JSON.parse(alcOpts.body as string)).toEqual({
+      google_sub: "google-sub-1",
+      email: "user@example.com",
+      name: "Test User",
+    });
   });
 
   it("returns 403 when tenant is not in TENANT_ACL for an ohishi-exp redirect target", async () => {
@@ -362,24 +337,7 @@ describe("handleGoogleCallback", () => {
     });
     mockVerify.mockResolvedValue({ redirect_uri: "https://dtako-admin.example/page" });
     mockIsAllowed.mockReturnValue(true);
-    // JWT: {"tenant_id":"some-other-tenant"}
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJzb21lLW90aGVyLXRlbmFudCJ9.sig";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-    );
+    stubLoginFetches(userResponse(mockUser({ tenant_id: "some-other-tenant" })));
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, aclEnv);
     expect(res.status).toBe(403);
@@ -396,24 +354,7 @@ describe("handleGoogleCallback", () => {
     });
     mockVerify.mockResolvedValue({ redirect_uri: "https://dtako-admin.example/page" });
     mockIsAllowed.mockReturnValue(true);
-    // JWT: {"tenant_id":"allowed-tenant"}
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJhbGxvd2VkLXRlbmFudCJ9.sig";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock-id-token" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-    );
+    stubLoginFetches(userResponse(mockUser({ tenant_id: "allowed-tenant" })));
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, aclEnv);
     expect(res.status).toBe(302);
@@ -431,23 +372,8 @@ describe("handleGoogleCallback", () => {
     });
     mockVerify.mockResolvedValue({ redirect_uri: "https://vast.trycloudflare.com/callback" });
     mockIsAllowed.mockReturnValue(true);
-    // Token without payload → tenant_id "" → would normally be denied for ohishi-exp
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id_token: "mock" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ access_token: "no-payload-token", expires_in: 3600 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-    );
+    // tenant_id "" → would normally be denied for ohishi-exp, but wt origin bypasses ACL
+    stubLoginFetches(userResponse(mockUser({ tenant_id: "" })));
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, aclEnv);
     expect(res.status).toBe(302);
