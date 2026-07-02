@@ -69,6 +69,7 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   if (path === "/api/tenko-call/tenko") return "public-ingest"; // TenkoCall 点呼送信
   if (path === "/api/devices/register/claim") return "public-ingest"; // AlcoholChecker 端末登録 (pairing 前)
   if (path === "/api/devices/fcm-dismiss-test") return "public-ingest"; // FCM dismiss test (device_id lookup)
+  if (path === "/api/devices/re-pair") return "public-ingest"; // kiosk 端末 re-pair (再認証、rust-alc-api#495)
 
   // ── internal-secret: rust が X-Internal-Secret (FCM_INTERNAL_SECRET) で自前認証する dev 経路 ──
   if (path === "/api/devices/trigger-update-dev") return "internal-secret"; // CI/dev OTA push
