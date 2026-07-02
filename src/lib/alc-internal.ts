@@ -126,6 +126,24 @@ export async function findUserByLineId(
   return (await res.json()) as InternalUserWithSlug | null;
 }
 
+/**
+ * google_sub で user を find-or-create する (Refs rust-alc-api#479)。
+ * tenant 解決 (招待 → email_domain → STAGING_MODE 自動作成) は rust 側。
+ * どのテナントにも割当できない場合 rust が 403 を返すので null で表す。
+ */
+export async function upsertGoogleUser(
+  env: Env,
+  body: { google_sub: string; email: string; name: string },
+): Promise<InternalUserWithSlug | null> {
+  const res = await internalFetch(env, `/api/internal/auth/users/upsert-google`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (res.status === 403) return null;
+  if (!res.ok) throw new Error(`internal upsert-google failed: ${res.status}`);
+  return (await res.json()) as InternalUserWithSlug;
+}
+
 /** line_user_id で user を find-or-create する。 */
 export async function upsertLineUser(
   env: Env,

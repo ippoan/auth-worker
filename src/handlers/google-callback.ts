@@ -1,16 +1,21 @@
 /**
  * Google OAuth callback handler (REST version)
- * Exchanges authorization code for id_token, then calls rust-alc-api to authenticate
+ *
+ * code 交換 → id_token decode → rust internal 経路で user find-or-create →
+ * auth-worker 自身の鍵で JWT 発行 (Refs rust-alc-api#479 — 旧 `/api/auth/google`
+ * は撤去済みで、rust は JWT を発行しない dumb backend)。LINE / LINE WORKS の
+ * callback と同じ internal パターン。
  */
 
 import type { Env } from "../index";
-import { alcOidcToken } from "../lib/alc-data-fetch";
 import { getAllowedOrigins } from "../lib/config";
 import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { resolveSecret } from "../lib/secret";
 import { verifyOAuthState, isAllowedRedirectUri } from "../lib/security";
 import { setAuthCookie, authCookieReachesHost } from "../lib/cookies";
-import { signJwt, decodeJwtPayload } from "../lib/jwt";
+import { decodeJwtPayload } from "../lib/jwt";
+import { upsertGoogleUser, type InternalUserWithSlug } from "../lib/alc-internal";
+import { createAccessToken, ACCESS_TOKEN_EXPIRY_SECS } from "../lib/access-token";
 
 export async function handleGoogleCallback(
   request: Request,
@@ -75,54 +80,60 @@ export async function handleGoogleCallback(
     return redirectToLogin(origin, redirectUri, "No ID token returned from Google");
   }
 
-  // Call rust-alc-api to authenticate with Google ID token
-  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=ALC_API_ORIGIN) を要求する。
-  // mint 不可 (SA key 未設定 = lockdown 前) は Authorization 無しで fail-open。
-  const oidc = await alcOidcToken(env);
-  const authHeaders: Record<string, string> = { "Content-Type": "application/json" };
-  if (oidc) authHeaders.Authorization = `Bearer ${oidc}`;
-  const authResp = await fetch(`${env.ALC_API_ORIGIN}/api/auth/google`, {
-    method: "POST",
-    headers: authHeaders,
-    body: JSON.stringify({ id_token: tokenData.id_token }),
-  });
-
-  if (!authResp.ok) {
-    const errorText = await authResp.text();
-    console.log(JSON.stringify({ event: "google_login_failure", error: errorText }));
-    return redirectToLogin(origin, redirectUri, errorText);
+  // id_token は Google token endpoint から TLS で直接受け取ったものなので署名検証は
+  // 省略して claims を decode する。旧 rust `/api/auth/google` の verify() が担っていた
+  // email_verified チェックのみ引き継ぐ。
+  const idClaims = decodeJwtPayload(tokenData.id_token) as {
+    sub?: string;
+    email?: string;
+    name?: string;
+    email_verified?: boolean;
+  } | null;
+  if (!idClaims?.sub || !idClaims.email) {
+    return redirectToLogin(origin, redirectUri, "Invalid ID token");
+  }
+  if (idClaims.email_verified !== true) {
+    return redirectToLogin(origin, redirectUri, "Google アカウントのメールアドレスが未確認です");
   }
 
-  const authData = (await authResp.json()) as {
-    access_token: string;
-    expires_in: number;
-    refresh_token?: string;
-  };
-
-  const rustToken = authData.access_token;
-  const expiresAt = String(Math.floor(Date.now() / 1000) + authData.expires_in);
-
-  // rust-alc-api の access_token は rust の鍵で署名されている。rust は #441 で JWT
-  // 検証をやめた dumb backend になったので、/top + introspect が検証する cookie JWT は
-  // auth-worker が署名・所有する (Refs rust-alc-api#434)。元 token の claims を取り出し、
-  // auth-worker の JWT_SECRET + env=WORKER_ENV (#218 cross-env 保護) で再署名する。
-  // これで staging でも prod でも auth-worker 自身の鍵で検証一致する (= rust と
-  // auth-worker の鍵不整合による login 無限ループの根治)。再署名できない場合
-  // (JWT_SECRET 欠落 / claims 欠落) は rust token のまま fallback (従来動作、非破壊)。
-  let tenantId = "";
-  let email = "";
-  let token = rustToken;
-  const claims = decodeJwtPayload(rustToken);
-  if (claims) {
-    tenantId = (claims.tenant_id as string) || (claims.org as string) || "";
-    email = (claims.email as string) || "";
-    const jwtSecret = await resolveSecret(env.JWT_SECRET);
-    if (jwtSecret && typeof claims.exp === "number") {
-      token = await signJwt({ ...claims, env: env.WORKER_ENV }, jwtSecret);
-    }
+  // rust internal 経路で user を find-or-create する。tenant 解決 (招待 →
+  // email_domain → STAGING_MODE 自動作成 → 403) は rust 側 upsert-google が担う。
+  let user: InternalUserWithSlug | null;
+  try {
+    user = await upsertGoogleUser(env, {
+      google_sub: idClaims.sub,
+      email: idClaims.email,
+      name: idClaims.name ?? "",
+    });
+  } catch (e) {
+    console.log(JSON.stringify({ event: "google_login_failure", error: String(e) }));
+    return redirectToLogin(origin, redirectUri, "ログイン処理に失敗しました");
+  }
+  if (!user) {
+    console.log(JSON.stringify({ event: "google_login_no_tenant", email: idClaims.email }));
+    return redirectToLogin(
+      origin,
+      redirectUri,
+      "このメールアドレスはどのテナントにも登録されていません",
+    );
   }
 
-  // Build JWT fragment (再署名後の token を載せる。cookie が届かない host へ fragment 配布)
+  // auth-worker 自身の JWT_SECRET で access JWT を発行 (rust と同形 claims、
+  // /top ゲート・introspect と鍵が一致する)。
+  const jwtSecret = await resolveSecret(env.JWT_SECRET);
+  if (!jwtSecret) {
+    return new Response("JWT secret not configured", { status: 503 });
+  }
+  const token = await createAccessToken(
+    { id: user.id, email: user.email, name: user.name, tenant_id: user.tenant_id, role: user.role },
+    jwtSecret,
+    user.slug,
+  );
+  const expiresAt = String(Math.floor(Date.now() / 1000) + ACCESS_TOKEN_EXPIRY_SECS);
+  const tenantId = user.tenant_id;
+  const email = user.email;
+
+  // Build JWT fragment (cookie が届かない host へ fragment 配布)
   const fragment = new URLSearchParams({
     token,
     expires_at: expiresAt,
