@@ -872,7 +872,6 @@ describe("handleHealthOAuth", () => {
       github: new Error("net down"),
       lineworks: new Error("net down"),
       egov: new Error("net down"),
-      canary: new Error("net down"),
     });
     const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
