@@ -63,6 +63,7 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   // ── shared-secret: rust の require_internal_shared_secret ingest ──
   if (path === "/api/dtako/tickets") return "shared-secret"; // POST 起票
   if (/^\/api\/dtako\/tickets\/[^/]+\/scraped$/.test(path)) return "shared-secret"; // PATCH 結果反映
+  if (path === "/api/upload") return "shared-secret"; // POST dtako csvdata.zip 取り込み (ohishi-exp/dtako-scraper#22)
 
   // ── public-ingest: rust の public_router (caller #5 Android、tenant は body/lookup 解決) ──
   if (path === "/api/tenko-call/register") return "public-ingest"; // TenkoCall 端末登録
