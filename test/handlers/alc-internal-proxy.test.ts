@@ -124,6 +124,31 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect((init as RequestInit).body).toBeDefined();
   });
 
+  it("正常 (POST /api/upload): multipart body も raw のまま forward (dtako-scraper#22)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response('{"upload_id":"x"}', { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const boundary = "----test";
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/upload", {
+        method: "POST",
+        headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+        body: `--${boundary}\r\ncontent\r\n--${boundary}--\r\n`,
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/upload");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect(h["Content-Type"]).toBe(`multipart/form-data; boundary=${boundary}`);
+  });
+
   it("正常 (PATCH scraped): allowlist を通り query も維持して forward", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
