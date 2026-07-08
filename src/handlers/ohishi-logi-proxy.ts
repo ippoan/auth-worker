@@ -64,6 +64,13 @@ export async function handleOhishiLogiProxy(request: Request, env: Env): Promise
   if (role !== DEVICE_ROLE_CAM_FLICKR) return jsonError(403, "forbidden");
   const url = new URL(request.url);
   const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
+  // percent-encoding (`%2e%2e` 等) はここでは decode しない — allowlist が見た
+  // 生の path と forward 先が見る path が食い違うと prefix chek を回避できて
+  // しまうため、`%` を含む path はまるごと拒否する (ohishi-logi 側の axum が
+  // decode して初めて `..` になる余地を proxy 層で潰す、defense-in-depth)。
+  if (backendPath.includes("%") || backendPath.includes("..") || backendPath.includes("\\")) {
+    return jsonError(403, "forbidden");
+  }
   if (!backendPath.startsWith(ALLOWED_PATH_PREFIX)) return jsonError(403, "forbidden");
 
   // ── ③ OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) ────────────────
