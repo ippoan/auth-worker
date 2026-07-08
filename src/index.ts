@@ -443,8 +443,12 @@ export default {
       // ippoan/cf-flickr-cam-worker#3, #4: Flickr OAuth1.0a callback (ブラウザ
       // 経由リダイレクト) + 運用者向け UI を公開するための唯一の到達経路。
       // CF Access Application が edge で path-scoped 保護する (handler 側は
-      // 認証を検証しない、境界は CF Access 側)。
-      if (url.pathname.startsWith("/cf-flickr-cam-worker-proxy/")) {
+      // 認証を検証しない、境界は CF Access 側)。末尾スラッシュ無し (bare prefix)
+      // もトップページ (`/`) 相当として受け付ける (Refs #16)。
+      if (
+        url.pathname === "/cf-flickr-cam-worker-proxy" ||
+        url.pathname.startsWith("/cf-flickr-cam-worker-proxy/")
+      ) {
         return handleCfFlickrCamWorkerProxy(request, env);
       }
 
