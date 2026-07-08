@@ -64,11 +64,20 @@ export const DEVICE_ROLE_KIOSK = "device-kiosk";
  */
 export const DEVICE_ROLE_DTAKO_INGEST = "device-dtako-ingest";
 
+/**
+ * cf-flickr-cam-worker (Cloudflare Worker、無人 cron) 用 role。ohishi-logi
+ * (Cloud Run、無状態 camera fetcher) の `/cam/*` RPC のみを許可する
+ * (Refs ohishi-exp/ohishi-logi#1, ippoan/cf-flickr-cam-worker#1)。
+ * 許可 path は `ohishi-logi-proxy.ts` 側で管理。
+ */
+export const DEVICE_ROLE_CAM_FLICKR = "device-cam-flickr";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
 export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_DTAKO_INGEST,
+  DEVICE_ROLE_CAM_FLICKR,
 ]);
 
 /**
