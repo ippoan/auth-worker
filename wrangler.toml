@@ -331,6 +331,14 @@ MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://
 # Refs ippoan/HealthConnectReaderWorker#60, #61
 HCREADER_WORKER_ORIGIN = "https://hcreader.ippoan.org"
 
+# ippoan/cf-flickr-cam-worker#17 デバッグ用に一時追加 (CAM_HOST secret 化後の
+# 動作確認を CF Access 認証なしで通す、auth-staging.ippoan.org 経由)。
+# 確認が終わったら削除すること (過去に同パターンで追加→削除した経緯あり、
+# ippoan/auth-worker#354/#356)。
+[[env.staging.services]]
+binding = "CF_FLICKR_CAM_WORKER"
+service = "cf-flickr-cam-worker"
+
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"
