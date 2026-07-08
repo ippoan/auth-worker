@@ -22,6 +22,7 @@ import { handleMyOrgs } from "./handlers/api-my-orgs";
 import { handleAlcProxy } from "./handlers/alc-proxy";
 import { handleAlcInternalProxy } from "./handlers/alc-internal-proxy";
 import { handleDeviceDataProxy } from "./handlers/device-data-proxy";
+import { handleOhishiLogiProxy } from "./handlers/ohishi-logi-proxy";
 import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
@@ -137,6 +138,17 @@ export interface Env {
    *  rust-alc-api に到達するために使う。Secrets Store binding、未設定なら
    *  `/alc-proxy` は 503 (fail-closed)。auth-worker のみ bind (SA key 集約)。 */
   ALC_API_PROXY_SA_KEY?: SecretBinding;
+  /** ohishi-logi (Cloud Run、無状態 camera fetcher) の origin。`/ohishi-logi-proxy/*`
+   *  が forward 先として使う。未設定なら 503 (fail-closed)。Refs
+   *  ohishi-exp/ohishi-logi#1。新規 GCP project 確定後に投入する (2026-07-08
+   *  時点は未デプロイのため未設定)。 */
+  OHISHI_LOGI_ORIGIN?: string;
+  /** `/ohishi-logi-proxy/*` が Google OIDC ID token を mint して Cloud Run IAM
+   *  lockdown 後の ohishi-logi に到達するための run.invoker SA key (JSON)。
+   *  ALC_API_PROXY_SA_KEY とは別の SA (ohishi-logi service 限定の run.invoker
+   *  のみ付与、blast radius を分離)。Secrets Store binding、未設定なら
+   *  `/ohishi-logi-proxy` は 503 (fail-closed)。 */
+  OHISHI_LOGI_PROXY_SA_KEY?: SecretBinding;
   /** rust-alc-api#434 lockdown cutover フラグ。`"1"` で internal-auth 呼び出し
    *  (`lib/alc-internal.ts`) を HS256 internal JWT → Google OIDC (aud=alc-api-internal) mint に
    *  切替える。allUsers 削除 + Cloud Run `--add-custom-audiences=alc-api-internal` + rust 側
@@ -411,6 +423,13 @@ export default {
       // を叩く経路。tenant は device pairing 時に確定済み (client からは詐称不能)。
       if (url.pathname.startsWith("/device-data-proxy/")) {
         return handleDeviceDataProxy(request, env);
+      }
+
+      // ohishi-exp/ohishi-logi#1 / ippoan/cf-flickr-cam-worker#1: cf-flickr-cam-worker
+      // (無人 cron) が device JWT で ohishi-logi (無状態 camera fetcher) の
+      // `/cam/*` RPC を叩く経路。device-data-proxy と同パターンだが tenant 束縛は無い。
+      if (url.pathname.startsWith("/ohishi-logi-proxy/")) {
+        return handleOhishiLogiProxy(request, env);
       }
 
       // admin/notify ページ用 rust forward proxy (#434)。ページ client JS が
