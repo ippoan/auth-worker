@@ -331,14 +331,6 @@ MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://
 # Refs ippoan/HealthConnectReaderWorker#60, #61
 HCREADER_WORKER_ORIGIN = "https://hcreader.ippoan.org"
 
-# ippoan/cf-flickr-cam-worker#6: `/oauth/start` の Flickr request_token 失敗の
-# 原因調査のため、デバッグ期間限定で staging 経由でも到達できるようにする binding。
-# 調査完了後は削除する (auth-staging.ippoan.org は CF Access が全体 bypass のため
-# 認証なしで到達可能な点に注意、Refs ippoan/cf-flickr-cam-worker#6)。
-[[env.staging.services]]
-binding = "CF_FLICKR_CAM_WORKER"
-service = "cf-flickr-cam-worker"
-
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"
