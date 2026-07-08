@@ -97,6 +97,24 @@ describe("handleOhishiLogiProxy (ohishi-exp/ohishi-logi#1, cf-flickr-cam-worker#
     expect(res.status).toBe(403);
   });
 
+  it("path に percent-encoding を含む場合は 403 (allowlist 回避防止)", async () => {
+    // %2e%2e は decode すれば ".." だが、ここでは decode せず "%" を含む時点で拒否する
+    // (allowlist が見た raw path と forward 先が見る decode 後 path の food い違いを防ぐ)
+    const res = await handleOhishiLogiProxy(
+      req("/ohishi-logi-proxy/cam/%2e%2e/admin/secret", { token: await deviceToken() }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("path に .. を含む場合は 403", async () => {
+    const res = await handleOhishiLogiProxy(
+      req("/ohishi-logi-proxy/cam/../admin/secret", { token: await deviceToken() }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+  });
+
   it("role は正しいが /cam/ 配下でない path は 403 (盗難時の blast radius 限定)", async () => {
     const res = await handleOhishiLogiProxy(
       req("/ohishi-logi-proxy/admin/secret", { token: await deviceToken() }),
