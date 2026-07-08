@@ -45,10 +45,19 @@ export async function handleCfFlickrCamWorkerProxy(request: Request, env: Env): 
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? await request.arrayBuffer() : undefined;
 
+  // `redirect: "manual"` が必須 — 既定 (follow) だと Flickr OAuth callback
+  // (`/oauth/start` が 302 で Location: https://www.flickr.com/... を返す) を
+  // service binding の fetch が自動追跡してしまい、**binding 先の
+  // cf-flickr-cam-worker 自身が再度呼ばれる** (service binding は URL の
+  // hostname でなく binding 先に固定でルーティングされるため)。存在しない
+  // path (`/services/oauth/authorize` 等) に当たり Hono の 404 を返していた
+  // 実害を manual 指定で回避する — 302 はそのままクライアント (ブラウザ/Flickr)
+  // に返し、実際のリダイレクト追跡はクライアント側に委ねる。
   return service.fetch(target, {
     method,
     headers: request.headers,
     body,
+    redirect: "manual",
   });
 }
 
