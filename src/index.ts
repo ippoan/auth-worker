@@ -23,6 +23,7 @@ import { handleAlcProxy } from "./handlers/alc-proxy";
 import { handleAlcInternalProxy } from "./handlers/alc-internal-proxy";
 import { handleDeviceDataProxy } from "./handlers/device-data-proxy";
 import { handleOhishiLogiProxy } from "./handlers/ohishi-logi-proxy";
+import { handleCfFlickrCamWorkerProxy } from "./handlers/cf-flickr-cam-worker-proxy";
 import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
@@ -149,6 +150,13 @@ export interface Env {
    *  のみ付与、blast radius を分離)。Secrets Store binding、未設定なら
    *  `/ohishi-logi-proxy` は 503 (fail-closed)。 */
   OHISHI_LOGI_PROXY_SA_KEY?: SecretBinding;
+  /** `/cf-flickr-cam-worker-proxy/*` の forward 先 (service binding)。
+   *  Flickr OAuth1.0a callback (ブラウザ経由リダイレクト) と運用者向け UI だけを
+   *  公開するための唯一の到達経路。cf-flickr-cam-worker 自体は `workers_dev: false`
+   *  で完全非公開 (Refs ippoan/cf-flickr-cam-worker#3, #4)。SA key/OIDC 不要
+   *  (Cloud Run ではなく同じ Cloudflare account 内 Worker 間の service binding)。
+   *  未 bind なら `/cf-flickr-cam-worker-proxy/*` は 503 (fail-closed)。 */
+  CF_FLICKR_CAM_WORKER?: Fetcher;
   /** rust-alc-api#434 lockdown cutover フラグ。`"1"` で internal-auth 呼び出し
    *  (`lib/alc-internal.ts`) を HS256 internal JWT → Google OIDC (aud=alc-api-internal) mint に
    *  切替える。allUsers 削除 + Cloud Run `--add-custom-audiences=alc-api-internal` + rust 側
@@ -430,6 +438,14 @@ export default {
       // `/cam/*` RPC を叩く経路。device-data-proxy と同パターンだが tenant 束縛は無い。
       if (url.pathname.startsWith("/ohishi-logi-proxy/")) {
         return handleOhishiLogiProxy(request, env);
+      }
+
+      // ippoan/cf-flickr-cam-worker#3, #4: Flickr OAuth1.0a callback (ブラウザ
+      // 経由リダイレクト) + 運用者向け UI を公開するための唯一の到達経路。
+      // CF Access Application が edge で path-scoped 保護する (handler 側は
+      // 認証を検証しない、境界は CF Access 側)。
+      if (url.pathname.startsWith("/cf-flickr-cam-worker-proxy/")) {
+        return handleCfFlickrCamWorkerProxy(request, env);
       }
 
       // admin/notify ページ用 rust forward proxy (#434)。ページ client JS が

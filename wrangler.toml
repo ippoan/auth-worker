@@ -40,6 +40,15 @@ MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"
 
+# ippoan/cf-flickr-cam-worker#3, #4: Flickr OAuth callback proxy 用 service
+# binding。cf-flickr-cam-worker は workers_dev: false (完全非公開) で、
+# 到達経路は本 binding のみ (SA key/OIDC 不要、同 account 内 Worker 間の
+# service binding のため)。cf-flickr-cam-worker は single-env (staging = prod)
+# なので service 名は環境を分けない。
+[[services]]
+binding = "CF_FLICKR_CAM_WORKER"
+service = "cf-flickr-cam-worker"
+
 # ⚠️ MCP_OAUTH_KV は top-level (prod) には **意図的に bind しない**。
 # これは欠落ではなく guardrail: prod `auth.ippoan.org/mcp/pair/grant-via-oat`
 # を `MCP_OAUTH_KV not bound` (503) で無効化し、OAT→JWT mint を
