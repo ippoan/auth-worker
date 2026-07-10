@@ -7,6 +7,12 @@ vi.mock("../../src/lib/oidc", () => ({
   mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
 }));
 
+// internal-jwt class (schedule fire) は internalAuthToken (aud=alc-api-internal) を
+// 使う。mint 実体は lib/alc-internal 側でテスト済みなのでここでは mock で固定する。
+vi.mock("../../src/lib/alc-internal", () => ({
+  internalAuthToken: vi.fn(async () => "fake-internal-jwt"),
+}));
+
 import { handleAlcInternalProxy } from "../../src/handlers/alc-internal-proxy";
 
 const PROXY_SECRET = "test-internal-shared-secret-32!!";
@@ -274,6 +280,82 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(h["X-Internal-Secret"]).toBe("fcm-secret-xyz");
     expect(h["X-Tenant-ID"]).toBeUndefined();
     expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
+  });
+
+  it("internal-jwt (schedule fire): aud=alc-api-internal の Bearer で forward、tenant/secret は載せない (ippoan/auth-worker#359)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req(
+        "/alc-internal-proxy/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/fire",
+        { method: "POST" },
+      ),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe(
+      "https://alc-api.test.example/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/fire",
+    );
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-internal-jwt");
+    expect(h["X-Tenant-ID"]).toBeUndefined();
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
+  });
+
+  it("internal-jwt: UUID 形式不正の fire path は 403", async () => {
+    for (const p of [
+      "/alc-internal-proxy/api/internal/trouble/schedules/not-a-uuid/fire",
+      "/alc-internal-proxy/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/../fire",
+      "/alc-internal-proxy/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/fire/x",
+      "/alc-internal-proxy/api/internal/auth/sso-config",
+    ]) {
+      const res = await handleAlcInternalProxy(req(p, { method: "POST" }), env());
+      expect(res.status, p).toBe(403);
+    }
+  });
+
+  it("internal-jwt: POST 以外は 403", async () => {
+    for (const method of ["GET", "DELETE", "PUT"]) {
+      const res = await handleAlcInternalProxy(
+        req(
+          "/alc-internal-proxy/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/fire",
+          { method },
+        ),
+        env(),
+      );
+      expect(res.status, method).toBe(403);
+    }
+  });
+
+  it("internal-jwt も consumer proof は必須 (X-Alc-Proxy-Secret 欠落は 401)", async () => {
+    const res = await handleAlcInternalProxy(
+      req(
+        "/alc-internal-proxy/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/fire",
+        { method: "POST", proxySecret: null },
+      ),
+      env(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("internal-jwt: internalAuthToken 失敗は 502 (詳細は出さない)", async () => {
+    const { internalAuthToken } = await import("../../src/lib/alc-internal");
+    (internalAuthToken as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("boom"),
+    );
+    const res = await handleAlcInternalProxy(
+      req(
+        "/alc-internal-proxy/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/fire",
+        { method: "POST" },
+      ),
+      env(),
+    );
+    expect(res.status).toBe(502);
   });
 
   it("OIDC mint 失敗は 502 (詳細は出さない)", async () => {
