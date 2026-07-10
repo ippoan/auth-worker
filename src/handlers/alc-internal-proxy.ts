@@ -35,6 +35,7 @@
 import type { Env } from "../index";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
+import { internalAuthToken } from "../lib/alc-internal";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 
 const ROUTE_PREFIX = "/alc-internal-proxy";
@@ -43,7 +44,11 @@ const ROUTE_PREFIX = "/alc-internal-proxy";
 const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
 
 /** allowlist の分類。`null` は不許可 (403)。 */
-type InternalPathClass = "shared-secret" | "public-ingest" | "internal-secret";
+type InternalPathClass =
+  | "shared-secret"
+  | "public-ingest"
+  | "internal-secret"
+  | "internal-jwt";
 
 /**
  * forward 可能な ingest 経路だけを許可し、そのクラスを返す。
@@ -58,6 +63,10 @@ type InternalPathClass = "shared-secret" | "public-ingest" | "internal-secret";
  *   で自前認証する dev 経路**用。OIDC transport を付けつつ caller の `X-Internal-Secret` を
  *   pass-through し、X-Tenant-ID は forward しない。rust 側で secret 検証されるので proxy は
  *   素通しでよい (consumer proof は X-Alc-Proxy-Secret で別途取れている)。
+ * - `internal-jwt` は rust の **`require_internal_jwt` (aud=alc-api-internal) 経路**用。
+ *   Authorization を `internalAuthToken` (aud=alc-api-internal) に差し替えて forward する。
+ *   X-Tenant-ID / X-Internal-Shared-Secret は forward しない (fire は RLS バイパスの
+ *   id 引きで tenant を解決する冪等操作)。POST のみ許可。
  */
 function classifyInternalPath(path: string): InternalPathClass | null {
   // ── shared-secret: rust の require_internal_shared_secret ingest ──
@@ -74,6 +83,18 @@ function classifyInternalPath(path: string): InternalPathClass | null {
 
   // ── internal-secret: rust が X-Internal-Secret (FCM_INTERNAL_SECRET) で自前認証する dev 経路 ──
   if (path === "/api/devices/trigger-update-dev") return "internal-secret"; // CI/dev OTA push
+
+  // ── internal-jwt: rust の require_internal_jwt (aud=alc-api-internal) 経路 ──
+  // schedule-alarm DO worker (nuxt-notify) の通知予約発火 (Refs ippoan/rust-alc-api#550,
+  // ippoan/auth-worker#359)。fire は id 引きの冪等操作で X-Tenant-ID を使わない。
+  // UUID は正規表現で厳密検証 (path injection 防止)。
+  if (
+    /^\/api\/internal\/trouble\/schedules\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/fire$/i.test(
+      path,
+    )
+  ) {
+    return "internal-jwt";
+  }
 
   return null;
 }
@@ -116,16 +137,28 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
   const pathClass = classifyInternalPath(backendPath);
   if (!pathClass) return jsonError(403, "forbidden");
+  // internal-jwt (schedule fire) は POST のみ許可 (冪等発火以外の操作を通さない)。
+  if (pathClass === "internal-jwt" && request.method !== "POST") {
+    return jsonError(403, "forbidden");
+  }
 
   // ── ③ tenant — shared-secret 経路のみ必須 (内部呼び出し元が明示)。 ──────────
   //     public-ingest は rust 側が X-Tenant-ID を honor しないため strip する。
   const tenantId = request.headers.get("X-Tenant-ID") ?? "";
   if (pathClass === "shared-secret" && !tenantId) return jsonError(400, "X-Tenant-ID required");
 
-  // ── ④ OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) ────────────────
+  // ── ④ auth token mint ──────────────────────────────────────────────────────
+  //     - internal-jwt: rust の require_internal_jwt 用に aud=alc-api-internal。
+  //       #479 方針どおり internalAuthToken に集約 (OIDC cutover flag / HS256
+  //       fallback 込み)。Cloud Run custom audience (alc-api-internal) 登録済みの
+  //       ため IAM transport も同じ token で通る。
+  //     - それ以外: Cloud Run IAM lockdown 用に aud=service URL を mint。
   let idToken: string;
   try {
-    idToken = await mintGoogleIdToken(saKey, apiOrigin);
+    idToken =
+      pathClass === "internal-jwt"
+        ? await internalAuthToken(env)
+        : await mintGoogleIdToken(saKey, apiOrigin);
   } catch {
     return jsonError(502, "upstream auth error"); // 詳細は log のみ
   }
