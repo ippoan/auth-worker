@@ -73,6 +73,7 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   if (path === "/api/dtako/tickets") return "shared-secret"; // POST 起票
   if (/^\/api\/dtako\/tickets\/[^/]+\/scraped$/.test(path)) return "shared-secret"; // PATCH 結果反映
   if (path === "/api/upload") return "shared-secret"; // POST dtako csvdata.zip 取り込み (ohishi-exp/dtako-scraper#22)
+  if (path === "/api/internal/operations") return "shared-secret"; // GET dtako 実運行一覧 (nuxt-ichibanboshi の一番星突合、ohishi-exp/nuxt-dtako-admin#198 Phase 8)
 
   // ── public-ingest: rust の public_router (caller #5 Android、tenant は body/lookup 解決) ──
   if (path === "/api/tenko-call/register") return "public-ingest"; // TenkoCall 端末登録

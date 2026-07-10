@@ -155,6 +155,31 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(h["Content-Type"]).toBe(`multipart/form-data; boundary=${boundary}`);
   });
 
+  it("正常 (GET /api/internal/operations): dtako 実運行一覧を query 付きで forward (nuxt-ichibanboshi 突合用、ohishi-exp/nuxt-dtako-admin#198 Phase 8)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response('{"operations":[]}', { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/internal/operations?vehicle_cd=0272&date_from=2026-06-01", {
+        method: "GET",
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe(
+      "https://alc-api.test.example/api/internal/operations?vehicle_cd=0272&date_from=2026-06-01",
+    );
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("GET");
+  });
+
   it("正常 (PATCH scraped): allowlist を通り query も維持して forward", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
