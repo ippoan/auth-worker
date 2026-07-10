@@ -12,7 +12,8 @@ vi.mock("../../src/lib/oidc", () => ({
   mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
 }));
 
-import { handleAlcProxy } from "../../src/handlers/alc-proxy";
+import { handleAlcProxy, validatePreviewBase } from "../../src/handlers/alc-proxy";
+import { mintGoogleIdToken } from "../../src/lib/oidc";
 
 const ORIGIN = "https://alc.ippoan.org";
 const PROXY_SECRET = "test-internal-shared-secret-32!!";
@@ -124,6 +125,61 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
     expect(h["X-User-Role"]).toBe("admin");
   });
 
+  it("preview override: 妥当な tagged revision URL は forward 先 + OIDC aud を差し替える (Refs ippoan/ci-dashboard#472)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const previewBase = "https://v1-2-3---rust-alc-api-747065218280.asia-northeast1.run.app";
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees", {
+        headers: { "X-Alc-Preview-Api-Base": previewBase },
+      }),
+      env({
+        ALC_API_PREVIEW_HOST_SUFFIX: "rust-alc-api-747065218280.asia-northeast1.run.app",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe(`${previewBase}/api/employees`);
+    // OIDC aud も preview origin に切り替わる
+    expect(vi.mocked(mintGoogleIdToken)).toHaveBeenLastCalledWith("{}", previewBase);
+  });
+
+  it("preview override: suffix 不一致 / 非 https / tag 無しは 400 (prod への silent fallback をしない)", async () => {
+    const suffixEnv = env({
+      ALC_API_PREVIEW_HOST_SUFFIX: "rust-alc-api-747065218280.asia-northeast1.run.app",
+    });
+    for (const bad of [
+      "https://evil.example/",
+      "https://v1---other-service-123.asia-northeast1.run.app",
+      "http://v1---rust-alc-api-747065218280.asia-northeast1.run.app",
+      "https://rust-alc-api-747065218280.asia-northeast1.run.app", // tag 無し (= prod と同じ)
+      "not a url",
+    ]) {
+      const res = await handleAlcProxy(
+        req("/alc-proxy/api/employees", { headers: { "X-Alc-Preview-Api-Base": bad } }),
+        suffixEnv,
+      );
+      expect(res.status, bad).toBe(400);
+    }
+  });
+
+  it("preview override: ALC_API_PREVIEW_HOST_SUFFIX 未設定なら override 要求は 400 (fail-closed)", async () => {
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees", {
+        headers: {
+          "X-Alc-Preview-Api-Base":
+            "https://v1---rust-alc-api-747065218280.asia-northeast1.run.app",
+        },
+      }),
+      env(),
+    );
+    expect(res.status).toBe(400);
+  });
+
   it("POST は body を forward する", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
@@ -144,5 +200,31 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
     const h = (init as RequestInit).headers as Record<string, string>;
     expect(h["Content-Type"]).toBe("application/json");
     expect((init as RequestInit).body).toBeDefined();
+  });
+});
+
+describe("validatePreviewBase (pure)", () => {
+  const SUFFIX = "rust-alc-api-747065218280.asia-northeast1.run.app";
+
+  it("`<tag>---<suffix>` の https URL だけ origin を返す", () => {
+    expect(validatePreviewBase(`https://v1-42-0---${SUFFIX}/api/x`, SUFFIX)).toBe(
+      `https://v1-42-0---${SUFFIX}`,
+    );
+  });
+
+  it("suffix 空 (未設定) は常に null", () => {
+    expect(validatePreviewBase(`https://v1---${SUFFIX}`, "")).toBeNull();
+  });
+
+  it("tag が空 / 不正文字なら null", () => {
+    expect(validatePreviewBase(`https://---${SUFFIX}`, SUFFIX)).toBeNull();
+    expect(validatePreviewBase(`https://V1.x---${SUFFIX}`, SUFFIX)).toBeNull();
+  });
+
+  it("suffix を欺く host (evil.example?---suffix 等) は null", () => {
+    expect(
+      validatePreviewBase(`https://evil.example/?x=---${SUFFIX}`, SUFFIX),
+    ).toBeNull();
+    expect(validatePreviewBase(`https://v1---${SUFFIX}.evil.example`, SUFFIX)).toBeNull();
   });
 });

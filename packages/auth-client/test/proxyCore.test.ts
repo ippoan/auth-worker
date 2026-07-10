@@ -76,6 +76,29 @@ describe('buildAlcProxyHeaders', () => {
       'X-Alc-Proxy-Origin': 'https://x.example',
     })
   })
+
+  it('previewApiBase があれば X-Alc-Preview-Api-Base に載せる (Refs ippoan/ci-dashboard#472)', () => {
+    expect(
+      buildAlcProxyHeaders({
+        sharedSecret: 's',
+        origin: 'https://x.example',
+        previewApiBase: 'https://v1-2-3---rust-alc-api-abc.asia-northeast1.run.app',
+      }),
+    ).toEqual({
+      'X-Alc-Proxy-Secret': 's',
+      'X-Alc-Proxy-Origin': 'https://x.example',
+      'X-Alc-Preview-Api-Base': 'https://v1-2-3---rust-alc-api-abc.asia-northeast1.run.app',
+    })
+  })
+
+  it('previewApiBase が空/undefined なら header を出さない', () => {
+    expect(
+      buildAlcProxyHeaders({ sharedSecret: 's', origin: 'https://x.example', previewApiBase: undefined }),
+    ).toEqual({
+      'X-Alc-Proxy-Secret': 's',
+      'X-Alc-Proxy-Origin': 'https://x.example',
+    })
+  })
 })
 
 describe('buildProxyHeaders', () => {

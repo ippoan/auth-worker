@@ -236,6 +236,10 @@ export declare function buildAlcProxyHeaders(input: {
   origin: string
   token?: string
   contentType?: string
+  /** flip 前 preview override (`alc_api_preview_base` cookie 値)。あれば
+   *  `X-Alc-Preview-Api-Base` に載せる。検証は auth-worker `/alc-proxy` 側
+   *  (Refs ippoan/ci-dashboard#472)。 */
+  previewApiBase?: string
 }): Record<string, string>
 
 /**
