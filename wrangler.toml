@@ -11,6 +11,12 @@ preview_urls = true
 AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
 ALC_API_ORIGIN = "https://alc-api.ippoan.org"
 ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
+# flip 前 preview override (Refs ippoan/ci-dashboard#472) が許可する rust-alc-api
+# prod service の Cloud Run host suffix。/alc-proxy は X-Alc-Preview-Api-Base の
+# host が `<tag>---<この suffix>` (同一 service の tagged revision URL) の時だけ
+# forward 先 + OIDC aud を差し替える。値が実際の tagged URL (backend deploy.yml が
+# pending-release で報告する preview_url) の host と一致するか初回 release で確認する。
+ALC_API_PREVIEW_HOST_SUFFIX = "rust-alc-api-747065218280.asia-northeast1.run.app"
 WORKER_ENV = "prod"
 # #434 Phase D: prod でも internal call の認証 token を Google OIDC ID token
 # (aud=alc-api-internal、ALC_API_PROXY_SA_KEY で mint) にする。staging で実証済み。

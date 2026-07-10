@@ -35,6 +35,36 @@ const ROUTE_PREFIX = "/alc-proxy";
 /** consumer worker proof を運ぶ header。`INTERNAL_SHARED_SECRET*` の生値を載せる。 */
 const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
 
+/**
+ * flip 前 preview override を運ぶ header (Refs ippoan/ci-dashboard#472)。
+ * ci-dashboard の preview-router が `alc_api_preview_base` cookie を Set し、
+ * consumer の `createAuthWorkerProxyHandler` (auth-client) がこの header に
+ * 変換して forward してくる。値は同一 Cloud Run service の tagged revision URL
+ * (`https://<tag>---<ALC_API_PREVIEW_HOST_SUFFIX>`) のみ許可。
+ */
+const PREVIEW_BASE_HEADER = "X-Alc-Preview-Api-Base";
+
+/**
+ * preview override の値を検証して origin を返す (不正は null)。
+ * `<tag>---<suffix>` 形式に pin することで、任意 host への forward
+ * (= 認証済み利用者が自分の JWT 由来リクエストを外部に流す) を防ぐ。
+ */
+export function validatePreviewBase(raw: string, hostSuffix: string): string | null {
+  if (!hostSuffix) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:") return null;
+  const marker = `---${hostSuffix}`;
+  if (!parsed.hostname.endsWith(marker)) return null;
+  const tag = parsed.hostname.slice(0, -marker.length);
+  if (!/^[a-z0-9-]+$/.test(tag)) return null;
+  return parsed.origin;
+}
+
 /** 定数時間比較。短絡せず全文字を XOR して合算 (mcp-introspect.ts と同実装)。 */
 function constantTimeEquals(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -98,18 +128,33 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   if (!checkAppTenant(env, origin, tenantId, email)) return jsonError(401, "Unauthorized");
   if (!tenantId) return jsonError(401, "Unauthorized");
 
-  // ── OIDC mint (Cloud Run IAM lockdown 用)。aud = rust-alc-api service URL ──
+  // ── flip 前 preview override (Refs ippoan/ci-dashboard#472) ───────────────
+  // proof (①) + JWT/ACL 通過後のみ評価する。不正値は 400 で loud fail —
+  // 黙って prod に流すと「flip 前を検証したつもりで prod を叩いていた」事故に
+  // なるため、fallback しない。
+  let targetOrigin = apiOrigin;
+  const previewBase = request.headers.get(PREVIEW_BASE_HEADER);
+  if (previewBase) {
+    const previewOrigin = validatePreviewBase(
+      previewBase,
+      env.ALC_API_PREVIEW_HOST_SUFFIX ?? "",
+    );
+    if (!previewOrigin) return jsonError(400, "invalid preview override");
+    targetOrigin = previewOrigin;
+  }
+
+  // ── OIDC mint (Cloud Run IAM lockdown 用)。aud = forward 先 service URL ──
   let idToken: string;
   try {
-    idToken = await mintGoogleIdToken(saKey, apiOrigin);
+    idToken = await mintGoogleIdToken(saKey, targetOrigin);
   } catch {
     return jsonError(502, "upstream auth error"); // 詳細は log のみ (ここでは出さない)
   }
 
-  // ── forward: ALC_API_ORIGIN + (/alc-proxy 以降の path) ────────────────────
+  // ── forward: targetOrigin + (/alc-proxy 以降の path) ──────────────────────
   const url = new URL(request.url);
   const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
-  const target = `${apiOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
+  const target = `${targetOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
 
   const fwdHeaders: Record<string, string> = {
     Authorization: `Bearer ${idToken}`,

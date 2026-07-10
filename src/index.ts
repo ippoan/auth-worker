@@ -116,6 +116,12 @@ export interface Env {
   OAUTH_STATE_SECRET: string;
   AUTH_WORKER_ORIGIN: string;
   ALC_API_ORIGIN: string;
+  /** flip 前 preview override (Refs ippoan/ci-dashboard#472) が許可する
+   *  rust-alc-api の Cloud Run host suffix。`/alc-proxy/*` は
+   *  `X-Alc-Preview-Api-Base` header の host が `<tag>---<この suffix>`
+   *  (= 同一 service の tagged revision URL) に一致する時だけ forward 先と
+   *  OIDC aud を差し替える。未設定なら override 要求は 400 (fail-closed)。 */
+  ALC_API_PREVIEW_HOST_SUFFIX?: string;
   /** staging Cloud Run の rust-alc-api。Bot Config Import (developer 専用) 用 proxy 先。
    *  未設定なら handler 内で本番 staging URL に fallback する。 */
   ALC_API_STAGING_ORIGIN?: string;

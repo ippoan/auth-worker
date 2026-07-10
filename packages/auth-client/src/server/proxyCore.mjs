@@ -81,6 +81,9 @@ export function buildAlcProxyHeaders(input) {
   }
   if (input.token) headers['Authorization'] = `Bearer ${input.token}`
   if (input.contentType) headers['Content-Type'] = input.contentType
+  // flip 前 preview override (Refs ippoan/ci-dashboard#472)。値の検証は
+  // auth-worker `/alc-proxy` 側 (同一 service の tagged revision URL に pin)。
+  if (input.previewApiBase) headers['X-Alc-Preview-Api-Base'] = input.previewApiBase
   return headers
 }
 

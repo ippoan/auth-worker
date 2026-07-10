@@ -44,6 +44,16 @@ import { mintGoogleIdToken } from './oidc.mjs'
 /** logi_auth_token cookie の既定名 (auth.mjs と同じ)。 */
 const DEFAULT_COOKIE_NAME = 'logi_auth_token'
 
+/**
+ * flip 前 preview override cookie 名 (Refs ippoan/ci-dashboard#472)。
+ * ci-dashboard の preview-router (`preview-<app>.ippoan.org`) が backend の
+ * pending release (tagged revision URL) を Set-Cookie し、same-origin の
+ * `/api/proxy/*` リクエストに自動で載ってくる。createAuthWorkerProxyHandler は
+ * これを `X-Alc-Preview-Api-Base` header に変換して auth-worker `/alc-proxy` に
+ * 渡すだけ — 値の検証と forward 先差し替えは auth-worker 側が行う (不正は 400)。
+ */
+const PREVIEW_API_BASE_COOKIE = 'alc_api_preview_base'
+
 function bearerToken(authHeader) {
   if (!authHeader) return undefined
   const m = /^Bearer\s+(.+)$/i.exec(authHeader)
@@ -148,6 +158,7 @@ export function createAuthWorkerProxyHandler(options) {
       origin,
       token,
       contentType: getHeader(event, 'content-type'),
+      previewApiBase: getCookie(event, PREVIEW_API_BASE_COOKIE),
     })
 
     // service binding fetch には絶対 URL が要る (host は binding が無視するが
