@@ -110,6 +110,33 @@ describe("POST /auth/introspect — token validation", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
+  it("active:true for a device-hub device JWT (cf-alc-recorder の WS ハンドシェイク経路、#363)", async () => {
+    const { mintDeviceJwt, DEVICE_ROLE_HUB } = await import("../../src/lib/device");
+    const token = await mintDeviceJwt(
+      { JWT_SECRET: TEST_JWT_SECRET, WORKER_ENV: "prod" },
+      {
+        device_id: "hub-dev-1",
+        tenant_id: PROD_TENANT,
+        secret_hash: "x",
+        label: "cores3",
+        created_at: Math.floor(Date.now() / 1000),
+        revoked: false,
+        role: DEVICE_ROLE_HUB,
+      },
+      Math.floor(Date.now() / 1000),
+    );
+    const res = await handleAuthIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token, origin: APP_ORIGIN }) }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { active: boolean; tenant_id: string; role: string; sub: string };
+    expect(body.active).toBe(true);
+    expect(body.tenant_id).toBe(PROD_TENANT);
+    expect(body.role).toBe(DEVICE_ROLE_HUB);
+    expect(body.sub).toBe("hub-dev-1"); // recorder は sub を device_id として注入する
+  });
+
   it("reads tenant_id from the `org` claim as fallback", async () => {
     const token = await jwt({ org: PROD_TENANT });
     const res = await handleAuthIntrospect(

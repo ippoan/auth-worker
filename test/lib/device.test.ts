@@ -10,6 +10,7 @@ import {
   DEVICE_ROLE,
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_DTAKO_INGEST,
+  DEVICE_ROLE_HUB,
   DEVICE_JWT_TTL_SECONDS,
   type DeviceRecord,
 } from "../../src/lib/device";
@@ -38,6 +39,7 @@ describe("normalizeDeviceRole", () => {
     expect(normalizeDeviceRole(DEVICE_ROLE)).toBe(DEVICE_ROLE);
     expect(normalizeDeviceRole(DEVICE_ROLE_KIOSK)).toBe(DEVICE_ROLE_KIOSK);
     expect(normalizeDeviceRole(DEVICE_ROLE_DTAKO_INGEST)).toBe(DEVICE_ROLE_DTAKO_INGEST);
+    expect(normalizeDeviceRole(DEVICE_ROLE_HUB)).toBe(DEVICE_ROLE_HUB);
   });
 
   it("falls back to the default role for unknown strings", () => {
@@ -85,6 +87,8 @@ describe("createDeviceCredential", () => {
     const env = { AUTH_CONFIG: createMockKV() };
     const kiosk = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_KIOSK);
     expect(kiosk.record.role).toBe(DEVICE_ROLE_KIOSK);
+    const hub = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
+    expect(hub.record.role).toBe(DEVICE_ROLE_HUB); // CoreS3 ハブ (#363)
     const bad = await createDeviceCredential(env, "t", "l", NOW, "admin");
     expect(bad.record.role).toBe(DEVICE_ROLE); // 未知 role は既定に倒す
   });
@@ -191,6 +195,14 @@ describe("mintDeviceJwt", () => {
     const token = await mintDeviceJwt({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, kioskRecord, NOW);
     const payload = await verifyJwt(token, SECRET, "staging");
     expect(payload!.role).toBe(DEVICE_ROLE_KIOSK);
+  });
+
+  it("carries the record's role when set (hub、cf-alc-recorder が introspect で読む)", async () => {
+    const hubRecord: DeviceRecord = { ...record, role: DEVICE_ROLE_HUB };
+    const token = await mintDeviceJwt({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, hubRecord, NOW);
+    const payload = await verifyJwt(token, SECRET, "staging");
+    expect(payload!.role).toBe(DEVICE_ROLE_HUB);
+    expect(payload!.sub).toBe("dev-1"); // recorder は sub を device_id として注入する
   });
 
   it("honors a custom ttl", async () => {
