@@ -86,6 +86,9 @@ describe("handleDeviceSetupPage", () => {
     // 実行前に現在の登録状態を表示し、登録済みなら上書き確認する
     expect(html).toContain("AUTH STATUS");
     expect(html).toContain("上書き登録しますか");
+    // ポート open 時のリセット対策: PING/PONG で起動完了を待ってから進む
+    expect(html).toContain("PONG");
+    expect(html).toContain("setSignals");
     // operator の email を表示 (どのテナントで登録されるかの確認用)
     expect(html).toContain("op@example.com");
   });
