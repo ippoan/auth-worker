@@ -188,6 +188,10 @@ async function run() {
     if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
     const port = await navigator.serial.requestPort();
     await port.open({ baudRate: 115200 });
+    // ポート open で ESP32-S3 が DTR/RTS トグルによりリセットする実装があるため、
+    // 信号を落としてリセットを抑止する (対応しないボードでは無害)。
+    // ただしこれに頼らず、下の PING/PONG で実際の起動完了を待つ
+    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
     const writer = port.writable.getWriter();
     const reader = port.readable.getReader();
     const decoder = new TextDecoder();
@@ -226,6 +230,30 @@ async function run() {
       }
     };
 
+    // --- 準備ハンドシェイク (根本対策) ---
+    // ポート open 時のリセットで最初のコマンドが起動中に飲まれる問題を、固定
+    // 待ちやリトライ回数ではなく「PONG が返るまで PING を打ち続ける」ことで
+    // 確実に解消する。デバイスが応答可能になった時点で必ず抜ける。
+    // 起動 (Wi-Fi/BLE 初期化含む) を見込んで全体 20 秒、PING は 700ms 間隔。
+    log("デバイスの起動を待機中 ...");
+    const readyDeadline = Date.now() + 20000;
+    let ready = false;
+    while (Date.now() < readyDeadline) {
+      const before = lines.length;
+      await writer.write(new TextEncoder().encode("PING\\n"));
+      // 700ms 以内に PONG が来たか (この PING への応答)
+      const until = Date.now() + 700;
+      while (Date.now() < until) {
+        if (lines.slice(before).some((l) => /^PONG/.test(l))) { ready = true; break; }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (ready) break;
+    }
+    if (!ready) throw new Error("デバイスが応答しません (USB 接続とファームウェアを確認してください)");
+    log("デバイス応答 OK — 現在の登録状態を確認します");
+    // 起動中に溜まったログ行は捨て、以降のコマンド応答だけを見る
+    lines.length = 0;
+
     // 現在の登録状態を先に表示する (既存登録の黙殺・黙って上書きをしない)
     await send("AUTH STATUS");
     const current = await waitLine(/^AUTH (PAIRED|UNPAIRED)/, 5000);
@@ -262,8 +290,10 @@ async function run() {
       await send("WS URL wss://alc-recorder-staging.m-tama-ramu.workers.dev/ws");
       await waitLine(/^OK WS URL/, 5000);
     }
+    // AUTH TOKEN は HTTPS 疎通確認。デバイス側が Wi-Fi 再接続 (ポート open の
+    // リセット後 ~30 秒) を内部で待ってから mint するため、余裕をもって待つ
     await send("AUTH TOKEN");
-    const evt = await waitLine(/^EVT AUTH_TOKEN (OK|NG)/, 30000);
+    const evt = await waitLine(/^EVT AUTH_TOKEN (OK|NG)/, 60000);
     if (!/^EVT AUTH_TOKEN OK/.test(evt)) throw new Error(evt);
     await send("WS STATUS");
     await waitLine(/^WS /, 5000);
