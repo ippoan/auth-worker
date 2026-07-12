@@ -81,6 +81,7 @@ import {
   handleDevicePairApprove,
   handleDevicePairToken,
 } from "./handlers/device-pair";
+import { handleDeviceSetupPage, handleDeviceSetupPair } from "./handlers/device-setup";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
@@ -595,6 +596,9 @@ export default {
           // Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing 承認ページ。
           case "/device/pair/approve":
             return await handleDevicePairApprovePage(request, env);
+          // CoreS3 の USB provisioning ページ (WebSerial、Refs #365)。
+          case "/device/setup":
+            return await handleDeviceSetupPage(request, env);
           // MCP OAuth Provider — GitHub OAuth callback (Phase 3, RFC 8628 §3.4)
           case "/mcp/device_callback":
             return await handleMcpDeviceCallback(request, env);
@@ -720,6 +724,9 @@ export default {
             return await handleDeviceToken(request, env);
           case "/device/revoke":
             return await handleDeviceRevoke(request, env);
+          // CoreS3 の USB provisioning: browser (cookie session) からの credential mint。
+          case "/device/setup/pair":
+            return await handleDeviceSetupPair(request, env);
           // Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing (box ↔ operator)。
           case "/device/pair/start":
             return await handleDevicePairStart(request, env);
