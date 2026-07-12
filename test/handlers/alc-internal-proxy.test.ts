@@ -88,6 +88,7 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
       "/alc-internal-proxy/api/dtako/vehicles",
       "/alc-internal-proxy/api/measurements",
       "/alc-internal-proxy/api/dtako/tickets/abc/other",
+      "/alc-internal-proxy/api/hub/other", // hub prefix でも列挙外は拒否 (#363)
     ]) {
       const res = await handleAlcInternalProxy(req(p, { method: "POST" }), env());
       expect(res.status, p).toBe(403);
@@ -128,6 +129,39 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(h["Content-Type"]).toBe("application/json");
     expect((init as RequestInit).method).toBe("POST");
     expect((init as RequestInit).body).toBeDefined();
+  });
+
+  it("正常 (POST /api/hub/measurements): shared-secret クラスとして X-Tenant-ID 付きで forward (#363)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/hub/measurements", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ device_id: "dev-1", kind: "alcohol", seq: 1, payload: {} }]),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/hub/measurements");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("POST");
+  });
+
+  it("POST /api/hub/measurements は X-Tenant-ID 欠落で 400 (shared-secret クラスの必須ヘッダー)", async () => {
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/hub/measurements", { method: "POST", tenant: null }),
+      env(),
+    );
+    expect(res.status).toBe(400);
   });
 
   it("正常 (POST /api/upload): multipart body も raw のまま forward (dtako-scraper#22)", async () => {

@@ -72,12 +72,21 @@ export const DEVICE_ROLE_DTAKO_INGEST = "device-dtako-ingest";
  */
 export const DEVICE_ROLE_CAM_FLICKR = "device-cam-flickr";
 
+/**
+ * alc-app-s3 (M5Stack CoreS3) 組み込みハブ専用 role。cf-alc-recorder (WS 受口) が
+ * introspect でこの role のみ accept し、hub は測定データ ingest 用途に限定する。
+ * `device-kiosk` (ブラウザキオスク) とは blast radius を分離する
+ * (Refs #363, ippoan/alc-app#106)。
+ */
+export const DEVICE_ROLE_HUB = "device-hub";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
 export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_ROLE_CAM_FLICKR,
+  DEVICE_ROLE_HUB,
 ]);
 
 /**
