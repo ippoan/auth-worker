@@ -38,6 +38,15 @@ function postJson(path: string, body: unknown, headers: Record<string, string> =
   });
 }
 
+/** POST /device/setup/pair の応答 (成功時)。 */
+interface PairResponse {
+  device_id: string;
+  device_secret: string;
+  tenant_id: string;
+  label: string;
+  role: string;
+}
+
 describe("handleDeviceSetupPage", () => {
   it("redirects to /login when not authenticated", async () => {
     const res = await handleDeviceSetupPage(getReq("/device/setup"), makeEnv());
@@ -80,7 +89,7 @@ describe("handleDeviceSetupPair", () => {
       env,
     );
     expect(res.status).toBe(201);
-    const body = (await res.json()) as Record<string, string>;
+    const body = (await res.json()) as PairResponse;
     expect(body.device_id).toBeTruthy();
     expect(body.device_secret).toBeTruthy();
     expect(body.tenant_id).toBe("tenant-1");
@@ -100,7 +109,7 @@ describe("handleDeviceSetupPair", () => {
     });
     const res = await handleDeviceSetupPair(req, env);
     expect(res.status).toBe(201);
-    const body = (await res.json()) as Record<string, string>;
+    const body = (await res.json()) as PairResponse;
     expect(body.label).toBe("cores3");
   });
 
@@ -110,15 +119,15 @@ describe("handleDeviceSetupPair", () => {
     const first = (await (
       await handleDeviceSetupPair(
         postJson("/device/setup/pair", { label: "cores3-abc", replace_label: true }, headers),
-      env,
+        env,
       )
-    ).json()) as Record<string, string>;
+    ).json()) as PairResponse;
     const second = (await (
       await handleDeviceSetupPair(
         postJson("/device/setup/pair", { label: "cores3-abc", replace_label: true }, headers),
         env,
       )
-    ).json()) as Record<string, string>;
+    ).json()) as PairResponse;
     expect(second.device_id).not.toBe(first.device_id);
     // 旧 credential は revoke され、新しい方だけが有効
     const oldRecord = await getDeviceRecord(env, first.device_id);
