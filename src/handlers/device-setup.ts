@@ -290,6 +290,22 @@ async function run() {
       await send("WS URL wss://alc-recorder-staging.m-tama-ramu.workers.dev/ws");
       await waitLine(/^OK WS URL/, 5000);
     }
+    // AUTH TOKEN は HTTPS でサーバに接続するため Wi-Fi 接続を待つ。
+    // ポート open のリセット後は Wi-Fi 再接続に ~30 秒かかることがあり
+    // (STATUS の WIFI=0→1)、待たずに叩くと「リクエスト送信に失敗」になる。
+    log("Wi-Fi 接続を待機中 ...");
+    const wifiDeadline = Date.now() + 45000;
+    let wifiUp = false;
+    while (Date.now() < wifiDeadline) {
+      const before = lines.length;
+      await send("STATUS");
+      const st = await waitLine(/^STATUS /, 3000).catch(() => "");
+      if (/WIFI=1/.test(st)) { wifiUp = true; break; }
+      void before;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!wifiUp) throw new Error("Wi-Fi に接続できません (Improv で Wi-Fi 設定を確認してください)");
+
     await send("AUTH TOKEN");
     const evt = await waitLine(/^EVT AUTH_TOKEN (OK|NG)/, 30000);
     if (!/^EVT AUTH_TOKEN OK/.test(evt)) throw new Error(evt);
