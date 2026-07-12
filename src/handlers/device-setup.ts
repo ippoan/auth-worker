@@ -67,12 +67,38 @@ export async function handleDeviceSetupPage(request: Request, env: Env): Promise
   const issuer = issuerOf(env);
   const session = await cookieSession(request, env);
   if (!session) {
+    // cookie が「有るのに検証に落ちる」場合 (期限切れ・env 不一致・組織未選択で
+    // tenant_id 無し) に /login へ 302 すると、ログイン済みブラウザでは
+    // login → (自動) callback → 本ページ → login … の無限リダイレクトになる。
+    // cookie 有りの失敗はリダイレクトせず理由を表示して止める。
+    if (getAuthCookie(request)) {
+      return new Response(sessionErrorPage(issuer), {
+        status: 403,
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
     const back = `${issuer}/device/setup`;
     return Response.redirect(`${issuer}/login?redirect_uri=${encodeURIComponent(back)}`, 302);
   }
   return new Response(setupPage(issuer, session.email), {
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
   });
+}
+
+/** cookie はあるがセッションとして使えない場合の案内 (リダイレクトループ防止)。 */
+function sessionErrorPage(issuer: string): string {
+  return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>セッションを確認できません</title>
+<style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:3rem auto;padding:0 1rem;color:#1a1a1a}
+h1{font-size:1.3rem}.muted{color:#666;font-size:.9rem}a{color:#1a56db}</style></head>
+<body><h1>セッションを確認できません</h1>
+<p>ログインセッションが期限切れか、組織が未選択の可能性があります。</p>
+<ul>
+<li><a href="${escapeHtml(issuer)}/top">/top で組織を確認・選択する</a></li>
+<li><a href="${escapeHtml(issuer)}/logout">一度ログアウトしてやり直す</a></li>
+</ul>
+<p class="muted">${escapeHtml(issuer)}</p></body></html>`;
 }
 
 /**
