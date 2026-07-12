@@ -80,8 +80,12 @@ describe("handleDeviceSetupPage", () => {
     const html = await res.text();
     expect(html).toContain("navigator.serial");
     expect(html).toContain("AUTH SET");
-    // WS URL は env 注入ではなく operator の入力欄 (空なら device 既定 = prod)
-    expect(html).toContain('id="wsurl"');
+    // 測定記録の送り先は origin から自動判定 (operator への入力欄は無い)
+    expect(html).not.toContain('id="wsurl"');
+    expect(html).toContain("alc-recorder-staging");
+    // 実行前に現在の登録状態を表示し、登録済みなら上書き確認する
+    expect(html).toContain("AUTH STATUS");
+    expect(html).toContain("上書き登録しますか");
     // operator の email を表示 (どのテナントで登録されるかの確認用)
     expect(html).toContain("op@example.com");
   });

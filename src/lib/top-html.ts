@@ -368,6 +368,9 @@ export function renderTopPage(
         <a href="/admin/line-users" class="nav-item">
           <div class="nav-item-icon">💬</div>LINE ユーザー管理
         </a>
+        <a href="/device/setup" class="nav-item">
+          <div class="nav-item-icon">🔌</div>デバイス登録 (CoreS3)
+        </a>
       </div>
     </div>
     <div id="nav-overlay" class="nav-overlay" onclick="toggleNav(false)"></div>
