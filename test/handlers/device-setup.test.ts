@@ -54,6 +54,26 @@ describe("handleDeviceSetupPage", () => {
     expect(res.headers.get("Location")).toContain("/login?redirect_uri=");
   });
 
+  it("shows an error page (no redirect) when a cookie exists but fails verification", async () => {
+    // 期限切れ/不正 cookie で /login へ 302 すると、ログイン済みブラウザで
+    // login → callback → 本ページ → login … の無限リダイレクトになるため
+    const res = await handleDeviceSetupPage(
+      getReq("/device/setup", { Cookie: "logi_auth_token=broken" }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("セッションを確認できません");
+  });
+
+  it("shows the error page for a session without tenant_id (org unselected)", async () => {
+    const token = await signTestJwt({ email: "op@example.com", env: ENV }, SECRET);
+    const res = await handleDeviceSetupPage(
+      getReq("/device/setup", { Cookie: `logi_auth_token=${token}` }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(403);
+  });
+
   it("serves the WebSerial setup page for an operator session", async () => {
     const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
     expect(res.status).toBe(200);
