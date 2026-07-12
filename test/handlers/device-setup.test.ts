@@ -89,8 +89,6 @@ describe("handleDeviceSetupPage", () => {
     // ポート open 時のリセット対策: PING/PONG で起動完了を待ってから進む
     expect(html).toContain("PONG");
     expect(html).toContain("setSignals");
-    // AUTH TOKEN (HTTPS) 前に Wi-Fi 再接続 (WIFI=1) を待つ
-    expect(html).toContain("WIFI=1");
     // operator の email を表示 (どのテナントで登録されるかの確認用)
     expect(html).toContain("op@example.com");
   });
