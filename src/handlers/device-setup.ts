@@ -15,9 +15,9 @@
  *   1. POST /device/setup/pair → { device_id, device_secret, tenant_id }
  *   2. シリアル: AUTH SET <id> <secret> <tenant>
  *   3. シリアル: AUTH URL <このページの origin>
- *      WS URL はページの入力欄 (任意) — 空なら送らずファームウェア既定
- *      (prod recorder) のまま。staging 検証時だけ operator が入力する。
- *      env ごとの var を持たないため staging/prod でページ実装は同一
+ *      測定記録の送り先 (WS URL) はページの origin から自動判定 —
+ *      staging で開いていれば staging recorder を注入、それ以外は送らず
+ *      ファームウェア既定 (prod recorder) のまま。operator には訊かない
  *   4. シリアル: AUTH TOKEN → `EVT AUTH_TOKEN OK` で疎通確認完了
  */
 
@@ -160,13 +160,11 @@ pre{background:#f6f8fa;border:1px solid #e2e5e9;border-radius:.4rem;padding:.8re
 </style></head>
 <body>
 <h1>CoreS3 デバイス登録 (USB)</h1>
-<p class="muted">CoreS3 を USB で接続し「セットアップ実行」を押してください。credential の発行
-(テナント: このアカウント ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行います。
-Chrome / Edge のみ (WebSerial)。</p>
+<p class="muted">CoreS3 を USB で接続し「セットアップ実行」を押してください。まず現在の登録状態を
+表示し (登録済みなら上書き確認)、credential の発行 (テナント: このアカウント
+${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行います。Chrome / Edge のみ (WebSerial)。</p>
 <label for="label">デバイスラベル (同名は旧 credential を自動失効)</label>
 <input id="label" value="cores3" pattern="[A-Za-z0-9._-]+">
-<label for="wsurl">測定記録の WS URL (空欄 = デバイス既定の本番 recorder。staging 検証時のみ入力)</label>
-<input id="wsurl" style="width:100%" placeholder="wss://alc-recorder-staging.m-tama-ramu.workers.dev/ws">
 <p><button id="run">セットアップ実行</button></p>
 <p id="result"></p>
 <pre id="log"></pre>
@@ -228,6 +226,19 @@ async function run() {
       }
     };
 
+    // 現在の登録状態を先に表示する (既存登録の黙殺・黙って上書きをしない)
+    await send("AUTH STATUS");
+    const current = await waitLine(/^AUTH (PAIRED|UNPAIRED)/, 5000);
+    if (/^AUTH PAIRED/.test(current)) {
+      const parts = current.split(" ");
+      const msg = "このデバイスは登録済みです:\\n  デバイスID: " + (parts[3] || "?") +
+        "\\n  テナント: " + (parts[2] || "?") +
+        "\\n\\n上書き登録しますか? (旧 credential は失効します)";
+      if (!confirm(msg)) throw new Error("キャンセルしました (既存の登録を維持)");
+    } else {
+      log("未登録のデバイスです — 新規登録します");
+    }
+
     const label = document.getElementById("label").value || "cores3";
     log("credential を発行中 (label=" + label + ") ...");
     const res = await fetch(ISSUER + "/device/setup/pair", {
@@ -244,10 +255,11 @@ async function run() {
     await waitLine(/^OK AUTH SET/, 5000);
     await send("AUTH URL " + ISSUER);
     await waitLine(/^OK AUTH URL/, 5000);
-    const wsUrl = document.getElementById("wsurl").value.trim();
-    if (wsUrl) {
-      if (!/^wss?:\\/\\//.test(wsUrl)) throw new Error("WS URL は ws(s):// で始めてください");
-      await send("WS URL " + wsUrl);
+    // 測定記録の送り先はページの origin から自動判定する (operator に訊かない):
+    // staging で開いていれば staging recorder、それ以外は送らずデバイス既定
+    // (本番 recorder) のまま
+    if (location.hostname.includes("staging")) {
+      await send("WS URL wss://alc-recorder-staging.m-tama-ramu.workers.dev/ws");
       await waitLine(/^OK WS URL/, 5000);
     }
     await send("AUTH TOKEN");
