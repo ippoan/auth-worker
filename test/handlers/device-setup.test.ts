@@ -295,10 +295,11 @@ describe("handleDeviceSetupOta / handleDeviceSetupOtaStatus", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: "cmd-1" });
     expect(calls.length).toBe(1);
-    expect(calls[0].method).toBe("POST");
-    expect(calls[0].auth).toBe("shared-abc");
-    expect(calls[0].url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
-    expect(JSON.parse(calls[0].body)).toEqual({ payload: { action: "ota", url: "https://x/app.bin" } });
+    const call = calls[0]!;
+    expect(call.method).toBe("POST");
+    expect(call.auth).toBe("shared-abc");
+    expect(call.url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
+    expect(JSON.parse(call.body)).toEqual({ payload: { action: "ota", url: "https://x/app.bin" } });
   });
 
   it("他テナントの device_id は 403 (recorder を叩かない)", async () => {
