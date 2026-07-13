@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createMockEnv, createMockKV, TEST_JWT_SECRET } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 
@@ -87,6 +87,119 @@ describe("handleTopPage", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
     expect(await res.text()).toBe("<html>mock top page</html>");
+  });
+
+  describe("dangling tenant 検知 (my-orgs 空 → 再ログイン)", () => {
+    // verifiedIdentityHeaders が identity を組める full claims (4 点必須)
+    const fullClaims = {
+      sub: "11111111-1111-1111-1111-111111111111",
+      tenant_id: "22222222-2222-2222-2222-222222222222",
+      email: "op@example.com",
+      role: "admin",
+    };
+    const realFetch = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+    });
+    function stubMyOrgs(organizations: unknown[] | null, status = 200): void {
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify(organizations === null ? {} : { organizations }), {
+            status,
+          }),
+        ) as unknown as typeof fetch;
+    }
+
+    it("my-orgs が空なら cookie を破棄して /login へ 302 (stale session)", async () => {
+      stubMyOrgs([]);
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: await authedCookie(fullClaims) },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toContain("/login");
+      const setCookie = res.headers.get("Set-Cookie") ?? "";
+      expect(setCookie).toContain("logi_auth_token=;");
+      expect(setCookie).toContain("Max-Age=0");
+    });
+
+    it("ログイン直後 (?lw_callback=1) でも空なら 403 エラーページ (無限ループ防止)", async () => {
+      stubMyOrgs([]);
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top?lw_callback=1", {
+        headers: { Cookie: await authedCookie(fullClaims) },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain("組織が見つかりません");
+    });
+
+    it("組織があれば通常どおり表示する", async () => {
+      stubMyOrgs([{ id: "org-1", name: "Org", slug: "org" }]);
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: await authedCookie(fullClaims) },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("<html>mock top page</html>");
+    });
+
+    it("my-orgs の判定不能 (fetch 失敗 / 非 200 / 応答形不正) は fail-open で表示", async () => {
+      const env = createMockEnv();
+      for (const setup of [
+        () => {
+          globalThis.fetch = vi
+            .fn()
+            .mockRejectedValue(new Error("rust down")) as unknown as typeof fetch;
+        },
+        () => stubMyOrgs([], 503),
+        () => stubMyOrgs(null), // organizations キー欠落
+      ]) {
+        setup();
+        const req = new Request("https://auth.test.example/top", {
+          headers: { Cookie: await authedCookie(fullClaims) },
+        });
+        const res = await handleTopPage(req, env);
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe("<html>mock top page</html>");
+      }
+    });
+
+    it("?woff=1 は組織 gate をスキップする (WOFF フロー非破壊)", async () => {
+      stubMyOrgs([]);
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top?woff=1", {
+        headers: { Cookie: await authedCookie(fullClaims) },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("<html>mock top page</html>");
+    });
+
+    it("identity claims 不足 (tenant_id 等欠落) は fetch せず fail-open", async () => {
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy as unknown as typeof fetch;
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: await authedCookie() }, // claims なし
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(200);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
   });
 
   it("allows access with ?woff=1 even without cookie (WOFF flow)", async () => {
