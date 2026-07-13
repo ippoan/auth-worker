@@ -43,6 +43,13 @@ export function initAuthSession(options: InitAuthSessionOptions = {}): void {
 
   if (typeof window === 'undefined') return
 
+  // auth-worker から戻ってきた直後か (cookie handoff / fragment のどちらでも付く)。
+  // この後の復元が全部失敗して未認証のまま redirectToLogin に落ちる = 「ログイン
+  // したのにセッションを確立できない」= cookie が毒 (dangling tenant 等)。素の
+  // /login へ戻すと同じ cookie でまた戻ってきて無限ループになるため、その時だけ
+  // reauth (=/logout で cookie 破棄してから /login) にしてループを断つ。
+  const cameFromAuthWorker = new URLSearchParams(window.location.search).has('lw_callback')
+
   const {
     consumeFragment,
     loadFromStorage,
@@ -96,9 +103,11 @@ export function initAuthSession(options: InitAuthSessionOptions = {}): void {
     recoverFromCookie()
   }
 
-  // 3. 未認証 → ログイン画面へ（redirectToLogin 内で lw_domain をチェック）
+  // 3. 未認証 → ログイン画面へ（redirectToLogin 内で lw_domain をチェック）。
+  //    auth-worker から戻った直後なのに未認証なら、毒 cookie を破棄してから
+  //    再認証する (reauth) — 素の /login はループになるため (上のコメント参照)。
   if (!isAuthenticated.value) {
-    redirectToLogin()
+    redirectToLogin(cameFromAuthWorker ? { reauth: true } : undefined)
     return
   }
 
