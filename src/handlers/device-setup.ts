@@ -179,14 +179,16 @@ async function recorderFetch(
   path: string,
   init: RequestInit,
 ): Promise<Response | null> {
-  if (!env.ALC_RECORDER) return null;
+  // await を跨ぐと env.ALC_RECORDER の narrowing が失われるためローカルに束ねる
+  const recorder = env.ALC_RECORDER;
+  if (!recorder) return null;
   const secret = await resolveSecret(env.INTERNAL_SHARED_SECRET);
   if (!secret) return null;
   const headers = new Headers(init.headers);
   headers.set("Authorization", secret);
   // service binding fetch は host を無視するが path は recorder の route と
   // 一致させる必要がある
-  return env.ALC_RECORDER.fetch(`https://alc-recorder.internal${path}`, { ...init, headers });
+  return recorder.fetch(`https://alc-recorder.internal${path}`, { ...init, headers });
 }
 
 /** device_id が本当にこの operator の tenant のものか (詐称防止に必須)。 */

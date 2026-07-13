@@ -440,7 +440,7 @@ export default {
       // OTA 進捗ポーリング (/device/setup/ota/:id)。switch は完全一致なので
       // path param 付きはここで捌く (GET のみ)。
       const otaStatus = /^\/device\/setup\/ota\/([^/]+)$/.exec(url.pathname);
-      if (otaStatus && request.method === "GET") {
+      if (otaStatus?.[1] && request.method === "GET") {
         return await handleDeviceSetupOtaStatus(request, env, decodeURIComponent(otaStatus[1]));
       }
 
