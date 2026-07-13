@@ -502,7 +502,7 @@ async function loadDevices() {
       bar.appendChild(barFill);
       const msg = document.createElement("div");
       msg.className = "ota-msg";
-      btn.addEventListener("click", () => startOta(d.device_id, btn, bar, barFill, msg));
+      btn.addEventListener("click", () => startOta(d.device_id, btn, bar, barFill, msg, verSpan));
       otaTd.appendChild(btn);
       otaTd.appendChild(bar);
       otaTd.appendChild(msg);
@@ -560,7 +560,7 @@ async function queryVersion(deviceId, verSpan) {
 }
 
 // OTA を開始し、command id で進捗をポーリングして表示する。
-async function startOta(deviceId, btn, bar, barFill, msg) {
+async function startOta(deviceId, btn, bar, barFill, msg, verSpan) {
   const url = document.getElementById("ota-url").value.trim();
   if (!/^https?:\\/\\//.test(url)) { msg.textContent = "URL が不正です"; return; }
   btn.disabled = true;
@@ -579,15 +579,38 @@ async function startOta(deviceId, btn, bar, barFill, msg) {
     const { id } = await res.json();
     if (!id) { msg.textContent = "command id を取得できませんでした"; btn.disabled = false; return; }
     msg.textContent = "更新を開始しました...";
-    pollOta(id, btn, barFill, msg);
+    pollOta(id, deviceId, btn, barFill, msg, verSpan);
   } catch (e) {
     msg.textContent = "送信エラー";
     btn.disabled = false;
   }
 }
 
+// OTA 完了後、デバイスの再起動 → WS 再接続を待ってから、その行の
+// バージョンだけを再照会して更新する (全リストは読み直さない)。
+// 再起動 (~15s) + WS 再接続を見込んで、未接続の間は少し待ってリトライする。
+async function refreshVersionAfterReboot(deviceId, verSpan, msg) {
+  verSpan.textContent = "再起動待ち...";
+  const deadline = Date.now() + 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 4000));
+    // まだ接続が戻っていないと version トリガが 409 になる。接続を確認してから照会。
+    let connected = false;
+    try {
+      const cr = await fetch(ISSUER + "/device/setup/connected", { credentials: "include" });
+      if (cr.ok) connected = (((await cr.json()).devices) || []).includes(deviceId);
+    } catch { /* retry */ }
+    if (connected) {
+      msg.textContent = "更新完了 (再接続を確認)";
+      await queryVersion(deviceId, verSpan); // その行のバージョンだけ更新
+      return;
+    }
+  }
+  verSpan.textContent = "再接続待ちタイムアウト";
+}
+
 // 進捗ポーリング (2s 間隔、最大 5 分)。phase = pending/download/ok/error。
-async function pollOta(id, btn, barFill, msg) {
+async function pollOta(id, deviceId, btn, barFill, msg, verSpan) {
   const deadline = Date.now() + 5 * 60 * 1000;
   for (;;) {
     if (Date.now() > deadline) { msg.textContent = "タイムアウト (デバイスの状態を確認してください)"; btn.disabled = false; return; }
@@ -604,8 +627,12 @@ async function pollOta(id, btn, barFill, msg) {
       msg.textContent = "ダウンロード中 " + pct + "% (" + p.received + "/" + p.total + ")";
     } else if (p.phase === "ok") {
       barFill.style.width = "100%";
-      msg.textContent = "完了 — デバイスは再起動しています (" + (p.bytes || "?") + " bytes)";
+      msg.textContent = "完了 — デバイスの再起動を待っています (" + (p.bytes || "?") + " bytes)";
       btn.disabled = false;
+      // デバイスは再起動 → 新スロットで WS 再接続する。**その行だけ**
+      // バージョンを再照会して更新 (全リストは読み直さない)。再接続まで
+      // リトライしてから照会する。
+      if (verSpan) void refreshVersionAfterReboot(deviceId, verSpan, msg);
       return;
     } else if (p.phase === "error") {
       msg.textContent = "失敗: " + (p.message || "不明なエラー");
