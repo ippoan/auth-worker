@@ -81,7 +81,11 @@ import {
   handleDevicePairApprove,
   handleDevicePairToken,
 } from "./handlers/device-pair";
-import { handleDeviceSetupPage, handleDeviceSetupPair } from "./handlers/device-setup";
+import {
+  handleDeviceSetupPage,
+  handleDeviceSetupPair,
+  handleDeviceSetupList,
+} from "./handlers/device-setup";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
@@ -599,6 +603,9 @@ export default {
           // CoreS3 の USB provisioning ページ (WebSerial、Refs #365)。
           case "/device/setup":
             return await handleDeviceSetupPage(request, env);
+          // 登録済みデバイス一覧 (cookie session、ページの表示用)。
+          case "/device/setup/list":
+            return await handleDeviceSetupList(request, env);
           // MCP OAuth Provider — GitHub OAuth callback (Phase 3, RFC 8628 §3.4)
           case "/mcp/device_callback":
             return await handleMcpDeviceCallback(request, env);

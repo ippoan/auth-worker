@@ -204,6 +204,27 @@ export async function createDeviceCredentialReplacingLabel(
   return cred;
 }
 
+/**
+ * tenant に紐づく有効な (revoke されていない) device credential 一覧を
+ * 発行日時降順で返す (Refs /device/setup の登録済み一覧)。
+ *
+ * KV には tenant 二次索引が無いため `device:` prefix を全走査して filter する
+ * (device 数は運用上小さい前提。list 上限 1000 keys を超える規模になったら
+ * `device-tenant:<tenant>:` 二次索引の導入を検討する)。
+ */
+export async function listDeviceRecordsByTenant(
+  env: DeviceKvEnv,
+  tenantId: string,
+): Promise<DeviceRecord[]> {
+  const listed = await env.AUTH_CONFIG.list({ prefix: KV_PREFIX, limit: 1000 });
+  const records = await Promise.all(
+    listed.keys.map((k) => getDeviceRecord(env, k.name.slice(KV_PREFIX.length))),
+  );
+  return records
+    .filter((r): r is DeviceRecord => !!r && r.tenant_id === tenantId && !r.revoked)
+    .sort((a, b) => b.created_at - a.created_at);
+}
+
 /** device レコードを KV から読む。不在 / JSON 破損は null。 */
 export async function getDeviceRecord(
   env: DeviceKvEnv,

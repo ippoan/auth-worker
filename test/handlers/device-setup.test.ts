@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { handleDeviceSetupPage, handleDeviceSetupPair } from "../../src/handlers/device-setup";
+import {
+  handleDeviceSetupPage,
+  handleDeviceSetupPair,
+  handleDeviceSetupList,
+} from "../../src/handlers/device-setup";
 import { getDeviceRecord } from "../../src/lib/device";
 import { createMockKV } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
@@ -91,6 +95,76 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("setSignals");
     // operator の email を表示 (どのテナントで登録されるかの確認用)
     expect(html).toContain("op@example.com");
+    // 登録済みデバイス一覧 (ページ表示時に /device/setup/list を読む)
+    expect(html).toContain("登録済みデバイス");
+    expect(html).toContain("/device/setup/list");
+  });
+});
+
+describe("handleDeviceSetupList", () => {
+  it("rejects without session (401)", async () => {
+    const res = await handleDeviceSetupList(getReq("/device/setup/list"), makeEnv());
+    expect(res.status).toBe(401);
+  });
+
+  it("returns only the operator tenant's active credentials, newest first", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    // tenant-1 に 2 台 (同 label replace で 1 台は revoke) + 別 label 1 台
+    const revoked = (await (
+      await handleDeviceSetupPair(
+        postJson("/device/setup/pair", { label: "cores3-a", replace_label: true }, headers),
+        env,
+      )
+    ).json()) as PairResponse;
+    const current = (await (
+      await handleDeviceSetupPair(
+        postJson("/device/setup/pair", { label: "cores3-a", replace_label: true }, headers),
+        env,
+      )
+    ).json()) as PairResponse;
+    const other = (await (
+      await handleDeviceSetupPair(
+        postJson("/device/setup/pair", { label: "cores3-b" }, headers),
+        env,
+      )
+    ).json()) as PairResponse;
+    // 他テナントの credential は一覧に出ない
+    const otherTenantCookie = await opCookie({ tenant_id: "tenant-2" });
+    await handleDeviceSetupPair(
+      postJson("/device/setup/pair", { label: "cores3-x" }, { ...otherTenantCookie, Origin: ISSUER }),
+      env,
+    );
+
+    const res = await handleDeviceSetupList(getReq("/device/setup/list", await opCookie()), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      devices: Array<{ device_id: string; label: string; role: string; created_at: number }>;
+    };
+    const ids = body.devices.map((d) => d.device_id);
+    expect(ids).toContain(current.device_id);
+    expect(ids).toContain(other.device_id);
+    expect(ids).not.toContain(revoked.device_id); // revoke 済みは出ない
+    expect(ids.length).toBe(2);
+    for (const d of body.devices) {
+      expect(d.role).toBe("device-hub");
+      expect(d.created_at).toBeGreaterThan(0);
+      // secret は KV に hash しか無く、応答にも含まれない
+      expect(d).not.toHaveProperty("device_secret");
+      expect(d).not.toHaveProperty("secret_hash");
+    }
+    // 発行日時降順
+    const times = body.devices.map((d) => d.created_at);
+    expect([...times].sort((a, b) => b - a)).toEqual(times);
+  });
+
+  it("returns an empty list for a tenant with no devices", async () => {
+    const res = await handleDeviceSetupList(
+      getReq("/device/setup/list", await opCookie({ tenant_id: "tenant-empty" })),
+      makeEnv(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ devices: [] });
   });
 });
 
