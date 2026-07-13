@@ -233,15 +233,43 @@ export const useAuth = () => {
    * ログイン画面へリダイレクト
    * - auth-worker モード: authWorkerUrl 設定時（既存動作）
    * - Direct API モード: authWorkerUrl 未設定 + apiBase 設定時（rust-alc-api 直接 OAuth）
+   *
+   * `reauth: true` — **既存セッションが拒否された** (API が 401 を返し続ける /
+   * dangling tenant 等) 場合に使う。auth-worker の cookie を `/logout` で破棄して
+   * から認証経路へ進む。破棄しないと同じ不正 cookie が返ってきて
+   * `401 → login → 401 …` の無限ループになる (auth-worker /top と同じ問題)。
+   * **通常の初回ログイン (reauth 無し) では cookie を消さない** — 別アプリで
+   * 取得済みの有効な親ドメイン cookie による SSO を壊さないため。
+   * `onUnauthorized` / 401 ハンドラからは `redirectToLogin({ reauth: true })` を推奨。
    */
-  function redirectToLogin(options?: { provider?: 'google'; callbackPath?: string }): void {
+  function redirectToLogin(options?: {
+    provider?: 'google'
+    callbackPath?: string
+    reauth?: boolean
+  }): void {
     const callbackPath = options?.callbackPath ?? '/?lw_callback=1'
     const redirectUri = window.location.origin + callbackPath
+
+    // reauth 指定時は最終遷移先を /logout でラップし、cookie 破棄 → その後
+    // 認証経路へ進ませる。reauth 無しは素通し (SSO 維持)。
+    // reauth では localStorage の token / lw_domain も消す — 残すと直後の
+    // redirect が stale な lw_domain で LINE WORKS 自動ログインを再発火し、
+    // 毒セッションのまま戻ってきてループが続くため。
+    const go = (authUrl: string): void => {
+      if (options?.reauth && authWorkerUrl) {
+        clearStorage()
+        clearLwDomain()
+        authState.value = null
+        window.location.href = `${authWorkerUrl}/logout?redirect_uri=${encodeURIComponent(authUrl)}`
+      } else {
+        window.location.href = authUrl
+      }
+    }
 
     // 明示的 provider 指定: auth-worker 経由 or Direct API で Google OAuth に直接リダイレクト
     if (options?.provider === 'google') {
       if (authWorkerUrl) {
-        window.location.href = `${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+        go(`${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`)
       } else {
         const apiBase = ((config.public.apiBase as string | undefined) || '').replace(/\/$/, '')
         if (apiBase) {
@@ -261,13 +289,13 @@ export const useAuth = () => {
     // URL パラメータによる自動ログイン（QRコード等の明示的指定を優先）
     const urlParams = new URLSearchParams(window.location.search)
     if (urlParams.get('provider') === 'google') {
-      window.location.href = `${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`
+      go(`${authWorkerUrl}/oauth/google/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`)
       return
     }
     const lwParam = urlParams.get('lw')
     if (lwParam) {
       const params = new URLSearchParams({ domain: lwParam, redirect_uri: redirectUri })
-      window.location.href = `${authWorkerUrl}/oauth/lineworks/redirect?${params.toString()}`
+      go(`${authWorkerUrl}/oauth/lineworks/redirect?${params.toString()}`)
       return
     }
 
@@ -275,12 +303,12 @@ export const useAuth = () => {
     const lwDomain = getLwDomain()
     if (lwDomain) {
       const params = new URLSearchParams({ domain: lwDomain, redirect_uri: redirectUri })
-      window.location.href = `${authWorkerUrl}/oauth/lineworks/redirect?${params.toString()}`
+      go(`${authWorkerUrl}/oauth/lineworks/redirect?${params.toString()}`)
       return
     }
 
     // デフォルト: auth-worker ログインページ
-    window.location.href = `${authWorkerUrl}/login?redirect_uri=${encodeURIComponent(redirectUri)}`
+    go(`${authWorkerUrl}/login?redirect_uri=${encodeURIComponent(redirectUri)}`)
   }
 
   /** ログアウト: ストレージ/cookie クリア → トップページに遷移 */
