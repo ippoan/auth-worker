@@ -5,6 +5,8 @@ import {
   handleDeviceSetupList,
   handleDeviceSetupOta,
   handleDeviceSetupOtaStatus,
+  handleDeviceSetupConnected,
+  handleDeviceSetupVersion,
 } from "../../src/handlers/device-setup";
 import { createDeviceCredential, getDeviceRecord } from "../../src/lib/device";
 import { createMockKV } from "../helpers/mock-env";
@@ -104,6 +106,11 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("/device/setup/ota");
     expect(html).toContain("alc-hub-cores3-app.bin");
     expect(html).toContain("startOta");
+    // 接続状態 + バージョン照会 + 最新版
+    expect(html).toContain("/device/setup/connected");
+    expect(html).toContain("/device/setup/version");
+    expect(html).toContain("/device/setup/latest");
+    expect(html).toContain("queryVersion");
   });
 });
 
@@ -426,5 +433,65 @@ describe("handleDeviceSetupOta / handleDeviceSetupOtaStatus", () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ phase: "pending" });
+  });
+
+  it("接続一覧: recorder /tenants/:t/devices を透過する", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ devices: ["dev-a", "dev-b"] }), { status: 200 }),
+    );
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const res = await handleDeviceSetupConnected(
+      getReq("/device/setup/connected", await opCookie()),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ devices: ["dev-a", "dev-b"] });
+    expect(calls[0]!.url).toContain("/tenants/tenant-1/devices");
+    expect(calls[0]!.auth).toBe("shared-abc");
+  });
+
+  it("接続一覧: recorder 未設定は空配列 (fail-open)", async () => {
+    const res = await handleDeviceSetupConnected(
+      getReq("/device/setup/connected", await opCookie()),
+      makeEnv(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ devices: [] });
+  });
+
+  it("バージョン照会: recorder に action:version を送り id を返す", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "ver-1" }), { status: 202 }),
+    );
+    const { env, deviceId } = await otaEnv(fetcher);
+    const res = await handleDeviceSetupVersion(
+      postJson(
+        "/device/setup/version",
+        { device_id: deviceId },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "ver-1" });
+    expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "version" } });
+  });
+
+  it("バージョン照会: 他テナントの device は 403", async () => {
+    const { fetcher } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env } = await otaEnv(fetcher);
+    const otherHeaders = { ...(await opCookie({ tenant_id: "tenant-2" })), Origin: ISSUER };
+    const other = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "y" }, otherHeaders), env)
+    ).json()) as PairResponse;
+    const res = await handleDeviceSetupVersion(
+      postJson(
+        "/device/setup/version",
+        { device_id: other.device_id },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
   });
 });
