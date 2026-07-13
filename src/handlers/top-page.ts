@@ -4,13 +4,12 @@
  */
 import type { Env } from "../index";
 import { renderTopPage, type AppEntry } from "../lib/top-html";
-import { clearAuthCookie, getAuthCookie } from "../lib/cookies";
+import { getAuthCookie } from "../lib/cookies";
 import { classifyOrigin, getDisplayOrigins } from "../lib/config";
 import { isTenantInOrgAllowlist } from "../lib/acl";
 import { verifyJwt, decodeJwtPayload, type JwtPayload } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 import { verifiedIdentityHeaders } from "../lib/identity-headers";
-import { escapeHtml } from "../lib/html";
 
 /** Known app patterns — matches both production and staging URLs */
 const APP_PATTERNS: Array<{
@@ -83,24 +82,6 @@ async function myOrgsCount(env: Env, token: string): Promise<number | null> {
   }
 }
 
-/**
- * 再ログインしても所属組織が 0 件のままの場合の明示エラー (login → /top →
- * login の無限ループをここで断ち切る)。
- */
-function noOrgErrorPage(origin: string): string {
-  const o = escapeHtml(origin);
-  return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>組織が見つかりません</title>
-<style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:3rem auto;padding:0 1rem;color:#1a1a1a}
-h1{font-size:1.3rem}.muted{color:#666;font-size:.9rem}a{color:#1a56db}</style></head>
-<body><h1>組織が見つかりません</h1>
-<p>このアカウントはどの組織にも所属していません (組織が削除されたか、まだ招待されていません)。
-管理者に招待を依頼してください。</p>
-<ul><li><a href="${o}/logout">ログアウトする</a></li></ul>
-<p class="muted">${o}</p></body></html>`;
-}
-
 export async function handleTopPage(
   request: Request,
   env: Env,
@@ -168,33 +149,20 @@ export async function handleTopPage(
     return Response.redirect(loginUrl, 302);
   }
 
-  // dangling tenant 検知: セッション JWT が有効でも、その tenant の tenants 行が
-  // rust 側に無いと my-orgs が空になり、下流アプリは未認可扱い (再ログイン要求)、
-  // hub ingest は FK 違反 500 になる (2026-07-13 本番で顕在化)。/top の時点で
-  // 検知し、cookie を破棄して再ログインさせる。ログイン直後 (?lw_callback=1) でも
-  // 空のままなら、login → /top → login の無限ループを避けて明示エラーで停止する。
-  // WOFF フロー (?woff=1) はページ描画が前提なので gate しない。
+  // dangling tenant 検知: セッション JWT は有効でも、その tenant の tenants 行が
+  // rust 側に無いと my-orgs が空になり、下流アプリは未認可扱い (再ログイン要求)
+  // になる (2026-07-13 本番で顕在化)。0 件なら **/login ではなく /logout** へ飛ばす:
+  //   - /login 直行は「同じ account → 同じ tenant_id → 同じ空 my-orgs」で
+  //     自動 login ループになる (この gate が最初に踏んだバグ)。
+  //   - /logout は cookie/session を破棄して /login で**止まる** (自動再認証
+  //     しない) ので、ユーザーは別アカウントに切り替えられ、ループしない。
+  // 判定不能 (rust 障害・claim 不足・応答形不正) は fail-open、?woff は gate 対象外。
   if (payload && cookieToken && !hasWoff) {
     const orgCount = await myOrgsCount(env, cookieToken);
     if (orgCount === 0) {
       const { tenantId } = claimsFromPayload(payload);
-      console.log(
-        JSON.stringify({ event: "top_no_org", tenantId, willForceRelogin: !hasLwCallback }),
-      );
-      if (!hasLwCallback) {
-        const loginUrl = `${url.origin}/login?redirect_uri=${encodeURIComponent(url.origin + "/top")}`;
-        return new Response(null, {
-          status: 302,
-          headers: {
-            Location: loginUrl,
-            "Set-Cookie": clearAuthCookie(url.hostname),
-          },
-        });
-      }
-      return new Response(noOrgErrorPage(url.origin), {
-        status: 403,
-        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-      });
+      console.log(JSON.stringify({ event: "top_no_org", tenantId }));
+      return Response.redirect(`${url.origin}/logout`, 302);
     }
   }
 
