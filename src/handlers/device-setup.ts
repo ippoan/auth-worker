@@ -152,19 +152,25 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
 }
 
 /**
- * GET /device/setup/list — operator の tenant に登録済みの有効な device
- * credential 一覧 (ページの「登録済みデバイス」表示用)。secret は KV に
- * hash しか無いため応答に含まれない (含められない)。
+ * GET /device/setup/list — operator の tenant に登録済みの有効な CoreS3 ハブ
+ * (`device-hub` role) 一覧 (ページの「登録済みデバイス」表示用)。
+ *
+ * **role で `device-hub` に絞る**: 本ページは CoreS3 provisioning 専用で、OTA も
+ * CoreS3 firmware を push する。dtako-scraper / uploader 等の別種デバイスを混ぜて
+ * 表示すると、その行の「更新」で CoreS3 firmware を誤配布する事故になる。
+ * secret は KV に hash しか無いため応答に含まれない (含められない)。
  */
 export async function handleDeviceSetupList(request: Request, env: Env): Promise<Response> {
   const session = await cookieSession(request, env);
   if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  const devices = (await listDeviceRecordsByTenant(env, session.tenantId)).map((r) => ({
-    device_id: r.device_id,
-    label: r.label,
-    role: r.role ?? "",
-    created_at: r.created_at,
-  }));
+  const devices = (await listDeviceRecordsByTenant(env, session.tenantId))
+    .filter((r) => r.role === DEVICE_ROLE_HUB)
+    .map((r) => ({
+      device_id: r.device_id,
+      label: r.label,
+      role: r.role ?? "",
+      created_at: r.created_at,
+    }));
   return jsonNoStore({ devices });
 }
 
@@ -198,7 +204,9 @@ async function deviceBelongsToTenant(
   deviceId: string,
 ): Promise<boolean> {
   const rec = await getDeviceRecord(env, deviceId);
-  return !!rec && rec.tenant_id === tenantId && !rec.revoked;
+  // OTA は CoreS3 firmware を push する → `device-hub` 以外には送らせない
+  // (同 tenant でも dtako-scraper 等への誤配布を防ぐ、fail-closed)
+  return !!rec && rec.tenant_id === tenantId && !rec.revoked && rec.role === DEVICE_ROLE_HUB;
 }
 
 /**
