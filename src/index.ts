@@ -85,6 +85,8 @@ import {
   handleDeviceSetupPage,
   handleDeviceSetupPair,
   handleDeviceSetupList,
+  handleDeviceSetupOta,
+  handleDeviceSetupOtaStatus,
 } from "./handlers/device-setup";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
@@ -168,6 +170,11 @@ export interface Env {
    *  (Cloud Run ではなく同じ Cloudflare account 内 Worker 間の service binding)。
    *  未 bind なら `/cf-flickr-cam-worker-proxy/*` は 503 (fail-closed)。 */
   CF_FLICKR_CAM_WORKER?: Fetcher;
+  /** cf-alc-recorder (CoreS3 測定データ WS 受口) への service binding。
+   *  `/device/setup` の OTA トリガ/進捗ポーリングが recorder の内部 HTTP API
+   *  (`Authorization: <INTERNAL_SHARED_SECRET>`) を叩く。未 bind なら OTA 系は
+   *  503 (fail-closed)。 */
+  ALC_RECORDER?: Fetcher;
   /** rust-alc-api#434 lockdown cutover フラグ。`"1"` で internal-auth 呼び出し
    *  (`lib/alc-internal.ts`) を HS256 internal JWT → Google OIDC (aud=alc-api-internal) mint に
    *  切替える。allUsers 削除 + Cloud Run `--add-custom-audiences=alc-api-internal` + rust 側
@@ -430,6 +437,13 @@ export default {
         return handleAlcProxy(request, env);
       }
 
+      // OTA 進捗ポーリング (/device/setup/ota/:id)。switch は完全一致なので
+      // path param 付きはここで捌く (GET のみ)。
+      const otaStatus = /^\/device\/setup\/ota\/([^/]+)$/.exec(url.pathname);
+      if (otaStatus?.[1] && request.method === "GET") {
+        return await handleDeviceSetupOtaStatus(request, env, decodeURIComponent(otaStatus[1]));
+      }
+
       // rust-alc-api#434 step 3d (caller #4): browser JWT を持たない server-to-server
       // 内部呼び出し (email-receiver 等) 向け。shared-secret proof + path allowlist で
       // ingest 経路だけを OIDC mint して forward する (data 経路は /alc-proxy 専用)。
@@ -606,6 +620,9 @@ export default {
           // 登録済みデバイス一覧 (cookie session、ページの表示用)。
           case "/device/setup/list":
             return await handleDeviceSetupList(request, env);
+          // OTA トリガ (cookie session → recorder の下り command)。
+          case "/device/setup/ota":
+            return await handleDeviceSetupOta(request, env);
           // MCP OAuth Provider — GitHub OAuth callback (Phase 3, RFC 8628 §3.4)
           case "/mcp/device_callback":
             return await handleMcpDeviceCallback(request, env);
