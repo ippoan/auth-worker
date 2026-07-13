@@ -31,6 +31,15 @@ export function createMockKV(initial: Record<string, string> = {}): KVNamespace 
       delete data[key];
       delete ttls[key];
     },
+    list: async (opts?: { prefix?: string; limit?: number }) => {
+      const prefix = opts?.prefix ?? "";
+      const keys = Object.keys(data)
+        .filter((k) => k.startsWith(prefix))
+        .sort()
+        .slice(0, opts?.limit ?? 1000)
+        .map((name) => ({ name }));
+      return { keys, list_complete: true, cacheStatus: null };
+    },
     _data: data,
     _ttls: ttls,
   };

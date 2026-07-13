@@ -29,6 +29,7 @@ import { escapeHtml } from "../lib/html";
 import {
   createDeviceCredential,
   createDeviceCredentialReplacingLabel,
+  listDeviceRecordsByTenant,
   DEVICE_ROLE_HUB,
 } from "../lib/device";
 
@@ -141,6 +142,23 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   );
 }
 
+/**
+ * GET /device/setup/list — operator の tenant に登録済みの有効な device
+ * credential 一覧 (ページの「登録済みデバイス」表示用)。secret は KV に
+ * hash しか無いため応答に含まれない (含められない)。
+ */
+export async function handleDeviceSetupList(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  const devices = (await listDeviceRecordsByTenant(env, session.tenantId)).map((r) => ({
+    device_id: r.device_id,
+    label: r.label,
+    role: r.role ?? "",
+    created_at: r.created_at,
+  }));
+  return jsonNoStore({ devices });
+}
+
 /** セットアップページ本体。WebSerial は Chrome/Edge のみ。 */
 function setupPage(issuer: string, email: string): string {
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
@@ -157,6 +175,10 @@ pre{background:#f6f8fa;border:1px solid #e2e5e9;border-radius:.4rem;padding:.8re
     height:16rem;overflow-y:auto;white-space:pre-wrap}
 .muted{color:#666;font-size:.85rem}
 .ok{color:#1a7f37;font-weight:600}.ng{color:#b91c1c;font-weight:600}
+h2{font-size:1.05rem;margin-top:2rem}
+table{border-collapse:collapse;width:100%;font-size:.85rem}
+th,td{border:1px solid #e2e5e9;padding:.35rem .6rem;text-align:left}
+th{background:#f6f8fa;color:#444;font-weight:600}
 </style></head>
 <body>
 <h1>CoreS3 デバイス登録 (USB)</h1>
@@ -168,6 +190,12 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 <p><button id="run">セットアップ実行</button></p>
 <p id="result"></p>
 <pre id="log"></pre>
+<h2>登録済みデバイス</h2>
+<p id="devices-status" class="muted">読み込み中...</p>
+<table id="devices" style="display:none">
+<thead><tr><th>ラベル</th><th>デバイスID</th><th>role</th><th>発行日時</th></tr></thead>
+<tbody id="devices-body"></tbody>
+</table>
 <script>
 "use strict";
 const ISSUER = ${JSON.stringify(issuer)};
@@ -180,6 +208,45 @@ function log(line) {
 }
 // CoreS3 は ESP-IDF ログが混在するため既知プレフィックス行のみ解釈する
 const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG)\\b/;
+
+// 登録済みデバイス一覧 (このテナントに発行済みで有効な credential)。
+// ページ表示時 + セットアップ成功後に読み直す。
+async function loadDevices() {
+  const statusEl = document.getElementById("devices-status");
+  const table = document.getElementById("devices");
+  const body = document.getElementById("devices-body");
+  try {
+    const res = await fetch(ISSUER + "/device/setup/list", { credentials: "include" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    body.textContent = "";
+    if (!data.devices || data.devices.length === 0) {
+      table.style.display = "none";
+      statusEl.textContent = "登録済みデバイスはありません";
+      return;
+    }
+    for (const d of data.devices) {
+      const tr = document.createElement("tr");
+      const cells = [
+        d.label,
+        d.device_id,
+        d.role,
+        new Date(d.created_at * 1000).toLocaleString("ja-JP"),
+      ];
+      for (const v of cells) {
+        const td = document.createElement("td");
+        td.textContent = String(v);
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+    statusEl.textContent = "";
+    table.style.display = "";
+  } catch (e) {
+    table.style.display = "none";
+    statusEl.textContent = "一覧の取得に失敗しました";
+  }
+}
 
 async function run() {
   runBtn.disabled = true;
@@ -302,6 +369,7 @@ async function run() {
     writer.releaseLock();
     await reader.cancel().catch(() => {});
     await port.close().catch(() => {});
+    loadDevices();
   } catch (e) {
     resultEl.innerHTML = '<span class="ng">失敗: ' +
       String(e && e.message ? e.message : e).replace(/[<>&]/g, "") + "</span>";
@@ -310,6 +378,7 @@ async function run() {
   }
 }
 runBtn.addEventListener("click", run);
+loadDevices();
 </script>
 <p class="muted">${escapeHtml(issuer)}</p>
 </body></html>`;
