@@ -12,6 +12,8 @@ export {
 } from './jwt'
 export { authMiddleware } from './authMiddleware'
 export type { AuthMiddlewareOptions } from './authMiddleware'
+export { ensureFreshBuild, isStaleBuild } from './versionReload'
+export type { EnsureFreshBuildOptions, FreshBuildWindow } from './versionReload'
 export { default as AuthToolbar } from './AuthToolbar.vue'
 export { default as AuthCallback } from './AuthCallback.vue'
 export { default as StagingFooter } from './StagingFooter.vue'

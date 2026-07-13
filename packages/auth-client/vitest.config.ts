@@ -13,6 +13,7 @@ export default defineConfig({
       reportsDirectory: "./coverage",
       include: [
         "src/createAuthFetch.ts",
+        "src/versionReload.ts",
         "src/jwt.ts",
         "src/jwt-core.mjs",
         "src/server/authLogic.mjs",
