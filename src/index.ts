@@ -87,6 +87,9 @@ import {
   handleDeviceSetupList,
   handleDeviceSetupOta,
   handleDeviceSetupOtaStatus,
+  handleDeviceSetupConnected,
+  handleDeviceSetupVersion,
+  handleDeviceSetupLatest,
 } from "./handlers/device-setup";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
@@ -623,6 +626,15 @@ export default {
           // OTA トリガ (cookie session → recorder の下り command)。
           case "/device/setup/ota":
             return await handleDeviceSetupOta(request, env);
+          // WS 接続中デバイス一覧 (recorder /tenants/:t/devices 透過)。
+          case "/device/setup/connected":
+            return await handleDeviceSetupConnected(request, env);
+          // バージョン照会トリガ (recorder command {action:version})。
+          case "/device/setup/version":
+            return await handleDeviceSetupVersion(request, env);
+          // 公開中の最新 firmware バージョン (Pages manifest.json)。
+          case "/device/setup/latest":
+            return await handleDeviceSetupLatest(request, env);
           // MCP OAuth Provider — GitHub OAuth callback (Phase 3, RFC 8628 §3.4)
           case "/mcp/device_callback":
             return await handleMcpDeviceCallback(request, env);

@@ -53,6 +53,9 @@ function otaDefaultUrl(_issuer: string): string {
   return "https://ippoan.github.io/alc-app-s3/firmware/alc-hub-cores3-app.bin";
 }
 
+/** 公開中の firmware バージョンを載せた manifest (CI が `<version>+<sha>` を書く)。 */
+const FIRMWARE_MANIFEST_URL = "https://ippoan.github.io/alc-app-s3/manifest.json";
+
 interface OperatorSession {
   tenantId: string;
   email: string;
@@ -286,6 +289,84 @@ export async function handleDeviceSetupOtaStatus(
   return jsonNoStore(payload);
 }
 
+/**
+ * GET /device/setup/connected — この tenant で今 WS 接続中の device_id 一覧。
+ * recorder の `GET /tenants/:t/devices` を透過 (接続中デバイスの UI 表示・OTA
+ * ボタンの活性判定に使う)。
+ */
+export async function handleDeviceSetupConnected(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(session.tenantId)}/devices`,
+    { method: "GET" },
+  );
+  if (!res) return jsonNoStore({ devices: [] }); // recorder 未設定 = 接続情報なし
+  if (!res.ok) return jsonNoStore({ devices: [] });
+  const data = (await res.json()) as { devices?: unknown };
+  const devices = Array.isArray(data.devices) ? data.devices : [];
+  return jsonNoStore({ devices });
+}
+
+/**
+ * POST /device/setup/version — 接続中デバイスへ現在バージョンの照会を送る。
+ * recorder の command API に `{action:"version"}` を投げ command id を返す
+ * (web は `/device/setup/ota/:id` で結果 `{version, slot}` をポーリングする)。
+ */
+export async function handleDeviceSetupVersion(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  if (request.headers.get("Origin") !== issuerOf(env)) {
+    return jsonNoStore({ error: "bad_origin" }, 403);
+  }
+  let body: Record<string, unknown> = {};
+  try {
+    const v = await request.json();
+    if (v && typeof v === "object") body = v as Record<string, unknown>;
+  } catch {
+    // 空 body は検証で弾く
+  }
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
+  if (!(await deviceBelongsToTenant(env, session.tenantId, deviceId))) {
+    return jsonNoStore({ error: "not_your_device" }, 403);
+  }
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(session.tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: { action: "version" } }),
+    },
+  );
+  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+  if (res.status === 404) return jsonNoStore({ error: "device_not_connected" }, 409);
+  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
+  const data = (await res.json()) as { id?: string };
+  return jsonNoStore({ id: data.id ?? "" });
+}
+
+/**
+ * GET /device/setup/latest — 公開中の最新 firmware バージョン (Pages の
+ * manifest.json の `version`)。web が device のバージョンと突き合わせて
+ * 「更新必要か」を判定する。取得不可は version:null。
+ */
+export async function handleDeviceSetupLatest(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  try {
+    const res = await fetch(FIRMWARE_MANIFEST_URL);
+    if (!res.ok) return jsonNoStore({ version: null });
+    const data = (await res.json()) as { version?: unknown };
+    const version = typeof data.version === "string" ? data.version : null;
+    return jsonNoStore({ version });
+  } catch {
+    return jsonNoStore({ version: null });
+  }
+}
+
 /** セットアップページ本体。WebSerial は Chrome/Edge のみ。 */
 function setupPage(issuer: string, email: string): string {
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
@@ -308,9 +389,14 @@ th,td{border:1px solid #e2e5e9;padding:.35rem .6rem;text-align:left}
 th{background:#f6f8fa;color:#444;font-weight:600}
 button.small{font-size:.8rem;padding:.3rem .6rem;background:#1a56db}
 .ota-cell{white-space:nowrap}
-.bar{height:.5rem;background:#e2e5e9;border-radius:.25rem;overflow:hidden;margin-top:.3rem;width:12rem}
+.bar{height:.5rem;background:#e2e5e9;border-radius:.25rem;overflow:hidden;margin-top:.3rem;width:10rem}
 .bar>span{display:block;height:100%;background:#1a7f37;width:0}
 .ota-msg{font-size:.8rem;color:#555;margin-top:.2rem}
+.dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;margin-right:.3rem;vertical-align:middle}
+.dot.on{background:#1a7f37}.dot.off{background:#9ca3af}
+.tag{font-size:.75rem;padding:.1rem .4rem;border-radius:.25rem;margin-left:.3rem}
+.tag.new{background:#fef3c7;color:#92400e}.tag.cur{background:#dcfce7;color:#166534}
+.did{font-family:monospace;font-size:.75rem;color:#666}
 </style></head>
 <body>
 <h1>CoreS3 デバイス登録 (USB)</h1>
@@ -325,11 +411,12 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 <h2>登録済みデバイス</h2>
 <label for="ota-url">OTA firmware URL (app イメージ)</label>
 <input id="ota-url" value="${escapeHtml(otaDefaultUrl(issuer))}" style="width:100%;max-width:32rem">
-<p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。進捗はデバイスが
-返す状態をポーリング表示します。</p>
+<p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。接続中のデバイスは
+バージョンを自動照会し、公開中の最新版と違えば「更新あり」を表示します。</p>
+<p id="latest" class="muted"></p>
 <p id="devices-status" class="muted">読み込み中...</p>
 <table id="devices" style="display:none">
-<thead><tr><th>ラベル</th><th>デバイスID</th><th>role</th><th>発行日時</th><th>OTA</th></tr></thead>
+<thead><tr><th>ラベル</th><th>接続</th><th>バージョン</th><th>更新</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
 <script>
@@ -345,16 +432,27 @@ function log(line) {
 // CoreS3 は ESP-IDF ログが混在するため既知プレフィックス行のみ解釈する
 const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG)\\b/;
 
-// 登録済みデバイス一覧 (このテナントに発行済みで有効な credential)。
+let LATEST_VERSION = null; // 公開中の最新 firmware バージョン
+
+// 登録済み CoreS3 一覧 + 接続状態 + 最新版を読み込んで描画する。
 // ページ表示時 + セットアップ成功後に読み直す。
 async function loadDevices() {
   const statusEl = document.getElementById("devices-status");
+  const latestEl = document.getElementById("latest");
   const table = document.getElementById("devices");
   const body = document.getElementById("devices-body");
   try {
-    const res = await fetch(ISSUER + "/device/setup/list", { credentials: "include" });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
+    const [listRes, connRes, latestRes] = await Promise.all([
+      fetch(ISSUER + "/device/setup/list", { credentials: "include" }),
+      fetch(ISSUER + "/device/setup/connected", { credentials: "include" }),
+      fetch(ISSUER + "/device/setup/latest", { credentials: "include" }),
+    ]);
+    if (!listRes.ok) throw new Error("HTTP " + listRes.status);
+    const data = await listRes.json();
+    const connected = new Set(((connRes.ok ? await connRes.json() : {}).devices) || []);
+    LATEST_VERSION = (latestRes.ok ? await latestRes.json() : {}).version || null;
+    latestEl.textContent = LATEST_VERSION ? "公開中の最新版: " + LATEST_VERSION : "";
+
     body.textContent = "";
     if (!data.devices || data.devices.length === 0) {
       table.style.display = "none";
@@ -362,23 +460,41 @@ async function loadDevices() {
       return;
     }
     for (const d of data.devices) {
+      const isConn = connected.has(d.device_id);
       const tr = document.createElement("tr");
-      for (const v of [
-        d.label,
-        d.device_id,
-        d.role,
-        new Date(d.created_at * 1000).toLocaleString("ja-JP"),
-      ]) {
-        const td = document.createElement("td");
-        td.textContent = String(v);
-        tr.appendChild(td);
-      }
-      // OTA セル: 更新ボタン + 進捗バー + メッセージ
+
+      // ラベル (+ デバイスID を小さく)
+      const labelTd = document.createElement("td");
+      labelTd.textContent = d.label;
+      const did = document.createElement("div");
+      did.className = "did";
+      did.textContent = d.device_id;
+      labelTd.appendChild(did);
+      tr.appendChild(labelTd);
+
+      // 接続
+      const connTd = document.createElement("td");
+      const dot = document.createElement("span");
+      dot.className = "dot " + (isConn ? "on" : "off");
+      connTd.appendChild(dot);
+      connTd.appendChild(document.createTextNode(isConn ? "接続中" : "未接続"));
+      tr.appendChild(connTd);
+
+      // バージョン (接続中は自動照会 / 未接続は照会不可)
+      const verTd = document.createElement("td");
+      const verSpan = document.createElement("span");
+      verSpan.textContent = isConn ? "照会中..." : "—";
+      verTd.appendChild(verSpan);
+      tr.appendChild(verTd);
+
+      // 更新セル: 更新ボタン + 進捗
       const otaTd = document.createElement("td");
       otaTd.className = "ota-cell";
       const btn = document.createElement("button");
       btn.className = "small";
       btn.textContent = "更新";
+      btn.disabled = !isConn;
+      if (!isConn) btn.title = "未接続のため更新できません";
       const bar = document.createElement("div");
       bar.className = "bar";
       bar.style.display = "none";
@@ -391,13 +507,55 @@ async function loadDevices() {
       otaTd.appendChild(bar);
       otaTd.appendChild(msg);
       tr.appendChild(otaTd);
+
       body.appendChild(tr);
+      if (isConn) queryVersion(d.device_id, verSpan);
     }
     statusEl.textContent = "";
     table.style.display = "";
   } catch (e) {
     table.style.display = "none";
     statusEl.textContent = "一覧の取得に失敗しました";
+  }
+}
+
+// 接続中デバイスへ version コマンドを送り、結果 (version) をセルに表示。
+// 最新版と比較し「最新」/「更新あり」タグを付ける。
+async function queryVersion(deviceId, verSpan) {
+  try {
+    const res = await fetch(ISSUER + "/device/setup/version", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ device_id: deviceId }),
+    });
+    if (!res.ok) { verSpan.textContent = "照会失敗"; return; }
+    const { id } = await res.json();
+    if (!id) { verSpan.textContent = "照会失敗"; return; }
+    // 結果ポーリング (最大 20s)。version が返るまで待つ
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      let p;
+      try {
+        const pr = await fetch(ISSUER + "/device/setup/ota/" + encodeURIComponent(id), { credentials: "include" });
+        if (!pr.ok) continue;
+        p = await pr.json();
+      } catch { continue; }
+      if (p && typeof p.version === "string") {
+        verSpan.textContent = p.version + (p.slot ? " (" + p.slot + ")" : "");
+        if (LATEST_VERSION) {
+          const tag = document.createElement("span");
+          if (p.version === LATEST_VERSION) { tag.className = "tag cur"; tag.textContent = "最新"; }
+          else { tag.className = "tag new"; tag.textContent = "更新あり"; }
+          verSpan.appendChild(tag);
+        }
+        return;
+      }
+    }
+    verSpan.textContent = "照会タイムアウト";
+  } catch {
+    verSpan.textContent = "照会失敗";
   }
 }
 
