@@ -388,7 +388,11 @@ table{border-collapse:collapse;width:100%;font-size:.85rem}
 th,td{border:1px solid #e2e5e9;padding:.35rem .6rem;text-align:left}
 th{background:#f6f8fa;color:#444;font-weight:600}
 button.small{font-size:.8rem;padding:.3rem .6rem;background:#1a56db}
+button.small.update{background:#b91c1c}
+button.small:disabled{background:#9ca3af}
 .ota-cell{white-space:nowrap}
+.ota-note{font-size:.85rem;color:#666}
+.ota-note.latest{color:#166534;font-weight:600}
 .bar{height:.5rem;background:#e2e5e9;border-radius:.25rem;overflow:hidden;margin-top:.3rem;width:10rem}
 .bar>span{display:block;height:100%;background:#1a7f37;width:0}
 .ota-msg{font-size:.8rem;color:#555;margin-top:.2rem}
@@ -487,14 +491,15 @@ async function loadDevices() {
       verTd.appendChild(verSpan);
       tr.appendChild(verTd);
 
-      // 更新セル: 更新ボタン + 進捗
+      // 更新セル: 更新あり時のみ赤ボタン / 最新なら「最新」表示 + 進捗
       const otaTd = document.createElement("td");
       otaTd.className = "ota-cell";
       const btn = document.createElement("button");
-      btn.className = "small";
+      btn.className = "small update";
       btn.textContent = "更新";
-      btn.disabled = !isConn;
-      if (!isConn) btn.title = "未接続のため更新できません";
+      // 更新要否が判明するまでの状態表示 (照会中は「確認中」、最新なら「最新」)
+      const otaNote = document.createElement("span");
+      otaNote.className = "ota-note";
       const bar = document.createElement("div");
       bar.className = "bar";
       bar.style.display = "none";
@@ -502,14 +507,26 @@ async function loadDevices() {
       bar.appendChild(barFill);
       const msg = document.createElement("div");
       msg.className = "ota-msg";
-      btn.addEventListener("click", () => startOta(d.device_id, btn, bar, barFill, msg, verSpan));
+      btn.addEventListener("click", () => startOta(d.device_id, btn, bar, barFill, msg, verSpan, otaNote));
+      if (isConn) {
+        // 接続中: バージョン照会が終わるまでボタンは出さず「確認中」を表示。
+        // queryVersion が最新/更新ありを判定してボタン or「最新」を出し分ける。
+        btn.style.display = "none";
+        otaNote.textContent = "確認中...";
+      } else {
+        // 未接続: バージョン照会できず更新不可 (無効ボタン表示、赤にはしない)
+        btn.disabled = true;
+        btn.classList.remove("update");
+        btn.title = "未接続のため更新できません";
+      }
       otaTd.appendChild(btn);
+      otaTd.appendChild(otaNote);
       otaTd.appendChild(bar);
       otaTd.appendChild(msg);
       tr.appendChild(otaTd);
 
       body.appendChild(tr);
-      if (isConn) queryVersion(d.device_id, verSpan);
+      if (isConn) queryVersion(d.device_id, verSpan, btn, otaNote);
     }
     statusEl.textContent = "";
     table.style.display = "";
@@ -521,7 +538,17 @@ async function loadDevices() {
 
 // 接続中デバイスへ version コマンドを送り、結果 (version) をセルに表示。
 // 最新版と比較し「最新」/「更新あり」タグを付ける。
-async function queryVersion(deviceId, verSpan) {
+async function queryVersion(deviceId, verSpan, otaBtn, otaNote) {
+  // 「更新あり」: 赤ボタンを出し「最新」表示を消す
+  const showUpdatable = () => {
+    if (otaNote) { otaNote.textContent = ""; otaNote.classList.remove("latest"); otaNote.style.display = "none"; }
+    if (otaBtn) { otaBtn.disabled = false; otaBtn.classList.add("update"); otaBtn.style.display = ""; }
+  };
+  // 「最新」: ボタンは出さず「最新」テキストを表示
+  const showLatest = () => {
+    if (otaBtn) otaBtn.style.display = "none";
+    if (otaNote) { otaNote.textContent = "最新"; otaNote.classList.add("latest"); otaNote.style.display = ""; }
+  };
   try {
     const res = await fetch(ISSUER + "/device/setup/version", {
       method: "POST",
@@ -529,9 +556,9 @@ async function queryVersion(deviceId, verSpan) {
       credentials: "include",
       body: JSON.stringify({ device_id: deviceId }),
     });
-    if (!res.ok) { verSpan.textContent = "照会失敗"; return; }
+    if (!res.ok) { verSpan.textContent = "照会失敗"; showUpdatable(); return; }
     const { id } = await res.json();
-    if (!id) { verSpan.textContent = "照会失敗"; return; }
+    if (!id) { verSpan.textContent = "照会失敗"; showUpdatable(); return; }
     // 結果ポーリング (最大 20s)。version が返るまで待つ
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
@@ -550,17 +577,22 @@ async function queryVersion(deviceId, verSpan) {
           else { tag.className = "tag new"; tag.textContent = "更新あり"; }
           verSpan.appendChild(tag);
         }
+        // 更新セル: 最新ならボタンを出さず「最新」、それ以外 (最新版不明含む) は赤ボタン
+        if (LATEST_VERSION && p.version === LATEST_VERSION) showLatest();
+        else showUpdatable();
         return;
       }
     }
     verSpan.textContent = "照会タイムアウト";
+    showUpdatable();
   } catch {
     verSpan.textContent = "照会失敗";
+    showUpdatable();
   }
 }
 
 // OTA を開始し、command id で進捗をポーリングして表示する。
-async function startOta(deviceId, btn, bar, barFill, msg, verSpan) {
+async function startOta(deviceId, btn, bar, barFill, msg, verSpan, otaNote) {
   const url = document.getElementById("ota-url").value.trim();
   if (!/^https?:\\/\\//.test(url)) { msg.textContent = "URL が不正です"; return; }
   btn.disabled = true;
@@ -579,7 +611,7 @@ async function startOta(deviceId, btn, bar, barFill, msg, verSpan) {
     const { id } = await res.json();
     if (!id) { msg.textContent = "command id を取得できませんでした"; btn.disabled = false; return; }
     msg.textContent = "更新を開始しました...";
-    pollOta(id, deviceId, btn, barFill, msg, verSpan);
+    pollOta(id, deviceId, btn, barFill, msg, verSpan, otaNote);
   } catch (e) {
     msg.textContent = "送信エラー";
     btn.disabled = false;
@@ -589,7 +621,7 @@ async function startOta(deviceId, btn, bar, barFill, msg, verSpan) {
 // OTA 完了後、デバイスの再起動 → WS 再接続を待ってから、その行の
 // バージョンだけを再照会して更新する (全リストは読み直さない)。
 // 再起動 (~15s) + WS 再接続を見込んで、未接続の間は少し待ってリトライする。
-async function refreshVersionAfterReboot(deviceId, verSpan, msg) {
+async function refreshVersionAfterReboot(deviceId, verSpan, msg, btn, otaNote) {
   verSpan.textContent = "再起動待ち...";
   const deadline = Date.now() + 60 * 1000;
   while (Date.now() < deadline) {
@@ -602,7 +634,8 @@ async function refreshVersionAfterReboot(deviceId, verSpan, msg) {
     } catch { /* retry */ }
     if (connected) {
       msg.textContent = "更新完了 (再接続を確認)";
-      await queryVersion(deviceId, verSpan); // その行のバージョンだけ更新
+      // その行のバージョンだけ更新 (更新後は最新になるので「最新」表示に切り替わる)
+      await queryVersion(deviceId, verSpan, btn, otaNote);
       return;
     }
   }
@@ -610,7 +643,7 @@ async function refreshVersionAfterReboot(deviceId, verSpan, msg) {
 }
 
 // 進捗ポーリング (2s 間隔、最大 5 分)。phase = pending/download/ok/error。
-async function pollOta(id, deviceId, btn, barFill, msg, verSpan) {
+async function pollOta(id, deviceId, btn, barFill, msg, verSpan, otaNote) {
   const deadline = Date.now() + 5 * 60 * 1000;
   for (;;) {
     if (Date.now() > deadline) { msg.textContent = "タイムアウト (デバイスの状態を確認してください)"; btn.disabled = false; return; }
@@ -632,7 +665,7 @@ async function pollOta(id, deviceId, btn, barFill, msg, verSpan) {
       // デバイスは再起動 → 新スロットで WS 再接続する。**その行だけ**
       // バージョンを再照会して更新 (全リストは読み直さない)。再接続まで
       // リトライしてから照会する。
-      if (verSpan) void refreshVersionAfterReboot(deviceId, verSpan, msg);
+      if (verSpan) void refreshVersionAfterReboot(deviceId, verSpan, msg, btn, otaNote);
       return;
     } else if (p.phase === "error") {
       msg.textContent = "失敗: " + (p.message || "不明なエラー");
