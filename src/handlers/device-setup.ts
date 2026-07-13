@@ -29,6 +29,7 @@ import { escapeHtml } from "../lib/html";
 import {
   createDeviceCredential,
   createDeviceCredentialReplacingLabel,
+  getDeviceRecord,
   listDeviceRecordsByTenant,
   DEVICE_ROLE_HUB,
 } from "../lib/device";
@@ -42,6 +43,14 @@ function jsonNoStore(body: unknown, status = 200): Response {
 
 function issuerOf(env: Env): string {
   return env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
+}
+
+/**
+ * OTA URL 入力欄の既定値。alc-app-s3 の CI が GitHub Pages に公開する app 単体
+ * イメージ (build.yml の "Save OTA app image")。operator は必要なら書き換える。
+ */
+function otaDefaultUrl(_issuer: string): string {
+  return "https://ippoan.github.io/alc-app-s3/firmware/alc-hub-cores3-app.bin";
 }
 
 interface OperatorSession {
@@ -159,6 +168,114 @@ export async function handleDeviceSetupList(request: Request, env: Env): Promise
   return jsonNoStore({ devices });
 }
 
+/**
+ * cf-alc-recorder の内部 HTTP API を service binding 経由で叩く。
+ * recorder 側は `Authorization: <INTERNAL_SHARED_SECRET>` (生値) を要求する
+ * (auth-worker と同じ Secrets Store entry を共有)。binding / secret 未設定は
+ * null (caller が 503)。
+ */
+async function recorderFetch(
+  env: Env,
+  path: string,
+  init: RequestInit,
+): Promise<Response | null> {
+  if (!env.ALC_RECORDER) return null;
+  const secret = await resolveSecret(env.INTERNAL_SHARED_SECRET);
+  if (!secret) return null;
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", secret);
+  // service binding fetch は host を無視するが path は recorder の route と
+  // 一致させる必要がある
+  return env.ALC_RECORDER.fetch(`https://alc-recorder.internal${path}`, { ...init, headers });
+}
+
+/** device_id が本当にこの operator の tenant のものか (詐称防止に必須)。 */
+async function deviceBelongsToTenant(
+  env: Env,
+  tenantId: string,
+  deviceId: string,
+): Promise<boolean> {
+  const rec = await getDeviceRecord(env, deviceId);
+  return !!rec && rec.tenant_id === tenantId && !rec.revoked;
+}
+
+/**
+ * POST /device/setup/ota — 登録済みデバイスへ OTA 更新指示を push する。
+ * body: `{ device_id, url }` (url は http(s) の firmware app イメージ)。
+ * recorder の下り command API に `{action:"ota", url}` を投げ、返ってきた
+ * command id を返す (web はこの id で進捗をポーリングする)。
+ */
+export async function handleDeviceSetupOta(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  if (request.headers.get("Origin") !== issuerOf(env)) {
+    return jsonNoStore({ error: "bad_origin" }, 403);
+  }
+
+  let body: Record<string, unknown> = {};
+  try {
+    const v = await request.json();
+    if (v && typeof v === "object") body = v as Record<string, unknown>;
+  } catch {
+    // 空 body → 検証で弾く
+  }
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  const url = typeof body.url === "string" ? body.url : "";
+  if (!deviceId || !/^https?:\/\//.test(url)) {
+    return jsonNoStore({ error: "device_id と http(s) url が必要です" }, 400);
+  }
+  // device がこの operator の tenant のものか確認 (他テナントのデバイスを
+  // 更新させない — recorder は tenant 単位 DO だが、二重に fail-closed)
+  if (!(await deviceBelongsToTenant(env, session.tenantId, deviceId))) {
+    return jsonNoStore({ error: "not_your_device" }, 403);
+  }
+
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(session.tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: { action: "ota", url } }),
+    },
+  );
+  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+  if (res.status === 404) {
+    // デバイスが WS 未接続 (recorder に居ない)
+    return jsonNoStore({ error: "device_not_connected" }, 409);
+  }
+  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
+  const data = (await res.json()) as { id?: string };
+  return jsonNoStore({ id: data.id ?? "" });
+}
+
+/**
+ * GET /device/setup/ota/:id — OTA 進捗の取得。デバイスが command_result として
+ * push した最新の進捗 payload (`{phase, received, total}` / `{phase:"ok"}` /
+ * `{phase:"error"}`) を返す。まだ何も無ければ 404 相当の `{phase:"pending"}`。
+ */
+export async function handleDeviceSetupOtaStatus(
+  request: Request,
+  env: Env,
+  commandId: string,
+): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(session.tenantId)}/commands/${encodeURIComponent(commandId)}/result`,
+    { method: "GET" },
+  );
+  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+  if (res.status === 404) return jsonNoStore({ phase: "pending" });
+  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
+  const stored = (await res.json()) as { payload?: unknown };
+  const payload =
+    stored.payload && typeof stored.payload === "object" ? stored.payload : { phase: "pending" };
+  return jsonNoStore(payload);
+}
+
 /** セットアップページ本体。WebSerial は Chrome/Edge のみ。 */
 function setupPage(issuer: string, email: string): string {
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
@@ -179,6 +296,11 @@ h2{font-size:1.05rem;margin-top:2rem}
 table{border-collapse:collapse;width:100%;font-size:.85rem}
 th,td{border:1px solid #e2e5e9;padding:.35rem .6rem;text-align:left}
 th{background:#f6f8fa;color:#444;font-weight:600}
+button.small{font-size:.8rem;padding:.3rem .6rem;background:#1a56db}
+.ota-cell{white-space:nowrap}
+.bar{height:.5rem;background:#e2e5e9;border-radius:.25rem;overflow:hidden;margin-top:.3rem;width:12rem}
+.bar>span{display:block;height:100%;background:#1a7f37;width:0}
+.ota-msg{font-size:.8rem;color:#555;margin-top:.2rem}
 </style></head>
 <body>
 <h1>CoreS3 デバイス登録 (USB)</h1>
@@ -191,9 +313,13 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 <p id="result"></p>
 <pre id="log"></pre>
 <h2>登録済みデバイス</h2>
+<label for="ota-url">OTA firmware URL (app イメージ)</label>
+<input id="ota-url" value="${escapeHtml(otaDefaultUrl(issuer))}" style="width:100%;max-width:32rem">
+<p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。進捗はデバイスが
+返す状態をポーリング表示します。</p>
 <p id="devices-status" class="muted">読み込み中...</p>
 <table id="devices" style="display:none">
-<thead><tr><th>ラベル</th><th>デバイスID</th><th>role</th><th>発行日時</th></tr></thead>
+<thead><tr><th>ラベル</th><th>デバイスID</th><th>role</th><th>発行日時</th><th>OTA</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
 <script>
@@ -227,17 +353,34 @@ async function loadDevices() {
     }
     for (const d of data.devices) {
       const tr = document.createElement("tr");
-      const cells = [
+      for (const v of [
         d.label,
         d.device_id,
         d.role,
         new Date(d.created_at * 1000).toLocaleString("ja-JP"),
-      ];
-      for (const v of cells) {
+      ]) {
         const td = document.createElement("td");
         td.textContent = String(v);
         tr.appendChild(td);
       }
+      // OTA セル: 更新ボタン + 進捗バー + メッセージ
+      const otaTd = document.createElement("td");
+      otaTd.className = "ota-cell";
+      const btn = document.createElement("button");
+      btn.className = "small";
+      btn.textContent = "更新";
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      bar.style.display = "none";
+      const barFill = document.createElement("span");
+      bar.appendChild(barFill);
+      const msg = document.createElement("div");
+      msg.className = "ota-msg";
+      btn.addEventListener("click", () => startOta(d.device_id, btn, bar, barFill, msg));
+      otaTd.appendChild(btn);
+      otaTd.appendChild(bar);
+      otaTd.appendChild(msg);
+      tr.appendChild(otaTd);
       body.appendChild(tr);
     }
     statusEl.textContent = "";
@@ -245,6 +388,63 @@ async function loadDevices() {
   } catch (e) {
     table.style.display = "none";
     statusEl.textContent = "一覧の取得に失敗しました";
+  }
+}
+
+// OTA を開始し、command id で進捗をポーリングして表示する。
+async function startOta(deviceId, btn, bar, barFill, msg) {
+  const url = document.getElementById("ota-url").value.trim();
+  if (!/^https?:\\/\\//.test(url)) { msg.textContent = "URL が不正です"; return; }
+  btn.disabled = true;
+  bar.style.display = "";
+  barFill.style.width = "0";
+  msg.textContent = "デバイスへ指示を送信中...";
+  try {
+    const res = await fetch(ISSUER + "/device/setup/ota", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ device_id: deviceId, url }),
+    });
+    if (res.status === 409) { msg.textContent = "デバイスが未接続です (WS 接続を確認)"; btn.disabled = false; return; }
+    if (!res.ok) { msg.textContent = "送信失敗: HTTP " + res.status; btn.disabled = false; return; }
+    const { id } = await res.json();
+    if (!id) { msg.textContent = "command id を取得できませんでした"; btn.disabled = false; return; }
+    msg.textContent = "更新を開始しました...";
+    pollOta(id, btn, barFill, msg);
+  } catch (e) {
+    msg.textContent = "送信エラー";
+    btn.disabled = false;
+  }
+}
+
+// 進捗ポーリング (2s 間隔、最大 5 分)。phase = pending/download/ok/error。
+async function pollOta(id, btn, barFill, msg) {
+  const deadline = Date.now() + 5 * 60 * 1000;
+  for (;;) {
+    if (Date.now() > deadline) { msg.textContent = "タイムアウト (デバイスの状態を確認してください)"; btn.disabled = false; return; }
+    await new Promise((r) => setTimeout(r, 2000));
+    let p;
+    try {
+      const res = await fetch(ISSUER + "/device/setup/ota/" + encodeURIComponent(id), { credentials: "include" });
+      if (!res.ok) continue;
+      p = await res.json();
+    } catch { continue; }
+    if (p.phase === "download") {
+      const pct = p.total > 0 ? Math.floor((p.received / p.total) * 100) : 0;
+      barFill.style.width = pct + "%";
+      msg.textContent = "ダウンロード中 " + pct + "% (" + p.received + "/" + p.total + ")";
+    } else if (p.phase === "ok") {
+      barFill.style.width = "100%";
+      msg.textContent = "完了 — デバイスは再起動しています (" + (p.bytes || "?") + " bytes)";
+      btn.disabled = false;
+      return;
+    } else if (p.phase === "error") {
+      msg.textContent = "失敗: " + (p.message || "不明なエラー");
+      btn.disabled = false;
+      return;
+    }
+    // pending はそのまま次のポーリングへ
   }
 }
 

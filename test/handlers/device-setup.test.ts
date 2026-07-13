@@ -3,6 +3,8 @@ import {
   handleDeviceSetupPage,
   handleDeviceSetupPair,
   handleDeviceSetupList,
+  handleDeviceSetupOta,
+  handleDeviceSetupOtaStatus,
 } from "../../src/handlers/device-setup";
 import { getDeviceRecord } from "../../src/lib/device";
 import { createMockKV } from "../helpers/mock-env";
@@ -98,6 +100,10 @@ describe("handleDeviceSetupPage", () => {
     // 登録済みデバイス一覧 (ページ表示時に /device/setup/list を読む)
     expect(html).toContain("登録済みデバイス");
     expect(html).toContain("/device/setup/list");
+    // OTA UI: URL 欄 + 更新トリガ + 進捗ポーリング
+    expect(html).toContain("/device/setup/ota");
+    expect(html).toContain("alc-hub-cores3-app.bin");
+    expect(html).toContain("startOta");
   });
 });
 
@@ -236,5 +242,169 @@ describe("handleDeviceSetupPair", () => {
     const newRecord = await getDeviceRecord(env, second.device_id);
     expect(newRecord?.revoked).toBe(false);
     expect(newRecord?.role).toBe("device-hub");
+  });
+});
+
+describe("handleDeviceSetupOta / handleDeviceSetupOtaStatus", () => {
+  /** ALC_RECORDER の service binding を模した Fetcher。呼び出しを記録する。 */
+  function mockRecorder(handler: (req: Request) => Response) {
+    const calls: Array<{ url: string; method: string; auth: string | null; body: string }> = [];
+    const fetcher = {
+      async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+        const req = new Request(input as string, init);
+        calls.push({
+          url: req.url,
+          method: req.method,
+          auth: req.headers.get("Authorization"),
+          body: init?.body ? String(init.body) : "",
+        });
+        return handler(req);
+      },
+    };
+    return { fetcher, calls };
+  }
+
+  /** OTA 用 env: recorder binding + shared secret + operator の device を仕込む。 */
+  async function otaEnv(recorder: unknown) {
+    const env = makeEnv({
+      ALC_RECORDER: recorder,
+      INTERNAL_SHARED_SECRET: "shared-abc",
+    });
+    // tenant-1 の有効な device を 1 台発行しておく
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    return { env, deviceId: cred.device_id };
+  }
+
+  it("OTA トリガ: recorder に action:ota を shared secret 付きで転送し id を返す", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "cmd-1", delivered: 1 }), { status: 202 }),
+    );
+    const { env, deviceId } = await otaEnv(fetcher);
+
+    const res = await handleDeviceSetupOta(
+      postJson(
+        "/device/setup/ota",
+        { device_id: deviceId, url: "https://x/app.bin" },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "cmd-1" });
+    expect(calls.length).toBe(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].auth).toBe("shared-abc");
+    expect(calls[0].url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
+    expect(JSON.parse(calls[0].body)).toEqual({ payload: { action: "ota", url: "https://x/app.bin" } });
+  });
+
+  it("他テナントの device_id は 403 (recorder を叩かない)", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env } = await otaEnv(fetcher);
+    // 別テナントで発行した device
+    const otherHeaders = { ...(await opCookie({ tenant_id: "tenant-2" })), Origin: ISSUER };
+    const other = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "x" }, otherHeaders), env)
+    ).json()) as PairResponse;
+
+    const res = await handleDeviceSetupOta(
+      postJson(
+        "/device/setup/ota",
+        { device_id: other.device_id, url: "https://x/app.bin" },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(calls.length).toBe(0);
+  });
+
+  it("不正入力・認証: session なし 401 / bad origin 403 / url 不正 400 / device 未接続 409", async () => {
+    const { fetcher } = mockRecorder(() => new Response("{}", { status: 404 }));
+    const { env, deviceId } = await otaEnv(fetcher);
+
+    expect(
+      (await handleDeviceSetupOta(postJson("/device/setup/ota", {}), env)).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleDeviceSetupOta(
+          postJson("/device/setup/ota", {}, { ...(await opCookie()), Origin: "https://evil" }),
+          env,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await handleDeviceSetupOta(
+          postJson(
+            "/device/setup/ota",
+            { device_id: deviceId, url: "ftp://x" },
+            { ...(await opCookie()), Origin: ISSUER },
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(400);
+    // recorder が 404 (device not connected) → 409
+    const notConn = await handleDeviceSetupOta(
+      postJson(
+        "/device/setup/ota",
+        { device_id: deviceId, url: "https://x/app.bin" },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(notConn.status).toBe(409);
+  });
+
+  it("recorder binding 未設定は 503", async () => {
+    const env = makeEnv({ INTERNAL_SHARED_SECRET: "s" });
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", {}, headers), env)
+    ).json()) as PairResponse;
+    const res = await handleDeviceSetupOta(
+      postJson(
+        "/device/setup/ota",
+        { device_id: cred.device_id, url: "https://x/app.bin" },
+        headers,
+      ),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("進捗ポーリング: recorder の command_result payload を透過する", async () => {
+    const { fetcher } = mockRecorder(
+      () =>
+        new Response(
+          JSON.stringify({ payload: { phase: "download", received: 65536, total: 1831920 } }),
+          { status: 200 },
+        ),
+    );
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const res = await handleDeviceSetupOtaStatus(
+      getReq("/device/setup/ota/cmd-1", await opCookie()),
+      env,
+      "cmd-1",
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ phase: "download", received: 65536, total: 1831920 });
+  });
+
+  it("進捗ポーリング: recorder 404 (まだ結果なし) は phase:pending", async () => {
+    const { fetcher } = mockRecorder(() => new Response("{}", { status: 404 }));
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const res = await handleDeviceSetupOtaStatus(
+      getReq("/device/setup/ota/cmd-x", await opCookie()),
+      env,
+      "cmd-x",
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ phase: "pending" });
   });
 });

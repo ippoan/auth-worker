@@ -55,6 +55,15 @@ id = "f13ecae4b69043819c09f606abb84797"
 binding = "CF_FLICKR_CAM_WORKER"
 service = "cf-flickr-cam-worker"
 
+# cf-alc-recorder (CoreS3 測定データ WS 受口、ippoan/alc-app) への service
+# binding。/device/setup の OTA トリガ/進捗ポーリングが recorder の内部 HTTP API
+# (`POST /tenants/:t/devices/:d/command` / `GET /tenants/:t/commands/:id/result`、
+# `Authorization: <INTERNAL_SHARED_SECRET>` 認証) を叩くために使う。recorder は
+# prod = `alc-recorder` / staging = env なので env.staging では別 service を bind。
+[[services]]
+binding = "ALC_RECORDER"
+service = "alc-recorder"
+
 # ⚠️ MCP_OAUTH_KV は top-level (prod) には **意図的に bind しない**。
 # これは欠落ではなく guardrail: prod `auth.ippoan.org/mcp/pair/grant-via-oat`
 # を `MCP_OAUTH_KV not bound` (503) で無効化し、OAT→JWT mint を
@@ -344,6 +353,12 @@ HCREADER_WORKER_ORIGIN = "https://hcreader.ippoan.org"
 [[env.staging.services]]
 binding = "CF_FLICKR_CAM_WORKER"
 service = "cf-flickr-cam-worker"
+
+# cf-alc-recorder staging (env.staging.name = alc-recorder-staging)。top-level
+# コメント参照。staging ページ (auth-staging) の OTA は staging recorder を叩く。
+[[env.staging.services]]
+binding = "ALC_RECORDER"
+service = "alc-recorder-staging"
 
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
