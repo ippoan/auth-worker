@@ -6,7 +6,7 @@ import {
   handleDeviceSetupOta,
   handleDeviceSetupOtaStatus,
 } from "../../src/handlers/device-setup";
-import { getDeviceRecord } from "../../src/lib/device";
+import { createDeviceCredential, getDeviceRecord } from "../../src/lib/device";
 import { createMockKV } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 import type { Env } from "../../src/index";
@@ -171,6 +171,25 @@ describe("handleDeviceSetupList", () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ devices: [] });
+  });
+
+  it("device-hub 以外の role (dtako-ingest 等) は一覧に出さない (CoreS3 専用ページ)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    // CoreS3 ハブ 1 台 (device-hub)
+    const hub = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    // 同 tenant の別種デバイス (直接 KV に device-dtako-ingest で発行)
+    const now = Math.floor(Date.now() / 1000);
+    const other = await createDeviceCredential(env, "tenant-1", "scraper", now, "device-dtako-ingest");
+
+    const res = await handleDeviceSetupList(getReq("/device/setup/list", await opCookie()), env);
+    const body = (await res.json()) as { devices: Array<{ device_id: string; role: string }> };
+    const ids = body.devices.map((d) => d.device_id);
+    expect(ids).toContain(hub.device_id);
+    expect(ids).not.toContain(other.device_id); // 別種は除外
+    expect(body.devices.every((d) => d.role === "device-hub")).toBe(true);
   });
 });
 
