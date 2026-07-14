@@ -91,6 +91,7 @@ import {
   handleDeviceSetupVersion,
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
+import { handlePrintTestPdf, handlePrintTestPage } from "./handlers/print-test";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
@@ -631,6 +632,12 @@ export default {
             return await handleDeviceSetupLatest(request, env);
           // 注: /device/setup/ota と /device/setup/version は **POST** なので
           // 下の POST 用 switch 側に置く (GET switch に入れると 404 になる)。
+          // 印刷ブリッジ (alc-app-s3#38) のプリントテストページ (WebSerial)。
+          case "/device/print-test":
+            return await handlePrintTestPage(request, env);
+          // テスト用 PDF (公開 — デバイスは認証ヘッダを付けずに GET する)。
+          case "/print/test.pdf":
+            return handlePrintTestPdf(request);
           // MCP OAuth Provider — GitHub OAuth callback (Phase 3, RFC 8628 §3.4)
           case "/mcp/device_callback":
             return await handleMcpDeviceCallback(request, env);
