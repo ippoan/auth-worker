@@ -11,6 +11,7 @@ import {
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_ROLE_HUB,
+  DEVICE_ROLE_PRINT,
   DEVICE_JWT_TTL_SECONDS,
   type DeviceRecord,
 } from "../../src/lib/device";
@@ -40,6 +41,7 @@ describe("normalizeDeviceRole", () => {
     expect(normalizeDeviceRole(DEVICE_ROLE_KIOSK)).toBe(DEVICE_ROLE_KIOSK);
     expect(normalizeDeviceRole(DEVICE_ROLE_DTAKO_INGEST)).toBe(DEVICE_ROLE_DTAKO_INGEST);
     expect(normalizeDeviceRole(DEVICE_ROLE_HUB)).toBe(DEVICE_ROLE_HUB);
+    expect(normalizeDeviceRole(DEVICE_ROLE_PRINT)).toBe(DEVICE_ROLE_PRINT);
   });
 
   it("falls back to the default role for unknown strings", () => {
@@ -89,6 +91,8 @@ describe("createDeviceCredential", () => {
     expect(kiosk.record.role).toBe(DEVICE_ROLE_KIOSK);
     const hub = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
     expect(hub.record.role).toBe(DEVICE_ROLE_HUB); // CoreS3 ハブ (#363)
+    const print = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_PRINT);
+    expect(print.record.role).toBe(DEVICE_ROLE_PRINT); // AtomS3 印刷ブリッジ (alc-app-s3#38)
     const bad = await createDeviceCredential(env, "t", "l", NOW, "admin");
     expect(bad.record.role).toBe(DEVICE_ROLE); // 未知 role は既定に倒す
   });
@@ -195,6 +199,13 @@ describe("mintDeviceJwt", () => {
     const token = await mintDeviceJwt({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, kioskRecord, NOW);
     const payload = await verifyJwt(token, SECRET, "staging");
     expect(payload!.role).toBe(DEVICE_ROLE_KIOSK);
+  });
+
+  it("carries the record's role when set (print、cf-alc-recorder が introspect で読む)", async () => {
+    const printRecord: DeviceRecord = { ...record, role: DEVICE_ROLE_PRINT };
+    const token = await mintDeviceJwt({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, printRecord, NOW);
+    const payload = await verifyJwt(token, SECRET, "staging");
+    expect(payload!.role).toBe(DEVICE_ROLE_PRINT);
   });
 
   it("carries the record's role when set (hub、cf-alc-recorder が introspect で読む)", async () => {

@@ -80,6 +80,13 @@ export const DEVICE_ROLE_CAM_FLICKR = "device-cam-flickr";
  */
 export const DEVICE_ROLE_HUB = "device-hub";
 
+/**
+ * alc-app-s3 (AtomS3 + PoE) 印刷ブリッジ専用 role (ippoan/alc-app-s3#38)。
+ * cf-alc-recorder が hub と並んで accept する (下り print/ota command の待受)。
+ * /device/setup の OTA gate は role で firmware を分けるため、hub と混ぜない。
+ */
+export const DEVICE_ROLE_PRINT = "device-print";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
 export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,
@@ -87,6 +94,7 @@ export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_ROLE_CAM_FLICKR,
   DEVICE_ROLE_HUB,
+  DEVICE_ROLE_PRINT,
 ]);
 
 /**
