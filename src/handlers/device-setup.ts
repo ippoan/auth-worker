@@ -359,6 +359,29 @@ export async function handleDeviceSetupConnected(request: Request, env: Env): Pr
 }
 
 /**
+ * GET /device/setup/events — recorder `GET /tenants/:t/events` (SSE) の透過。
+ * ページの「接続」列を WS 接続/切断のたびに live 更新するための push。
+ * recorder 側のストリームをそのまま browser へ中継する (buffering しない)。
+ */
+export async function handleDeviceSetupEvents(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(session.tenantId)}/events`,
+    { method: "GET" },
+  );
+  if (!res || !res.ok || !res.body) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+  return new Response(res.body, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+/**
  * POST /device/setup/version — 接続中デバイスへ現在バージョンの照会を送る。
  * recorder の command API に `{action:"version"}` を投げ command id を返す
  * (web は `/device/setup/ota/:id` で結果 `{version, slot}` をポーリングする)。
@@ -510,9 +533,16 @@ kindSel.addEventListener("change", () => {
 const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG)\\b/;
 
 const LATEST = {}; // kind → 公開中の最新 firmware バージョン
+// device_id → 行の DOM 参照 (SSE の接続/切断イベントで、一覧を読み直さず
+// その行だけ更新するために使う)。
+const ROWS = new Map();
+let knownConnected = new Set(); // 直近の接続中 device_id (SSE payload との差分検出用)
+// OTA 進行中の device_id (再起動による瞬断は OTA フロー側が自分で管理するため、
+// applyConnected の disconnect 分岐で進捗表示を上書きしないためのガード)。
+const OTA_BUSY = new Set();
 
 // 登録済み CoreS3 一覧 + 接続状態 + 最新版を読み込んで描画する。
-// ページ表示時 + セットアップ成功後に読み直す。
+// ページ表示時 + セットアップ成功後 + SSE で未知の device_id を見た時に読み直す。
 async function loadDevices() {
   const statusEl = document.getElementById("devices-status");
   const latestEl = document.getElementById("latest");
@@ -528,6 +558,7 @@ async function loadDevices() {
     if (!listRes.ok) throw new Error("HTTP " + listRes.status);
     const data = await listRes.json();
     const connected = new Set(((connRes.ok ? await connRes.json() : {}).devices) || []);
+    knownConnected = connected;
     LATEST["cores3"] = (latestCoreRes.ok ? await latestCoreRes.json() : {}).version || null;
     LATEST["atoms3-print"] = (latestPrintRes.ok ? await latestPrintRes.json() : {}).version || null;
     const latestParts = [];
@@ -536,6 +567,7 @@ async function loadDevices() {
     latestEl.textContent = latestParts.length ? "公開中の最新版 — " + latestParts.join(" / ") : "";
 
     body.textContent = "";
+    ROWS.clear();
     if (!data.devices || data.devices.length === 0) {
       table.style.display = "none";
       statusEl.textContent = "登録済みデバイスはありません";
@@ -563,8 +595,9 @@ async function loadDevices() {
       const connTd = document.createElement("td");
       const dot = document.createElement("span");
       dot.className = "dot " + (isConn ? "on" : "off");
+      const connText = document.createTextNode(isConn ? "接続中" : "未接続");
       connTd.appendChild(dot);
-      connTd.appendChild(document.createTextNode(isConn ? "接続中" : "未接続"));
+      connTd.appendChild(connText);
       tr.appendChild(connTd);
 
       // バージョン (接続中は自動照会 / 未接続は照会不可)
@@ -609,6 +642,7 @@ async function loadDevices() {
       tr.appendChild(otaTd);
 
       body.appendChild(tr);
+      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, bar, barFill, msg, otaNote });
       if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
     }
     statusEl.textContent = "";
@@ -617,6 +651,67 @@ async function loadDevices() {
     table.style.display = "none";
     statusEl.textContent = "一覧の取得に失敗しました";
   }
+}
+
+// SSE で 1 device の接続/切断を反映する (一覧は読み直さず、その行だけ更新)。
+function applyConnected(deviceId, isConn) {
+  const row = ROWS.get(deviceId);
+  if (!row) return; // 未知 device (別タブでの新規登録等) は onDevicesEvent 側で loadDevices() する
+  row.dot.className = "dot " + (isConn ? "on" : "off");
+  row.connText.textContent = isConn ? "接続中" : "未接続";
+  if (OTA_BUSY.has(deviceId)) return; // OTA フロー (startOta/pollOta/refreshVersionAfterReboot) が進捗表示を管理中
+  if (isConn) {
+    row.verSpan.textContent = "照会中...";
+    row.btn.style.display = "none";
+    row.btn.disabled = true;
+    row.otaNote.textContent = "確認中...";
+    row.otaNote.style.display = "";
+    row.otaNote.classList.remove("latest");
+    queryVersion(deviceId, row.kind, row.verSpan, row.btn, row.otaNote);
+  } else {
+    row.verSpan.textContent = "—";
+    row.btn.disabled = true;
+    row.btn.classList.remove("update");
+    row.btn.style.display = "";
+    row.btn.title = "未接続のため更新できません";
+    row.otaNote.textContent = "";
+    row.otaNote.style.display = "none";
+    row.bar.style.display = "none";
+    row.msg.textContent = "";
+  }
+}
+
+// recorder からの \`devices\` SSE event (接続中 device_id の全量) を現在の行と突き合わせる。
+function onDevicesEvent(deviceIds) {
+  const next = new Set(deviceIds);
+  for (const id of next) {
+    if (!ROWS.has(id)) {
+      // 未知 device (他タブでの新規登録直後 等) — 一覧ごと読み直す
+      loadDevices();
+      knownConnected = next;
+      return;
+    }
+  }
+  for (const id of ROWS.keys()) {
+    const was = knownConnected.has(id);
+    const now = next.has(id);
+    if (was !== now) applyConnected(id, now);
+  }
+  knownConnected = next;
+}
+
+// device/setup/events (recorder /tenants/:t/events の SSE 透過) に接続する。
+// EventSource は切断時に自動再接続するため、再接続処理は明示的に書かない。
+function startDeviceEventStream() {
+  const es = new EventSource(ISSUER + "/device/setup/events", { withCredentials: true });
+  es.addEventListener("devices", (ev) => {
+    try {
+      const payload = JSON.parse(ev.data);
+      if (Array.isArray(payload.devices)) onDevicesEvent(payload.devices);
+    } catch {
+      // 壊れた event は無視 (次の event / 再接続で復帰)
+    }
+  });
 }
 
 // 接続中デバイスへ version コマンドを送り、結果 (version) をセルに表示。
@@ -687,6 +782,7 @@ async function startOta(deviceId, kind, btn, bar, barFill, msg, verSpan, otaNote
   bar.style.display = "";
   barFill.style.width = "0";
   msg.textContent = "デバイスへ指示を送信中...";
+  OTA_BUSY.add(deviceId); // 完了/失敗/タイムアウトで pollOta 側が delete する
   try {
     const res = await fetch(ISSUER + "/device/setup/ota", {
       method: "POST",
@@ -694,15 +790,16 @@ async function startOta(deviceId, kind, btn, bar, barFill, msg, verSpan, otaNote
       credentials: "include",
       body: JSON.stringify({ device_id: deviceId, url }),
     });
-    if (res.status === 409) { msg.textContent = "デバイスが未接続です (WS 接続を確認)"; btn.disabled = false; return; }
-    if (!res.ok) { msg.textContent = "送信失敗: HTTP " + res.status; btn.disabled = false; return; }
+    if (res.status === 409) { msg.textContent = "デバイスが未接続です (WS 接続を確認)"; btn.disabled = false; OTA_BUSY.delete(deviceId); return; }
+    if (!res.ok) { msg.textContent = "送信失敗: HTTP " + res.status; btn.disabled = false; OTA_BUSY.delete(deviceId); return; }
     const { id } = await res.json();
-    if (!id) { msg.textContent = "command id を取得できませんでした"; btn.disabled = false; return; }
+    if (!id) { msg.textContent = "command id を取得できませんでした"; btn.disabled = false; OTA_BUSY.delete(deviceId); return; }
     msg.textContent = "更新を開始しました...";
     pollOta(id, deviceId, kind, btn, barFill, msg, verSpan, otaNote);
   } catch (e) {
     msg.textContent = "送信エラー";
     btn.disabled = false;
+    OTA_BUSY.delete(deviceId);
   }
 }
 
@@ -724,17 +821,19 @@ async function refreshVersionAfterReboot(deviceId, kind, verSpan, msg, btn, otaN
       msg.textContent = "更新完了 (再接続を確認)";
       // その行のバージョンだけ更新 (更新後は最新になるので「最新」表示に切り替わる)
       await queryVersion(deviceId, kind, verSpan, btn, otaNote);
+      OTA_BUSY.delete(deviceId);
       return;
     }
   }
   verSpan.textContent = "再接続待ちタイムアウト";
+  OTA_BUSY.delete(deviceId);
 }
 
 // 進捗ポーリング (2s 間隔、最大 5 分)。phase = pending/download/ok/error。
 async function pollOta(id, deviceId, kind, btn, barFill, msg, verSpan, otaNote) {
   const deadline = Date.now() + 5 * 60 * 1000;
   for (;;) {
-    if (Date.now() > deadline) { msg.textContent = "タイムアウト (デバイスの状態を確認してください)"; btn.disabled = false; return; }
+    if (Date.now() > deadline) { msg.textContent = "タイムアウト (デバイスの状態を確認してください)"; btn.disabled = false; OTA_BUSY.delete(deviceId); return; }
     await new Promise((r) => setTimeout(r, 2000));
     let p;
     try {
@@ -758,6 +857,7 @@ async function pollOta(id, deviceId, kind, btn, barFill, msg, verSpan, otaNote) 
     } else if (p.phase === "error") {
       msg.textContent = "失敗: " + (p.message || "不明なエラー");
       btn.disabled = false;
+      OTA_BUSY.delete(deviceId);
       return;
     }
     // pending はそのまま次のポーリングへ
@@ -896,6 +996,7 @@ async function run() {
 }
 runBtn.addEventListener("click", run);
 loadDevices();
+startDeviceEventStream();
 </script>
 <p class="muted">${escapeHtml(issuer)}</p>
 </body></html>`;

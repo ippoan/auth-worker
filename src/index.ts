@@ -88,6 +88,7 @@ import {
   handleDeviceSetupOta,
   handleDeviceSetupOtaStatus,
   handleDeviceSetupConnected,
+  handleDeviceSetupEvents,
   handleDeviceSetupVersion,
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
@@ -627,6 +628,9 @@ export default {
           // WS 接続中デバイス一覧 (recorder /tenants/:t/devices 透過)。
           case "/device/setup/connected":
             return await handleDeviceSetupConnected(request, env);
+          // 接続/切断の live push (recorder /tenants/:t/events の SSE 透過)。
+          case "/device/setup/events":
+            return await handleDeviceSetupEvents(request, env);
           // 公開中の最新 firmware バージョン (Pages manifest.json)。
           case "/device/setup/latest":
             return await handleDeviceSetupLatest(request, env);
