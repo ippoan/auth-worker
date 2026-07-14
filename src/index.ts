@@ -90,6 +90,7 @@ import {
   handleDeviceSetupConnected,
   handleDeviceSetupEvents,
   handleDeviceSetupVersion,
+  handleDeviceSetupBattery,
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
 import { handlePrintTestPdf, handlePrintTestPage } from "./handlers/print-test";
@@ -776,6 +777,9 @@ export default {
           // バージョン照会トリガ (recorder command {action:version})。POST。
           case "/device/setup/version":
             return await handleDeviceSetupVersion(request, env);
+          // 電源/バッテリー照会トリガ (recorder command {action:battery})。POST。
+          case "/device/setup/battery":
+            return await handleDeviceSetupBattery(request, env);
           // Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing (box ↔ operator)。
           case "/device/pair/start":
             return await handleDevicePairStart(request, env);
