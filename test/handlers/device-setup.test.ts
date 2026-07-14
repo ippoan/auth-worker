@@ -112,6 +112,19 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("/device/setup/version");
     expect(html).toContain("/device/setup/latest");
     expect(html).toContain("queryVersion");
+    // dev ビルド選択は developer 以外には表示しない (alc-app-s3#44)
+    expect(html).not.toContain('id="dev-build-cores3"');
+  });
+
+  it("developer アカウントには dev ビルド (mem-hud) 配信の選択を表示する (alc-app-s3#44)", async () => {
+    const cookie = await opCookie({ email: "m.tama.ramu@gmail.com" });
+    const res = await handleDeviceSetupPage(getReq("/device/setup", cookie), makeEnv());
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="dev-build-cores3"');
+    // チェックで OTA URL 欄を dev app イメージへ切り替える
+    expect(html).toContain("alc-hub-cores3-dev-app.bin");
+    expect(html).toContain("DEV_APP_URL_CORES3");
   });
 });
 

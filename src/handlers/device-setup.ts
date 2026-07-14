@@ -60,11 +60,25 @@ export interface DeviceKind {
   labelDefault: string;
   /** OTA する app 単体イメージの既定 URL (build.yml の "Save OTA app image") */
   appUrl: string;
+  /**
+   * dev ビルド (mem-hud 付き) の app イメージ URL (alc-app-s3#44)。
+   * developer アカウントの「dev ビルドを配信」選択が OTA URL をこれに
+   * 切り替える。dev バリアントを持たない機種は undefined
+   */
+  devAppUrl?: string;
   /** 公開中バージョンを載せた manifest (CI が `<version>+<sha>` を書く) */
   manifestUrl: string;
   /** 表示名 */
   display: string;
 }
+
+/**
+ * dev ビルド配信の選択 UI を表示する developer アカウント
+ * (lib/admin-html.ts の DEVELOPER_EMAILS と同方式)。
+ * OTA URL 欄自体は従来どおり誰でも自由編集できるため、これはあくまで
+ * UI 上の出し分け — サーバ側の追加 enforcement は不要。
+ */
+const DEVELOPER_EMAILS = ["m.tama.ramu@gmail.com"];
 
 /**
  * kind → 機種定義。**role と firmware はここで 1:1 に対応**させ、
@@ -76,6 +90,7 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     role: DEVICE_ROLE_HUB,
     labelDefault: "cores3",
     appUrl: `${PAGES_BASE}/firmware/alc-hub-cores3-app.bin`,
+    devAppUrl: `${PAGES_BASE}/firmware/alc-hub-cores3-dev-app.bin`,
     manifestUrl: `${PAGES_BASE}/manifest.json`,
     display: "CoreS3 統合ハブ",
   },
@@ -445,6 +460,14 @@ export async function handleDeviceSetupLatest(request: Request, env: Env): Promi
 
 /** セットアップページ本体。WebSerial は Chrome/Edge のみ。 */
 function setupPage(issuer: string, email: string): string {
+  // developer のみ: CoreS3 の OTA URL を dev ビルド (mem-hud 付き) に切り替える
+  // チェックボックス。開発機を /device/setup から更新すると本番ビルドになり
+  // メモリ使用率 HUD が消える問題への対処 (alc-app-s3#44)
+  const isDeveloper = DEVELOPER_EMAILS.includes(email.toLowerCase());
+  const devToggleHtml = isDeveloper
+    ? `<label style="display:block;margin:.3rem 0 .8rem;font-size:.85rem;color:#92400e">
+<input type="checkbox" id="dev-build-cores3"> CoreS3 は dev ビルド (mem-hud = メモリ使用率 HUD 付き) を配信する</label>`
+    : "";
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>デバイス登録</title>
@@ -496,6 +519,7 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 <h2>登録済みデバイス</h2>
 <label for="ota-url-cores3">OTA firmware URL — CoreS3 統合ハブ (app イメージ)</label>
 <input id="ota-url-cores3" value="${escapeHtml(DEVICE_KINDS.cores3?.appUrl ?? "")}" style="width:100%;max-width:32rem">
+${devToggleHtml}
 <label for="ota-url-atoms3-print">OTA firmware URL — AtomS3 印刷ブリッジ (app イメージ)</label>
 <input id="ota-url-atoms3-print" value="${escapeHtml(DEVICE_KINDS["atoms3-print"]?.appUrl ?? "")}" style="width:100%;max-width:32rem">
 <p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。接続中のデバイスは
@@ -531,6 +555,18 @@ kindSel.addEventListener("change", () => {
 });
 // CoreS3 は ESP-IDF ログが混在するため既知プレフィックス行のみ解釈する
 const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG)\\b/;
+
+// dev ビルド切り替え (developer のみ checkbox が描画される)。チェックで
+// OTA URL 欄を dev app イメージへ、外すと prod へ書き戻す
+const PROD_APP_URL_CORES3 = ${JSON.stringify(DEVICE_KINDS.cores3?.appUrl ?? "")};
+const DEV_APP_URL_CORES3 = ${JSON.stringify(DEVICE_KINDS.cores3?.devAppUrl ?? "")};
+const devToggle = document.getElementById("dev-build-cores3");
+if (devToggle) {
+  devToggle.addEventListener("change", () => {
+    document.getElementById("ota-url-cores3").value =
+      devToggle.checked ? DEV_APP_URL_CORES3 : PROD_APP_URL_CORES3;
+  });
+}
 
 const LATEST = {}; // kind → 公開中の最新 firmware バージョン
 // device_id → 行の DOM 参照 (SSE の接続/切断イベントで、一覧を読み直さず
