@@ -1,5 +1,6 @@
 /**
- * /device/setup — CoreS3 (alc-app-s3) の USB provisioning ページ (Refs #365)。
+ * /device/setup — alc-app-s3 デバイス (CoreS3 統合ハブ / AtomS3 印刷ブリッジ) の
+ * USB provisioning ページ (Refs #365、機種分離は ippoan/alc-app-s3#38)。
  *
  * Wi-Fi の Improv 設定と同じ「セットアップは USB 前提」思想:
  * operator がログイン済みブラウザで本ページを開き、WebSerial (Chrome/Edge) で
@@ -8,8 +9,10 @@
  *
  *   GET  /device/setup       — login-gated HTML (WebSerial JS 入り)
  *   POST /device/setup/pair  — cookie session + Origin check で credential を mint
- *                              (role は device-hub 固定。replace_label で同一
- *                              (tenant, label) の旧 credential を revoke → 再発行)
+ *                              (role は body.kind → DEVICE_KINDS で決まる:
+ *                              cores3 = device-hub / atoms3-print = device-print。
+ *                              replace_label で同一 (tenant, label) の旧
+ *                              credential を revoke → 再発行)
  *
  * 注入手順 (ページ JS が自動実行):
  *   1. POST /device/setup/pair → { device_id, device_secret, tenant_id }
@@ -32,6 +35,7 @@ import {
   getDeviceRecord,
   listDeviceRecordsByTenant,
   DEVICE_ROLE_HUB,
+  DEVICE_ROLE_PRINT,
 } from "../lib/device";
 
 function jsonNoStore(body: unknown, status = 200): Response {
@@ -45,16 +49,52 @@ function issuerOf(env: Env): string {
   return env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
 }
 
-/**
- * OTA URL 入力欄の既定値。alc-app-s3 の CI が GitHub Pages に公開する app 単体
- * イメージ (build.yml の "Save OTA app image")。operator は必要なら書き換える。
- */
-function otaDefaultUrl(_issuer: string): string {
-  return "https://ippoan.github.io/alc-app-s3/firmware/alc-hub-cores3-app.bin";
+/** alc-app-s3 CI が GitHub Pages に公開する firmware の置き場。 */
+const PAGES_BASE = "https://ippoan.github.io/alc-app-s3";
+
+/** 本ページで管理する機種 (kind)。role・firmware・manifest を機種単位で束ねる。 */
+export interface DeviceKind {
+  /** credential の role (= 誤配布防止 gate の単位) */
+  role: string;
+  /** デバイスラベルの既定値 */
+  labelDefault: string;
+  /** OTA する app 単体イメージの既定 URL (build.yml の "Save OTA app image") */
+  appUrl: string;
+  /** 公開中バージョンを載せた manifest (CI が `<version>+<sha>` を書く) */
+  manifestUrl: string;
+  /** 表示名 */
+  display: string;
 }
 
-/** 公開中の firmware バージョンを載せた manifest (CI が `<version>+<sha>` を書く)。 */
-const FIRMWARE_MANIFEST_URL = "https://ippoan.github.io/alc-app-s3/manifest.json";
+/**
+ * kind → 機種定義。**role と firmware はここで 1:1 に対応**させ、
+ * CoreS3 firmware を印刷ブリッジへ push するような取り違えを構造的に防ぐ
+ * (ippoan/alc-app-s3#38)。
+ */
+export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
+  cores3: {
+    role: DEVICE_ROLE_HUB,
+    labelDefault: "cores3",
+    appUrl: `${PAGES_BASE}/firmware/alc-hub-cores3-app.bin`,
+    manifestUrl: `${PAGES_BASE}/manifest.json`,
+    display: "CoreS3 統合ハブ",
+  },
+  "atoms3-print": {
+    role: DEVICE_ROLE_PRINT,
+    labelDefault: "atoms3-print",
+    appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-print-app.bin`,
+    manifestUrl: `${PAGES_BASE}/manifest-atoms3-print.json`,
+    display: "AtomS3 印刷ブリッジ",
+  },
+};
+
+/** role → kind 名の逆引き (一覧表示・OTA gate 用)。 */
+function kindNameForRole(role: string | undefined): string | null {
+  for (const [name, k] of Object.entries(DEVICE_KINDS)) {
+    if (k.role === role) return name;
+  }
+  return null;
+}
 
 interface OperatorSession {
   tenantId: string;
@@ -117,7 +157,7 @@ h1{font-size:1.3rem}.muted{color:#666;font-size:.9rem}a{color:#1a56db}</style></
 /**
  * POST /device/setup/pair — operator の cookie session で device credential を発行する。
  * `/device/pair` (Bearer 限定) と違い browser から叩くため Origin を検証する (CSRF 対策)。
- * role は CoreS3 用の device-hub に固定する (本ページの用途を越えた mint をさせない)。
+ * role は body.kind → DEVICE_KINDS で決める (本ページで管理する機種以外は mint しない)。
  */
 export async function handleDeviceSetupPair(request: Request, env: Env): Promise<Response> {
   const session = await cookieSession(request, env);
@@ -133,13 +173,16 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   } catch {
     // 空 body は既定値で続行
   }
-  const label = typeof body.label === "string" && body.label ? body.label : "cores3";
+  const kindName = typeof body.kind === "string" && body.kind ? body.kind : "cores3";
+  const kind = DEVICE_KINDS[kindName];
+  if (!kind) return jsonNoStore({ error: "unknown kind" }, 400);
+  const label = typeof body.label === "string" && body.label ? body.label : kind.labelDefault;
   const replaceLabel = body.replace_label === true;
 
   const now = Math.floor(Date.now() / 1000);
   const cred = replaceLabel
-    ? await createDeviceCredentialReplacingLabel(env, session.tenantId, label, now, DEVICE_ROLE_HUB)
-    : await createDeviceCredential(env, session.tenantId, label, now, DEVICE_ROLE_HUB);
+    ? await createDeviceCredentialReplacingLabel(env, session.tenantId, label, now, kind.role)
+    : await createDeviceCredential(env, session.tenantId, label, now, kind.role);
 
   return jsonNoStore(
     {
@@ -148,6 +191,7 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
       tenant_id: cred.record.tenant_id,
       label: cred.record.label,
       role: cred.record.role,
+      kind: kindName,
       note: "store device_secret now; it is not retrievable later",
     },
     201,
@@ -155,23 +199,24 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
 }
 
 /**
- * GET /device/setup/list — operator の tenant に登録済みの有効な CoreS3 ハブ
- * (`device-hub` role) 一覧 (ページの「登録済みデバイス」表示用)。
+ * GET /device/setup/list — operator の tenant に登録済みの管理対象デバイス
+ * (DEVICE_KINDS の role = device-hub / device-print) 一覧。
  *
- * **role で `device-hub` に絞る**: 本ページは CoreS3 provisioning 専用で、OTA も
- * CoreS3 firmware を push する。dtako-scraper / uploader 等の別種デバイスを混ぜて
- * 表示すると、その行の「更新」で CoreS3 firmware を誤配布する事故になる。
+ * **role を DEVICE_KINDS に絞る**: dtako-scraper / uploader 等の別種デバイスを
+ * 混ぜて表示すると、その行の「更新」で誤った firmware を配布する事故になる。
+ * 応答の kind は行ごとの firmware/manifest の選択に使う。
  * secret は KV に hash しか無いため応答に含まれない (含められない)。
  */
 export async function handleDeviceSetupList(request: Request, env: Env): Promise<Response> {
   const session = await cookieSession(request, env);
   if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
   const devices = (await listDeviceRecordsByTenant(env, session.tenantId))
-    .filter((r) => r.role === DEVICE_ROLE_HUB)
+    .filter((r) => kindNameForRole(r.role) !== null)
     .map((r) => ({
       device_id: r.device_id,
       label: r.label,
       role: r.role ?? "",
+      kind: kindNameForRole(r.role) ?? "",
       created_at: r.created_at,
     }));
   return jsonNoStore({ devices });
@@ -200,16 +245,20 @@ async function recorderFetch(
   return recorder.fetch(`https://alc-recorder.internal${path}`, { ...init, headers });
 }
 
-/** device_id が本当にこの operator の tenant のものか (詐称防止に必須)。 */
-async function deviceBelongsToTenant(
+/**
+ * device_id が本当にこの operator の tenant の管理対象デバイスか確認し、
+ * その機種 (DeviceKind) を返す (詐称防止 + 誤配布防止に必須)。
+ * 他 tenant / revoked / DEVICE_KINDS 外の role は null (fail-closed)。
+ */
+async function managedDeviceKind(
   env: Env,
   tenantId: string,
   deviceId: string,
-): Promise<boolean> {
+): Promise<DeviceKind | null> {
   const rec = await getDeviceRecord(env, deviceId);
-  // OTA は CoreS3 firmware を push する → `device-hub` 以外には送らせない
-  // (同 tenant でも dtako-scraper 等への誤配布を防ぐ、fail-closed)
-  return !!rec && rec.tenant_id === tenantId && !rec.revoked && rec.role === DEVICE_ROLE_HUB;
+  if (!rec || rec.tenant_id !== tenantId || rec.revoked) return null;
+  const kindName = kindNameForRole(rec.role);
+  return (kindName && DEVICE_KINDS[kindName]) || null;
 }
 
 /**
@@ -237,9 +286,9 @@ export async function handleDeviceSetupOta(request: Request, env: Env): Promise<
   if (!deviceId || !/^https?:\/\//.test(url)) {
     return jsonNoStore({ error: "device_id と http(s) url が必要です" }, 400);
   }
-  // device がこの operator の tenant のものか確認 (他テナントのデバイスを
+  // device がこの operator の tenant の管理対象か確認 (他テナントのデバイスを
   // 更新させない — recorder は tenant 単位 DO だが、二重に fail-closed)
-  if (!(await deviceBelongsToTenant(env, session.tenantId, deviceId))) {
+  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
     return jsonNoStore({ error: "not_your_device" }, 403);
   }
 
@@ -329,7 +378,7 @@ export async function handleDeviceSetupVersion(request: Request, env: Env): Prom
   }
   const deviceId = typeof body.device_id === "string" ? body.device_id : "";
   if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
-  if (!(await deviceBelongsToTenant(env, session.tenantId, deviceId))) {
+  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
     return jsonNoStore({ error: "not_your_device" }, 403);
   }
   const res = await recorderFetch(
@@ -349,15 +398,19 @@ export async function handleDeviceSetupVersion(request: Request, env: Env): Prom
 }
 
 /**
- * GET /device/setup/latest — 公開中の最新 firmware バージョン (Pages の
- * manifest.json の `version`)。web が device のバージョンと突き合わせて
- * 「更新必要か」を判定する。取得不可は version:null。
+ * GET /device/setup/latest?kind= — 公開中の最新 firmware バージョン (Pages の
+ * 機種別 manifest の `version`)。web が device のバージョンと突き合わせて
+ * 「更新必要か」を判定する。kind 省略時は cores3 (後方互換)。取得不可は
+ * version:null、未知 kind は 400。
  */
 export async function handleDeviceSetupLatest(request: Request, env: Env): Promise<Response> {
   const session = await cookieSession(request, env);
   if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  const kindName = new URL(request.url).searchParams.get("kind") || "cores3";
+  const kind = DEVICE_KINDS[kindName];
+  if (!kind) return jsonNoStore({ error: "unknown kind" }, 400);
   try {
-    const res = await fetch(FIRMWARE_MANIFEST_URL);
+    const res = await fetch(kind.manifestUrl);
     if (!res.ok) return jsonNoStore({ version: null });
     const data = (await res.json()) as { version?: unknown };
     const version = typeof data.version === "string" ? data.version : null;
@@ -371,7 +424,7 @@ export async function handleDeviceSetupLatest(request: Request, env: Env): Promi
 function setupPage(issuer: string, email: string): string {
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CoreS3 デバイス登録</title>
+<title>デバイス登録</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:36rem;margin:2.5rem auto;padding:0 1rem;color:#1a1a1a}
 h1{font-size:1.3rem}
@@ -403,29 +456,40 @@ button.small:disabled{background:#9ca3af}
 .did{font-family:monospace;font-size:.75rem;color:#666}
 </style></head>
 <body>
-<h1>CoreS3 デバイス登録 (USB)</h1>
-<p class="muted">CoreS3 を USB で接続し「セットアップ実行」を押してください。まず現在の登録状態を
+<h1>デバイス登録 (USB)</h1>
+<p class="muted">デバイスを USB で接続し「セットアップ実行」を押してください。まず現在の登録状態を
 表示し (登録済みなら上書き確認)、credential の発行 (テナント: このアカウント
 ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行います。Chrome / Edge のみ (WebSerial)。</p>
+<label for="kind">機種</label>
+<select id="kind" style="font-size:1rem;padding:.4rem .6rem;border:1px solid #ccc;border-radius:.4rem">
+  <option value="cores3">CoreS3 統合ハブ</option>
+  <option value="atoms3-print">AtomS3 印刷ブリッジ</option>
+</select>
 <label for="label">デバイスラベル (同名は旧 credential を自動失効)</label>
 <input id="label" value="cores3" pattern="[A-Za-z0-9._-]+">
 <p><button id="run">セットアップ実行</button></p>
 <p id="result"></p>
 <pre id="log"></pre>
 <h2>登録済みデバイス</h2>
-<label for="ota-url">OTA firmware URL (app イメージ)</label>
-<input id="ota-url" value="${escapeHtml(otaDefaultUrl(issuer))}" style="width:100%;max-width:32rem">
+<label for="ota-url-cores3">OTA firmware URL — CoreS3 統合ハブ (app イメージ)</label>
+<input id="ota-url-cores3" value="${escapeHtml(DEVICE_KINDS.cores3?.appUrl ?? "")}" style="width:100%;max-width:32rem">
+<label for="ota-url-atoms3-print">OTA firmware URL — AtomS3 印刷ブリッジ (app イメージ)</label>
+<input id="ota-url-atoms3-print" value="${escapeHtml(DEVICE_KINDS["atoms3-print"]?.appUrl ?? "")}" style="width:100%;max-width:32rem">
 <p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。接続中のデバイスは
-バージョンを自動照会し、公開中の最新版と違えば「更新あり」を表示します。</p>
+バージョンを自動照会し、その機種の公開中の最新版と違えば「更新あり」を表示します。</p>
 <p id="latest" class="muted"></p>
 <p id="devices-status" class="muted">読み込み中...</p>
 <table id="devices" style="display:none">
-<thead><tr><th>ラベル</th><th>接続</th><th>バージョン</th><th>更新</th></tr></thead>
+<thead><tr><th>ラベル</th><th>種別</th><th>接続</th><th>バージョン</th><th>更新</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
 <script>
 "use strict";
 const ISSUER = ${JSON.stringify(issuer)};
+// 機種 → 表示名 (サーバ側 DEVICE_KINDS と対。list 応答の kind をキーに使う)
+const KIND_DISPLAY = ${JSON.stringify(
+    Object.fromEntries(Object.entries(DEVICE_KINDS).map(([k, v]) => [k, v.display])),
+  )};
 const logEl = document.getElementById("log");
 const resultEl = document.getElementById("result");
 const runBtn = document.getElementById("run");
@@ -433,10 +497,19 @@ function log(line) {
   logEl.textContent += line + "\\n";
   logEl.scrollTop = logEl.scrollHeight;
 }
+// 機種を切り替えたらラベル既定値も追随させる (手で編集済みならそのまま)
+const kindSel = document.getElementById("kind");
+const labelInput = document.getElementById("label");
+kindSel.addEventListener("change", () => {
+  const defaults = { cores3: "cores3", "atoms3-print": "atoms3-print" };
+  if (Object.values(defaults).includes(labelInput.value)) {
+    labelInput.value = defaults[kindSel.value] || kindSel.value;
+  }
+});
 // CoreS3 は ESP-IDF ログが混在するため既知プレフィックス行のみ解釈する
 const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG)\\b/;
 
-let LATEST_VERSION = null; // 公開中の最新 firmware バージョン
+const LATEST = {}; // kind → 公開中の最新 firmware バージョン
 
 // 登録済み CoreS3 一覧 + 接続状態 + 最新版を読み込んで描画する。
 // ページ表示時 + セットアップ成功後に読み直す。
@@ -446,16 +519,21 @@ async function loadDevices() {
   const table = document.getElementById("devices");
   const body = document.getElementById("devices-body");
   try {
-    const [listRes, connRes, latestRes] = await Promise.all([
+    const [listRes, connRes, latestCoreRes, latestPrintRes] = await Promise.all([
       fetch(ISSUER + "/device/setup/list", { credentials: "include" }),
       fetch(ISSUER + "/device/setup/connected", { credentials: "include" }),
-      fetch(ISSUER + "/device/setup/latest", { credentials: "include" }),
+      fetch(ISSUER + "/device/setup/latest?kind=cores3", { credentials: "include" }),
+      fetch(ISSUER + "/device/setup/latest?kind=atoms3-print", { credentials: "include" }),
     ]);
     if (!listRes.ok) throw new Error("HTTP " + listRes.status);
     const data = await listRes.json();
     const connected = new Set(((connRes.ok ? await connRes.json() : {}).devices) || []);
-    LATEST_VERSION = (latestRes.ok ? await latestRes.json() : {}).version || null;
-    latestEl.textContent = LATEST_VERSION ? "公開中の最新版: " + LATEST_VERSION : "";
+    LATEST["cores3"] = (latestCoreRes.ok ? await latestCoreRes.json() : {}).version || null;
+    LATEST["atoms3-print"] = (latestPrintRes.ok ? await latestPrintRes.json() : {}).version || null;
+    const latestParts = [];
+    if (LATEST["cores3"]) latestParts.push("CoreS3: " + LATEST["cores3"]);
+    if (LATEST["atoms3-print"]) latestParts.push("印刷ブリッジ: " + LATEST["atoms3-print"]);
+    latestEl.textContent = latestParts.length ? "公開中の最新版 — " + latestParts.join(" / ") : "";
 
     body.textContent = "";
     if (!data.devices || data.devices.length === 0) {
@@ -475,6 +553,11 @@ async function loadDevices() {
       did.textContent = d.device_id;
       labelTd.appendChild(did);
       tr.appendChild(labelTd);
+
+      // 種別 (list 応答の kind。DEVICE_KINDS 外の role は list 側で除外済み)
+      const kindTd = document.createElement("td");
+      kindTd.textContent = KIND_DISPLAY[d.kind] || d.kind || "?";
+      tr.appendChild(kindTd);
 
       // 接続
       const connTd = document.createElement("td");
@@ -507,7 +590,7 @@ async function loadDevices() {
       bar.appendChild(barFill);
       const msg = document.createElement("div");
       msg.className = "ota-msg";
-      btn.addEventListener("click", () => startOta(d.device_id, btn, bar, barFill, msg, verSpan, otaNote));
+      btn.addEventListener("click", () => startOta(d.device_id, d.kind, btn, bar, barFill, msg, verSpan, otaNote));
       if (isConn) {
         // 接続中: バージョン照会が終わるまでボタンは出さず「確認中」を表示。
         // queryVersion が最新/更新ありを判定してボタン or「最新」を出し分ける。
@@ -526,7 +609,7 @@ async function loadDevices() {
       tr.appendChild(otaTd);
 
       body.appendChild(tr);
-      if (isConn) queryVersion(d.device_id, verSpan, btn, otaNote);
+      if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
     }
     statusEl.textContent = "";
     table.style.display = "";
@@ -538,7 +621,7 @@ async function loadDevices() {
 
 // 接続中デバイスへ version コマンドを送り、結果 (version) をセルに表示。
 // 最新版と比較し「最新」/「更新あり」タグを付ける。
-async function queryVersion(deviceId, verSpan, otaBtn, otaNote) {
+async function queryVersion(deviceId, kind, verSpan, otaBtn, otaNote) {
   // 「更新あり」: 赤ボタンを出し「最新」表示を消す
   const showUpdatable = () => {
     if (otaNote) { otaNote.textContent = ""; otaNote.classList.remove("latest"); otaNote.style.display = "none"; }
@@ -571,14 +654,15 @@ async function queryVersion(deviceId, verSpan, otaBtn, otaNote) {
       } catch { continue; }
       if (p && typeof p.version === "string") {
         verSpan.textContent = p.version + (p.slot ? " (" + p.slot + ")" : "");
-        if (LATEST_VERSION) {
+        const latest = LATEST[kind] || null;
+        if (latest) {
           const tag = document.createElement("span");
-          if (p.version === LATEST_VERSION) { tag.className = "tag cur"; tag.textContent = "最新"; }
+          if (p.version === latest) { tag.className = "tag cur"; tag.textContent = "最新"; }
           else { tag.className = "tag new"; tag.textContent = "更新あり"; }
           verSpan.appendChild(tag);
         }
         // 更新セル: 最新ならボタンを出さず「最新」、それ以外 (最新版不明含む) は赤ボタン
-        if (LATEST_VERSION && p.version === LATEST_VERSION) showLatest();
+        if (latest && p.version === latest) showLatest();
         else showUpdatable();
         return;
       }
@@ -592,8 +676,12 @@ async function queryVersion(deviceId, verSpan, otaBtn, otaNote) {
 }
 
 // OTA を開始し、command id で進捗をポーリングして表示する。
-async function startOta(deviceId, btn, bar, barFill, msg, verSpan, otaNote) {
-  const url = document.getElementById("ota-url").value.trim();
+async function startOta(deviceId, kind, btn, bar, barFill, msg, verSpan, otaNote) {
+  // 機種別の URL 入力を使う (未知 kind は cores3 側にフォールバックしない —
+  // list が DEVICE_KINDS 外を除外しているため来ない想定だが fail-closed)
+  const urlInput = document.getElementById("ota-url-" + kind);
+  if (!urlInput) { msg.textContent = "未知の機種です"; return; }
+  const url = urlInput.value.trim();
   if (!/^https?:\\/\\//.test(url)) { msg.textContent = "URL が不正です"; return; }
   btn.disabled = true;
   bar.style.display = "";
@@ -611,7 +699,7 @@ async function startOta(deviceId, btn, bar, barFill, msg, verSpan, otaNote) {
     const { id } = await res.json();
     if (!id) { msg.textContent = "command id を取得できませんでした"; btn.disabled = false; return; }
     msg.textContent = "更新を開始しました...";
-    pollOta(id, deviceId, btn, barFill, msg, verSpan, otaNote);
+    pollOta(id, deviceId, kind, btn, barFill, msg, verSpan, otaNote);
   } catch (e) {
     msg.textContent = "送信エラー";
     btn.disabled = false;
@@ -621,7 +709,7 @@ async function startOta(deviceId, btn, bar, barFill, msg, verSpan, otaNote) {
 // OTA 完了後、デバイスの再起動 → WS 再接続を待ってから、その行の
 // バージョンだけを再照会して更新する (全リストは読み直さない)。
 // 再起動 (~15s) + WS 再接続を見込んで、未接続の間は少し待ってリトライする。
-async function refreshVersionAfterReboot(deviceId, verSpan, msg, btn, otaNote) {
+async function refreshVersionAfterReboot(deviceId, kind, verSpan, msg, btn, otaNote) {
   verSpan.textContent = "再起動待ち...";
   const deadline = Date.now() + 60 * 1000;
   while (Date.now() < deadline) {
@@ -635,7 +723,7 @@ async function refreshVersionAfterReboot(deviceId, verSpan, msg, btn, otaNote) {
     if (connected) {
       msg.textContent = "更新完了 (再接続を確認)";
       // その行のバージョンだけ更新 (更新後は最新になるので「最新」表示に切り替わる)
-      await queryVersion(deviceId, verSpan, btn, otaNote);
+      await queryVersion(deviceId, kind, verSpan, btn, otaNote);
       return;
     }
   }
@@ -643,7 +731,7 @@ async function refreshVersionAfterReboot(deviceId, verSpan, msg, btn, otaNote) {
 }
 
 // 進捗ポーリング (2s 間隔、最大 5 分)。phase = pending/download/ok/error。
-async function pollOta(id, deviceId, btn, barFill, msg, verSpan, otaNote) {
+async function pollOta(id, deviceId, kind, btn, barFill, msg, verSpan, otaNote) {
   const deadline = Date.now() + 5 * 60 * 1000;
   for (;;) {
     if (Date.now() > deadline) { msg.textContent = "タイムアウト (デバイスの状態を確認してください)"; btn.disabled = false; return; }
@@ -665,7 +753,7 @@ async function pollOta(id, deviceId, btn, barFill, msg, verSpan, otaNote) {
       // デバイスは再起動 → 新スロットで WS 再接続する。**その行だけ**
       // バージョンを再照会して更新 (全リストは読み直さない)。再接続まで
       // リトライしてから照会する。
-      if (verSpan) void refreshVersionAfterReboot(deviceId, verSpan, msg, btn, otaNote);
+      if (verSpan) void refreshVersionAfterReboot(deviceId, kind, verSpan, msg, btn, otaNote);
       return;
     } else if (p.phase === "error") {
       msg.textContent = "失敗: " + (p.message || "不明なエラー");
@@ -762,13 +850,14 @@ async function run() {
       log("未登録のデバイスです — 新規登録します");
     }
 
-    const label = document.getElementById("label").value || "cores3";
+    const kind = kindSel.value;
+    const label = labelInput.value || kind;
     log("credential を発行中 (label=" + label + ") ...");
     const res = await fetch(ISSUER + "/device/setup/pair", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ label, replace_label: true }),
+      body: JSON.stringify({ label, replace_label: true, kind }),
     });
     if (!res.ok) throw new Error("credential 発行に失敗: HTTP " + res.status);
     const cred = await res.json();

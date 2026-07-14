@@ -160,7 +160,7 @@ describe("handleDeviceSetupList", () => {
     expect(ids).not.toContain(revoked.device_id); // revoke 済みは出ない
     expect(ids.length).toBe(2);
     for (const d of body.devices) {
-      expect(d.role).toBe("device-hub");
+      expect(d.role).toBe("device-hub"); // この test は hub のみ発行している
       expect(d.created_at).toBeGreaterThan(0);
       // secret は KV に hash しか無く、応答にも含まれない
       expect(d).not.toHaveProperty("device_secret");
@@ -180,23 +180,34 @@ describe("handleDeviceSetupList", () => {
     expect(await res.json()).toEqual({ devices: [] });
   });
 
-  it("device-hub 以外の role (dtako-ingest 等) は一覧に出さない (CoreS3 専用ページ)", async () => {
+  it("管理対象外の role (dtako-ingest 等) は一覧に出さず、hub/print は kind 付きで出す", async () => {
     const env = makeEnv();
     const headers = { ...(await opCookie()), Origin: ISSUER };
-    // CoreS3 ハブ 1 台 (device-hub)
+    // CoreS3 ハブ (device-hub) + AtomS3 印刷ブリッジ (device-print) を 1 台ずつ
     const hub = (await (
       await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    const print = (await (
+      await handleDeviceSetupPair(
+        postJson("/device/setup/pair", { label: "printer-1", kind: "atoms3-print" }, headers),
+        env,
+      )
     ).json()) as PairResponse;
     // 同 tenant の別種デバイス (直接 KV に device-dtako-ingest で発行)
     const now = Math.floor(Date.now() / 1000);
     const other = await createDeviceCredential(env, "tenant-1", "scraper", now, "device-dtako-ingest");
 
     const res = await handleDeviceSetupList(getReq("/device/setup/list", await opCookie()), env);
-    const body = (await res.json()) as { devices: Array<{ device_id: string; role: string }> };
+    const body = (await res.json()) as {
+      devices: Array<{ device_id: string; role: string; kind: string }>;
+    };
     const ids = body.devices.map((d) => d.device_id);
     expect(ids).toContain(hub.device_id);
-    expect(ids).not.toContain(other.device_id); // 別種は除外
-    expect(body.devices.every((d) => d.role === "device-hub")).toBe(true);
+    expect(ids).toContain(print.device_id); // 印刷ブリッジも一覧に出る
+    expect(ids).not.toContain(other.device_id); // 管理対象外は除外
+    const kinds = new Map(body.devices.map((d) => [d.device_id, d.kind]));
+    expect(kinds.get(hub.device_id)).toBe("cores3");
+    expect(kinds.get(print.device_id)).toBe("atoms3-print");
   });
 });
 
@@ -231,6 +242,32 @@ describe("handleDeviceSetupPair", () => {
     const record = await getDeviceRecord(env, body.device_id);
     expect(record?.tenant_id).toBe("tenant-1");
     expect(record?.role).toBe("device-hub");
+  });
+
+  it("kind=atoms3-print は device-print role で mint する (機種分離 alc-app-s3#38)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupPair(
+      postJson("/device/setup/pair", { kind: "atoms3-print" }, headers),
+      env,
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as PairResponse & { kind?: string };
+    expect(body.role).toBe("device-print");
+    expect(body.kind).toBe("atoms3-print");
+    expect(body.label).toBe("atoms3-print"); // 機種別の label 既定
+    const record = await getDeviceRecord(env, body.device_id);
+    expect(record?.role).toBe("device-print");
+  });
+
+  it("未知の kind は 400 (誤配布防止 — 管理対象機種以外を mint しない)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupPair(
+      postJson("/device/setup/pair", { kind: "toaster" }, headers),
+      env,
+    );
+    expect(res.status).toBe(400);
   });
 
   it("defaults the label and tolerates an empty body", async () => {
