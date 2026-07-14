@@ -6,6 +6,7 @@ import {
   handleDeviceSetupOta,
   handleDeviceSetupOtaStatus,
   handleDeviceSetupConnected,
+  handleDeviceSetupEvents,
   handleDeviceSetupVersion,
 } from "../../src/handlers/device-setup";
 import { createDeviceCredential, getDeviceRecord } from "../../src/lib/device";
@@ -494,6 +495,40 @@ describe("handleDeviceSetupOta / handleDeviceSetupOtaStatus", () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ devices: [] });
+  });
+
+  it("live update: recorder /tenants/:t/events の SSE ストリームを透過する", async () => {
+    const sseBody = 'event: devices\ndata: {"devices":["dev-a"]}\n\n';
+    const { fetcher, calls } = mockRecorder(
+      () =>
+        new Response(sseBody, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    );
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const res = await handleDeviceSetupEvents(
+      getReq("/device/setup/events", await opCookie()),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(await res.text()).toBe(sseBody);
+    expect(calls[0]!.url).toContain("/tenants/tenant-1/events");
+    expect(calls[0]!.auth).toBe("shared-abc");
+  });
+
+  it("live update: 未ログインは 401", async () => {
+    const res = await handleDeviceSetupEvents(getReq("/device/setup/events"), makeEnv());
+    expect(res.status).toBe(401);
+  });
+
+  it("live update: recorder 未設定は 503", async () => {
+    const res = await handleDeviceSetupEvents(
+      getReq("/device/setup/events", await opCookie()),
+      makeEnv(),
+    );
+    expect(res.status).toBe(503);
   });
 
   it("バージョン照会: recorder に action:version を送り id を返す", async () => {
