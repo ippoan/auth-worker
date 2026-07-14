@@ -63,6 +63,21 @@ describe("handleDeviceSetupPage", () => {
     expect(res.headers.get("Location")).toContain("/login?redirect_uri=");
   });
 
+  it("セッションエラーページは毒 cookie を破棄する Set-Cookie を返す (Refs #387)", async () => {
+    const badToken = await signTestJwt({ tenant_id: "t", email: "e@x", env: ENV }, "wrong-secret");
+    const res = await handleDeviceSetupPage(
+      getReq("/device/setup", { Cookie: `logi_auth_token=${badToken}` }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(403);
+    const setCookies = res.headers.getSetCookie();
+    expect(setCookies.length).toBe(2);
+    for (const c of setCookies) {
+      expect(c).toContain("logi_auth_token=;");
+      expect(c).toContain("Max-Age=0");
+    }
+  });
+
   it("shows an error page (no redirect) when a cookie exists but fails verification", async () => {
     // 期限切れ/不正 cookie で /login へ 302 すると、ログイン済みブラウザで
     // login → callback → 本ページ → login … の無限リダイレクトになるため

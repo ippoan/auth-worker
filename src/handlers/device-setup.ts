@@ -27,7 +27,7 @@
 import type { Env } from "../index";
 import { resolveSecret } from "../lib/secret";
 import { verifyJwt } from "../lib/jwt";
-import { getAuthCookie } from "../lib/cookies";
+import { clearAuthCookieVariants, getAuthCookie } from "../lib/cookies";
 import { escapeHtml } from "../lib/html";
 import {
   createDeviceCredential,
@@ -140,10 +140,17 @@ export async function handleDeviceSetupPage(request: Request, env: Env): Promise
     // login → (自動) callback → 本ページ → login … の無限リダイレクトになる。
     // cookie 有りの失敗はリダイレクトせず理由を表示して止める。
     if (getAuthCookie(request)) {
-      return new Response(sessionErrorPage(issuer), {
-        status: 403,
-        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      // Refs #387: 検証に落ちた cookie はこの応答で破棄する (Domain 付き /
+      // host-only の両方)。次のリロードで cookie 無し → /login への正常な
+      // redirect に入り、手動 logout なしで回復できる
+      const headers = new Headers({
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
       });
+      for (const c of clearAuthCookieVariants(new URL(request.url).hostname)) {
+        headers.append("Set-Cookie", c);
+      }
+      return new Response(sessionErrorPage(issuer), { status: 403, headers });
     }
     const back = `${issuer}/device/setup`;
     return Response.redirect(`${issuer}/login?redirect_uri=${encodeURIComponent(back)}`, 302);

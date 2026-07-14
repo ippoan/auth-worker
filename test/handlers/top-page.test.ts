@@ -87,6 +87,56 @@ describe("handleTopPage", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
     expect(await res.text()).toBe("<html>mock top page</html>");
+    // 有効 cookie の通常フローに破棄 Set-Cookie を混入させない (Refs #387)
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  describe("毒 cookie の自動破棄 + shadowing 耐性 (Refs #387)", () => {
+    it("invalid cookie 付き redirect には破棄 Set-Cookie (Domain 付き/無し) が付く", async () => {
+      const token = await signTestJwt({ sub: "u1" }, "wrong-secret");
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: `logi_auth_token=${token}` },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(302);
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.length).toBe(2);
+      for (const c of setCookies) {
+        expect(c).toContain("logi_auth_token=;");
+        expect(c).toContain("Max-Age=0");
+      }
+      // Domain 付き (親ドメイン) と host-only の両方を破棄する
+      expect(setCookies.some((c) => c.includes("Domain=.test.example"))).toBe(true);
+      expect(setCookies.some((c) => !c.includes("Domain="))).toBe(true);
+    });
+
+    it("cookie 無しの redirect には Set-Cookie を付けない", async () => {
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top");
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+    });
+
+    it("同名 cookie 2 個 (先頭 invalid / 後方 valid) でも表示できる", async () => {
+      const stale = await signTestJwt({ sub: "u1" }, "wrong-secret");
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: {
+          Cookie: `logi_auth_token=${stale}; ${await authedCookie()}`,
+        },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("<html>mock top page</html>");
+    });
   });
 
   describe("dangling tenant 検知 (my-orgs 空 → /logout、ループ回避)", () => {
