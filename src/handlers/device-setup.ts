@@ -531,11 +531,13 @@ ${devToggleHtml}
 <label for="ota-url-atoms3-print">OTA firmware URL — AtomS3 印刷ブリッジ (app イメージ)</label>
 <input id="ota-url-atoms3-print" value="${escapeHtml(DEVICE_KINDS["atoms3-print"]?.appUrl ?? "")}" style="width:100%;max-width:32rem">
 <p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。接続中のデバイスは
-バージョンを自動照会し、その機種の公開中の最新版と違えば「更新あり」を表示します。</p>
+バージョンを自動照会し、その機種の公開中の最新版と違えば「更新あり」を表示します。
+「再登録」は firmware の再インストール等で credential が消えたデバイスの復旧用です —
+デバイスを USB で接続してから押すと、その行のラベルのまま再発行・注入します (旧 credential は失効)。</p>
 <p id="latest" class="muted"></p>
 <p id="devices-status" class="muted">読み込み中...</p>
 <table id="devices" style="display:none">
-<thead><tr><th>ラベル</th><th>種別</th><th>接続</th><th>バージョン</th><th>更新</th></tr></thead>
+<thead><tr><th>ラベル</th><th>種別</th><th>接続</th><th>バージョン</th><th>更新</th><th>再登録</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
 <script>
@@ -684,6 +686,25 @@ async function loadDevices() {
       otaTd.appendChild(bar);
       otaTd.appendChild(msg);
       tr.appendChild(otaTd);
+
+      // 再登録: この行の label/kind のまま USB provisioning を再実行する。
+      // firmware 再インストール (Web インストーラーは NVS ごと消す) で
+      // credential が飛んだデバイスの復旧用。replace_label により旧
+      // credential は自動失効するので、同じ行が二重登録になることはない。
+      // WS 接続状態とは無関係に USB さえ繋げば実行できるため常に活性。
+      const reregTd = document.createElement("td");
+      const reregBtn = document.createElement("button");
+      reregBtn.className = "small";
+      reregBtn.textContent = "再登録";
+      reregBtn.title = "USB 接続したデバイスへ credential を再発行・注入します (旧 credential は失効)";
+      reregBtn.addEventListener("click", () => {
+        kindSel.value = d.kind;
+        labelInput.value = d.label;
+        runBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+        run();
+      });
+      reregTd.appendChild(reregBtn);
+      tr.appendChild(reregTd);
 
       body.appendChild(tr);
       ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, bar, barFill, msg, otaNote });
