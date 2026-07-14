@@ -471,9 +471,10 @@ function setupPage(issuer: string, email: string): string {
   // チェックボックス。開発機を /device/setup から更新すると本番ビルドになり
   // メモリ使用率 HUD が消える問題への対処 (alc-app-s3#44)
   const isDeveloper = DEVELOPER_EMAILS.includes(email.toLowerCase());
+  // checkbox はページ共通 CSS の input{width:14rem} を width:auto で打ち消し、
+  // flex でラベル文と 1 行に並べる (崩れの実害あり 2026-07-14)
   const devToggleHtml = isDeveloper
-    ? `<label style="display:block;margin:.3rem 0 .8rem;font-size:.85rem;color:#92400e">
-<input type="checkbox" id="dev-build-cores3"> CoreS3 は dev ビルド (mem-hud = メモリ使用率 HUD 付き) を配信する</label>`
+    ? `<label for="dev-build-cores3" style="display:flex;align-items:center;gap:.45rem;margin:.3rem 0 .8rem;font-size:.85rem;color:#92400e;cursor:pointer"><input type="checkbox" id="dev-build-cores3" style="width:auto;margin:0">CoreS3 は dev ビルド (mem-hud = メモリ使用率 HUD 付き) を配信する</label>`
     : "";
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -759,7 +760,9 @@ function startDeviceEventStream() {
 
 // 接続中デバイスへ version コマンドを送り、結果 (version) をセルに表示。
 // 最新版と比較し「最新」/「更新あり」タグを付ける。
+// 戻り値: version を取得できたら true (OTA 後の再照会リトライ判定に使う #389)。
 async function queryVersion(deviceId, kind, verSpan, otaBtn, otaNote) {
+  verSpan.textContent = "照会中...";
   // 「更新あり」: 赤ボタンを出し「最新」表示を消す
   const showUpdatable = () => {
     if (otaNote) { otaNote.textContent = ""; otaNote.classList.remove("latest"); otaNote.style.display = "none"; }
@@ -777,9 +780,9 @@ async function queryVersion(deviceId, kind, verSpan, otaBtn, otaNote) {
       credentials: "include",
       body: JSON.stringify({ device_id: deviceId }),
     });
-    if (!res.ok) { verSpan.textContent = "照会失敗"; showUpdatable(); return; }
+    if (!res.ok) { verSpan.textContent = "照会失敗"; showUpdatable(); return false; }
     const { id } = await res.json();
-    if (!id) { verSpan.textContent = "照会失敗"; showUpdatable(); return; }
+    if (!id) { verSpan.textContent = "照会失敗"; showUpdatable(); return false; }
     // 結果ポーリング (最大 20s)。version が返るまで待つ
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
@@ -802,14 +805,16 @@ async function queryVersion(deviceId, kind, verSpan, otaBtn, otaNote) {
         // 更新セル: 最新ならボタンを出さず「最新」、それ以外 (最新版不明含む) は赤ボタン
         if (latest && p.version === latest) showLatest();
         else showUpdatable();
-        return;
+        return true;
       }
     }
     verSpan.textContent = "照会タイムアウト";
     showUpdatable();
+    return false;
   } catch {
     verSpan.textContent = "照会失敗";
     showUpdatable();
+    return false;
   }
 }
 
@@ -849,9 +854,15 @@ async function startOta(deviceId, kind, btn, bar, barFill, msg, verSpan, otaNote
 // OTA 完了後、デバイスの再起動 → WS 再接続を待ってから、その行の
 // バージョンだけを再照会して更新する (全リストは読み直さない)。
 // 再起動 (~15s) + WS 再接続を見込んで、未接続の間は少し待ってリトライする。
+//
+// #389: デバイスは再起動時に WS を close フレーム無しで落とすため、recorder
+// にはゾンビ接続がしばらく残り /connected は「接続中」を返す。その間に送った
+// version command は宛先喪失でタイムアウトする (実機の再接続は reboot +
+// ネットワーク + TLS + JWT mint で 30 秒超かかり得る)。1 回で諦めず、
+// 期限内は queryVersion が成功するまでリトライする。
 async function refreshVersionAfterReboot(deviceId, kind, verSpan, msg, btn, otaNote) {
   verSpan.textContent = "再起動待ち...";
-  const deadline = Date.now() + 60 * 1000;
+  const deadline = Date.now() + 120 * 1000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 4000));
     // まだ接続が戻っていないと version トリガが 409 になる。接続を確認してから照会。
@@ -860,15 +871,16 @@ async function refreshVersionAfterReboot(deviceId, kind, verSpan, msg, btn, otaN
       const cr = await fetch(ISSUER + "/device/setup/connected", { credentials: "include" });
       if (cr.ok) connected = (((await cr.json()).devices) || []).includes(deviceId);
     } catch { /* retry */ }
-    if (connected) {
-      msg.textContent = "更新完了 (再接続を確認)";
-      // その行のバージョンだけ更新 (更新後は最新になるので「最新」表示に切り替わる)
-      await queryVersion(deviceId, kind, verSpan, btn, otaNote);
+    if (!connected) continue;
+    msg.textContent = "更新完了 (再接続を確認)";
+    // その行のバージョンだけ更新 (更新後は最新になるので「最新」表示に切り替わる)。
+    // ゾンビ WS 宛てで失敗した場合は次周でもう一度照会する
+    if (await queryVersion(deviceId, kind, verSpan, btn, otaNote)) {
       OTA_BUSY.delete(deviceId);
       return;
     }
   }
-  verSpan.textContent = "再接続待ちタイムアウト";
+  verSpan.textContent = "照会タイムアウト (リロードで再確認できます)";
   OTA_BUSY.delete(deviceId);
 }
 
