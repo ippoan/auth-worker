@@ -46,3 +46,34 @@ export function getAuthCookie(request: Request): string | null {
   const match = cookie.match(/logi_auth_token=([^;]+)/);
   return match?.[1] ?? null;
 }
+
+/**
+ * 同名 cookie (logi_auth_token) を **全て** 返す (Refs #387)。
+ *
+ * host-only cookie と Domain 付き cookie は別物としてブラウザが両方送るため、
+ * 古い方が先頭に来ると `getAuthCookie` (先頭のみ) では有効な cookie が
+ * 陰に隠れる (shadowing)。login-gated ページは全候補を verify すること。
+ */
+export function getAuthCookies(request: Request): string[] {
+  const cookie = request.headers.get("Cookie") || "";
+  const out: string[] = [];
+  const re = /logi_auth_token=([^;]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cookie)) !== null) out.push(m[1]!);
+  return out;
+}
+
+/**
+ * 検証に落ちた cookie の自動破棄用 Set-Cookie 群 (Refs #387)。
+ *
+ * setAuthCookie は Domain=親ドメインで set するが、過去版や別経路が残した
+ * host-only cookie も同時に破棄できるよう **Domain 付き / 無しの両方**を返す。
+ * 毒 cookie (期限切れ / env claim 不一致 / 署名不正) を手動 logout に頼らず
+ * 回収するため、login-gated ページの「cookie 有り + 検証全滅」応答に付ける。
+ */
+export function clearAuthCookieVariants(hostname: string): string[] {
+  return [
+    clearAuthCookie(hostname),
+    `${AUTH_COOKIE}=; Path=/; Max-Age=0; Secure; SameSite=Lax`,
+  ];
+}

@@ -4,7 +4,7 @@
  */
 import type { Env } from "../index";
 import { renderTopPage, type AppEntry } from "../lib/top-html";
-import { getAuthCookie } from "../lib/cookies";
+import { clearAuthCookieVariants, getAuthCookies } from "../lib/cookies";
 import { classifyOrigin, getDisplayOrigins } from "../lib/config";
 import { isTenantInOrgAllowlist } from "../lib/acl";
 import { verifyJwt, decodeJwtPayload, type JwtPayload } from "../lib/jwt";
@@ -99,12 +99,25 @@ export async function handleTopPage(
   // WOFF SDK can run and obtain a token client-side. ?lw_callback=1 also
   // bypasses because the OAuth callback may redirect here in the same response
   // that issued Set-Cookie, before the UA persists it for the next request.
-  const cookieToken = getAuthCookie(request);
+  //
+  // Refs #387: 同名 cookie が複数届くことがある (host-only と Domain 付きの併存)。
+  // 先頭 1 個だけ見ると古い cookie が有効な cookie を陰にして永遠に invalid に
+  // なるため、全候補を verify し、最初に通ったものを採用する。
+  const cookieTokens = getAuthCookies(request);
+  let cookieToken: string | null = cookieTokens[0] ?? null;
   const jwtSecret = await resolveSecret(env.JWT_SECRET);
   // Refs #218: token に env claim があれば WORKER_ENV と一致を強制
-  const payload = cookieToken && jwtSecret
-    ? await verifyJwt(cookieToken, jwtSecret, env.WORKER_ENV)
-    : null;
+  let payload: JwtPayload | null = null;
+  if (jwtSecret) {
+    for (const candidate of cookieTokens) {
+      const p = await verifyJwt(candidate, jwtSecret, env.WORKER_ENV);
+      if (p) {
+        payload = p;
+        cookieToken = candidate;
+        break;
+      }
+    }
+  }
   const hasWoff = url.searchParams.has("woff");
   const hasLwCallback = url.searchParams.has("lw_callback");
   // 診断ログ (login ループ調査): token 本体は出さず、cookie 有無 / 検証成否 /
@@ -132,21 +145,34 @@ export async function handleTopPage(
       workerEnv: env.WORKER_ENV ?? null,
     };
   }
+  // Refs #387: cookie が有るのに全候補が検証に落ちた = 毒 cookie (期限切れ /
+  // staging↔prod の env claim 不一致 / 署名不正)。redirect 応答で破棄まで行い、
+  // 手動 logout に頼らず自動回復させる (放置すると /login 往復が続く)。
+  const willRedirect = !hasWoff && !hasLwCallback && !payload;
+  const clearPoison = willRedirect && cookieTokens.length > 0;
   console.log(
     JSON.stringify({
       event: "top_gate",
       hasCookie: !!cookieToken,
+      cookieCount: cookieTokens.length,
       cookieLen: cookieToken?.length ?? 0,
       payloadValid: !!payload,
       hasWoff,
       hasLwCallback,
-      willRedirectToLogin: !hasWoff && !hasLwCallback && !payload,
+      willRedirectToLogin: willRedirect,
+      clearedPoisonCookie: clearPoison,
       ...jwtDiag,
     }),
   );
-  if (!hasWoff && !hasLwCallback && !payload) {
+  if (willRedirect) {
     const loginUrl = `${url.origin}/login?redirect_uri=${encodeURIComponent(url.origin + "/top")}`;
-    return Response.redirect(loginUrl, 302);
+    const headers = new Headers({ Location: loginUrl });
+    if (clearPoison) {
+      for (const c of clearAuthCookieVariants(url.hostname)) {
+        headers.append("Set-Cookie", c);
+      }
+    }
+    return new Response(null, { status: 302, headers });
   }
 
   // dangling tenant 検知: セッション JWT は有効でも、その tenant の tenants 行が
