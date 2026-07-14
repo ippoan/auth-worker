@@ -404,6 +404,45 @@ export async function handleDeviceSetupEvents(request: Request, env: Env): Promi
 }
 
 /**
+ * POST /device/setup/battery — 接続中デバイスへ電源/バッテリー状態の照会を送る。
+ * recorder の command API に `{action:"battery"}` を投げ command id を返す
+ * (web は `/device/setup/ota/:id` で結果 `{read,percent,mv,vbus,charge}` をポーリング)。
+ */
+export async function handleDeviceSetupBattery(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  if (request.headers.get("Origin") !== issuerOf(env)) {
+    return jsonNoStore({ error: "bad_origin" }, 403);
+  }
+  let body: Record<string, unknown> = {};
+  try {
+    const v = await request.json();
+    if (v && typeof v === "object") body = v as Record<string, unknown>;
+  } catch {
+    // 空 body は検証で弾く
+  }
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
+  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
+    return jsonNoStore({ error: "not_your_device" }, 403);
+  }
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(session.tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: { action: "battery" } }),
+    },
+  );
+  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+  if (res.status === 404) return jsonNoStore({ error: "device_not_connected" }, 409);
+  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
+  const data = (await res.json()) as { id?: string };
+  return jsonNoStore({ id: data.id ?? "" });
+}
+
+/**
  * POST /device/setup/version — 接続中デバイスへ現在バージョンの照会を送る。
  * recorder の command API に `{action:"version"}` を投げ command id を返す
  * (web は `/device/setup/ota/:id` で結果 `{version, slot}` をポーリングする)。
@@ -474,7 +513,7 @@ function setupPage(issuer: string, email: string): string {
   // checkbox はページ共通 CSS の input{width:14rem} を width:auto で打ち消し、
   // flex でラベル文と 1 行に並べる (崩れの実害あり 2026-07-14)
   const devToggleHtml = isDeveloper
-    ? `<label for="dev-build-cores3" style="display:flex;align-items:center;gap:.45rem;margin:.3rem 0 .8rem;font-size:.85rem;color:#92400e;cursor:pointer"><input type="checkbox" id="dev-build-cores3" style="width:auto;margin:0">CoreS3 は dev ビルド (mem-hud = メモリ使用率 HUD 付き) を配信する</label>`
+    ? `<label for="dev-build-cores3" style="display:flex;align-items:center;gap:.45rem;margin:.3rem 0 .8rem;font-size:.85rem;color:#92400e;cursor:pointer"><input type="checkbox" id="dev-build-cores3" style="width:auto;margin:0" checked>CoreS3 は dev ビルド (mem-hud = メモリ使用率 HUD 付き) を配信する</label>`
     : "";
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -576,6 +615,11 @@ if (devToggle) {
     document.getElementById("ota-url-cores3").value =
       devToggle.checked ? DEV_APP_URL_CORES3 : PROD_APP_URL_CORES3;
   });
+  // developer は既定で dev ビルド配信 (checkbox = checked)。読み込み時に OTA URL
+  // 欄を checkbox 状態へ同期する (change は発火しないため明示)。
+  if (devToggle.checked) {
+    document.getElementById("ota-url-cores3").value = DEV_APP_URL_CORES3;
+  }
 }
 
 const LATEST = {}; // kind → 公開中の最新 firmware バージョン
@@ -681,12 +725,22 @@ async function loadDevices() {
       forceBtn.style.display = "none";
       forceBtn.title = "版に関わらず、選択中の OTA URL (dev/prod) を今すぐ書き込みます";
       forceBtn.addEventListener("click", () => startOta(d.device_id, d.kind, forceBtn, bar, barFill, msg, verSpan, otaNote));
+      // 電源/バッテリー照会 (WS battery コマンド)。USB を繋がず /device/setup から
+      // brownout / 充電状態を確認する (alc-app-s3#52)。接続中のみ表示。
+      const battBtn = document.createElement("button");
+      battBtn.className = "small";
+      battBtn.textContent = "電源";
+      battBtn.style.marginLeft = ".35rem";
+      battBtn.style.display = "none";
+      battBtn.title = "バッテリー残量・充電状態・外部給電(VBUS)を照会します";
+      battBtn.addEventListener("click", () => queryBattery(d.device_id, msg));
       if (isConn) {
         // 接続中: バージョン照会が終わるまでボタンは出さず「確認中」を表示。
         // queryVersion が最新/更新ありを判定してボタン or「最新」を出し分ける。
         btn.style.display = "none";
         otaNote.textContent = "確認中...";
         forceBtn.style.display = "";
+        battBtn.style.display = "";
       } else {
         // 未接続: バージョン照会できず更新不可 (無効ボタン表示、赤にはしない)
         btn.disabled = true;
@@ -695,6 +749,7 @@ async function loadDevices() {
       }
       otaTd.appendChild(btn);
       otaTd.appendChild(forceBtn);
+      otaTd.appendChild(battBtn);
       otaTd.appendChild(otaNote);
       otaTd.appendChild(bar);
       otaTd.appendChild(msg);
@@ -720,7 +775,7 @@ async function loadDevices() {
       tr.appendChild(reregTd);
 
       body.appendChild(tr);
-      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, bar, barFill, msg, otaNote });
+      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, battBtn, bar, barFill, msg, otaNote });
       if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
     }
     statusEl.textContent = "";
@@ -746,6 +801,7 @@ function applyConnected(deviceId, isConn) {
     row.otaNote.style.display = "";
     row.otaNote.classList.remove("latest");
     if (row.forceBtn) row.forceBtn.style.display = "";
+    if (row.battBtn) row.battBtn.style.display = "";
     queryVersion(deviceId, row.kind, row.verSpan, row.btn, row.otaNote);
   } else {
     row.verSpan.textContent = "—";
@@ -758,6 +814,7 @@ function applyConnected(deviceId, isConn) {
     row.bar.style.display = "none";
     row.msg.textContent = "";
     if (row.forceBtn) row.forceBtn.style.display = "none";
+    if (row.battBtn) row.battBtn.style.display = "none";
   }
 }
 
@@ -797,6 +854,44 @@ function startDeviceEventStream() {
 // 接続中デバイスへ version コマンドを送り、結果 (version) をセルに表示。
 // 最新版と比較し「最新」/「更新あり」タグを付ける。
 // 戻り値: version を取得できたら true (OTA 後の再照会リトライ判定に使う #389)。
+// 電源/バッテリー照会 (WS battery コマンド)。version と同経路 (trigger→poll)。
+// 結果 {read,percent,mv,vbus,charge} を msg 欄に表示する (alc-app-s3#52)。
+async function queryBattery(deviceId, msg) {
+  msg.textContent = "電源状態を照会中...";
+  try {
+    const res = await fetch(ISSUER + "/device/setup/battery", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ device_id: deviceId }),
+    });
+    if (res.status === 409) { msg.textContent = "未接続です"; return; }
+    if (!res.ok) { msg.textContent = "電源照会に失敗: HTTP " + res.status; return; }
+    const { id } = await res.json();
+    if (!id) { msg.textContent = "電源照会に失敗"; return; }
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      let p;
+      try {
+        const pr = await fetch(ISSUER + "/device/setup/ota/" + encodeURIComponent(id), { credentials: "include" });
+        if (!pr.ok) continue;
+        p = await pr.json();
+      } catch { continue; }
+      if (p && typeof p.percent === "number") {
+        if (p.read === false) { msg.textContent = "電源: 測定前です (数秒後に再試行)"; return; }
+        const chg = p.charge === 1 ? "充電中" : (p.charge === 2 ? "放電中" : "待機/満充電");
+        const src = p.vbus ? "外部給電あり" : "外部給電なし";
+        msg.textContent = "電源: " + p.percent + "% / " + (p.mv || 0) + "mV / " + chg + " / " + src;
+        return;
+      }
+    }
+    msg.textContent = "電源照会タイムアウト";
+  } catch (e) {
+    msg.textContent = "電源照会エラー";
+  }
+}
+
 async function queryVersion(deviceId, kind, verSpan, otaBtn, otaNote) {
   verSpan.textContent = "照会中...";
   // 「更新あり」: 赤ボタンを出し「最新」表示を消す
