@@ -670,11 +670,23 @@ async function loadDevices() {
       const msg = document.createElement("div");
       msg.className = "ota-msg";
       btn.addEventListener("click", () => startOta(d.device_id, d.kind, btn, bar, barFill, msg, verSpan, otaNote));
+      // 強制インストール: 版一致 (「最新」) でも、選択中の OTA URL
+      // (dev/prod チェックボックスに追従) を今すぐ書き込む。dev ⇄ prod は
+      // 版が同じで通常「更新」ボタンが出ないため、接続中は常時この経路で
+      // 押せるようにする (firmware/サーバとも版ゲート無し)。
+      const forceBtn = document.createElement("button");
+      forceBtn.className = "small";
+      forceBtn.textContent = "強制";
+      forceBtn.style.marginLeft = ".35rem";
+      forceBtn.style.display = "none";
+      forceBtn.title = "版に関わらず、選択中の OTA URL (dev/prod) を今すぐ書き込みます";
+      forceBtn.addEventListener("click", () => startOta(d.device_id, d.kind, forceBtn, bar, barFill, msg, verSpan, otaNote));
       if (isConn) {
         // 接続中: バージョン照会が終わるまでボタンは出さず「確認中」を表示。
         // queryVersion が最新/更新ありを判定してボタン or「最新」を出し分ける。
         btn.style.display = "none";
         otaNote.textContent = "確認中...";
+        forceBtn.style.display = "";
       } else {
         // 未接続: バージョン照会できず更新不可 (無効ボタン表示、赤にはしない)
         btn.disabled = true;
@@ -682,6 +694,7 @@ async function loadDevices() {
         btn.title = "未接続のため更新できません";
       }
       otaTd.appendChild(btn);
+      otaTd.appendChild(forceBtn);
       otaTd.appendChild(otaNote);
       otaTd.appendChild(bar);
       otaTd.appendChild(msg);
@@ -707,7 +720,7 @@ async function loadDevices() {
       tr.appendChild(reregTd);
 
       body.appendChild(tr);
-      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, bar, barFill, msg, otaNote });
+      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, bar, barFill, msg, otaNote });
       if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
     }
     statusEl.textContent = "";
@@ -732,6 +745,7 @@ function applyConnected(deviceId, isConn) {
     row.otaNote.textContent = "確認中...";
     row.otaNote.style.display = "";
     row.otaNote.classList.remove("latest");
+    if (row.forceBtn) row.forceBtn.style.display = "";
     queryVersion(deviceId, row.kind, row.verSpan, row.btn, row.otaNote);
   } else {
     row.verSpan.textContent = "—";
@@ -743,6 +757,7 @@ function applyConnected(deviceId, isConn) {
     row.otaNote.style.display = "none";
     row.bar.style.display = "none";
     row.msg.textContent = "";
+    if (row.forceBtn) row.forceBtn.style.display = "none";
   }
 }
 
