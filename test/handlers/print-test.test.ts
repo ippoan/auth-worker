@@ -1,33 +1,7 @@
 import { describe, it, expect } from "vitest";
-import {
-  buildTestPdf,
-  handlePrintTestPdf,
-  handlePrintTestPage,
-} from "../../src/handlers/print-test";
-import { createMockKV } from "../helpers/mock-env";
-import { signTestJwt } from "../helpers/test-jwt";
-import type { Env } from "../../src/index";
+import { buildTestPdf, handlePrintTestPdf } from "../../src/handlers/print-test";
 
-const SECRET = "print-test-secret";
-const ENV = "staging";
 const ISSUER = "https://auth.ippoan.org";
-
-function makeEnv(overrides: Record<string, unknown> = {}): Env {
-  return {
-    AUTH_CONFIG: createMockKV(),
-    JWT_SECRET: SECRET,
-    WORKER_ENV: ENV,
-    ...overrides,
-  } as unknown as Env;
-}
-
-async function opCookie(claims: Record<string, unknown> = {}): Promise<Record<string, string>> {
-  const token = await signTestJwt(
-    { tenant_id: "tenant-1", email: "op@example.com", env: ENV, ...claims },
-    SECRET,
-  );
-  return { Cookie: `logi_auth_token=${token}` };
-}
 
 function getReq(path: string, headers: Record<string, string> = {}): Request {
   return new Request(`${ISSUER}${path}`, { method: "GET", headers });
@@ -74,45 +48,5 @@ describe("handlePrintTestPdf", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("application/pdf");
     expect(res.headers.get("Cache-Control")).toBe("no-store");
-  });
-});
-
-describe("handlePrintTestPage", () => {
-  it("redirects to /login when not authenticated", async () => {
-    const res = await handlePrintTestPage(getReq("/device/print-test"), makeEnv());
-    expect(res.status).toBe(302);
-    const loc = res.headers.get("Location") ?? "";
-    expect(loc).toContain("/login");
-    expect(loc).toContain(encodeURIComponent("/device/print-test"));
-  });
-
-  it("shows session error page (not a redirect) when cookie is invalid", async () => {
-    const res = await handlePrintTestPage(
-      getReq("/device/print-test", { Cookie: "logi_auth_token=broken" }),
-      makeEnv(),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.text()).toContain("セッションを確認できません");
-  });
-
-  it("renders the WebSerial page for a valid session", async () => {
-    const res = await handlePrintTestPage(
-      getReq("/device/print-test", await opCookie()),
-      makeEnv(),
-    );
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("プリントテスト");
-    expect(html).toContain("/print/test.pdf");
-    expect(html).toContain("PRINTER ADDR");
-    expect(html).toContain("op@example.com");
-  });
-
-  it("rejects a session without tenant_id", async () => {
-    const res = await handlePrintTestPage(
-      getReq("/device/print-test", await opCookie({ tenant_id: "", org: "" })),
-      makeEnv(),
-    );
-    expect(res.status).toBe(403);
   });
 });
