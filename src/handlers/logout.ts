@@ -6,7 +6,7 @@
  */
 
 import type { Env } from "../index";
-import { clearAuthCookie } from "../lib/cookies";
+import { clearAuthCookieVariants } from "../lib/cookies";
 
 export async function handleLogout(
   request: Request,
@@ -31,10 +31,10 @@ export async function handleLogout(
 </script>
 </body></html>`;
 
-  return new Response(html, {
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Set-Cookie": clearAuthCookie(new URL(request.url).hostname),
-    },
-  });
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+  for (const c of clearAuthCookieVariants(new URL(request.url).hostname)) {
+    headers.append("Set-Cookie", c);
+  }
+
+  return new Response(html, { headers });
 }
