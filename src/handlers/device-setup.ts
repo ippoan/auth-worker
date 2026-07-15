@@ -563,6 +563,11 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 <div id="printer-addr-row" style="display:none">
 <label for="printer-addr">プリンター宛先 (host:port) — AtomS3 印刷ブリッジが 9100 raw 印字する LAN プリンター。空欄なら変更しない</label>
 <input id="printer-addr" placeholder="192.168.11.60:9100" pattern="[^\\s:]+:[0-9]{1,5}">
+<p style="margin:.4rem 0 .8rem">
+<button id="print-test" type="button">この宛先でテスト印刷</button>
+<span id="print-test-result" style="margin-left:.5rem;font-size:.9rem"></span>
+</p>
+<p class="muted" style="margin:-.4rem 0 .8rem">上のプリンター宛先を保存 (PRINTER ADDR) し、テスト PDF (<a href="${escapeHtml(issuer)}/print/test.pdf" target="_blank" rel="noopener">/print/test.pdf</a>) を印字して配線・IP を確認します。デバイスを USB 接続してから押してください。</p>
 </div>
 <p><button id="run">セットアップ実行</button></p>
 <p id="result"></p>
@@ -617,6 +622,95 @@ syncPrinterRow();
 // CoreS3 は ESP-IDF ログが混在するため既知プレフィックス行のみ解釈する。
 // PRINTER は PRINTER STATUS / PRINTER ADDR コマンドの応答表示用 (印刷ブリッジ)
 const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG|PRINTER)\\b/;
+
+// テスト印刷 (AtomS3 印刷ブリッジ): 入力済みの printer 宛先を PRINTER ADDR で
+// 保存し、公開テスト PDF (/print/test.pdf) を PRINT で送って印字確認する。
+// 経路は URL 方式 (デバイスが HTTP GET → 9100)。provisioning とは独立した
+// 単発の WebSerial セッション (登録フローの run() には影響しない)。
+const printTestBtn = document.getElementById("print-test");
+const printTestResult = document.getElementById("print-test-result");
+async function runPrintTest() {
+  printTestBtn.disabled = true;
+  printTestResult.textContent = "";
+  try {
+    const printer = (printerInput.value || "").trim();
+    if (!/^\\S+:\\d+$/.test(printer)) throw new Error("プリンター宛先を host:port 形式で入力してください");
+    if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
+    const url = ISSUER + "/print/test.pdf";
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
+    const writer = port.writable.getWriter();
+    const reader = port.readable.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    const lines = [];
+    (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let i;
+          while ((i = buf.search(/[\\r\\n]/)) >= 0) {
+            const line = buf.slice(0, i).trim();
+            buf = buf.slice(i + 1);
+            if (line && KNOWN.test(line)) { lines.push(line); log("<< " + line); }
+          }
+        }
+      } catch { /* port closed */ }
+    })();
+    const send = async (cmd) => { log(">> " + cmd); await writer.write(new TextEncoder().encode(cmd + "\\n")); };
+    const waitLine = async (re, timeoutMs) => {
+      const deadline = Date.now() + timeoutMs;
+      let idx = 0;
+      for (;;) {
+        while (idx < lines.length) {
+          const line = lines[idx++];
+          if (re.test(line)) return line;
+          if (/^ERR\\b/.test(line)) throw new Error(line);
+        }
+        if (Date.now() > deadline) throw new Error("応答タイムアウト: " + re);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    };
+    // PONG が返るまで PING (ポート open のリセットで最初のコマンドが飲まれる対策)
+    log("デバイスの起動を待機中 ...");
+    const readyDeadline = Date.now() + 20000;
+    let ready = false;
+    while (Date.now() < readyDeadline) {
+      const before = lines.length;
+      await writer.write(new TextEncoder().encode("PING\\n"));
+      const until = Date.now() + 700;
+      while (Date.now() < until) {
+        if (lines.slice(before).some((l) => /^PONG/.test(l))) { ready = true; break; }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (ready) break;
+    }
+    if (!ready) throw new Error("デバイスが応答しません (USB 接続とファームウェアを確認してください)");
+    lines.length = 0;
+    await send("PRINTER ADDR " + printer);
+    await waitLine(/^OK PRINTER ADDR/, 5000);
+    await send("PRINT " + url);
+    await waitLine(/^OK PRINT/, 5000);
+    log("印刷ジョブ開始 — 結果を待っています (最大 90 秒) ...");
+    // 不通時は lwip の接続タイムアウト (~20 秒) 後に NG が届く
+    const evt = await waitLine(/^EVT PRINT (OK|NG)/, 90000);
+    printTestResult.innerHTML = /^EVT PRINT OK/.test(evt)
+      ? '<span style="color:#166534">送信成功: ' + evt.replace(/[<>&]/g, "") + "</span>"
+      : '<span style="color:#b91c1c">失敗: ' + evt.replace(/[<>&]/g, "") + "</span>";
+    writer.releaseLock();
+    await reader.cancel().catch(() => {});
+    await port.close().catch(() => {});
+  } catch (e) {
+    printTestResult.innerHTML = '<span style="color:#b91c1c">失敗: ' +
+      String(e && e.message ? e.message : e).replace(/[<>&]/g, "") + "</span>";
+  } finally {
+    printTestBtn.disabled = false;
+  }
+}
+printTestBtn.addEventListener("click", runPrintTest);
 
 // dev ビルド切り替え (developer のみ checkbox が描画される)。チェックで
 // OTA URL 欄を dev app イメージへ、外すと prod へ書き戻す

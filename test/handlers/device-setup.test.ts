@@ -134,6 +134,11 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain('id="printer-addr"');
     expect(html).toContain("PRINTER ADDR ");
     expect(html).toContain("syncPrinterRow");
+    // テスト印刷ボタン: printer 宛先を保存し /print/test.pdf を印字する
+    // (Refs #395、URL 方式で配線・IP を確認)
+    expect(html).toContain('id="print-test"');
+    expect(html).toContain("runPrintTest");
+    expect(html).toContain("/print/test.pdf");
   });
 
   it("developer アカウントには dev ビルド (mem-hud) 配信の選択を表示する (alc-app-s3#44)", async () => {
