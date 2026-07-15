@@ -560,6 +560,10 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 </select>
 <label for="label">デバイスラベル (同名は旧 credential を自動失効)</label>
 <input id="label" value="cores3" pattern="[A-Za-z0-9._-]+">
+<div id="printer-addr-row" style="display:none">
+<label for="printer-addr">プリンター宛先 (host:port) — AtomS3 印刷ブリッジが 9100 raw 印字する LAN プリンター。空欄なら変更しない</label>
+<input id="printer-addr" placeholder="192.168.11.60:9100" pattern="[^\\s:]+:[0-9]{1,5}">
+</div>
 <p><button id="run">セットアップ実行</button></p>
 <p id="result"></p>
 <pre id="log"></pre>
@@ -596,14 +600,23 @@ function log(line) {
 // 機種を切り替えたらラベル既定値も追随させる (手で編集済みならそのまま)
 const kindSel = document.getElementById("kind");
 const labelInput = document.getElementById("label");
+// プリンター宛先の入力欄は AtomS3 印刷ブリッジ (9100 raw 印字) の時だけ出す
+const printerInput = document.getElementById("printer-addr");
+const printerRow = document.getElementById("printer-addr-row");
+function syncPrinterRow() {
+  printerRow.style.display = kindSel.value === "atoms3-print" ? "" : "none";
+}
 kindSel.addEventListener("change", () => {
   const defaults = { cores3: "cores3", "atoms3-print": "atoms3-print" };
   if (Object.values(defaults).includes(labelInput.value)) {
     labelInput.value = defaults[kindSel.value] || kindSel.value;
   }
+  syncPrinterRow();
 });
-// CoreS3 は ESP-IDF ログが混在するため既知プレフィックス行のみ解釈する
-const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG)\\b/;
+syncPrinterRow();
+// CoreS3 は ESP-IDF ログが混在するため既知プレフィックス行のみ解釈する。
+// PRINTER は PRINTER STATUS / PRINTER ADDR コマンドの応答表示用 (印刷ブリッジ)
+const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG|PRINTER)\\b/;
 
 // dev ビルド切り替え (developer のみ checkbox が描画される)。チェックで
 // OTA URL 欄を dev app イメージへ、外すと prod へ書き戻す
@@ -1159,6 +1172,14 @@ async function run() {
     if (location.hostname.includes("staging")) {
       await send("WS URL wss://alc-recorder-staging.m-tama-ramu.workers.dev/ws");
       await waitLine(/^OK WS URL/, 5000);
+    }
+    // プリンター宛先 (AtomS3 印刷ブリッジのみ、入力があれば)。firmware が NVS に
+    // 保存し、WS push 印刷 (Refs ippoan/alc-app-s3#38) の print_begin で 9100 raw
+    // 印字の宛先に使う。書式不正は firmware が ERR PRINTER で弾く
+    const printerAddr = (printerInput.value || "").trim();
+    if (kind === "atoms3-print" && printerAddr) {
+      await send("PRINTER ADDR " + printerAddr);
+      await waitLine(/^OK PRINTER ADDR/, 5000);
     }
     // AUTH TOKEN は HTTPS 疎通確認。デバイス側が Wi-Fi 再接続 (ポート open の
     // リセット後 ~30 秒) を内部で待ってから mint するため、余裕をもって待つ
