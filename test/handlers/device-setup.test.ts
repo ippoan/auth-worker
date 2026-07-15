@@ -129,6 +129,11 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("queryVersion");
     // dev ビルド選択は developer 以外には表示しない (alc-app-s3#44)
     expect(html).not.toContain('id="dev-build-cores3"');
+    // AtomS3 印刷ブリッジのプリンター宛先 (PRINTER ADDR) 設定 UI (Refs #395、
+    // WS push 印刷 ippoan/alc-app-s3#38)。kind=atoms3-print の時だけ表示する
+    expect(html).toContain('id="printer-addr"');
+    expect(html).toContain("PRINTER ADDR ");
+    expect(html).toContain("syncPrinterRow");
   });
 
   it("developer アカウントには dev ビルド (mem-hud) 配信の選択を表示する (alc-app-s3#44)", async () => {
