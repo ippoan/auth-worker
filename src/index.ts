@@ -64,6 +64,7 @@ import { handleMcpDeviceCallback } from "./handlers/mcp-device-callback";
 import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
 import { handleAuthIntrospect } from "./handlers/auth-introspect";
+import { handleInternalHubDevices } from "./handlers/internal-hub-devices";
 import { handleMcpJwtPickup } from "./handlers/mcp-jwt-pickup";
 import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
@@ -635,6 +636,10 @@ export default {
           // 公開中の最新 firmware バージョン (Pages manifest.json)。
           case "/device/setup/latest":
             return await handleDeviceSetupLatest(request, env);
+          // role=device-hub の device を tenant 横断で返す internal API
+          // (cf-alc-recorder cron 用、Refs ippoan/alc-app#121 / #401)。
+          case "/internal/hub-devices":
+            return await handleInternalHubDevices(request, env);
           // 注: /device/setup/ota と /device/setup/version は **POST** なので
           // 下の POST 用 switch 側に置く (GET switch に入れると 404 になる)。
           // テスト用 PDF (公開 — デバイスは認証ヘッダを付けずに GET する)。
