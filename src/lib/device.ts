@@ -233,6 +233,30 @@ export async function listDeviceRecordsByTenant(
     .sort((a, b) => b.created_at - a.created_at);
 }
 
+/** `listAllHubDeviceRecords` が返す最小限のフィールド (secret_hash 等の機微値は含めない)。 */
+export interface HubDeviceRef {
+  tenant_id: string;
+  device_id: string;
+}
+
+/**
+ * role=device-hub (CoreS3) の有効な device を tenant 横断で列挙する
+ * (cf-alc-recorder cron の対象一覧、ippoan/alc-app#121 / #401)。
+ *
+ * `listDeviceRecordsByTenant` と同じ全走査 (device 数は運用上小さい前提)。
+ * server-to-server 専用 (`GET /internal/hub-devices`) からのみ呼ばれるため、
+ * 返り値は secret_hash / label を含まない最小限の参照だけに絞る。
+ */
+export async function listAllHubDeviceRecords(env: DeviceKvEnv): Promise<HubDeviceRef[]> {
+  const listed = await env.AUTH_CONFIG.list({ prefix: KV_PREFIX, limit: 1000 });
+  const records = await Promise.all(
+    listed.keys.map((k) => getDeviceRecord(env, k.name.slice(KV_PREFIX.length))),
+  );
+  return records
+    .filter((r): r is DeviceRecord => !!r && !r.revoked && r.role === DEVICE_ROLE_HUB)
+    .map((r) => ({ tenant_id: r.tenant_id, device_id: r.device_id }));
+}
+
 /** device レコードを KV から読む。不在 / JSON 破損は null。 */
 export async function getDeviceRecord(
   env: DeviceKvEnv,

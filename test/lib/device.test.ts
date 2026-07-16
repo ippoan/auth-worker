@@ -13,6 +13,7 @@ import {
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
   DEVICE_JWT_TTL_SECONDS,
+  listAllHubDeviceRecords,
   type DeviceRecord,
 } from "../../src/lib/device";
 import { verifyJwt } from "../../src/lib/jwt";
@@ -231,5 +232,48 @@ describe("mintDeviceJwt", () => {
     await expect(
       mintDeviceJwt({ JWT_SECRET: undefined, WORKER_ENV: "staging" }, record, NOW),
     ).rejects.toThrow("JWT_SECRET not configured");
+  });
+});
+
+describe("listAllHubDeviceRecords", () => {
+  it("returns an empty array when no devices exist", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    expect(await listAllHubDeviceRecords(env)).toEqual([]);
+  });
+
+  it("returns only hub devices, across tenants, as {tenant_id, device_id}", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const hub1 = await createDeviceCredential(env, "tenant-a", "cores3-1", NOW, DEVICE_ROLE_HUB);
+    await createDeviceCredential(env, "tenant-a", "kiosk-1", NOW, DEVICE_ROLE_KIOSK); // hub 以外は除外
+    const hub2 = await createDeviceCredential(env, "tenant-b", "cores3-2", NOW, DEVICE_ROLE_HUB);
+    await createDeviceCredential(env, "tenant-b", "unset-role", NOW); // role 未指定 (既定 DEVICE_ROLE) も除外
+
+    const result = await listAllHubDeviceRecords(env);
+    expect(result).toHaveLength(2);
+    expect(result).toEqual(
+      expect.arrayContaining([
+        { tenant_id: "tenant-a", device_id: hub1.device_id },
+        { tenant_id: "tenant-b", device_id: hub2.device_id },
+      ]),
+    );
+    // secret_hash 等の機微値を含まない最小限の shape であること
+    for (const r of result) {
+      expect(Object.keys(r).sort()).toEqual(["device_id", "tenant_id"]);
+    }
+  });
+
+  it("excludes revoked hub devices", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const hub = await createDeviceCredential(env, "tenant-a", "cores3-1", NOW, DEVICE_ROLE_HUB);
+    await revokeDeviceCredential(env, hub.device_id);
+    expect(await listAllHubDeviceRecords(env)).toEqual([]);
+  });
+
+  it("skips corrupt KV entries (getDeviceRecord returns null)", async () => {
+    const kv = createMockKV({ "device:bad": "{not json" });
+    const env = { AUTH_CONFIG: kv };
+    const hub = await createDeviceCredential(env, "tenant-a", "cores3-1", NOW, DEVICE_ROLE_HUB);
+    const result = await listAllHubDeviceRecords(env);
+    expect(result).toEqual([{ tenant_id: "tenant-a", device_id: hub.device_id }]);
   });
 });
