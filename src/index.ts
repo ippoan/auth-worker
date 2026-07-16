@@ -92,6 +92,7 @@ import {
   handleDeviceSetupEvents,
   handleDeviceSetupVersion,
   handleDeviceSetupBattery,
+  handleDeviceSetupGw,
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
 import { handlePrintTestPdf } from "./handlers/print-test";
@@ -784,6 +785,10 @@ export default {
           // 電源/バッテリー照会トリガ (recorder command {action:battery})。POST。
           case "/device/setup/battery":
             return await handleDeviceSetupBattery(request, env);
+          // Windows GW (alc-gw) URL の設定/照会トリガ
+          // (recorder command {action:gw_url|gw_status})。POST。
+          case "/device/setup/gw":
+            return await handleDeviceSetupGw(request, env);
           // Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing (box ↔ operator)。
           case "/device/pair/start":
             return await handleDevicePairStart(request, env);
