@@ -443,6 +443,52 @@ export async function handleDeviceSetupBattery(request: Request, env: Env): Prom
 }
 
 /**
+ * POST /device/setup/gw — CoreS3 へ Windows GW (alc-gw、ippoan/alc-app#120) の
+ * ハブ URL 設定または接続状態照会を送る。body: `{ device_id, url? }`。
+ * url あり → `{action:"gw_url", url}` (ws(s):// のみ、シリアルの `GW URL` と
+ * 同じ NVS 保存先)、url なし → `{action:"gw_status"}`。command id を返し、
+ * 結果 (`{ok}` / `{connected, url}`) は `/device/setup/ota/:id` でポーリング。
+ */
+export async function handleDeviceSetupGw(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  if (request.headers.get("Origin") !== issuerOf(env)) {
+    return jsonNoStore({ error: "bad_origin" }, 403);
+  }
+  let body: Record<string, unknown> = {};
+  try {
+    const v = await request.json();
+    if (v && typeof v === "object") body = v as Record<string, unknown>;
+  } catch {
+    // 空 body は検証で弾く
+  }
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
+  const url = typeof body.url === "string" ? body.url : "";
+  if (url && !/^wss?:\/\//.test(url)) {
+    return jsonNoStore({ error: "url は ws(s):// で始めてください" }, 400);
+  }
+  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
+    return jsonNoStore({ error: "not_your_device" }, 403);
+  }
+  const payload = url ? { action: "gw_url", url } : { action: "gw_status" };
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(session.tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload }),
+    },
+  );
+  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+  if (res.status === 404) return jsonNoStore({ error: "device_not_connected" }, 409);
+  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
+  const data = (await res.json()) as { id?: string };
+  return jsonNoStore({ id: data.id ?? "" });
+}
+
+/**
  * POST /device/setup/version — 接続中デバイスへ現在バージョンの照会を送る。
  * recorder の command API に `{action:"version"}` を投げ command id を返す
  * (web は `/device/setup/ota/:id` で結果 `{version, slot}` をポーリングする)。
@@ -578,6 +624,8 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 ${devToggleHtml}
 <label for="ota-url-atoms3-print">OTA firmware URL — AtomS3 印刷ブリッジ (app イメージ)</label>
 <input id="ota-url-atoms3-print" value="${escapeHtml(DEVICE_KINDS["atoms3-print"]?.appUrl ?? "")}" style="width:100%;max-width:32rem">
+<label for="gw-url">Windows GW URL — CoreS3 の測定中継先 (alc-gw ハブ、ws://&lt;GW の IP&gt;:9000)。行の「GW設定」で接続中の CoreS3 に保存、「GW確認」で疎通を照会</label>
+<input id="gw-url" placeholder="ws://192.168.11.5:9000" style="width:100%;max-width:32rem">
 <p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。接続中のデバイスは
 バージョンを自動照会し、その機種の公開中の最新版と違えば「更新あり」を表示します。
 「再登録」は firmware の再インストール等で credential が消えたデバイスの復旧用です —
@@ -841,6 +889,24 @@ async function loadDevices() {
       battBtn.style.display = "none";
       battBtn.title = "バッテリー残量・充電状態・外部給電(VBUS)を照会します";
       battBtn.addEventListener("click", () => queryBattery(d.device_id, msg));
+      // Windows GW (alc-gw) 連携: 上の GW URL 入力欄をデバイスへ保存 / 接続状態
+      // を照会 (WS gw_url / gw_status コマンド)。gw_link を持つ CoreS3 のみ・
+      // WS 接続中のみ表示。
+      const gwBtn = document.createElement("button");
+      gwBtn.className = "small";
+      gwBtn.textContent = "GW設定";
+      gwBtn.style.marginLeft = ".35rem";
+      gwBtn.style.display = "none";
+      gwBtn.title = "上の Windows GW URL をこのデバイスに保存します (NVS)";
+      gwBtn.addEventListener("click", () => setGwUrl(d.device_id, msg));
+      const gwChkBtn = document.createElement("button");
+      gwChkBtn.className = "small";
+      gwChkBtn.textContent = "GW確認";
+      gwChkBtn.style.marginLeft = ".35rem";
+      gwChkBtn.style.display = "none";
+      gwChkBtn.title = "このデバイスの GW 接続状態を照会します";
+      gwChkBtn.addEventListener("click", () => queryGwStatus(d.device_id, msg));
+      const isGwKind = d.kind === "cores3";
       if (isConn) {
         // 接続中: バージョン照会が終わるまでボタンは出さず「確認中」を表示。
         // queryVersion が最新/更新ありを判定してボタン or「最新」を出し分ける。
@@ -848,6 +914,7 @@ async function loadDevices() {
         otaNote.textContent = "確認中...";
         forceBtn.style.display = "";
         battBtn.style.display = "";
+        if (isGwKind) { gwBtn.style.display = ""; gwChkBtn.style.display = ""; }
       } else {
         // 未接続: バージョン照会できず更新不可 (無効ボタン表示、赤にはしない)
         btn.disabled = true;
@@ -857,6 +924,8 @@ async function loadDevices() {
       otaTd.appendChild(btn);
       otaTd.appendChild(forceBtn);
       otaTd.appendChild(battBtn);
+      otaTd.appendChild(gwBtn);
+      otaTd.appendChild(gwChkBtn);
       otaTd.appendChild(otaNote);
       otaTd.appendChild(bar);
       otaTd.appendChild(msg);
@@ -882,7 +951,7 @@ async function loadDevices() {
       tr.appendChild(reregTd);
 
       body.appendChild(tr);
-      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, battBtn, bar, barFill, msg, otaNote });
+      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bar, barFill, msg, otaNote });
       if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
     }
     statusEl.textContent = "";
@@ -909,6 +978,10 @@ function applyConnected(deviceId, isConn) {
     row.otaNote.classList.remove("latest");
     if (row.forceBtn) row.forceBtn.style.display = "";
     if (row.battBtn) row.battBtn.style.display = "";
+    if (row.kind === "cores3") {
+      if (row.gwBtn) row.gwBtn.style.display = "";
+      if (row.gwChkBtn) row.gwChkBtn.style.display = "";
+    }
     queryVersion(deviceId, row.kind, row.verSpan, row.btn, row.otaNote);
   } else {
     row.verSpan.textContent = "—";
@@ -922,6 +995,8 @@ function applyConnected(deviceId, isConn) {
     row.msg.textContent = "";
     if (row.forceBtn) row.forceBtn.style.display = "none";
     if (row.battBtn) row.battBtn.style.display = "none";
+    if (row.gwBtn) row.gwBtn.style.display = "none";
+    if (row.gwChkBtn) row.gwChkBtn.style.display = "none";
   }
 }
 
@@ -996,6 +1071,74 @@ async function queryBattery(deviceId, msg) {
     msg.textContent = "電源照会タイムアウト";
   } catch (e) {
     msg.textContent = "電源照会エラー";
+  }
+}
+
+// command_result の共通ポーリング (/device/setup/ota/:id は command 種別に
+// 依らない透過 API)。ready(payload) が true を返した payload を返す。
+// タイムアウトは null。
+async function pollCommandResult(id, timeoutMs, ready) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const pr = await fetch(ISSUER + "/device/setup/ota/" + encodeURIComponent(id), { credentials: "include" });
+      if (!pr.ok) continue;
+      const p = await pr.json();
+      if (ready(p)) return p;
+    } catch { /* 次のポーリングへ */ }
+  }
+  return null;
+}
+
+// Windows GW (alc-gw) URL の保存 (WS gw_url コマンド)。保存後は gw_link が
+// バックオフ込みで接続しに行くため、少し待ってから接続状態を自動照会する
+async function setGwUrl(deviceId, msg) {
+  const url = (document.getElementById("gw-url").value || "").trim();
+  if (!/^wss?:\\/\\//.test(url)) { msg.textContent = "GW URL を ws://<GWのIP>:9000 の形式で入力してください"; return; }
+  msg.textContent = "GW URL を保存中...";
+  try {
+    const res = await fetch(ISSUER + "/device/setup/gw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ device_id: deviceId, url }),
+    });
+    if (res.status === 409) { msg.textContent = "未接続です"; return; }
+    if (!res.ok) { msg.textContent = "GW URL 保存に失敗: HTTP " + res.status; return; }
+    const { id } = await res.json();
+    if (!id) { msg.textContent = "GW URL 保存に失敗"; return; }
+    const p = await pollCommandResult(id, 20000, (x) => x && typeof x.ok === "boolean");
+    if (!p) { msg.textContent = "GW URL 保存タイムアウト"; return; }
+    if (!p.ok) { msg.textContent = "GW URL 保存失敗: " + (p.message || "不明なエラー"); return; }
+    msg.textContent = "GW URL 保存 OK — 15 秒後に接続状態を確認します...";
+    setTimeout(() => queryGwStatus(deviceId, msg), 15000);
+  } catch (e) {
+    msg.textContent = "GW URL 保存エラー";
+  }
+}
+
+// GW 接続状態の照会 (WS gw_status コマンド)
+async function queryGwStatus(deviceId, msg) {
+  msg.textContent = "GW 接続状態を照会中...";
+  try {
+    const res = await fetch(ISSUER + "/device/setup/gw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ device_id: deviceId }),
+    });
+    if (res.status === 409) { msg.textContent = "未接続です"; return; }
+    if (!res.ok) { msg.textContent = "GW 照会に失敗: HTTP " + res.status; return; }
+    const { id } = await res.json();
+    if (!id) { msg.textContent = "GW 照会に失敗"; return; }
+    const p = await pollCommandResult(id, 20000, (x) => x && typeof x.connected === "boolean");
+    if (!p) { msg.textContent = "GW 照会タイムアウト"; return; }
+    msg.textContent = p.connected
+      ? "GW: 接続中 (" + (p.url || "") + ")"
+      : "GW: 未接続" + (p.url ? " (" + p.url + ")" : " (URL 未設定)");
+  } catch (e) {
+    msg.textContent = "GW 照会エラー";
   }
 }
 

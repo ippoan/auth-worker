@@ -8,6 +8,7 @@ import {
   handleDeviceSetupConnected,
   handleDeviceSetupEvents,
   handleDeviceSetupVersion,
+  handleDeviceSetupGw,
 } from "../../src/handlers/device-setup";
 import { createDeviceCredential, getDeviceRecord } from "../../src/lib/device";
 import { createMockKV } from "../helpers/mock-env";
@@ -603,5 +604,151 @@ describe("handleDeviceSetupOta / handleDeviceSetupOtaStatus", () => {
       env,
     );
     expect(res.status).toBe(403);
+  });
+});
+
+describe("handleDeviceSetupGw", () => {
+  function mockRecorder(handler: (req: Request) => Response) {
+    const calls: Array<{ url: string; method: string; auth: string | null; body: string }> = [];
+    const fetcher = {
+      async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+        const req = new Request(input as string, init);
+        calls.push({
+          url: req.url,
+          method: req.method,
+          auth: req.headers.get("Authorization"),
+          body: init?.body ? String(init.body) : "",
+        });
+        return handler(req);
+      },
+    };
+    return { fetcher, calls };
+  }
+
+  async function gwEnv(recorder: unknown) {
+    const env = makeEnv({
+      ALC_RECORDER: recorder,
+      INTERNAL_SHARED_SECRET: "shared-abc",
+    });
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    return { env, deviceId: cred.device_id };
+  }
+
+  it("url あり: recorder に action:gw_url を転送し id を返す", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "gw-1" }), { status: 202 }),
+    );
+    const { env, deviceId } = await gwEnv(fetcher);
+    const res = await handleDeviceSetupGw(
+      postJson(
+        "/device/setup/gw",
+        { device_id: deviceId, url: "ws://192.168.11.5:9000" },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "gw-1" });
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.auth).toBe("shared-abc");
+    expect(calls[0]!.url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
+    expect(JSON.parse(calls[0]!.body)).toEqual({
+      payload: { action: "gw_url", url: "ws://192.168.11.5:9000" },
+    });
+  });
+
+  it("url なし: action:gw_status を転送する (接続状態の照会)", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "gw-2" }), { status: 202 }),
+    );
+    const { env, deviceId } = await gwEnv(fetcher);
+    const res = await handleDeviceSetupGw(
+      postJson("/device/setup/gw", { device_id: deviceId }, { ...(await opCookie()), Origin: ISSUER }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "gw-2" });
+    expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "gw_status" } });
+  });
+
+  it("不正入力・認証: session なし 401 / bad origin 403 / ws 以外の url 400 / device_id なし 400 / 未接続 409", async () => {
+    const { fetcher } = mockRecorder(() => new Response("{}", { status: 404 }));
+    const { env, deviceId } = await gwEnv(fetcher);
+    expect((await handleDeviceSetupGw(postJson("/device/setup/gw", {}), env)).status).toBe(401);
+    expect(
+      (
+        await handleDeviceSetupGw(
+          postJson("/device/setup/gw", {}, { ...(await opCookie()), Origin: "https://evil" }),
+          env,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await handleDeviceSetupGw(
+          postJson(
+            "/device/setup/gw",
+            { device_id: deviceId, url: "http://192.168.11.5:9000" },
+            { ...(await opCookie()), Origin: ISSUER },
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await handleDeviceSetupGw(
+          postJson("/device/setup/gw", { url: "ws://x:9000" }, { ...(await opCookie()), Origin: ISSUER }),
+          env,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await handleDeviceSetupGw(
+          postJson(
+            "/device/setup/gw",
+            { device_id: deviceId, url: "ws://192.168.11.5:9000" },
+            { ...(await opCookie()), Origin: ISSUER },
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(409);
+  });
+
+  it("他テナントの device_id は 403 (recorder を叩かない)", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env } = await gwEnv(fetcher);
+    const otherHeaders = { ...(await opCookie({ tenant_id: "tenant-2" })), Origin: ISSUER };
+    const other = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "z" }, otherHeaders), env)
+    ).json()) as PairResponse;
+    const res = await handleDeviceSetupGw(
+      postJson(
+        "/device/setup/gw",
+        { device_id: other.device_id, url: "ws://192.168.11.5:9000" },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(calls.length).toBe(0);
+  });
+
+  it("recorder binding 未設定は 503", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    const res = await handleDeviceSetupGw(
+      postJson("/device/setup/gw", { device_id: cred.device_id, url: "ws://x:9000" }, headers),
+      env,
+    );
+    expect(res.status).toBe(503);
   });
 });
