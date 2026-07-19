@@ -1643,9 +1643,13 @@ async function runP4Gateway(port, siteIdOverride) {
       }
     } catch { /* port closed */ }
   })();
+  // P4 の console は素の ESP-IDF esp_console/linenoise REPL — CoreS3 側の
+  // 自前パーサ (alc-app-s3) と違い \\n 単独だと行確定とみなされず (実機で
+  // 検証: cred show を送っても一切応答が返らなかった)、\\r\\n (実端末の
+  // Enter キー相当) を送る必要がある。
   const send = async (cmd, secretParts) => {
     log(">> " + (secretParts ? cmd.split(" ").slice(0, 2).join(" ") + " …(伏せ字)" : cmd));
-    await writer.write(new TextEncoder().encode(cmd + "\\n"));
+    await writer.write(new TextEncoder().encode(cmd + "\\r\\n"));
   };
   // mark 以降に現れた行だけを見る (offset 方式)。前段の応答 (例: cred show の
   // "credential not set") を後段のマッチと取り違えないため。
