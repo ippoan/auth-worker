@@ -4,11 +4,16 @@ import {
   handleDevicePairInternal,
   handleDeviceToken,
   handleDeviceRevoke,
+  handleDeviceHubToken,
+  handleDeviceIntrospect,
+  handleDeviceSiteBackfill,
 } from "../../src/handlers/device";
 import {
   createDeviceCredential,
   DEVICE_ROLE,
   DEVICE_ROLE_KIOSK,
+  DEVICE_ROLE_HUB,
+  DEVICE_ROLE_GATEWAY,
 } from "../../src/lib/device";
 import { verifyJwt } from "../../src/lib/jwt";
 import { createMockKV } from "../helpers/mock-env";
@@ -389,5 +394,234 @@ describe("handleDeviceRevoke", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.revoked).toBe(true);
+  });
+});
+
+describe("handleDeviceHubToken (Refs #406)", () => {
+  it("400 when device_id, device_secret or nonce is missing", async () => {
+    const res = await handleDeviceHubToken(post("/device/hub-token", { device_id: "x" }), makeEnv());
+    expect(res.status).toBe(400);
+  });
+
+  it("401 for an invalid credential", async () => {
+    const res = await handleDeviceHubToken(
+      post("/device/hub-token", { device_id: "nope", device_secret: "x", nonce: "n" }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("403 when the credential's role is not hub/gateway (e.g. kiosk)", async () => {
+    const env = makeEnv();
+    const cred = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_KIOSK, "site-1");
+    const res = await handleDeviceHubToken(
+      post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "n" }),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("403 when site_id is unset on an otherwise eligible (hub) credential", async () => {
+    const env = makeEnv();
+    const cred = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_HUB); // no site_id
+    const res = await handleDeviceHubToken(
+      post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "n" }),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("mints a nonce-bound hub token for a device-hub credential with site_id", async () => {
+    const env = makeEnv();
+    const cred = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_HUB, "site-1");
+    const res = await handleDeviceHubToken(
+      post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "abc" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.token_type).toBe("Bearer");
+    expect(body.site_id).toBe("site-1");
+    const payload = await verifyJwt(body.access_token as string, SECRET, ENV);
+    expect(payload?.aud).toBe("hub");
+    expect(payload?.nonce).toBe("abc");
+    expect(payload?.site_id).toBe("site-1");
+  });
+
+  it("mints for a device-gateway credential with site_id", async () => {
+    const env = makeEnv();
+    const cred = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_GATEWAY, "site-1");
+    const res = await handleDeviceHubToken(
+      post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "abc" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("503 when JWT_SECRET is unset (mint throws)", async () => {
+    const kv = createMockKV();
+    const seedEnv = { AUTH_CONFIG: kv, JWT_SECRET: SECRET, WORKER_ENV: ENV } as unknown as Env;
+    const cred = await createDeviceCredential(seedEnv, "t", "l", 1700, DEVICE_ROLE_HUB, "site-1");
+    const noSecretEnv = { AUTH_CONFIG: kv, JWT_SECRET: undefined, WORKER_ENV: ENV } as unknown as Env;
+    const res = await handleDeviceHubToken(
+      post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "n" }),
+      noSecretEnv,
+    );
+    expect(res.status).toBe(503);
+  });
+});
+
+describe("handleDeviceIntrospect (Refs #406)", () => {
+  it("400 when required fields are missing", async () => {
+    const res = await handleDeviceIntrospect(post("/device/introspect", { device_id: "x" }), makeEnv());
+    expect(res.status).toBe(400);
+  });
+
+  it("401 for an invalid caller credential", async () => {
+    const res = await handleDeviceIntrospect(
+      post("/device/introspect", { device_id: "nope", device_secret: "x", token: "t" }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("401 when the caller credential's role is not hub/gateway", async () => {
+    const env = makeEnv();
+    const caller = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_KIOSK);
+    const res = await handleDeviceIntrospect(
+      post("/device/introspect", {
+        device_id: caller.device_id,
+        device_secret: caller.device_secret,
+        token: "whatever",
+      }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("valid:false for a garbage token", async () => {
+    const env = makeEnv();
+    const caller = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_HUB, "site-1");
+    const res = await handleDeviceIntrospect(
+      post("/device/introspect", {
+        device_id: caller.device_id,
+        device_secret: caller.device_secret,
+        token: "garbage.not.a.jwt",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.valid).toBe(false);
+  });
+
+  it("valid:false for a normal device JWT (aud mismatch — not a hub token)", async () => {
+    const env = makeEnv();
+    const caller = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_HUB, "site-1");
+    const other = await createDeviceCredential(env, "t", "l2", 1700, DEVICE_ROLE_HUB, "site-1");
+    const otherTokenRes = await handleDeviceToken(
+      post("/device/token", { device_id: other.device_id, device_secret: other.device_secret }),
+      env,
+    );
+    const otherToken = ((await otherTokenRes.json()) as Record<string, string>).access_token;
+    const res = await handleDeviceIntrospect(
+      post("/device/introspect", {
+        device_id: caller.device_id,
+        device_secret: caller.device_secret,
+        token: otherToken,
+      }),
+      env,
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.valid).toBe(false);
+  });
+
+  it("validates a hub token minted by another device and returns its claims", async () => {
+    const env = makeEnv();
+    const gw = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_GATEWAY, "site-1");
+    const hubTokenRes = await handleDeviceHubToken(
+      post("/device/hub-token", { device_id: gw.device_id, device_secret: gw.device_secret, nonce: "n1" }),
+      env,
+    );
+    const gwToken = ((await hubTokenRes.json()) as Record<string, string>).access_token;
+
+    const hub = await createDeviceCredential(env, "t", "l2", 1700, DEVICE_ROLE_HUB, "site-1");
+    const res = await handleDeviceIntrospect(
+      post("/device/introspect", { device_id: hub.device_id, device_secret: hub.device_secret, token: gwToken }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.valid).toBe(true);
+    expect(body.site_id).toBe("site-1");
+    expect(body.role).toBe(DEVICE_ROLE_GATEWAY);
+    expect((body.claims as Record<string, unknown>).nonce).toBe("n1");
+  });
+});
+
+describe("handleDeviceSiteBackfill (Refs #406)", () => {
+  const INTERNAL = "internal-shared-secret-32chars!!";
+
+  function internalEnv(overrides: Record<string, unknown> = {}): Env {
+    return makeEnv({ INTERNAL_SHARED_SECRET: INTERNAL, ...overrides });
+  }
+
+  it("503 when no INTERNAL_SHARED_SECRET is bound", async () => {
+    const res = await handleDeviceSiteBackfill(
+      post("/device/site/backfill", { device_id: "x", site_id: "s" }, { "X-Internal-Shared-Secret": INTERNAL }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("401 without the shared secret header", async () => {
+    const res = await handleDeviceSiteBackfill(
+      post("/device/site/backfill", { device_id: "x", site_id: "s" }),
+      internalEnv(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("400 when device_id or site_id is missing", async () => {
+    const res = await handleDeviceSiteBackfill(
+      post("/device/site/backfill", { device_id: "x" }, { "X-Internal-Shared-Secret": INTERNAL }),
+      internalEnv(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("404 for an unknown device", async () => {
+    const res = await handleDeviceSiteBackfill(
+      post(
+        "/device/site/backfill",
+        { device_id: "missing", site_id: "site-1" },
+        { "X-Internal-Shared-Secret": INTERNAL },
+      ),
+      internalEnv(),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("assigns site_id to an already-provisioned device-hub credential", async () => {
+    const env = internalEnv();
+    const cred = await createDeviceCredential(env, "t", "cores3-1", 1700, DEVICE_ROLE_HUB);
+    const res = await handleDeviceSiteBackfill(
+      post(
+        "/device/site/backfill",
+        { device_id: cred.device_id, site_id: "site-42" },
+        { "X-Internal-Shared-Secret": INTERNAL },
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.site_id).toBe("site-42");
+
+    // hub-token が今度は mint できる (site_id 付与前は 403 だった) ことで実用性を確認。
+    const tokRes = await handleDeviceHubToken(
+      post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "n" }),
+      env,
+    );
+    expect(tokRes.status).toBe(200);
   });
 });

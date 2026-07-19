@@ -199,12 +199,13 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   const kind = DEVICE_KINDS[kindName];
   if (!kind) return jsonNoStore({ error: "unknown kind" }, 400);
   const label = typeof body.label === "string" && body.label ? body.label : kind.labelDefault;
+  const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
   const replaceLabel = body.replace_label === true;
 
   const now = Math.floor(Date.now() / 1000);
   const cred = replaceLabel
-    ? await createDeviceCredentialReplacingLabel(env, session.tenantId, label, now, kind.role)
-    : await createDeviceCredential(env, session.tenantId, label, now, kind.role);
+    ? await createDeviceCredentialReplacingLabel(env, session.tenantId, label, now, kind.role, siteId)
+    : await createDeviceCredential(env, session.tenantId, label, now, kind.role, siteId);
 
   return jsonNoStore(
     {
@@ -213,6 +214,7 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
       tenant_id: cred.record.tenant_id,
       label: cred.record.label,
       role: cred.record.role,
+      site_id: cred.record.site_id,
       kind: kindName,
       note: "store device_secret now; it is not retrievable later",
     },

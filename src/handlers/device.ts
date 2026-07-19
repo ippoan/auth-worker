@@ -24,8 +24,14 @@ import {
   revokeDeviceCredential,
   getDeviceRecord,
   mintDeviceJwt,
+  mintHubToken,
+  setDeviceSiteId,
   normalizeDeviceRole,
+  DEVICE_ROLE,
   DEVICE_JWT_TTL_SECONDS,
+  HUB_TOKEN_TTL_SECONDS,
+  HUB_TOKEN_ELIGIBLE_ROLES,
+  type HubTokenClaims,
 } from "../lib/device";
 
 /** consumer proof を運ぶ header (alc-internal-proxy / rust の app 認証と同名)。 */
@@ -83,9 +89,10 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
   const body = await readJsonBody(request);
   const label = typeof body.label === "string" && body.label ? body.label : "device";
   const role = normalizeDeviceRole(body.role);
+  const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
 
   const now = Math.floor(Date.now() / 1000);
-  const cred = await createDeviceCredential(env, session.tenantId, label, now, role);
+  const cred = await createDeviceCredential(env, session.tenantId, label, now, role, siteId);
 
   return jsonNoStore(
     {
@@ -94,6 +101,7 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
       tenant_id: cred.record.tenant_id,
       label: cred.record.label,
       role: cred.record.role,
+      site_id: cred.record.site_id,
       note: "store device_secret now; it is not retrievable later",
     },
     201,
@@ -134,12 +142,13 @@ export async function handleDevicePairInternal(request: Request, env: Env): Prom
   if (!tenantId) return jsonNoStore({ error: "tenant_id required" }, 400);
   const label = typeof body.label === "string" && body.label ? body.label : "device";
   const role = normalizeDeviceRole(body.role);
+  const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
   const replaceLabel = body.replace_label === true;
 
   const now = Math.floor(Date.now() / 1000);
   const cred = replaceLabel
-    ? await createDeviceCredentialReplacingLabel(env, tenantId, label, now, role)
-    : await createDeviceCredential(env, tenantId, label, now, role);
+    ? await createDeviceCredentialReplacingLabel(env, tenantId, label, now, role, siteId)
+    : await createDeviceCredential(env, tenantId, label, now, role, siteId);
 
   return jsonNoStore(
     {
@@ -147,6 +156,7 @@ export async function handleDevicePairInternal(request: Request, env: Env): Prom
       device_secret: cred.device_secret,
       tenant_id: cred.record.tenant_id,
       role: cred.record.role,
+      site_id: cred.record.site_id,
       note: "store device_secret now; it is not retrievable later",
     },
     201,
@@ -198,4 +208,97 @@ export async function handleDeviceRevoke(request: Request, env: Env): Promise<Re
 
   await revokeDeviceCredential(env, deviceId);
   return jsonNoStore({ revoked: true, device_id: deviceId });
+}
+
+/**
+ * POST /device/hub-token — device credential + 呼び出し元指定の nonce を、
+ * 短命 (60s) の拠点相互認証トークンに交換する (Refs #406)。
+ * `device-hub` (CoreS3) / `device-gateway` (alc-gw / P4) の credential のみ mint
+ * できる。`site_id` 未設定の credential (site 未割当) は forbidden。
+ */
+export async function handleDeviceHubToken(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonBody(request);
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  const deviceSecret = typeof body.device_secret === "string" ? body.device_secret : "";
+  const nonce = typeof body.nonce === "string" ? body.nonce : "";
+  if (!deviceId || !deviceSecret || !nonce) {
+    return jsonNoStore({ error: "device_id, device_secret and nonce required" }, 400);
+  }
+
+  const record = await verifyDeviceCredential(env, deviceId, deviceSecret);
+  if (!record) return jsonNoStore({ error: "invalid_credential" }, 401);
+
+  let token: string | null;
+  try {
+    token = await mintHubToken(env, record, nonce, Math.floor(Date.now() / 1000));
+  } catch {
+    return jsonNoStore({ error: "server_error" }, 503);
+  }
+  if (!token) return jsonNoStore({ error: "forbidden" }, 403);
+
+  return jsonNoStore({
+    access_token: token,
+    token_type: "Bearer",
+    expires_in: HUB_TOKEN_TTL_SECONDS,
+    site_id: record.site_id,
+  });
+}
+
+/**
+ * POST /device/introspect — device credential で認証した呼び出し元に、相手デバイスが
+ * mint した hub token の検証結果を返す (Refs #406)。CoreS3 (ESP32) は JWKS 検証を
+ * 実装しないため、この REST 呼び出しで検証を代替する (site-device-auth-project 設計)。
+ * `site_id` の一致判定 (1:1 強制) は呼び出し側の責務 — ここでは claims をそのまま返す。
+ */
+export async function handleDeviceIntrospect(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonBody(request);
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  const deviceSecret = typeof body.device_secret === "string" ? body.device_secret : "";
+  const token = typeof body.token === "string" ? body.token : "";
+  if (!deviceId || !deviceSecret || !token) {
+    return jsonNoStore({ error: "device_id, device_secret and token required" }, 400);
+  }
+
+  const caller = await verifyDeviceCredential(env, deviceId, deviceSecret);
+  if (!caller || !HUB_TOKEN_ELIGIBLE_ROLES.has(caller.role ?? DEVICE_ROLE)) {
+    return jsonNoStore({ error: "unauthorized" }, 401);
+  }
+
+  const secret = await resolveSecret(env.JWT_SECRET);
+  if (!secret) return jsonNoStore({ error: "server_error" }, 503);
+
+  const payload = await verifyJwt(token, secret, env.WORKER_ENV);
+  if (!payload || payload.aud !== "hub") {
+    return jsonNoStore({ valid: false });
+  }
+  const claims = payload as unknown as HubTokenClaims;
+
+  return jsonNoStore({ valid: true, site_id: claims.site_id, role: claims.role, claims });
+}
+
+/**
+ * POST /device/site/backfill — server-to-server で既存 device credential
+ * (主に現場稼働中の CoreS3) に事後で site_id を付与する (Refs #406)。
+ * alc-app にまだ拠点レジストリが無いため、provisioning 済み機体を再度 WebSerial 挿さずに
+ * site_id だけ割り当てる用途。認証は `/device/pair-internal` と同じ
+ * `INTERNAL_SHARED_SECRET*` multi-binding。
+ */
+export async function handleDeviceSiteBackfill(request: Request, env: Env): Promise<Response> {
+  const sharedSecrets = await resolveAllSharedSecrets(env);
+  if (!sharedSecrets) return jsonNoStore({ error: "not_configured" }, 503);
+
+  const provided = request.headers.get(INTERNAL_SECRET_HEADER) ?? "";
+  if (!provided || !sharedSecrets.some((s) => constantTimeEquals(provided, s))) {
+    return jsonNoStore({ error: "unauthorized" }, 401);
+  }
+
+  const body = await readJsonBody(request);
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  const siteId = typeof body.site_id === "string" ? body.site_id : "";
+  if (!deviceId || !siteId) return jsonNoStore({ error: "device_id and site_id required" }, 400);
+
+  const record = await setDeviceSiteId(env, deviceId, siteId);
+  if (!record) return jsonNoStore({ error: "not_found" }, 404);
+
+  return jsonNoStore({ device_id: record.device_id, site_id: record.site_id, role: record.role });
 }
