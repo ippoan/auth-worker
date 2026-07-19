@@ -25,12 +25,14 @@ import {
   getDeviceRecord,
   mintDeviceJwt,
   mintHubToken,
+  mintCamRelayToken,
   setDeviceSiteId,
   normalizeDeviceRole,
   DEVICE_ROLE,
   DEVICE_JWT_TTL_SECONDS,
   HUB_TOKEN_TTL_SECONDS,
   HUB_TOKEN_ELIGIBLE_ROLES,
+  CAM_RELAY_TOKEN_TTL_SECONDS,
   type HubTokenClaims,
 } from "../lib/device";
 
@@ -240,6 +242,39 @@ export async function handleDeviceHubToken(request: Request, env: Env): Promise<
     access_token: token,
     token_type: "Bearer",
     expires_in: HUB_TOKEN_TTL_SECONDS,
+    site_id: record.site_id,
+  });
+}
+
+/**
+ * POST /device/cam-relay-token — gateway device credential を、cf-alc-signaling
+ * (alc-app) の DO へカメラ中継 device 役として接続するための短命 Bearer トークンに
+ * 交換する (Refs alc-gw-p4#2, alc-app#129)。`device-gateway` credential のみ mint
+ * できる。DO 側の検証は v1 未実装 (camera-relay-convention.md 参照、別途 alc-app 側で対応)。
+ */
+export async function handleDeviceCamRelayToken(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonBody(request);
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  const deviceSecret = typeof body.device_secret === "string" ? body.device_secret : "";
+  if (!deviceId || !deviceSecret) {
+    return jsonNoStore({ error: "device_id and device_secret required" }, 400);
+  }
+
+  const record = await verifyDeviceCredential(env, deviceId, deviceSecret);
+  if (!record) return jsonNoStore({ error: "invalid_credential" }, 401);
+
+  let token: string | null;
+  try {
+    token = await mintCamRelayToken(env, record, Math.floor(Date.now() / 1000));
+  } catch {
+    return jsonNoStore({ error: "server_error" }, 503);
+  }
+  if (!token) return jsonNoStore({ error: "forbidden" }, 403);
+
+  return jsonNoStore({
+    access_token: token,
+    token_type: "Bearer",
+    expires_in: CAM_RELAY_TOKEN_TTL_SECONDS,
     site_id: record.site_id,
   });
 }
