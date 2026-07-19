@@ -34,6 +34,7 @@ import {
   createDeviceCredentialReplacingLabel,
   getDeviceRecord,
   listDeviceRecordsByTenant,
+  setDeviceSiteId,
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
 } from "../lib/device";
@@ -242,8 +243,43 @@ export async function handleDeviceSetupList(request: Request, env: Env): Promise
       role: r.role ?? "",
       kind: kindNameForRole(r.role) ?? "",
       created_at: r.created_at,
+      site_id: r.site_id ?? "",
     }));
   return jsonNoStore({ devices });
+}
+
+/**
+ * POST /device/setup/site — operator がブラウザから登録済み device-hub の
+ * site_id を設定する (Refs #406)。device_id を毎回チャット等で受け渡す必要を
+ * なくすため、`/device/setup` 一覧の行内編集からこの endpoint を叩く。
+ * `/device/site/backfill` (shared-secret, server-to-server) と違い、cookie
+ * session + `managedDeviceKind` でこの operator の tenant のデバイスに限定する。
+ */
+export async function handleDeviceSetupSite(request: Request, env: Env): Promise<Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  if (request.headers.get("Origin") !== issuerOf(env)) {
+    return jsonNoStore({ error: "bad_origin" }, 403);
+  }
+  let body: Record<string, unknown> = {};
+  try {
+    const v = await request.json();
+    if (v && typeof v === "object") body = v as Record<string, unknown>;
+  } catch {
+    // 空 body は検証で弾く
+  }
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
+  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
+    return jsonNoStore({ error: "not_your_device" }, 403);
+  }
+  // site_id 省略時は device_id 自身を既定にする (hub の site_id は自分の
+  // device_id が標準、Refs #406 改訂)。明示指定した値があればそれを優先する。
+  const explicitSiteId = typeof body.site_id === "string" ? body.site_id.trim() : "";
+  const siteId = explicitSiteId || deviceId;
+  const record = await setDeviceSiteId(env, deviceId, siteId);
+  if (!record) return jsonNoStore({ error: "not_found" }, 404);
+  return jsonNoStore({ device_id: record.device_id, site_id: record.site_id });
 }
 
 /**
@@ -635,7 +671,7 @@ ${devToggleHtml}
 <p id="latest" class="muted"></p>
 <p id="devices-status" class="muted">読み込み中...</p>
 <table id="devices" style="display:none">
-<thead><tr><th>ラベル</th><th>種別</th><th>接続</th><th>バージョン</th><th>更新</th><th>再登録</th></tr></thead>
+<thead><tr><th>ラベル</th><th>種別</th><th>拠点ID</th><th>接続</th><th>バージョン</th><th>更新</th><th>再登録</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
 <script>
@@ -837,6 +873,34 @@ async function loadDevices() {
       const kindTd = document.createElement("td");
       kindTd.textContent = KIND_DISPLAY[d.kind] || d.kind || "?";
       tr.appendChild(kindTd);
+
+      // 拠点ID (Refs #406、hub-token/introspect の site_id 束縛に使う)。
+      // hub は 1 hub = 1 site なので、新規登録は device_id が自動でそのまま
+      // site_id になる (サーバ側 createDeviceCredential が既定付与)。ここに
+      // 出るのは「この改訂前に登録済みで site_id が未設定」の既存機のみ —
+      // その場合だけ「設定」ボタンで自分の device_id を site_id として送る
+      // (自由入力させない。手打ちの typo で hub/GW の site_id がズレる事故を防ぐ)。
+      // cores3 (hub) のみ表示 — print ブリッジは hub-token 対象外。
+      const siteTd = document.createElement("td");
+      const isHubKind = d.kind === "cores3";
+      if (isHubKind && d.site_id) {
+        siteTd.textContent = d.site_id;
+      } else if (isHubKind) {
+        const siteMsg = document.createElement("span");
+        siteMsg.className = "ota-msg";
+        siteMsg.textContent = "未設定";
+        const siteSetBtn = document.createElement("button");
+        siteSetBtn.className = "small";
+        siteSetBtn.textContent = "設定";
+        siteSetBtn.style.marginLeft = ".35rem";
+        siteSetBtn.title = "このデバイス自身の ID を拠点IDとして設定します";
+        siteSetBtn.addEventListener("click", () => setSiteId(d.device_id, siteTd, siteSetBtn, siteMsg));
+        siteTd.appendChild(siteMsg);
+        siteTd.appendChild(siteSetBtn);
+      } else {
+        siteTd.textContent = "—";
+      }
+      tr.appendChild(siteTd);
 
       // 接続
       const connTd = document.createElement("td");
@@ -1091,6 +1155,29 @@ async function pollCommandResult(id, timeoutMs, ready) {
     } catch { /* 次のポーリングへ */ }
   }
   return null;
+}
+
+// 拠点ID (site_id) の設定 (Refs #406)。この改訂前に登録済みで site_id が
+// 未設定な hub の事後付与用 — site_id は自由入力させず、常に自分自身の
+// device_id を送る (サーバ側も省略時は同じ既定に倒すが、明示して意図を残す)。
+// WS コマンドではなく auth-worker の KV を直接更新するだけなので、デバイスの
+// 接続状態に関わらずいつでも押せる。
+async function setSiteId(deviceId, siteTd, btn, msg) {
+  btn.disabled = true;
+  msg.textContent = "設定中...";
+  try {
+    const res = await fetch(ISSUER + "/device/setup/site", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ device_id: deviceId, site_id: deviceId }),
+    });
+    if (!res.ok) { msg.textContent = "設定に失敗: HTTP " + res.status; btn.disabled = false; return; }
+    siteTd.textContent = deviceId;
+  } catch (e) {
+    msg.textContent = "設定エラー";
+    btn.disabled = false;
+  }
 }
 
 // Windows GW (alc-gw) URL の保存 (WS gw_url コマンド)。保存後は gw_link が

@@ -106,12 +106,24 @@ describe("createDeviceCredential", () => {
     expect(gw.record.role).toBe(DEVICE_ROLE_GATEWAY); // 拠点ゲートウェイ (Refs #406)
   });
 
-  it("stores site_id when provided, omits it when not (Refs #406)", async () => {
+  it("honors an explicit site_id override for a hub credential (Refs #406)", async () => {
     const env = { AUTH_CONFIG: createMockKV() };
     const withSite = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB, "site-1");
     expect(withSite.record.site_id).toBe("site-1");
-    const withoutSite = await createDeviceCredential(env, "t", "l2", NOW, DEVICE_ROLE_HUB);
-    expect(withoutSite.record.site_id).toBeUndefined();
+  });
+
+  it("defaults site_id to the device's own device_id for a hub credential when omitted (Refs #406 改訂)", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const hub = await createDeviceCredential(env, "t", "l2", NOW, DEVICE_ROLE_HUB);
+    expect(hub.record.site_id).toBe(hub.device_id);
+  });
+
+  it("does not auto-default site_id for non-hub roles (gateway needs an explicit target hub id)", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const gw = await createDeviceCredential(env, "t", "l3", NOW, DEVICE_ROLE_GATEWAY);
+    expect(gw.record.site_id).toBeUndefined();
+    const kiosk = await createDeviceCredential(env, "t", "l4", NOW, DEVICE_ROLE_KIOSK);
+    expect(kiosk.record.site_id).toBeUndefined();
   });
 });
 
@@ -131,10 +143,10 @@ describe("createDeviceCredentialReplacingLabel (site_id, Refs #406)", () => {
   });
 });
 
-describe("setDeviceSiteId (Refs #406 backfill)", () => {
-  it("assigns site_id to an existing record", async () => {
+describe("setDeviceSiteId (Refs #406 backfill、この改訂前に発行された既存 credential 向け)", () => {
+  it("assigns site_id to an existing record with no site_id yet (gateway、auto-default 対象外)", async () => {
     const env = { AUTH_CONFIG: createMockKV() };
-    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
+    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_GATEWAY);
     expect(cred.record.site_id).toBeUndefined();
     const updated = await setDeviceSiteId(env, cred.device_id, "site-1");
     expect(updated?.site_id).toBe("site-1");
@@ -148,7 +160,7 @@ describe("setDeviceSiteId (Refs #406 backfill)", () => {
 
   it("allows re-assigning site_id on a revoked device (history preserved, not forbidden)", async () => {
     const env = { AUTH_CONFIG: createMockKV() };
-    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
+    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_GATEWAY);
     await revokeDeviceCredential(env, cred.device_id);
     const updated = await setDeviceSiteId(env, cred.device_id, "site-2");
     expect(updated?.site_id).toBe("site-2");

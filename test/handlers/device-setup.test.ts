@@ -9,6 +9,7 @@ import {
   handleDeviceSetupEvents,
   handleDeviceSetupVersion,
   handleDeviceSetupGw,
+  handleDeviceSetupSite,
 } from "../../src/handlers/device-setup";
 import { createDeviceCredential, getDeviceRecord } from "../../src/lib/device";
 import { createMockKV } from "../helpers/mock-env";
@@ -212,6 +213,23 @@ describe("handleDeviceSetupList", () => {
     expect([...times].sort((a, b) => b - a)).toEqual(times);
   });
 
+  it("site_id を含めて返す (Refs #406、hub は明示指定が無ければ自分の device_id)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const withSite = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "a", site_id: "site-1" }, headers), env)
+    ).json()) as PairResponse;
+    const autoSite = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "b" }, headers), env)
+    ).json()) as PairResponse;
+
+    const res = await handleDeviceSetupList(getReq("/device/setup/list", await opCookie()), env);
+    const body = (await res.json()) as { devices: Array<{ device_id: string; site_id: string }> };
+    const byId = new Map(body.devices.map((d) => [d.device_id, d]));
+    expect(byId.get(withSite.device_id)?.site_id).toBe("site-1");
+    expect(byId.get(autoSite.device_id)?.site_id).toBe(autoSite.device_id);
+  });
+
   it("returns an empty list for a tenant with no devices", async () => {
     const res = await handleDeviceSetupList(
       getReq("/device/setup/list", await opCookie({ tenant_id: "tenant-empty" })),
@@ -298,10 +316,21 @@ describe("handleDeviceSetupPair", () => {
     expect(record?.site_id).toBe("site-1");
   });
 
-  it("site_id を省略すると credential に付与されない (Refs #406、後方互換)", async () => {
+  it("site_id を省略すると cores3 (hub) は自分の device_id が既定になる (Refs #406 改訂)", async () => {
     const env = makeEnv();
     const headers = { ...(await opCookie()), Origin: ISSUER };
     const res = await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3-abc" }, headers), env);
+    const body = (await res.json()) as PairResponse;
+    expect(body.site_id).toBe(body.device_id);
+  });
+
+  it("site_id を省略しても atoms3-print (非hub) には付与されない", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupPair(
+      postJson("/device/setup/pair", { label: "printer-1", kind: "atoms3-print" }, headers),
+      env,
+    );
     const body = (await res.json()) as PairResponse;
     expect(body.site_id).toBeUndefined();
   });
@@ -772,5 +801,98 @@ describe("handleDeviceSetupGw", () => {
       env,
     );
     expect(res.status).toBe(503);
+  });
+});
+
+describe("handleDeviceSetupSite (Refs #406)", () => {
+  it("rejects without session (401) and with wrong origin (403)", async () => {
+    const env = makeEnv();
+    const res = await handleDeviceSetupSite(postJson("/device/setup/site", {}), env);
+    expect(res.status).toBe(401);
+
+    const cookie = await opCookie();
+    const bad = await handleDeviceSetupSite(
+      postJson("/device/setup/site", {}, { ...cookie, Origin: "https://evil.example" }),
+      env,
+    );
+    expect(bad.status).toBe(403);
+  });
+
+  it("400 when device_id is missing", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupSite(postJson("/device/setup/site", {}, headers), env);
+    expect(res.status).toBe(400);
+  });
+
+  it("site_id を省略すると device_id 自身を既定にする (Refs #406 改訂、UIの「設定」ボタンが叩く経路)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    // /device/setup/pair 自体が既に site_id を自動付与するため、テストとして
+    // 「後から未設定を埋める」経路を踏むには KV を直接書き換えて未設定状態を作る。
+    const record = await getDeviceRecord(env, cred.device_id);
+    delete (record as { site_id?: string }).site_id;
+    await (env.AUTH_CONFIG as unknown as { put: (k: string, v: string) => Promise<void> }).put(
+      `device:${cred.device_id}`,
+      JSON.stringify(record),
+    );
+    expect((await getDeviceRecord(env, cred.device_id))?.site_id).toBeUndefined();
+
+    const res = await handleDeviceSetupSite(
+      postJson("/device/setup/site", { device_id: cred.device_id }, headers),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { device_id: string; site_id: string };
+    expect(body.site_id).toBe(cred.device_id);
+  });
+
+  it("sets site_id on a device owned by the operator's tenant", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+
+    const res = await handleDeviceSetupSite(
+      postJson("/device/setup/site", { device_id: cred.device_id, site_id: "site-1" }, headers),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { device_id: string; site_id: string };
+    expect(body.site_id).toBe("site-1");
+    const record = await getDeviceRecord(env, cred.device_id);
+    expect(record?.site_id).toBe("site-1");
+  });
+
+  it("403 for a device belonging to another tenant (not_your_device)", async () => {
+    const env = makeEnv();
+    const otherHeaders = { ...(await opCookie({ tenant_id: "tenant-2" })), Origin: ISSUER };
+    const other = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "z" }, otherHeaders), env)
+    ).json()) as PairResponse;
+
+    const res = await handleDeviceSetupSite(
+      postJson(
+        "/device/setup/site",
+        { device_id: other.device_id, site_id: "site-1" },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("403 for an unknown device_id (managedDeviceKind は不在も他 tenant と区別しない)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupSite(
+      postJson("/device/setup/site", { device_id: "missing", site_id: "site-1" }, headers),
+      env,
+    );
+    expect(res.status).toBe(403);
   });
 });

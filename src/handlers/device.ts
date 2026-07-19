@@ -294,8 +294,11 @@ export async function handleDeviceSiteBackfill(request: Request, env: Env): Prom
 
   const body = await readJsonBody(request);
   const deviceId = typeof body.device_id === "string" ? body.device_id : "";
-  const siteId = typeof body.site_id === "string" ? body.site_id : "";
-  if (!deviceId || !siteId) return jsonNoStore({ error: "device_id and site_id required" }, 400);
+  if (!deviceId) return jsonNoStore({ error: "device_id required" }, 400);
+  // site_id 省略時は device_id 自身を既定にする (hub の site_id は自分の
+  // device_id が標準、Refs #406 改訂)。
+  const explicitSiteId = typeof body.site_id === "string" ? body.site_id.trim() : "";
+  const siteId = explicitSiteId || deviceId;
 
   const record = await setDeviceSiteId(env, deviceId, siteId);
   if (!record) return jsonNoStore({ error: "not_found" }, 404);
