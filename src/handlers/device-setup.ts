@@ -37,6 +37,7 @@ import {
   setDeviceSiteId,
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
+  DEVICE_ROLE_GATEWAY,
 } from "../lib/device";
 
 function jsonNoStore(body: unknown, status = 200): Response {
@@ -101,6 +102,20 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-print-app.bin`,
     manifestUrl: `${PAGES_BASE}/manifest-atoms3-print.json`,
     display: "AtomS3 印刷ブリッジ",
+  },
+  /**
+   * Unit PoE-P4 (ippoan/alc-gw-p4) — hub_link の GW 側。CoreS3/atoms3-print と
+   * 違い ESP-IDF の素の esp_console REPL (`cred show` / `cred set <id> <secret>`)
+   * しか話さず、OTA-over-HTTP の仕組みも無いため appUrl/manifestUrl は空。
+   * WS 接続 (cf-alc-recorder) もしないので isConn は常に false — OTA/バージョン
+   * 照会 UI は自然に無効表示のままになる (別途の防御コード不要)。
+   */
+  "p4-gw": {
+    role: DEVICE_ROLE_GATEWAY,
+    labelDefault: "p4-gw",
+    appUrl: "",
+    manifestUrl: "",
+    display: "Unit PoE-P4 GW",
   },
 };
 
@@ -641,6 +656,7 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 <select id="kind" style="font-size:1rem;padding:.4rem .6rem;border:1px solid #ccc;border-radius:.4rem">
   <option value="cores3">CoreS3 統合ハブ</option>
   <option value="atoms3-print">AtomS3 印刷ブリッジ</option>
+  <option value="p4-gw">Unit PoE-P4 GW</option>
 </select>
 <label for="label">デバイスラベル (同名は旧 credential を自動失効)</label>
 <input id="label" value="cores3" pattern="[A-Za-z0-9._-]+">
@@ -652,6 +668,12 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 <span id="print-test-result" style="margin-left:.5rem;font-size:.9rem"></span>
 </p>
 <p class="muted" style="margin:-.4rem 0 .8rem">上のプリンター宛先を保存 (PRINTER ADDR) し、テスト PDF (<a href="${escapeHtml(issuer)}/print/test.pdf" target="_blank" rel="noopener">/print/test.pdf</a>) を印字して配線・IP を確認します。デバイスを USB 接続してから押してください。</p>
+</div>
+<div id="site-hub-row" style="display:none">
+<label for="site-hub">紐付け先の拠点 (hub) — この GW が接続する CoreS3 hub を選択</label>
+<select id="site-hub" style="font-size:1rem;padding:.4rem .6rem;border:1px solid #ccc;border-radius:.4rem;width:100%;max-width:24rem">
+  <option value="">(登録済み hub がありません)</option>
+</select>
 </div>
 <p><button id="run">セットアップ実行</button></p>
 <p id="result"></p>
@@ -697,14 +719,22 @@ const printerRow = document.getElementById("printer-addr-row");
 function syncPrinterRow() {
   printerRow.style.display = kindSel.value === "atoms3-print" ? "" : "none";
 }
+// 拠点 (hub) 選択は Unit PoE-P4 GW (site_id = 紐付ける CoreS3 hub の device_id) の時だけ出す
+const siteHubRow = document.getElementById("site-hub-row");
+const siteHubSel = document.getElementById("site-hub");
+function syncSiteHubRow() {
+  siteHubRow.style.display = kindSel.value === "p4-gw" ? "" : "none";
+}
 kindSel.addEventListener("change", () => {
-  const defaults = { cores3: "cores3", "atoms3-print": "atoms3-print" };
+  const defaults = { cores3: "cores3", "atoms3-print": "atoms3-print", "p4-gw": "p4-gw" };
   if (Object.values(defaults).includes(labelInput.value)) {
     labelInput.value = defaults[kindSel.value] || kindSel.value;
   }
   syncPrinterRow();
+  syncSiteHubRow();
 });
 syncPrinterRow();
+syncSiteHubRow();
 // CoreS3 は ESP-IDF ログが混在するため既知プレフィックス行のみ解釈する。
 // PRINTER は PRINTER STATUS / PRINTER ADDR コマンドの応答表示用 (印刷ブリッジ)
 const KNOWN = /^(OK|ERR|AUTH|EVT|WS|STATUS|PONG|CFG|PRINTER)\\b/;
@@ -897,6 +927,11 @@ async function loadDevices() {
         siteSetBtn.addEventListener("click", () => setSiteId(d.device_id, siteTd, siteSetBtn, siteMsg));
         siteTd.appendChild(siteMsg);
         siteTd.appendChild(siteSetBtn);
+      } else if (d.kind === "p4-gw") {
+        // GW の site_id はペアリング時に拠点ピッカーで確定させる (Refs 本改訂) —
+        // hub と違い「自分の device_id」という自然な既定が無いため、事後設定
+        // ボタンは出さない (再登録時にピッカー/上書き値で再送する)。
+        siteTd.textContent = d.site_id || "未設定";
       } else {
         siteTd.textContent = "—";
       }
@@ -1010,8 +1045,13 @@ async function loadDevices() {
       reregBtn.addEventListener("click", () => {
         kindSel.value = d.kind;
         labelInput.value = d.label;
+        syncPrinterRow();
+        syncSiteHubRow();
+        // GW の site_id はピッカーの現在の選択と無関係にこの行の値で再送する
+        // (ピッカーは表示合わせのベストエフォートで、実際の送信値は override 側)。
+        if (d.kind === "p4-gw" && d.site_id) siteHubSel.value = d.site_id;
         runBtn.scrollIntoView({ behavior: "smooth", block: "center" });
-        run();
+        run(d.kind === "p4-gw" ? d.site_id : undefined);
       });
       reregTd.appendChild(reregBtn);
       tr.appendChild(reregTd);
@@ -1022,6 +1062,26 @@ async function loadDevices() {
     }
     statusEl.textContent = "";
     table.style.display = "";
+
+    // Unit PoE-P4 GW の拠点ピッカー: 登録済み hub (cores3) から選ばせる
+    // (自由入力させない、Refs #406 の site_id typo 事故防止方針を踏襲)。
+    const hubs = data.devices.filter((d) => d.kind === "cores3");
+    const prevSiteHub = siteHubSel.value;
+    siteHubSel.textContent = "";
+    if (hubs.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "(登録済み hub がありません)";
+      siteHubSel.appendChild(opt);
+    } else {
+      for (const h of hubs) {
+        const opt = document.createElement("option");
+        opt.value = h.site_id || h.device_id;
+        opt.textContent = h.label + " (" + (h.site_id || h.device_id) + ")";
+        siteHubSel.appendChild(opt);
+      }
+      if (hubs.some((h) => (h.site_id || h.device_id) === prevSiteHub)) siteHubSel.value = prevSiteHub;
+    }
   } catch (e) {
     table.style.display = "none";
     statusEl.textContent = "一覧の取得に失敗しました";
@@ -1396,7 +1456,7 @@ async function pollOta(id, deviceId, kind, btn, barFill, msg, verSpan, otaNote) 
   }
 }
 
-async function run() {
+async function run(siteIdOverride) {
   runBtn.disabled = true;
   resultEl.textContent = "";
   try {
@@ -1405,127 +1465,14 @@ async function run() {
     await port.open({ baudRate: 115200 });
     // ポート open で ESP32-S3 が DTR/RTS トグルによりリセットする実装があるため、
     // 信号を落としてリセットを抑止する (対応しないボードでは無害)。
-    // ただしこれに頼らず、下の PING/PONG で実際の起動完了を待つ
+    // ただしこれに頼らず、下の PING/PONG (または P4 の cred show ポーリング) で
+    // 実際の起動完了を待つ
     try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
-    const writer = port.writable.getWriter();
-    const reader = port.readable.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    const lines = [];
-    (async () => {
-      try {
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let i;
-          while ((i = buf.search(/[\\r\\n]/)) >= 0) {
-            const line = buf.slice(0, i).trim();
-            buf = buf.slice(i + 1);
-            if (line && KNOWN.test(line)) { lines.push(line); log("<< " + line); }
-          }
-        }
-      } catch { /* port closed */ }
-    })();
-    const send = async (cmd, secretParts) => {
-      log(">> " + (secretParts ? cmd.split(" ").slice(0, 2).join(" ") + " …(伏せ字)" : cmd));
-      await writer.write(new TextEncoder().encode(cmd + "\\n"));
-    };
-    const waitLine = async (re, timeoutMs) => {
-      const deadline = Date.now() + timeoutMs;
-      let idx = 0;
-      for (;;) {
-        while (idx < lines.length) {
-          const line = lines[idx++];
-          if (re.test(line)) return line;
-          if (/^ERR\\b/.test(line)) throw new Error(line);
-        }
-        if (Date.now() > deadline) throw new Error("応答タイムアウト: " + re);
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    };
-
-    // --- 準備ハンドシェイク (根本対策) ---
-    // ポート open 時のリセットで最初のコマンドが起動中に飲まれる問題を、固定
-    // 待ちやリトライ回数ではなく「PONG が返るまで PING を打ち続ける」ことで
-    // 確実に解消する。デバイスが応答可能になった時点で必ず抜ける。
-    // 起動 (Wi-Fi/BLE 初期化含む) を見込んで全体 20 秒、PING は 700ms 間隔。
-    log("デバイスの起動を待機中 ...");
-    const readyDeadline = Date.now() + 20000;
-    let ready = false;
-    while (Date.now() < readyDeadline) {
-      const before = lines.length;
-      await writer.write(new TextEncoder().encode("PING\\n"));
-      // 700ms 以内に PONG が来たか (この PING への応答)
-      const until = Date.now() + 700;
-      while (Date.now() < until) {
-        if (lines.slice(before).some((l) => /^PONG/.test(l))) { ready = true; break; }
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      if (ready) break;
-    }
-    if (!ready) throw new Error("デバイスが応答しません (USB 接続とファームウェアを確認してください)");
-    log("デバイス応答 OK — 現在の登録状態を確認します");
-    // 起動中に溜まったログ行は捨て、以降のコマンド応答だけを見る
-    lines.length = 0;
-
-    // 現在の登録状態を先に表示する (既存登録の黙殺・黙って上書きをしない)
-    await send("AUTH STATUS");
-    const current = await waitLine(/^AUTH (PAIRED|UNPAIRED)/, 5000);
-    if (/^AUTH PAIRED/.test(current)) {
-      const parts = current.split(" ");
-      const msg = "このデバイスは登録済みです:\\n  デバイスID: " + (parts[3] || "?") +
-        "\\n  テナント: " + (parts[2] || "?") +
-        "\\n\\n上書き登録しますか? (旧 credential は失効します)";
-      if (!confirm(msg)) throw new Error("キャンセルしました (既存の登録を維持)");
+    if (kindSel.value === "p4-gw") {
+      await runP4Gateway(port, siteIdOverride);
     } else {
-      log("未登録のデバイスです — 新規登録します");
+      await runCoreS3OrPrint(port);
     }
-
-    const kind = kindSel.value;
-    const label = labelInput.value || kind;
-    log("credential を発行中 (label=" + label + ") ...");
-    const res = await fetch(ISSUER + "/device/setup/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ label, replace_label: true, kind }),
-    });
-    if (!res.ok) throw new Error("credential 発行に失敗: HTTP " + res.status);
-    const cred = await res.json();
-    log("credential 発行 OK (device_id=" + cred.device_id + ")");
-
-    await send("AUTH SET " + cred.device_id + " " + cred.device_secret + " " + cred.tenant_id, true);
-    await waitLine(/^OK AUTH SET/, 5000);
-    await send("AUTH URL " + ISSUER);
-    await waitLine(/^OK AUTH URL/, 5000);
-    // 測定記録の送り先はページの origin から自動判定する (operator に訊かない):
-    // staging で開いていれば staging recorder、それ以外は送らずデバイス既定
-    // (本番 recorder) のまま
-    if (location.hostname.includes("staging")) {
-      await send("WS URL wss://alc-recorder-staging.m-tama-ramu.workers.dev/ws");
-      await waitLine(/^OK WS URL/, 5000);
-    }
-    // プリンター宛先 (AtomS3 印刷ブリッジのみ、入力があれば)。firmware が NVS に
-    // 保存し、WS push 印刷 (Refs ippoan/alc-app-s3#38) の print_begin で 9100 raw
-    // 印字の宛先に使う。書式不正は firmware が ERR PRINTER で弾く
-    const printerAddr = (printerInput.value || "").trim();
-    if (kind === "atoms3-print" && printerAddr) {
-      await send("PRINTER ADDR " + printerAddr);
-      await waitLine(/^OK PRINTER ADDR/, 5000);
-    }
-    // AUTH TOKEN は HTTPS 疎通確認。デバイス側が Wi-Fi 再接続 (ポート open の
-    // リセット後 ~30 秒) を内部で待ってから mint するため、余裕をもって待つ
-    await send("AUTH TOKEN");
-    const evt = await waitLine(/^EVT AUTH_TOKEN (OK|NG)/, 60000);
-    if (!/^EVT AUTH_TOKEN OK/.test(evt)) throw new Error(evt);
-    await send("WS STATUS");
-    await waitLine(/^WS /, 5000);
-
-    resultEl.innerHTML = '<span class="ok">登録完了 — デバイスは auth-worker と疎通済みです</span>';
-    writer.releaseLock();
-    await reader.cancel().catch(() => {});
-    await port.close().catch(() => {});
     loadDevices();
   } catch (e) {
     resultEl.innerHTML = '<span class="ng">失敗: ' +
@@ -1534,7 +1481,236 @@ async function run() {
     runBtn.disabled = false;
   }
 }
-runBtn.addEventListener("click", run);
+
+// CoreS3 統合ハブ / AtomS3 印刷ブリッジ (alc-app-s3 の構造化行プロトコル) 向け。
+async function runCoreS3OrPrint(port) {
+  const writer = port.writable.getWriter();
+  const reader = port.readable.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const lines = [];
+  (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i;
+        while ((i = buf.search(/[\\r\\n]/)) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (line && KNOWN.test(line)) { lines.push(line); log("<< " + line); }
+        }
+      }
+    } catch { /* port closed */ }
+  })();
+  const send = async (cmd, secretParts) => {
+    log(">> " + (secretParts ? cmd.split(" ").slice(0, 2).join(" ") + " …(伏せ字)" : cmd));
+    await writer.write(new TextEncoder().encode(cmd + "\\n"));
+  };
+  const waitLine = async (re, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    let idx = 0;
+    for (;;) {
+      while (idx < lines.length) {
+        const line = lines[idx++];
+        if (re.test(line)) return line;
+        if (/^ERR\\b/.test(line)) throw new Error(line);
+      }
+      if (Date.now() > deadline) throw new Error("応答タイムアウト: " + re);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  };
+
+  // --- 準備ハンドシェイク (根本対策) ---
+  // ポート open 時のリセットで最初のコマンドが起動中に飲まれる問題を、固定
+  // 待ちやリトライ回数ではなく「PONG が返るまで PING を打ち続ける」ことで
+  // 確実に解消する。デバイスが応答可能になった時点で必ず抜ける。
+  // 起動 (Wi-Fi/BLE 初期化含む) を見込んで全体 20 秒、PING は 700ms 間隔。
+  log("デバイスの起動を待機中 ...");
+  const readyDeadline = Date.now() + 20000;
+  let ready = false;
+  while (Date.now() < readyDeadline) {
+    const before = lines.length;
+    await writer.write(new TextEncoder().encode("PING\\n"));
+    // 700ms 以内に PONG が来たか (この PING への応答)
+    const until = Date.now() + 700;
+    while (Date.now() < until) {
+      if (lines.slice(before).some((l) => /^PONG/.test(l))) { ready = true; break; }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (ready) break;
+  }
+  if (!ready) throw new Error("デバイスが応答しません (USB 接続とファームウェアを確認してください)");
+  log("デバイス応答 OK — 現在の登録状態を確認します");
+  // 起動中に溜まったログ行は捨て、以降のコマンド応答だけを見る
+  lines.length = 0;
+
+  // 現在の登録状態を先に表示する (既存登録の黙殺・黙って上書きをしない)
+  await send("AUTH STATUS");
+  const current = await waitLine(/^AUTH (PAIRED|UNPAIRED)/, 5000);
+  if (/^AUTH PAIRED/.test(current)) {
+    const parts = current.split(" ");
+    const msg = "このデバイスは登録済みです:\\n  デバイスID: " + (parts[3] || "?") +
+      "\\n  テナント: " + (parts[2] || "?") +
+      "\\n\\n上書き登録しますか? (旧 credential は失効します)";
+    if (!confirm(msg)) throw new Error("キャンセルしました (既存の登録を維持)");
+  } else {
+    log("未登録のデバイスです — 新規登録します");
+  }
+
+  const kind = kindSel.value;
+  const label = labelInput.value || kind;
+  log("credential を発行中 (label=" + label + ") ...");
+  const res = await fetch(ISSUER + "/device/setup/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ label, replace_label: true, kind }),
+  });
+  if (!res.ok) throw new Error("credential 発行に失敗: HTTP " + res.status);
+  const cred = await res.json();
+  log("credential 発行 OK (device_id=" + cred.device_id + ")");
+
+  await send("AUTH SET " + cred.device_id + " " + cred.device_secret + " " + cred.tenant_id, true);
+  await waitLine(/^OK AUTH SET/, 5000);
+  await send("AUTH URL " + ISSUER);
+  await waitLine(/^OK AUTH URL/, 5000);
+  // 測定記録の送り先はページの origin から自動判定する (operator に訊かない):
+  // staging で開いていれば staging recorder、それ以外は送らずデバイス既定
+  // (本番 recorder) のまま
+  if (location.hostname.includes("staging")) {
+    await send("WS URL wss://alc-recorder-staging.m-tama-ramu.workers.dev/ws");
+    await waitLine(/^OK WS URL/, 5000);
+  }
+  // プリンター宛先 (AtomS3 印刷ブリッジのみ、入力があれば)。firmware が NVS に
+  // 保存し、WS push 印刷 (Refs ippoan/alc-app-s3#38) の print_begin で 9100 raw
+  // 印字の宛先に使う。書式不正は firmware が ERR PRINTER で弾く
+  const printerAddr = (printerInput.value || "").trim();
+  if (kind === "atoms3-print" && printerAddr) {
+    await send("PRINTER ADDR " + printerAddr);
+    await waitLine(/^OK PRINTER ADDR/, 5000);
+  }
+  // AUTH TOKEN は HTTPS 疎通確認。デバイス側が Wi-Fi 再接続 (ポート open の
+  // リセット後 ~30 秒) を内部で待ってから mint するため、余裕をもって待つ
+  await send("AUTH TOKEN");
+  const evt = await waitLine(/^EVT AUTH_TOKEN (OK|NG)/, 60000);
+  if (!/^EVT AUTH_TOKEN OK/.test(evt)) throw new Error(evt);
+  await send("WS STATUS");
+  await waitLine(/^WS /, 5000);
+
+  resultEl.innerHTML = '<span class="ok">登録完了 — デバイスは auth-worker と疎通済みです</span>';
+  writer.releaseLock();
+  await reader.cancel().catch(() => {});
+  await port.close().catch(() => {});
+}
+
+// Unit PoE-P4 GW (alc-gw-p4) 向け。この console は素の ESP-IDF esp_console REPL
+// (prompt "hub-link> "、コマンドは cred show / cred set <id> <secret> のみ、
+// 応答は生の "OK" / "failed: ..." — CoreS3 側の PING/PONG や "OK AUTH SET" の
+// ような構造化プロトコルは無い) なので、KNOWN 行フィルタは使わず素の行配列
+// で照合する。P4 はポート open で必ずしもリセットしないため、プロンプトを
+// 受動的に待つと既に表示済みで二度と出ない可能性がある — 代わりに
+// "cred show" を打ち続け、最初の応答が返った時点を readiness とする
+// (これが「起動確認」と「既存登録の確認」を兼ねる)。
+async function runP4Gateway(port, siteIdOverride) {
+  const writer = port.writable.getWriter();
+  const reader = port.readable.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const lines = [];
+  // cred set 送信中は device_secret を伏せ字にしてから push/表示する
+  // (linenoise の echo でデバイスが送ってきた行にも実際の secret 文字列が
+  // 含まれるため、既存の send() 側マスクだけでは受信側の echo 行から漏れる)。
+  let pendingSecret = null;
+  (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i;
+        while ((i = buf.search(/[\\r\\n]/)) >= 0) {
+          let line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (!line) continue;
+          if (pendingSecret && line.includes(pendingSecret)) {
+            line = line.split(pendingSecret).join("…(伏せ字)");
+          }
+          lines.push(line);
+          log("<< " + line);
+        }
+      }
+    } catch { /* port closed */ }
+  })();
+  const send = async (cmd, secretParts) => {
+    log(">> " + (secretParts ? cmd.split(" ").slice(0, 2).join(" ") + " …(伏せ字)" : cmd));
+    await writer.write(new TextEncoder().encode(cmd + "\\n"));
+  };
+  // mark 以降に現れた行だけを見る (offset 方式)。前段の応答 (例: cred show の
+  // "credential not set") を後段のマッチと取り違えないため。
+  const waitFrom = async (mark, re, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    let idx = mark;
+    for (;;) {
+      while (idx < lines.length) {
+        const line = lines[idx++];
+        if (re.test(line)) return line;
+      }
+      if (Date.now() > deadline) return null;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  };
+
+  const siteId = (siteIdOverride || siteHubSel.value || "").trim();
+  if (!siteId) throw new Error("紐付ける拠点 (hub) を選択してください");
+
+  log("デバイスの起動を待機中 (cred show で確認) ...");
+  const readyDeadline = Date.now() + 20000;
+  let statusLine = null;
+  while (Date.now() < readyDeadline && !statusLine) {
+    const mark = lines.length;
+    await send("cred show");
+    statusLine = await waitFrom(mark, /^(device_id=|credential not set)/, 700);
+  }
+  if (!statusLine) throw new Error("デバイスが応答しません (USB 接続とファームウェアを確認してください)");
+  log("デバイス応答 OK — 現在の登録状態を確認します");
+
+  if (/^device_id=/.test(statusLine)) {
+    const existing = statusLine.replace(/^device_id=/, "").split(" ")[0];
+    const msg = "このデバイスは登録済みです:\\n  デバイスID: " + existing +
+      "\\n\\n上書き登録しますか? (旧 credential は失効します)";
+    if (!confirm(msg)) throw new Error("キャンセルしました (既存の登録を維持)");
+  } else {
+    log("未登録のデバイスです — 新規登録します");
+  }
+
+  const label = labelInput.value || "p4-gw";
+  log("credential を発行中 (label=" + label + ", site_id=" + siteId + ") ...");
+  const res = await fetch(ISSUER + "/device/setup/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ label, replace_label: true, kind: "p4-gw", site_id: siteId }),
+  });
+  if (!res.ok) throw new Error("credential 発行に失敗: HTTP " + res.status);
+  const cred = await res.json();
+  log("credential 発行 OK (device_id=" + cred.device_id + ")");
+
+  pendingSecret = cred.device_secret;
+  const mark = lines.length;
+  await send("cred set " + cred.device_id + " " + cred.device_secret, true);
+  const result = await waitFrom(mark, /^(OK|failed:)/, 5000);
+  if (!result) throw new Error("応答タイムアウト: cred set");
+  if (result.startsWith("failed:")) throw new Error(result);
+
+  resultEl.innerHTML = '<span class="ok">登録完了 — credential を書き込みました' +
+    ' (hub のビーコンを発見次第、自動でハンドシェイクを試みます)</span>';
+  writer.releaseLock();
+  await reader.cancel().catch(() => {});
+  await port.close().catch(() => {});
+}
+runBtn.addEventListener("click", () => run());
 loadDevices();
 startDeviceEventStream();
 </script>
