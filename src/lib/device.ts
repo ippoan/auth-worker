@@ -415,6 +415,63 @@ export interface HubTokenClaims {
   [key: string]: unknown;
 }
 
+/** `/device/cam-relay-token` を mint できる role (拠点ゲートウェイのカメラ中継専用、Refs alc-gw-p4#2 / alc-app#129)。 */
+export const CAM_RELAY_TOKEN_ELIGIBLE_ROLES: ReadonlySet<string> = new Set([
+  DEVICE_ROLE_GATEWAY,
+]);
+
+/** `/device/cam-relay-token` の既定 TTL (1h)。device は再接続を挟まず持ち回すため hub-token より長く取る。 */
+export const CAM_RELAY_TOKEN_TTL_SECONDS = 3600;
+
+/** `/device/cam-relay-token` が発行する claims。`aud` で hub token と区別する。 */
+export interface CamRelayTokenClaims {
+  sub: string;
+  site_id: string;
+  role: string;
+  aud: "cam-relay";
+  env: string;
+  iat: number;
+  exp: number;
+  [key: string]: unknown;
+}
+
+/**
+ * site-scope の短命トークンを mint する共通ロジック (`mintHubToken` / `mintCamRelayToken` の実体)。
+ * role が `eligibleRoles` に無い、または `record.site_id` が未設定なら null を返す
+ * (呼び出し側は 403 相当を返す前提)。
+ */
+async function mintSiteScopedToken(
+  env: DeviceJwtEnv,
+  record: DeviceRecord,
+  now: number,
+  eligibleRoles: ReadonlySet<string>,
+  aud: string,
+  ttlSeconds: number,
+  extraClaims?: Record<string, unknown>,
+): Promise<string | null> {
+  const role = record.role ?? DEVICE_ROLE;
+  if (!eligibleRoles.has(role)) return null;
+  if (!record.site_id) return null;
+
+  const secret = await resolveSecret(env.JWT_SECRET);
+  if (!secret) {
+    throw new Error("JWT_SECRET not configured");
+  }
+  return signHs256(
+    {
+      sub: record.device_id,
+      site_id: record.site_id,
+      role,
+      aud,
+      env: env.WORKER_ENV,
+      iat: now,
+      exp: now + ttlSeconds,
+      ...extraClaims,
+    },
+    secret,
+  );
+}
+
 /**
  * hub token を mint する (HS256 / JWT_SECRET、`mintDeviceJwt` と同じ鍵)。
  * `record.role` が `HUB_TOKEN_ELIGIBLE_ROLES` (device-hub / device-gateway) に
@@ -429,25 +486,24 @@ export async function mintHubToken(
   now: number,
   ttlSeconds: number = HUB_TOKEN_TTL_SECONDS,
 ): Promise<string | null> {
-  const role = record.role ?? DEVICE_ROLE;
-  if (!HUB_TOKEN_ELIGIBLE_ROLES.has(role)) return null;
-  if (!record.site_id) return null;
+  return mintSiteScopedToken(env, record, now, HUB_TOKEN_ELIGIBLE_ROLES, "hub", ttlSeconds, { nonce });
+}
 
-  const secret = await resolveSecret(env.JWT_SECRET);
-  if (!secret) {
-    throw new Error("JWT_SECRET not configured");
-  }
-  const claims: HubTokenClaims = {
-    sub: record.device_id,
-    site_id: record.site_id,
-    role,
-    nonce,
-    aud: "hub",
-    env: env.WORKER_ENV,
-    iat: now,
-    exp: now + ttlSeconds,
-  };
-  return signHs256(claims, secret);
+/**
+ * カメラ中継 (cf-alc-signaling の DO へ device 役として接続する) 用の token を mint する
+ * (HS256 / JWT_SECRET、`mintHubToken` と同じ鍵)。`record.role` が
+ * `CAM_RELAY_TOKEN_ELIGIBLE_ROLES` (device-gateway) に含まれない、または
+ * `record.site_id` が未設定なら null (呼び出し側は 403 相当を返す前提)。
+ * hub token と異なり相手デバイスと直接やり取りしないため nonce は不要
+ * (TLS 越しの cloud DO への Bearer header であり LAN 上の再生耐性は不要)。
+ */
+export async function mintCamRelayToken(
+  env: DeviceJwtEnv,
+  record: DeviceRecord,
+  now: number,
+  ttlSeconds: number = CAM_RELAY_TOKEN_TTL_SECONDS,
+): Promise<string | null> {
+  return mintSiteScopedToken(env, record, now, CAM_RELAY_TOKEN_ELIGIBLE_ROLES, "cam-relay", ttlSeconds);
 }
 
 async function signHs256(payload: Record<string, unknown>, secret: string): Promise<string> {

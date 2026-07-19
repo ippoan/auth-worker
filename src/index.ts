@@ -76,6 +76,7 @@ import {
   handleDeviceToken,
   handleDeviceRevoke,
   handleDeviceHubToken,
+  handleDeviceCamRelayToken,
   handleDeviceIntrospect,
   handleDeviceSiteBackfill,
 } from "./handlers/device";
@@ -781,6 +782,9 @@ export default {
           // credential → nonce 束縛の短命 hub token。平文 LAN でもリプレイ不能。
           case "/device/hub-token":
             return await handleDeviceHubToken(request, env);
+          // カメラ中継 (cf-alc-signaling DO) 接続用の gateway 拠点トークン (Refs alc-gw-p4#2)。
+          case "/device/cam-relay-token":
+            return await handleDeviceCamRelayToken(request, env);
           // hub token の検証代行 (ESP32 は JWKS 検証を実装しないため REST で代替)。
           case "/device/introspect":
             return await handleDeviceIntrospect(request, env);
