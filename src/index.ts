@@ -96,6 +96,7 @@ import {
   handleDeviceSetupVersion,
   handleDeviceSetupBattery,
   handleDeviceSetupGw,
+  handleDeviceSetupSite,
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
 import { handlePrintTestPdf } from "./handlers/print-test";
@@ -803,6 +804,9 @@ export default {
           // (recorder command {action:gw_url|gw_status})。POST。
           case "/device/setup/gw":
             return await handleDeviceSetupGw(request, env);
+          // 登録済み device-hub の site_id をブラウザから設定 (Refs #406)。
+          case "/device/setup/site":
+            return await handleDeviceSetupSite(request, env);
           // Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing (box ↔ operator)。
           case "/device/pair/start":
             return await handleDevicePairStart(request, env);

@@ -134,9 +134,16 @@ export interface DeviceRecord {
   role?: string;
   /**
    * 拠点 ID (Refs #406)。`device-hub` / `device-gateway` の 1:1 束縛と
-   * `/device/hub-token` の claim に使う。alc-app 側に拠点レジストリがまだ無いため
-   * 現状は provisioning 時の自由入力文字列 (レジストリ非依存)。未設定の既存
-   * device-hub credential は `/device/site/backfill` で事後付与する。
+   * `/device/hub-token` の claim に使う。
+   *
+   * **既定は hub 自身の `device_id`** (2026-07-19 改訂): 拠点は物理的に
+   * 1 hub = 1 site なので、`device-hub` credential は `createDeviceCredential`
+   * が siteId 省略時に自動で `device_id` を site_id にする (人手採番不要)。
+   * hub が交換され device_id が変われば site_id も変わり、GW 側の再ポイントで
+   * 自然に追従する (「hub 交換 = 再接続」として扱う設計)。alc-app に将来
+   * 拠点レジストリができた際は、その恒久 ID への置き換えを別途検討する。
+   * 未設定の既存 (この改訂前に発行された) device-hub credential は
+   * `/device/setup/site` や `/device/site/backfill` で事後付与する。
    */
   site_id?: string;
   /** 発行時刻 (unix 秒)。 */
@@ -192,13 +199,18 @@ export async function createDeviceCredential(
 ): Promise<NewDeviceCredential> {
   const device_id = randomToken(16);
   const device_secret = randomToken(32);
+  const normalizedRole = normalizeDeviceRole(role);
+  // device-hub は 1 hub = 1 site が物理的な前提なので、siteId 省略時は自分の
+  // device_id を site_id にする (人手採番不要、Refs #406 改訂)。gateway 等は
+  // 対象 hub の device_id を明示的に渡す運用のため自動化しない。
+  const resolvedSiteId = siteId ?? (normalizedRole === DEVICE_ROLE_HUB ? device_id : undefined);
   const record: DeviceRecord = {
     device_id,
     tenant_id: tenantId,
     secret_hash: await sha256Hex(device_secret),
     label,
-    role: normalizeDeviceRole(role),
-    ...(siteId ? { site_id: siteId } : {}),
+    role: normalizedRole,
+    ...(resolvedSiteId ? { site_id: resolvedSiteId } : {}),
     created_at: now,
     revoked: false,
   };

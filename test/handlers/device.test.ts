@@ -421,9 +421,11 @@ describe("handleDeviceHubToken (Refs #406)", () => {
     expect(res.status).toBe(403);
   });
 
-  it("403 when site_id is unset on an otherwise eligible (hub) credential", async () => {
+  it("403 when site_id is unset on an otherwise eligible (gateway) credential", async () => {
+    // hub は createDeviceCredential が site_id 省略時に自分の device_id を既定にするため
+    // (Refs #406 改訂)、この 403 分岐は auto-default 対象外の gateway で踏む。
     const env = makeEnv();
-    const cred = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_HUB); // no site_id
+    const cred = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_GATEWAY); // no site_id
     const res = await handleDeviceHubToken(
       post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "n" }),
       env,
@@ -431,9 +433,10 @@ describe("handleDeviceHubToken (Refs #406)", () => {
     expect(res.status).toBe(403);
   });
 
-  it("mints a nonce-bound hub token for a device-hub credential with site_id", async () => {
+  it("mints a nonce-bound hub token for a device-hub credential (site_id auto-defaults to its own device_id)", async () => {
     const env = makeEnv();
-    const cred = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_HUB, "site-1");
+    const cred = await createDeviceCredential(env, "t", "l", 1700, DEVICE_ROLE_HUB);
+    expect(cred.record.site_id).toBe(cred.device_id);
     const res = await handleDeviceHubToken(
       post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "abc" }),
       env,
@@ -441,11 +444,11 @@ describe("handleDeviceHubToken (Refs #406)", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.token_type).toBe("Bearer");
-    expect(body.site_id).toBe("site-1");
+    expect(body.site_id).toBe(cred.device_id);
     const payload = await verifyJwt(body.access_token as string, SECRET, ENV);
     expect(payload?.aud).toBe("hub");
     expect(payload?.nonce).toBe("abc");
-    expect(payload?.site_id).toBe("site-1");
+    expect(payload?.site_id).toBe(cred.device_id);
   });
 
   it("mints for a device-gateway credential with site_id", async () => {
@@ -582,12 +585,24 @@ describe("handleDeviceSiteBackfill (Refs #406)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("400 when device_id or site_id is missing", async () => {
+  it("400 when device_id is missing", async () => {
     const res = await handleDeviceSiteBackfill(
-      post("/device/site/backfill", { device_id: "x" }, { "X-Internal-Shared-Secret": INTERNAL }),
+      post("/device/site/backfill", { site_id: "s" }, { "X-Internal-Shared-Secret": INTERNAL }),
       internalEnv(),
     );
     expect(res.status).toBe(400);
+  });
+
+  it("site_id を省略すると device_id 自身を既定にする (Refs #406 改訂)", async () => {
+    const env = internalEnv();
+    const cred = await createDeviceCredential(env, "t", "cores3-1", 1700, DEVICE_ROLE_HUB);
+    const res = await handleDeviceSiteBackfill(
+      post("/device/site/backfill", { device_id: cred.device_id }, { "X-Internal-Shared-Secret": INTERNAL }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.site_id).toBe(cred.device_id);
   });
 
   it("404 for an unknown device", async () => {
@@ -602,9 +617,10 @@ describe("handleDeviceSiteBackfill (Refs #406)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("assigns site_id to an already-provisioned device-hub credential", async () => {
+  it("explicit site_id overrides the device's own auto-defaulted site_id", async () => {
     const env = internalEnv();
     const cred = await createDeviceCredential(env, "t", "cores3-1", 1700, DEVICE_ROLE_HUB);
+    expect(cred.record.site_id).toBe(cred.device_id); // 発行時点で既に自動付与済み (Refs #406 改訂)
     const res = await handleDeviceSiteBackfill(
       post(
         "/device/site/backfill",
@@ -617,11 +633,13 @@ describe("handleDeviceSiteBackfill (Refs #406)", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.site_id).toBe("site-42");
 
-    // hub-token が今度は mint できる (site_id 付与前は 403 だった) ことで実用性を確認。
+    // hub-token が新しい site_id で mint されることを確認。
     const tokRes = await handleDeviceHubToken(
       post("/device/hub-token", { device_id: cred.device_id, device_secret: cred.device_secret, nonce: "n" }),
       env,
     );
     expect(tokRes.status).toBe(200);
+    const tokBody = (await tokRes.json()) as Record<string, unknown>;
+    expect(tokBody.site_id).toBe("site-42");
   });
 });
