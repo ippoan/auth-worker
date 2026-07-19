@@ -87,6 +87,13 @@ export const DEVICE_ROLE_HUB = "device-hub";
  */
 export const DEVICE_ROLE_PRINT = "device-print";
 
+/**
+ * 拠点ゲートウェイ (Windows alc-gw / Unit PoE-P4) 専用 role (Refs #406)。
+ * `/device/hub-token` を mint できる role の一つ。WHIP 拠点トークンの mint も
+ * 将来的にこの role の device credential に統合する設計 (site-device-auth-project)。
+ */
+export const DEVICE_ROLE_GATEWAY = "device-gateway";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
 export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,
@@ -95,6 +102,13 @@ export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE_CAM_FLICKR,
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
+  DEVICE_ROLE_GATEWAY,
+]);
+
+/** `/device/hub-token` を mint できる role (拠点デバイスの相互認証、Refs #406)。 */
+export const HUB_TOKEN_ELIGIBLE_ROLES: ReadonlySet<string> = new Set([
+  DEVICE_ROLE_HUB,
+  DEVICE_ROLE_GATEWAY,
 ]);
 
 /**
@@ -118,6 +132,13 @@ export interface DeviceRecord {
    * `mintDeviceJwt` は `?? DEVICE_ROLE` で後方互換に倒す。
    */
   role?: string;
+  /**
+   * 拠点 ID (Refs #406)。`device-hub` / `device-gateway` の 1:1 束縛と
+   * `/device/hub-token` の claim に使う。alc-app 側に拠点レジストリがまだ無いため
+   * 現状は provisioning 時の自由入力文字列 (レジストリ非依存)。未設定の既存
+   * device-hub credential は `/device/site/backfill` で事後付与する。
+   */
+  site_id?: string;
   /** 発行時刻 (unix 秒)。 */
   created_at: number;
   /** revoke 済みフラグ。true なら検証は常に失敗する。 */
@@ -167,6 +188,7 @@ export async function createDeviceCredential(
   label: string,
   now: number,
   role: string = DEVICE_ROLE,
+  siteId?: string,
 ): Promise<NewDeviceCredential> {
   const device_id = randomToken(16);
   const device_secret = randomToken(32);
@@ -176,6 +198,7 @@ export async function createDeviceCredential(
     secret_hash: await sha256Hex(device_secret),
     label,
     role: normalizeDeviceRole(role),
+    ...(siteId ? { site_id: siteId } : {}),
     created_at: now,
     revoked: false,
   };
@@ -200,6 +223,7 @@ export async function createDeviceCredentialReplacingLabel(
   label: string,
   now: number,
   role: string = DEVICE_ROLE,
+  siteId?: string,
 ): Promise<NewDeviceCredential> {
   const indexKey = labelIndexKey(tenantId, label);
   const previousDeviceId = await env.AUTH_CONFIG.get(indexKey);
@@ -207,9 +231,28 @@ export async function createDeviceCredentialReplacingLabel(
     await revokeDeviceCredential(env, previousDeviceId);
   }
 
-  const cred = await createDeviceCredential(env, tenantId, label, now, role);
+  const cred = await createDeviceCredential(env, tenantId, label, now, role, siteId);
   await env.AUTH_CONFIG.put(indexKey, cred.device_id);
   return cred;
+}
+
+/**
+ * 既存 device credential (主に device-hub) に事後で site_id を付与する
+ * (Refs #406: alc-app にまだ拠点レジストリが無いため、既に現場に出ている CoreS3
+ * credential は provisioning 時ではなく事後 backfill で site_id を付ける)。
+ * revoke 済み credential にも付与自体は許す (履歴保持のため forbid しない)。
+ * 不在なら null。
+ */
+export async function setDeviceSiteId(
+  env: DeviceKvEnv,
+  deviceId: string,
+  siteId: string,
+): Promise<DeviceRecord | null> {
+  const record = await getDeviceRecord(env, deviceId);
+  if (!record) return null;
+  record.site_id = siteId;
+  await env.AUTH_CONFIG.put(KV_PREFIX + deviceId, JSON.stringify(record));
+  return record;
 }
 
 /**
@@ -337,6 +380,57 @@ export async function mintDeviceJwt(
     sub: record.device_id,
     tenant_id: record.tenant_id,
     role: record.role ?? DEVICE_ROLE,
+    env: env.WORKER_ENV,
+    iat: now,
+    exp: now + ttlSeconds,
+  };
+  return signHs256(claims, secret);
+}
+
+/** `/device/hub-token` の既定 TTL (60s)。GW/hub は必要な都度 nonce 付きで mint する。 */
+export const HUB_TOKEN_TTL_SECONDS = 60;
+
+/** `/device/hub-token` が発行する claims。`aud` で通常の device JWT と区別する。 */
+export interface HubTokenClaims {
+  sub: string;
+  site_id: string;
+  role: string;
+  nonce: string;
+  aud: "hub";
+  env: string;
+  iat: number;
+  exp: number;
+  [key: string]: unknown;
+}
+
+/**
+ * hub token を mint する (HS256 / JWT_SECRET、`mintDeviceJwt` と同じ鍵)。
+ * `record.role` が `HUB_TOKEN_ELIGIBLE_ROLES` (device-hub / device-gateway) に
+ * 含まれない、または `record.site_id` が未設定なら null を返す (呼び出し側は
+ * 403 相当を返す前提)。nonce は呼び出し元 (相手デバイス) が指定したものをそのまま
+ * claim に束縛し、平文 LAN 上でも再生不能にする (site-device-auth-project 設計)。
+ */
+export async function mintHubToken(
+  env: DeviceJwtEnv,
+  record: DeviceRecord,
+  nonce: string,
+  now: number,
+  ttlSeconds: number = HUB_TOKEN_TTL_SECONDS,
+): Promise<string | null> {
+  const role = record.role ?? DEVICE_ROLE;
+  if (!HUB_TOKEN_ELIGIBLE_ROLES.has(role)) return null;
+  if (!record.site_id) return null;
+
+  const secret = await resolveSecret(env.JWT_SECRET);
+  if (!secret) {
+    throw new Error("JWT_SECRET not configured");
+  }
+  const claims: HubTokenClaims = {
+    sub: record.device_id,
+    site_id: record.site_id,
+    role,
+    nonce,
+    aud: "hub",
     env: env.WORKER_ENV,
     iat: now,
     exp: now + ttlSeconds,

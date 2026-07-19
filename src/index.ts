@@ -75,6 +75,9 @@ import {
   handleDevicePairInternal,
   handleDeviceToken,
   handleDeviceRevoke,
+  handleDeviceHubToken,
+  handleDeviceIntrospect,
+  handleDeviceSiteBackfill,
 } from "./handlers/device";
 import {
   handleDevicePairStart,
@@ -773,6 +776,17 @@ export default {
             return await handleDeviceToken(request, env);
           case "/device/revoke":
             return await handleDeviceRevoke(request, env);
+          // 拠点デバイス相互認証 (Refs #406, site-device-auth-project): hub/gateway
+          // credential → nonce 束縛の短命 hub token。平文 LAN でもリプレイ不能。
+          case "/device/hub-token":
+            return await handleDeviceHubToken(request, env);
+          // hub token の検証代行 (ESP32 は JWKS 検証を実装しないため REST で代替)。
+          case "/device/introspect":
+            return await handleDeviceIntrospect(request, env);
+          // 現場稼働中の device-hub credential へ事後で site_id を付与する
+          // (shared-secret 認証、server-to-server 専用)。
+          case "/device/site/backfill":
+            return await handleDeviceSiteBackfill(request, env);
           // CoreS3 の USB provisioning: browser (cookie session) からの credential mint。
           case "/device/setup/pair":
             return await handleDeviceSetupPair(request, env);

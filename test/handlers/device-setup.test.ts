@@ -55,6 +55,7 @@ interface PairResponse {
   tenant_id: string;
   label: string;
   role: string;
+  site_id?: string;
 }
 
 describe("handleDeviceSetupPage", () => {
@@ -282,6 +283,27 @@ describe("handleDeviceSetupPair", () => {
     const record = await getDeviceRecord(env, body.device_id);
     expect(record?.tenant_id).toBe("tenant-1");
     expect(record?.role).toBe("device-hub");
+  });
+
+  it("site_id を渡すと credential に付与される (Refs #406)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupPair(
+      postJson("/device/setup/pair", { label: "cores3-abc", site_id: "site-1" }, headers),
+      env,
+    );
+    const body = (await res.json()) as PairResponse;
+    expect(body.site_id).toBe("site-1");
+    const record = await getDeviceRecord(env, body.device_id);
+    expect(record?.site_id).toBe("site-1");
+  });
+
+  it("site_id を省略すると credential に付与されない (Refs #406、後方互換)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3-abc" }, headers), env);
+    const body = (await res.json()) as PairResponse;
+    expect(body.site_id).toBeUndefined();
   });
 
   it("kind=atoms3-print は device-print role で mint する (機種分離 alc-app-s3#38)", async () => {

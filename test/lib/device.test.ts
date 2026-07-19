@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   createDeviceCredential,
+  createDeviceCredentialReplacingLabel,
   getDeviceRecord,
   revokeDeviceCredential,
   verifyDeviceCredential,
   mintDeviceJwt,
+  mintHubToken,
+  setDeviceSiteId,
   normalizeDeviceRole,
   sha256Hex,
   DEVICE_ROLE,
@@ -12,7 +15,9 @@ import {
   DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
+  DEVICE_ROLE_GATEWAY,
   DEVICE_JWT_TTL_SECONDS,
+  HUB_TOKEN_TTL_SECONDS,
   listAllHubDeviceRecords,
   type DeviceRecord,
 } from "../../src/lib/device";
@@ -43,6 +48,7 @@ describe("normalizeDeviceRole", () => {
     expect(normalizeDeviceRole(DEVICE_ROLE_DTAKO_INGEST)).toBe(DEVICE_ROLE_DTAKO_INGEST);
     expect(normalizeDeviceRole(DEVICE_ROLE_HUB)).toBe(DEVICE_ROLE_HUB);
     expect(normalizeDeviceRole(DEVICE_ROLE_PRINT)).toBe(DEVICE_ROLE_PRINT);
+    expect(normalizeDeviceRole(DEVICE_ROLE_GATEWAY)).toBe(DEVICE_ROLE_GATEWAY);
   });
 
   it("falls back to the default role for unknown strings", () => {
@@ -96,6 +102,57 @@ describe("createDeviceCredential", () => {
     expect(print.record.role).toBe(DEVICE_ROLE_PRINT); // AtomS3 印刷ブリッジ (alc-app-s3#38)
     const bad = await createDeviceCredential(env, "t", "l", NOW, "admin");
     expect(bad.record.role).toBe(DEVICE_ROLE); // 未知 role は既定に倒す
+    const gw = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_GATEWAY);
+    expect(gw.record.role).toBe(DEVICE_ROLE_GATEWAY); // 拠点ゲートウェイ (Refs #406)
+  });
+
+  it("stores site_id when provided, omits it when not (Refs #406)", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const withSite = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB, "site-1");
+    expect(withSite.record.site_id).toBe("site-1");
+    const withoutSite = await createDeviceCredential(env, "t", "l2", NOW, DEVICE_ROLE_HUB);
+    expect(withoutSite.record.site_id).toBeUndefined();
+  });
+});
+
+describe("createDeviceCredentialReplacingLabel (site_id, Refs #406)", () => {
+  it("threads site_id through to the newly minted credential", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const cred = await createDeviceCredentialReplacingLabel(
+      env,
+      "t",
+      "gw-1",
+      NOW,
+      DEVICE_ROLE_GATEWAY,
+      "site-9",
+    );
+    expect(cred.record.site_id).toBe("site-9");
+    expect(cred.record.role).toBe(DEVICE_ROLE_GATEWAY);
+  });
+});
+
+describe("setDeviceSiteId (Refs #406 backfill)", () => {
+  it("assigns site_id to an existing record", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
+    expect(cred.record.site_id).toBeUndefined();
+    const updated = await setDeviceSiteId(env, cred.device_id, "site-1");
+    expect(updated?.site_id).toBe("site-1");
+    expect((await getDeviceRecord(env, cred.device_id))?.site_id).toBe("site-1");
+  });
+
+  it("returns null for a missing device", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    expect(await setDeviceSiteId(env, "missing", "site-1")).toBeNull();
+  });
+
+  it("allows re-assigning site_id on a revoked device (history preserved, not forbidden)", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
+    await revokeDeviceCredential(env, cred.device_id);
+    const updated = await setDeviceSiteId(env, cred.device_id, "site-2");
+    expect(updated?.site_id).toBe("site-2");
+    expect(updated?.revoked).toBe(true);
   });
 });
 
@@ -231,6 +288,61 @@ describe("mintDeviceJwt", () => {
   it("throws when JWT_SECRET is not configured", async () => {
     await expect(
       mintDeviceJwt({ JWT_SECRET: undefined, WORKER_ENV: "staging" }, record, NOW),
+    ).rejects.toThrow("JWT_SECRET not configured");
+  });
+});
+
+describe("mintHubToken (Refs #406)", () => {
+  const hubRecord: DeviceRecord = {
+    device_id: "hub-1",
+    tenant_id: "tenant-9",
+    secret_hash: "x",
+    label: "l",
+    role: DEVICE_ROLE_HUB,
+    site_id: "site-1",
+    created_at: NOW,
+    revoked: false,
+  };
+  const gwRecord: DeviceRecord = { ...hubRecord, device_id: "gw-1", role: DEVICE_ROLE_GATEWAY };
+
+  it("mints a nonce-bound aud=hub token for a device-hub credential", async () => {
+    const token = await mintHubToken({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, hubRecord, "nonce-abc", NOW);
+    expect(token).not.toBeNull();
+    const payload = await verifyJwt(token!, SECRET, "staging");
+    expect(payload).not.toBeNull();
+    expect(payload!.sub).toBe("hub-1");
+    expect(payload!.site_id).toBe("site-1");
+    expect(payload!.role).toBe(DEVICE_ROLE_HUB);
+    expect(payload!.nonce).toBe("nonce-abc");
+    expect(payload!.aud).toBe("hub");
+    expect(payload!.exp).toBe(NOW + HUB_TOKEN_TTL_SECONDS);
+  });
+
+  it("mints for a device-gateway credential too", async () => {
+    const token = await mintHubToken({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, gwRecord, "n2", NOW);
+    const payload = await verifyJwt(token!, SECRET, "staging");
+    expect(payload!.role).toBe(DEVICE_ROLE_GATEWAY);
+  });
+
+  it("returns null for an ineligible role (e.g. device-kiosk)", async () => {
+    const kioskRecord: DeviceRecord = { ...hubRecord, role: DEVICE_ROLE_KIOSK };
+    expect(await mintHubToken({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, kioskRecord, "n", NOW)).toBeNull();
+  });
+
+  it("returns null when site_id is unset", async () => {
+    const noSite: DeviceRecord = { ...hubRecord, site_id: undefined };
+    expect(await mintHubToken({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, noSite, "n", NOW)).toBeNull();
+  });
+
+  it("honors a custom ttl", async () => {
+    const token = await mintHubToken({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, hubRecord, "n", NOW, 30);
+    const payload = await verifyJwt(token!, SECRET, "staging");
+    expect(payload!.exp).toBe(NOW + 30);
+  });
+
+  it("throws when JWT_SECRET is not configured", async () => {
+    await expect(
+      mintHubToken({ JWT_SECRET: undefined, WORKER_ENV: "staging" }, hubRecord, "n", NOW),
     ).rejects.toThrow("JWT_SECRET not configured");
   });
 });
