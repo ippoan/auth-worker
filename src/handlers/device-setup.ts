@@ -1295,6 +1295,13 @@ async function pollOta(id, deviceId, kind, btn, barFill, msg, verSpan, otaNote) 
       btn.disabled = false;
       OTA_BUSY.delete(deviceId);
       return;
+    } else if (p.phase !== "pending") {
+      // download/ok/error 以外の phase (started 等、alc-app-s3 側で今後追加
+      // されるものも含む) は firmware が payload に載せた message をそのまま
+      // 表示する。進捗バーや再起動待ちのような特別な UI が要る新 phase でない
+      // 限り、alc-app-s3 が phase を増やしてもここを編集する必要は無い
+      // (ippoan/alc-app-s3#94)
+      msg.textContent = p.message || ("状態: " + p.phase);
     }
     // pending はそのまま次のポーリングへ
   }
