@@ -104,17 +104,19 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     display: "AtomS3 印刷ブリッジ",
   },
   /**
-   * Unit PoE-P4 (ippoan/alc-gw-p4) — hub_link の GW 側。CoreS3/atoms3-print と
-   * 違い ESP-IDF の素の esp_console REPL (`cred show` / `cred set <id> <secret>`)
-   * しか話さず、OTA-over-HTTP の仕組みも無いため appUrl/manifestUrl は空。
-   * WS 接続 (cf-alc-recorder) もしないので isConn は常に false — OTA/バージョン
-   * 照会 UI は自然に無効表示のままになる (別途の防御コード不要)。
+   * Unit PoE-P4 (ippoan/alc-gw-p4) — hub_link の GW 側。cf-alc-recorder への
+   * WS常設接続 (recorder_link) と OTA (esp_https_ota) を alc-gw-p4#15 で実装済み。
+   * 配布は GitHub Releases (alc-gw-p4/.github/workflows/release.yml、
+   * Cloudflare Pages 配布の cores3/atoms3-print とは別経路):
+   *   - 安定版: releases/latest (v* タグ release、prerelease除外)
+   *   - dev版: releases/download/dev (main push の度に上書きされる rolling release)
    */
   "p4-gw": {
     role: DEVICE_ROLE_GATEWAY,
     labelDefault: "p4-gw",
-    appUrl: "",
-    manifestUrl: "",
+    appUrl: "https://github.com/ippoan/alc-gw-p4/releases/latest/download/alc_gw_p4_relay.bin",
+    devAppUrl: "https://github.com/ippoan/alc-gw-p4/releases/download/dev/alc_gw_p4_relay.bin",
+    manifestUrl: "https://github.com/ippoan/alc-gw-p4/releases/latest/download/manifest.json",
     display: "Unit PoE-P4 GW",
   },
 };
@@ -614,6 +616,13 @@ function setupPage(issuer: string, email: string): string {
   const devToggleHtml = isDeveloper
     ? `<label for="dev-build-cores3" style="display:flex;align-items:center;gap:.45rem;margin:.3rem 0 .8rem;font-size:.85rem;color:#92400e;cursor:pointer"><input type="checkbox" id="dev-build-cores3" style="width:auto;margin:0" checked>CoreS3 は dev ビルド (mem-hud = メモリ使用率 HUD 付き) を配信する</label>`
     : "";
+  // p4-gw の dev ビルド = main push の度に上書きされる GitHub Releases の
+  // "dev" release (alc-gw-p4/.github/workflows/release.yml)。CoreS3 の
+  // mem-hud のような機能差分は今のところ無く、「タグを打たずに最新 main を
+  // 試せる」チャンネルという位置づけ。
+  const devToggleHtmlP4Gw = isDeveloper
+    ? `<label for="dev-build-p4-gw" style="display:flex;align-items:center;gap:.45rem;margin:.3rem 0 .8rem;font-size:.85rem;color:#92400e;cursor:pointer"><input type="checkbox" id="dev-build-p4-gw" style="width:auto;margin:0" checked>Unit PoE-P4 GW は dev ビルド (main の最新コミット) を配信する</label>`
+    : "";
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>デバイス登録</title>
@@ -684,6 +693,9 @@ ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行い�
 ${devToggleHtml}
 <label for="ota-url-atoms3-print">OTA firmware URL — AtomS3 印刷ブリッジ (app イメージ)</label>
 <input id="ota-url-atoms3-print" value="${escapeHtml(DEVICE_KINDS["atoms3-print"]?.appUrl ?? "")}" style="width:100%;max-width:32rem">
+<label for="ota-url-p4-gw">OTA firmware URL — Unit PoE-P4 GW (app イメージ)</label>
+<input id="ota-url-p4-gw" value="${escapeHtml(DEVICE_KINDS["p4-gw"]?.appUrl ?? "")}" style="width:100%;max-width:32rem">
+${devToggleHtmlP4Gw}
 <label for="gw-url">Windows GW URL — CoreS3 の測定中継先 (alc-gw ハブ、ws://&lt;GW の IP&gt;:9000)。行の「GW設定」で接続中の CoreS3 に保存、「GW確認」で疎通を照会</label>
 <input id="gw-url" placeholder="ws://192.168.11.5:9000" style="width:100%;max-width:32rem">
 <p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。接続中のデバイスは
@@ -842,6 +854,19 @@ if (devToggle) {
   // 欄を checkbox 状態へ同期する (change は発火しないため明示)。
   if (devToggle.checked) {
     document.getElementById("ota-url-cores3").value = DEV_APP_URL_CORES3;
+  }
+}
+
+const PROD_APP_URL_P4_GW = ${JSON.stringify(DEVICE_KINDS["p4-gw"]?.appUrl ?? "")};
+const DEV_APP_URL_P4_GW = ${JSON.stringify(DEVICE_KINDS["p4-gw"]?.devAppUrl ?? "")};
+const devToggleP4Gw = document.getElementById("dev-build-p4-gw");
+if (devToggleP4Gw) {
+  devToggleP4Gw.addEventListener("change", () => {
+    document.getElementById("ota-url-p4-gw").value =
+      devToggleP4Gw.checked ? DEV_APP_URL_P4_GW : PROD_APP_URL_P4_GW;
+  });
+  if (devToggleP4Gw.checked) {
+    document.getElementById("ota-url-p4-gw").value = DEV_APP_URL_P4_GW;
   }
 }
 
