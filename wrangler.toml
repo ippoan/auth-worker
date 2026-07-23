@@ -356,10 +356,14 @@ MCP_JWT_AUDIENCE_ALLOWLIST = "github-mcp-server-rs,ref-files-mcp-server-rs"
 # 足す (= prod top-level [vars] には入れない。Refs ippoan/mcp-cf-workers#28)。
 # ci-dashboard も AUTH_WORKER_ORIGIN を auth-staging 固定にしている (staging=prod
 # 実運用) ので同様に staging 側にのみ追加。Refs ippoan/ci-dashboard#498。
-MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://security-rotate.ippoan.org,https://ref-files.ippoan.org,https://cf-access-mcp.ippoan.org,https://cdp-relay.ippoan.org,https://gmail-mcp.ippoan.org,https://ci-dashboard.ippoan.org"
+# kyuyo-mcp も同じ single-env (staging=prod) 規約で AUTH_WORKER_ORIGIN が
+# auth-staging 固定。Refs ohishi-exp/nuxt-dtako-admin#376。
+MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://security-rotate.ippoan.org,https://ref-files.ippoan.org,https://cf-access-mcp.ippoan.org,https://cdp-relay.ippoan.org,https://gmail-mcp.ippoan.org,https://ci-dashboard.ippoan.org,https://kyuyo-mcp.ippoan.org"
 # MCP OAuth に Google IdP を追加 (top-level [vars] の同名変数と同じ意味、staging 側)。
-# 現時点では未使用の origin なし。
-MCP_RESOURCE_GOOGLE_ORIGINS = ""
+# kyuyo-mcp が最初の利用者: 給与比較データへのアクセスを google-mcp-user-allowlist KV
+# (email ベース ACL) で絞るため、GitHub でなく Google に redirect させる。
+# Refs ippoan/auth-worker#414, ohishi-exp/nuxt-dtako-admin#376。
+MCP_RESOURCE_GOOGLE_ORIGINS = "https://kyuyo-mcp.ippoan.org"
 # hcreader-worker origin — `/oauth/ghapi/callback` から refresh_token を
 # 内部 POST する宛先 (`${HCREADER_WORKER_ORIGIN}/api/ghapi/store-tokens`)。
 # hcreader-worker は single-env (staging = prod = hcreader.ippoan.org)。
