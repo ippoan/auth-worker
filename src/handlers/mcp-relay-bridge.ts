@@ -152,6 +152,14 @@ async function authenticateMcpRelay(
   if (!payload) {
     return { kind: "error", response: unauthorizedResponse(env, "Invalid token") };
   }
+  // relay は GitHub 由来の binary session (github-mcp-server-rs) 専用。Google IdP
+  // 追加 (issue) で McpJwtPayload.github_login が optional 化されたため、Google
+  // flow の JWT (github_login 無し) を明示的に弾く。実際には aud predicate 側で
+  // 既に弾かれるはず (Google flow の aud は kyuyo-mcp 等の resource origin で、
+  // ここの relayOrigin/legacy allowlist と一致しない) だが defense-in-depth。
+  if (!payload.github_login) {
+    return { kind: "error", response: unauthorizedResponse(env, "Invalid token") };
+  }
   if (user !== null && payload.github_login !== user) {
     return { kind: "error", response: new Response("User mismatch", { status: 403 }) };
   }

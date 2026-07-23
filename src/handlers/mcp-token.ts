@@ -148,11 +148,18 @@ async function handleAuthorizationCodeGrant(
   }
   const aud = rec.resource ?? MCP_AUD;
 
-  const sub = `github:${rec.github_login}`;
+  // IdP ごとに片方のみセットされる不変条件 (issue: MCP OAuth に Google IdP を追加)。
+  // callback (mcp-auth-callback.ts / mcp-auth-callback-google.ts) が必ずどちらか
+  // 一方を書くので、両方欠落は設定不備として 500。
+  if (!rec.github_login && !rec.email) {
+    return oauthError("server_error", "auth code record missing identity", 500);
+  }
+  const sub = rec.email ? `google:${rec.email}` : `github:${rec.github_login}`;
   const access_token = await signMcpJwt(
     {
       sub,
-      github_login: rec.github_login,
+      ...(rec.github_login ? { github_login: rec.github_login } : {}),
+      ...(rec.email ? { email: rec.email } : {}),
       scope: rec.scope,
       aud,
     },
@@ -163,6 +170,7 @@ async function handleAuthorizationCodeGrant(
     sub,
     scope: rec.scope,
     github_login: rec.github_login,
+    email: rec.email,
     aud,
   });
   return successResponse({ access_token, refresh_token, scope: rec.scope });
@@ -250,7 +258,8 @@ async function handleRefreshGrant(form: FormData, env: Env, jwtSecret: string): 
   const access_token = await signMcpJwt(
     {
       sub: rec.sub,
-      github_login: rec.github_login,
+      ...(rec.github_login ? { github_login: rec.github_login } : {}),
+      ...(rec.email ? { email: rec.email } : {}),
       scope: rec.scope,
       aud,
     },
@@ -261,6 +270,7 @@ async function handleRefreshGrant(form: FormData, env: Env, jwtSecret: string): 
     sub: rec.sub,
     scope: rec.scope,
     github_login: rec.github_login,
+    email: rec.email,
     aud,
     rotated_from: rec.hash,
   });

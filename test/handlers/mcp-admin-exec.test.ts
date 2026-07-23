@@ -110,6 +110,20 @@ describe("handleMcpAdminExec — auth gates", () => {
     expect(await res.json()).toEqual({ ok: false, error: "invalid_jwt" });
   });
 
+  // MCP OAuth に Google IdP を追加: mcp.admin elevate は GitHub 由来 principal 専用
+  // なので、github_login を持たない (= Google flow の) 署名有効な JWT も 401 で弾く。
+  it("401 when JWT is valid but has no github_login (Google-flow token)", async () => {
+    const { env } = envWithKv();
+    const googleJwt = await signMcpJwt(
+      { sub: "google:alice@example.com", email: "alice@example.com", scope: "mcp.read", aud: MCP_AUD_LEGACY },
+      MCP_JWT_SECRET,
+      3600,
+    );
+    const res = await handleMcpAdminExec(makeRequest({}, { auth: googleJwt }), env);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ ok: false, error: "invalid_jwt" });
+  });
+
   it("403 when elevate flag missing", async () => {
     const { env } = envWithKv();
     const jwt = await makeJwt("alice");

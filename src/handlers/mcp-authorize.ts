@@ -15,9 +15,10 @@
  *
  * Process:
  *   1. param 検証 + DCR client_id lookup + redirect_uri 一致確認
- *   2. auth request id (UUID) 生成 → KV `auth:request:<id>` に context 保存 (TTL 10m)
- *   3. state HMAC を `{provider:"github_mcp_authcode", auth_request_id}` で生成
- *   4. GitHub OAuth authorize URL に 302 redirect
+ *   2. `resource` origin から IdP を決定 (`mcpIdpForResourceOrigin`、既定は github)
+ *   3. auth request id (UUID) 生成 → KV `auth:request:<id>` に context 保存 (TTL 10m)
+ *   4. state HMAC を `{provider:"github_mcp_authcode"|"google_mcp_authcode", auth_request_id}` で生成
+ *   5. GitHub または Google の OAuth authorize URL に 302 redirect
  *
  * エラー (RFC 6749 §4.1.2.1):
  *   - redirect_uri / client_id 不正 → 400 で client に表示 (redirect しない)
@@ -35,7 +36,7 @@ import {
   putAuthRequest,
 } from "../lib/mcp-authcode";
 import { getDcrClient } from "../lib/mcp-dcr";
-import { isAllowedResourceOrigin } from "../lib/mcp-origins";
+import { isAllowedResourceOrigin, mcpIdpForResourceOrigin } from "../lib/mcp-origins";
 import { mcpToGithubScope, normalizeMcpScope, parseMcpScope } from "../lib/mcp-scope";
 import { resolveSecret } from "../lib/secret";
 import { generateOAuthState } from "../lib/security";
@@ -58,11 +59,11 @@ export async function handleMcpAuthorize(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  // ── env guard ──
-  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  // ── env guard (IdP 非依存分のみ。GitHub/Google の client id は resource から
+  //    IdP を決めた後、使う方だけ guard する — 片方しか設定してない環境でも
+  //    もう片方の consumer を落とさないため) ──
   if (
     !env.MCP_OAUTH_KV ||
-    !githubClientId ||
     !env.OAUTH_STATE_SECRET ||
     !env.AUTH_WORKER_ORIGIN
   ) {
@@ -134,7 +135,52 @@ export async function handleMcpAuthorize(
     resource = resourceRaw;
   }
 
-  // ── auth request 保存 ──
+  // ── resource origin から IdP を決定 (issue: MCP OAuth に Google IdP を追加)。
+  //    resource 未指定 (legacy client) はデフォルトの github に倒れる。google 分岐は
+  //    `resource !== undefined` の内側にネストし、TS に `resource: string` を
+  //    narrowing させる — idp==="google" は常に resource 有りという不変条件を
+  //    型レベルでも表現し、github 分岐と違って「resource 無し」の dead branch を
+  //    作らない (coverage 100% gate 対応)。──
+  const issuer = env.AUTH_WORKER_ORIGIN;
+
+  if (resource !== undefined && mcpIdpForResourceOrigin(new URL(resource).origin, env) === "google") {
+    const googleClientId = await resolveSecret(env.GOOGLE_CLIENT_ID);
+    if (!googleClientId) {
+      return jsonResponse({ error: "server_error", error_description: "MCP OAuth Provider not configured" }, 503);
+    }
+    const id = crypto.randomUUID();
+    const rec: AuthRequestRecord = {
+      id,
+      client_id,
+      redirect_uri,
+      code_challenge,
+      code_challenge_method: "S256",
+      client_state: state,
+      scope,
+      resource,
+      expires_at: Date.now() + AUTH_REQUEST_TTL_SEC * 1000,
+    };
+    await putAuthRequest(env, rec);
+
+    const callbackUri = `${issuer}/mcp/auth_callback_google`;
+    const googleState = await generateOAuthState(callbackUri, env.OAUTH_STATE_SECRET, {
+      provider: "google_mcp_authcode",
+      auth_request_id: id,
+    });
+    const googleAuthorize = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    googleAuthorize.searchParams.set("client_id", googleClientId);
+    googleAuthorize.searchParams.set("redirect_uri", callbackUri);
+    googleAuthorize.searchParams.set("response_type", "code");
+    googleAuthorize.searchParams.set("scope", "openid email");
+    googleAuthorize.searchParams.set("state", googleState);
+    return Response.redirect(googleAuthorize.toString(), 302);
+  }
+
+  // ── GitHub OAuth に飛ばす (state HMAC に auth_request_id 埋め込み) ──
+  const githubClientId = await resolveSecret(env.GITHUB_MCP_CLIENT_ID);
+  if (!githubClientId) {
+    return jsonResponse({ error: "server_error", error_description: "MCP OAuth Provider not configured" }, 503);
+  }
   const id = crypto.randomUUID();
   const rec: AuthRequestRecord = {
     id,
@@ -149,8 +195,6 @@ export async function handleMcpAuthorize(
   };
   await putAuthRequest(env, rec);
 
-  // ── GitHub OAuth に飛ばす (state HMAC に auth_request_id 埋め込み) ──
-  const issuer = env.AUTH_WORKER_ORIGIN;
   const callbackUri = `${issuer}/mcp/auth_callback`;
   const ghState = await generateOAuthState(callbackUri, env.OAUTH_STATE_SECRET, {
     provider: "github_mcp_authcode",

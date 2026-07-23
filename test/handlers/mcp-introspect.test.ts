@@ -498,6 +498,67 @@ describe("POST /mcp/introspect — github_token recovery", () => {
   });
 });
 
+// MCP OAuth に Google IdP を追加: sub が `google:` prefix の JWT は github_token
+// KV lookup を skip し、email だけを積んで active:true を返す。
+describe("POST /mcp/introspect — Google IdP flow (sub prefix google:)", () => {
+  async function makeGoogleJwt(email = "alice@example.com", scope = "mcp.read"): Promise<string> {
+    return signMcpJwt(
+      { sub: `google:${email}`, email, scope, aud: AUD },
+      TEST_MCP_JWT_SECRET,
+      3600,
+    );
+  }
+
+  it("returns active:true with email and WITHOUT touching KV (no github_token stored for google sub)", async () => {
+    const { env, kv } = envWithKv();
+    const jwt = await makeGoogleJwt("alice@example.com", "mcp.read");
+    // github_token:{sub} を意図的に置かない — KV lookup が発生したら active:false になるはず。
+    const res = await handleMcpIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token: jwt }) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    const body = (await res.json()) as {
+      active: boolean;
+      scope: string;
+      sub: string;
+      email: string;
+      github_login?: string;
+      github_token?: string;
+      exp: number;
+    };
+    expect(body.active).toBe(true);
+    expect(body.scope).toBe("mcp.read");
+    expect(body.sub).toBe("google:alice@example.com");
+    expect(body.email).toBe("alice@example.com");
+    expect(body.github_login).toBeUndefined();
+    expect(body.github_token).toBeUndefined();
+    expect(typeof body.exp).toBe("number");
+    // KV に github_token:google:* が書かれていないこと (そもそも lookup していない証拠)
+    expect(Object.keys(kv._data).some((k) => k.startsWith("github_token:google:"))).toBe(false);
+  });
+
+  it("works via Bearer JWT auth (mode 1) too", async () => {
+    const { env } = envWithKv();
+    const jwt = await makeGoogleJwt("bob@example.com");
+    const res = await handleMcpIntrospect(req({ auth: `Bearer ${jwt}` }), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { active: boolean; sub: string; email: string };
+    expect(body.active).toBe(true);
+    expect(body.sub).toBe("google:bob@example.com");
+    expect(body.email).toBe("bob@example.com");
+  });
+
+  it("SSO_ENCRYPTION_KEY missing does not affect the google flow (no decrypt needed)", async () => {
+    const { env } = envWithKv({ SSO_ENCRYPTION_KEY: "still-set-but-unused" });
+    const jwt = await makeGoogleJwt("carol@example.com");
+    const res = await handleMcpIntrospect(req({ auth: `Bearer ${jwt}` }), env);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { active: boolean }).active).toBe(true);
+  });
+});
+
 // `INTERNAL_SHARED_SECRET` can be either a plain string (legacy `wrangler
 // secret put`, still used by these mock-env fixtures) or a Secrets Store
 // binding (`{ get(): Promise<string> }`). The handler unwraps both through

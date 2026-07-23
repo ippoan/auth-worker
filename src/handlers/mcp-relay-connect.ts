@@ -91,7 +91,10 @@ async function resolveAuth(
       jwtSecret,
       getLiteralAudAllowlist(env),
     );
-    if (payload) {
+    // relay は GitHub 由来の binary session 専用。Google IdP 追加 (issue) で
+    // McpJwtPayload.github_login が optional 化されたため、Google flow の JWT
+    // (github_login 無し) を明示的に弾く (mcp-relay-bridge.ts と同じ defense-in-depth)。
+    if (payload && payload.github_login) {
       return {
         kind: "ok",
         auth: { forward_token: token, github_login: payload.github_login },

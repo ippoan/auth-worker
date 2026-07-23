@@ -295,6 +295,38 @@ describe("POST /mcp/token — refresh_token grant", () => {
     expect(res3.status).toBe(200);
     expect((await res3.json() as { refresh_token: string }).refresh_token).not.toBe(body.refresh_token);
   });
+
+  // MCP OAuth に Google IdP を追加: RefreshRecord が email を積んでいる場合の分岐。
+  it("200 with sub=google:<email> and no github_login claim when RefreshRecord carries email", async () => {
+    const { env } = envWithKv();
+    const refresh = await issueRefreshToken(env, {
+      sub: "google:alice@example.com",
+      scope: "mcp.read",
+      email: "alice@example.com",
+    });
+
+    const res = await handleMcpToken(
+      postForm({ grant_type: "refresh_token", refresh_token: refresh }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string; refresh_token: string };
+    const payload = await verifyMcpJwt(body.access_token, TEST_MCP_JWT_SECRET, AUD);
+    expect(payload!.sub).toBe("google:alice@example.com");
+    expect(payload!.email).toBe("alice@example.com");
+    expect(payload!.github_login).toBeUndefined();
+
+    // rotation でも email を維持する (新 refresh_token で再度 rotate)
+    const res2 = await handleMcpToken(
+      postForm({ grant_type: "refresh_token", refresh_token: body.refresh_token }),
+      env,
+    );
+    expect(res2.status).toBe(200);
+    const body2 = (await res2.json()) as { access_token: string };
+    const payload2 = await verifyMcpJwt(body2.access_token, TEST_MCP_JWT_SECRET, AUD);
+    expect(payload2!.sub).toBe("google:alice@example.com");
+    expect(payload2!.email).toBe("alice@example.com");
+  });
 });
 
 // =============================================================================
@@ -464,6 +496,46 @@ describe("POST /mcp/token — authorization_code grant (Phase 5 #128)", () => {
       env,
     );
     expect(res2.status).toBe(400);
+  });
+
+  // MCP OAuth に Google IdP を追加: AuthCodeRecord が email を積んでいる場合の分岐。
+  it("200 with sub=google:<email> and no github_login claim when AuthCodeRecord carries email", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec({ github_login: undefined, email: "alice@example.com" }));
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string; refresh_token: string };
+    const payload = await verifyMcpJwt(body.access_token, TEST_MCP_JWT_SECRET, AUD);
+    expect(payload!.sub).toBe("google:alice@example.com");
+    expect(payload!.email).toBe("alice@example.com");
+    expect(payload!.github_login).toBeUndefined();
+  });
+
+  it("500 server_error when AuthCodeRecord has neither github_login nor email", async () => {
+    const { env } = envWithKv();
+    await putAuthCode(env, authCodeRec({ github_login: undefined, email: undefined }));
+    const res = await handleMcpToken(
+      postForm({
+        grant_type: "authorization_code",
+        code: "ac-1",
+        code_verifier: PKCE_VERIFIER,
+        redirect_uri: "https://claude.ai/cb",
+        client_id: "c-1",
+      }),
+      env,
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("server_error");
   });
 });
 

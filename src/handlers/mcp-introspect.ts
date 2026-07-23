@@ -24,7 +24,9 @@
  * Request body (mode 2 のみ必須): `application/json` `{ "token": "<JWT>" }`
  *
  * Response (RFC 7662 §2.2):
- *   - 有効: 200 `{ active: true, scope, sub, github_login, github_token, exp }`
+ *   - 有効 (GitHub flow): 200 `{ active: true, scope, sub, github_login, github_token, exp }`
+ *   - 有効 (Google flow、issue: MCP OAuth に Google IdP を追加): 200
+ *     `{ active: true, scope, sub, email, exp }` — github_token 相当は保管していないので含めない
  *   - 無効 / 期限切れ / KV miss: 200 `{ active: false }` (情報リーク回避)
  *   - 認証失敗: 401 (どちらの mode も成立しない)
  *   - body parse 失敗 / token 欠落 (mode 2 のみ): 200 `{ active: false }`
@@ -144,13 +146,31 @@ export async function resolveAllSharedSecrets(env: Env): Promise<string[] | null
 }
 
 /**
- * Resolve `payload.sub` to its KV-encrypted `github_token` and build the
- * RFC 7662 `active:true` response. Common between mode 1 and mode 2.
+ * `payload` を RFC 7662 `active:true` response に変換する。Common between mode 1
+ * and mode 2。
+ *
+ * IdP ごとに分岐する (issue: MCP OAuth に Google IdP を追加):
+ *  - Google flow (`sub` が `google:` prefix) — github_token 相当の生トークンは
+ *    そもそも保管していない (`mcp-auth-callback-google.ts` 参照) ので KV lookup を
+ *    skip し、`email` だけ積んで返す。**ここで KV lookup を試みると必ず miss して
+ *    `active:false` になり、正当な Google JWT が常に無効扱いされてしまう** —
+ *    これが Google IdP 追加で最初に踏んだ落とし穴。
+ *  - GitHub flow (従来通り) — `github_token:{sub}` を KV から復号して返す。
  */
-async function respondWithGithubToken(
+async function respondActive(
   env: Env,
   payload: McpJwtPayload,
 ): Promise<Response> {
+  if (payload.sub.startsWith("google:")) {
+    return jsonNoStore({
+      active: true,
+      scope: payload.scope,
+      sub: payload.sub,
+      email: payload.email,
+      exp: payload.exp,
+    });
+  }
+
   const encrypted = await env.MCP_OAUTH_KV!.get(`github_token:${payload.sub}`);
   if (!encrypted) {
     return jsonNoStore({ active: false });
@@ -210,7 +230,7 @@ export async function handleMcpIntrospect(
       // を付けないので意図せず mode 2 に降りることはない)。
       return jsonNoStore({ error: "unauthorized" }, 401);
     }
-    return await respondWithGithubToken(env, payload);
+    return await respondActive(env, payload);
   }
 
   // ── Mode 2: 生 shared secret (legacy + per-consumer multi-secret #189) ──
@@ -237,5 +257,5 @@ export async function handleMcpIntrospect(
   if (!payload) {
     return jsonNoStore({ active: false });
   }
-  return await respondWithGithubToken(env, payload);
+  return await respondActive(env, payload);
 }
