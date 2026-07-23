@@ -16,13 +16,31 @@ import type { Env } from "../../src/index";
 const ISSUER = "https://auth.test.example";
 const TEST_OAUTH_STATE_SECRET = "test-oauth-state-secret-32chars!";
 
-function envWithKv(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
+/** Default seed for AUTH_CONFIG KV's `google-mcp-user-allowlist` key, used by
+ *  every test that doesn't care about the exact allowlist contents. */
+const DEFAULT_ALLOWLIST_RAW = '["alice@example.com"]';
+
+/**
+ * `allowlistRaw` seeds AUTH_CONFIG KV's `google-mcp-user-allowlist` key
+ * (issue: MCP OAuth に Google IdP を追加 — KV allowlist, not Secrets Store;
+ * see `src/lib/config.ts::getGoogleMcpUserAllowlist`). Pass `undefined`
+ * explicitly to simulate the key being unset (fail-closed) — this parameter
+ * has **no default**, since a JS default parameter also fires on an
+ * explicitly-passed `undefined`, which would silently defeat that case.
+ */
+function envWithKv(
+  overrides: Partial<Env>,
+  allowlistRaw: string | undefined,
+): { env: Env; kv: MockKV } {
   const kv = createMockKV() as MockKV;
+  const authConfig = createMockKV(
+    allowlistRaw !== undefined ? { "google-mcp-user-allowlist": allowlistRaw } : {},
+  );
   const env = createMockEnv({
     MCP_OAUTH_KV: kv,
+    AUTH_CONFIG: authConfig,
     AUTH_WORKER_ORIGIN: ISSUER,
     OAUTH_STATE_SECRET: TEST_OAUTH_STATE_SECRET,
-    GOOGLE_MCP_USER_ALLOWLIST: '["alice@example.com"]',
     ...overrides,
   });
   return { env, kv };
@@ -90,43 +108,43 @@ describe("handleMcpAuthCallbackGoogle — env / state / request guards", () => {
   });
 
   it("503 when GOOGLE_CLIENT_ID missing", async () => {
-    const { env } = envWithKv({ GOOGLE_CLIENT_ID: undefined });
+    const { env } = envWithKv({ GOOGLE_CLIENT_ID: undefined }, DEFAULT_ALLOWLIST_RAW);
     const res = await handleMcpAuthCallbackGoogle(callbackReq({}), env);
     expect(res.status).toBe(503);
   });
 
   it("503 when GOOGLE_CLIENT_SECRET missing", async () => {
-    const { env } = envWithKv({ GOOGLE_CLIENT_SECRET: undefined });
+    const { env } = envWithKv({ GOOGLE_CLIENT_SECRET: undefined }, DEFAULT_ALLOWLIST_RAW);
     const res = await handleMcpAuthCallbackGoogle(callbackReq({}), env);
     expect(res.status).toBe(503);
   });
 
   it("503 when OAUTH_STATE_SECRET missing", async () => {
-    const { env } = envWithKv({ OAUTH_STATE_SECRET: "" });
+    const { env } = envWithKv({ OAUTH_STATE_SECRET: "" }, DEFAULT_ALLOWLIST_RAW);
     const res = await handleMcpAuthCallbackGoogle(callbackReq({}), env);
     expect(res.status).toBe(503);
   });
 
   it("503 when AUTH_WORKER_ORIGIN missing", async () => {
-    const { env } = envWithKv({ AUTH_WORKER_ORIGIN: "" });
+    const { env } = envWithKv({ AUTH_WORKER_ORIGIN: "" }, DEFAULT_ALLOWLIST_RAW);
     const res = await handleMcpAuthCallbackGoogle(callbackReq({}), env);
     expect(res.status).toBe(503);
   });
 
   it("400 when state missing", async () => {
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     const res = await handleMcpAuthCallbackGoogle(callbackReq({}), env);
     expect(res.status).toBe(400);
   });
 
   it("400 when state HMAC invalid", async () => {
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state: "bad.state" }), env);
     expect(res.status).toBe(400);
   });
 
   it("400 when state has wrong provider", async () => {
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     const wrong = await generateOAuthState(
       `${ISSUER}/mcp/auth_callback_google`,
       TEST_OAUTH_STATE_SECRET,
@@ -137,14 +155,14 @@ describe("handleMcpAuthCallbackGoogle — env / state / request guards", () => {
   });
 
   it("400 when auth request not found", async () => {
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     const state = await buildState("missing");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state }), env);
     expect(res.status).toBe(400);
   });
 
   it("400 when state valid but no code (and no error)", async () => {
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state }), env);
@@ -158,7 +176,7 @@ describe("handleMcpAuthCallbackGoogle — Google user cancelled", () => {
   afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("redirects with error=access_denied to client redirect_uri", async () => {
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(
@@ -180,7 +198,7 @@ describe("handleMcpAuthCallbackGoogle — Google fetch / id_token error paths", 
 
   it("redirects with server_error when Google token exchange fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response("err", { status: 500 })));
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state, code: "gc" }), env);
@@ -191,7 +209,7 @@ describe("handleMcpAuthCallbackGoogle — Google fetch / id_token error paths", 
 
   it("redirects with server_error when token response has no id_token", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({ error: "invalid_grant" })));
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state, code: "gc" }), env);
@@ -202,7 +220,7 @@ describe("handleMcpAuthCallbackGoogle — Google fetch / id_token error paths", 
 
   it("redirects with server_error when token response is empty object (?? fallback branch)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({})));
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state, code: "gc" }), env);
@@ -216,7 +234,7 @@ describe("handleMcpAuthCallbackGoogle — Google fetch / id_token error paths", 
       "fetch",
       vi.fn().mockResolvedValueOnce(jsonResp({ id_token: "not-a-jwt" })),
     );
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state, code: "gc" }), env);
@@ -228,7 +246,7 @@ describe("handleMcpAuthCallbackGoogle — Google fetch / id_token error paths", 
   it("redirects with server_error when email_verified is false", async () => {
     const unverified = makeIdToken({ email: "alice@example.com", email_verified: false });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({ id_token: unverified })));
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state, code: "gc" }), env);
@@ -240,7 +258,7 @@ describe("handleMcpAuthCallbackGoogle — Google fetch / id_token error paths", 
   it("redirects with server_error when id_token has no email", async () => {
     const noEmail = makeIdToken({ email_verified: true });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({ id_token: noEmail })));
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state, code: "gc" }), env);
@@ -255,9 +273,9 @@ describe("handleMcpAuthCallbackGoogle — ACL deny (parseAllowlist edge cases)",
   beforeEach(() => { originalFetch = globalThis.fetch; });
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  async function expectDenyForAllowlist(allowlist: string | undefined): Promise<void> {
+  async function expectDenyForAllowlist(allowlistRaw: string | undefined): Promise<void> {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({ id_token: VERIFIED_ID_TOKEN })));
-    const { env } = envWithKv({ GOOGLE_MCP_USER_ALLOWLIST: allowlist });
+    const { env } = envWithKv({}, allowlistRaw);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state, code: "gc" }), env);
@@ -273,7 +291,7 @@ describe("handleMcpAuthCallbackGoogle — ACL deny (parseAllowlist edge cases)",
         jsonResp({ id_token: makeIdToken({ email: "intruder@example.com", email_verified: true }) }),
       ),
     );
-    const { env } = envWithKv({ GOOGLE_MCP_USER_ALLOWLIST: '["alice@example.com"]' });
+    const { env } = envWithKv({}, '["alice@example.com"]');
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
     const res = await handleMcpAuthCallbackGoogle(callbackReq({ state, code: "gc" }), env);
@@ -282,19 +300,19 @@ describe("handleMcpAuthCallbackGoogle — ACL deny (parseAllowlist edge cases)",
     expect(loc.searchParams.get("error")).toBe("access_denied");
   });
 
-  it("denies all when GOOGLE_MCP_USER_ALLOWLIST is undefined (fail-closed)", async () => {
+  it("denies all when google-mcp-user-allowlist KV key is unset (fail-closed)", async () => {
     await expectDenyForAllowlist(undefined);
   });
 
-  it("denies all when GOOGLE_MCP_USER_ALLOWLIST is JSON but not an array", async () => {
+  it("denies all when google-mcp-user-allowlist is JSON but not an array", async () => {
     await expectDenyForAllowlist('{"alice@example.com": true}');
   });
 
-  it("denies all when GOOGLE_MCP_USER_ALLOWLIST is malformed JSON", async () => {
+  it("denies all when google-mcp-user-allowlist is malformed JSON", async () => {
     await expectDenyForAllowlist("{not json");
   });
 
-  it("denies all when GOOGLE_MCP_USER_ALLOWLIST array contains non-string", async () => {
+  it("denies all when google-mcp-user-allowlist array contains non-string", async () => {
     await expectDenyForAllowlist('["alice@example.com", 42]');
   });
 });
@@ -306,7 +324,7 @@ describe("handleMcpAuthCallbackGoogle — success", () => {
 
   it("issues auth code with email, does NOT store a github_token, redirects with code+state", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({ id_token: VERIFIED_ID_TOKEN })));
-    const { env, kv } = envWithKv();
+    const { env, kv } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
 
@@ -333,7 +351,7 @@ describe("handleMcpAuthCallbackGoogle — success", () => {
   it("normalizes email to lowercase before ACL check and storage", async () => {
     const mixedCaseToken = makeIdToken({ email: "Alice@Example.com", email_verified: true });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({ id_token: mixedCaseToken })));
-    const { env, kv } = envWithKv({ GOOGLE_MCP_USER_ALLOWLIST: '["alice@example.com"]' });
+    const { env, kv } = envWithKv({}, '["alice@example.com"]');
     await seedAuthRequest(env);
     const state = await buildState("ar-1");
 
@@ -347,7 +365,7 @@ describe("handleMcpAuthCallbackGoogle — success", () => {
   // L196 (success) と L57 (redirectError) の `if (clientState)` else branch カバー
   it("redirects without state param when client_state is empty (success path)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({ id_token: VERIFIED_ID_TOKEN })));
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await env.MCP_OAUTH_KV!.put(
       "auth:request:ar-empty",
       JSON.stringify({
@@ -372,7 +390,7 @@ describe("handleMcpAuthCallbackGoogle — success", () => {
   // RFC 8707 Resource Indicator の伝播。
   it("propagates resource from AuthRequestRecord to AuthCodeRecord", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResp({ id_token: VERIFIED_ID_TOKEN })));
-    const { env, kv } = envWithKv();
+    const { env, kv } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await env.MCP_OAUTH_KV!.put(
       "auth:request:ar-resource",
       JSON.stringify({
@@ -398,7 +416,7 @@ describe("handleMcpAuthCallbackGoogle — success", () => {
   // redirectError 内 `if (clientState)` else branch (error path で client_state 空)
   it("redirects with error params but no state when client_state is empty (error path)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response("err", { status: 500 })));
-    const { env } = envWithKv();
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
     await env.MCP_OAUTH_KV!.put(
       "auth:request:ar-empty-err",
       JSON.stringify({

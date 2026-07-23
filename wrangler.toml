@@ -173,11 +173,10 @@ store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "GITHUB_MCP_USER_ALLOWLIST"
 
 # MCP OAuth に Google IdP を追加: GOOGLE_CLIENT_ID/SECRET は既存ログイン用 (上記) を
-# 流用するのでここでは binding しない。allowlist だけ MCP 用途専用に分離する。
-[[secrets_store_secrets]]
-binding = "GOOGLE_MCP_USER_ALLOWLIST"
-store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
-secret_name = "GOOGLE_MCP_USER_ALLOWLIST"
+# 流用。allowlist は Secrets Store でなく AUTH_CONFIG KV (`google-mcp-user-allowlist`
+# キー、`src/lib/config.ts::getGoogleMcpUserAllowlist`) — 中身は秘密の値ではなく
+# 「誰が管理者か」の設定なので、GCP Secret Manager を新規 provisioning せず
+# origins:*/app-orgs と同じ KV allowlist 規約に揃える。
 
 [[secrets_store_secrets]]
 binding = "GITHUB_WEBHOOK_SECRET"
@@ -307,8 +306,6 @@ custom_domain = true
 #   [[secrets_store_secrets]] / `[[env.staging.secrets_store_secrets]]` を参照。
 #   `wrangler secret put INTERNAL_SHARED_SECRET ...` は使わない (二重管理になる)。
 # GITHUB_MCP_USER_ALLOWLIST  (JSON array of github logins, e.g. ["yhonda-ohishi"]; fail-closed)
-# GOOGLE_MCP_USER_ALLOWLIST  (JSON array of Google emails, e.g. ["m.tama.ramu@gmail.com"]; fail-closed.
-#                             MCP OAuth に Google IdP を追加 — GOOGLE_CLIENT_ID/SECRET は既存ログイン用を流用)
 # GITHUB_WEBHOOK_SECRET      (ADR-004: HMAC-SHA256 shared secret for `POST /webhooks/github`.
 #                             public issue 前提なので authn ではなく spam 対策、全 repo 共通値)
 #
@@ -316,6 +313,9 @@ custom_domain = true
 #   origins:prod    - production frontends
 #   origins:staging - staging frontends
 #   origins:dev     - dev-proxy frontends (*-dev.ippoan.org)
+#   google-mcp-user-allowlist - JSON array of Google emails allowed to use
+#                     /mcp/authorize's Google IdP branch, e.g. ["m.tama.ramu@gmail.com"]
+#                     (issue: MCP OAuth に Google IdP を追加; fail-closed if unset/malformed)
 
 [env.staging]
 name = "auth-worker-staging"
@@ -458,11 +458,6 @@ secret_name = "GITHUB_MCP_CLIENT_SECRET"
 binding = "GITHUB_MCP_USER_ALLOWLIST"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "GITHUB_MCP_USER_ALLOWLIST"
-
-[[env.staging.secrets_store_secrets]]
-binding = "GOOGLE_MCP_USER_ALLOWLIST"
-store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
-secret_name = "GOOGLE_MCP_USER_ALLOWLIST"
 
 [[env.staging.secrets_store_secrets]]
 binding = "GITHUB_WEBHOOK_SECRET"

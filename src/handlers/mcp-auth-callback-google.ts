@@ -16,7 +16,7 @@
  *      GitHub 側 `GITHUB_MCP_CLIENT_ID` のような専用クライアント分離は不要と判断)
  *   4. id_token の claims を decode (`decodeJwtPayload`、`google-callback.ts` と同じ —
  *      Google token endpoint から TLS 直接受信のため署名検証は省略、email_verified のみ確認)
- *   5. ACL (`GOOGLE_MCP_USER_ALLOWLIST`) 検証 (fail-closed)
+ *   5. ACL 検証 (fail-closed、KV `google-mcp-user-allowlist` — `lib/config.ts` 参照)
  *   6. auth code (UUID) 生成 → KV `auth:code:<code>` 保存 (TTL 5m)、`email` を積む
  *      (GitHub 版と異なり **github_token 相当の生トークンは保存しない** — Google API を
  *      代理呼び出しする用途が無いため)
@@ -35,6 +35,7 @@ import {
   getAuthRequest,
   putAuthCode,
 } from "../lib/mcp-authcode";
+import { getGoogleMcpUserAllowlist } from "../lib/config";
 import { jsonResponse } from "../lib/errors";
 import { decodeJwtPayload } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
@@ -166,9 +167,7 @@ export async function handleMcpAuthCallbackGoogle(
   const email = idClaims.email.toLowerCase();
 
   // ── ACL (fail-closed) ──
-  const allowlist = parseAllowlist(
-    (await resolveSecret(env.GOOGLE_MCP_USER_ALLOWLIST)) ?? undefined,
-  );
+  const allowlist = parseAllowlist(await getGoogleMcpUserAllowlist(env));
   if (!allowlist.includes(email)) {
     await deleteAuthRequest(env, reqRec.id);
     return redirectError(

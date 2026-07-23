@@ -276,13 +276,6 @@ export interface Env {
    *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed).
    *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */
   GITHUB_MCP_USER_ALLOWLIST?: SecretBinding;
-  /** JSON array of Google account emails allowed to use MCP server via the
-   *  Google IdP branch of `/mcp/authorize` (issue: MCP OAuth に Google IdP を追加)。
-   *  Example: `["m.tama.ramu@gmail.com"]`。Missing / malformed → deny all
-   *  (fail-closed、`GITHUB_MCP_USER_ALLOWLIST` と同じ規約)。既存ログイン用の
-   *  allowlist とは別管理 (MCP 用途で許可する人が既存ログインと一致するとは
-   *  限らないため)。`resolveSecret()` 経由でアクセス。 */
-  GOOGLE_MCP_USER_ALLOWLIST?: SecretBinding;
   /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens)。
    *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
   MCP_OAUTH_KV?: KVNamespace;
