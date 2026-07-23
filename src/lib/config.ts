@@ -12,6 +12,15 @@
  *   app-orgs        - JSON map of app-token → github-org, e.g.
  *                     `{"dtako-admin":"ohishi-exp","ohishi2":"ohishi-exp"}`.
  *                     Used to restrict specific orgs to allowlisted tenants.
+ *   google-mcp-user-allowlist - JSON array of Google account emails allowed
+ *                     to use `/mcp/authorize`'s Google IdP branch (issue: MCP
+ *                     OAuth に Google IdP を追加), e.g. `["m.tama.ramu@gmail.com"]`.
+ *                     Secrets Store は使わない — 中身は「誰が管理者アカウントか」
+ *                     という設定であって秘密の値ではなく (`DEVELOPER_EMAILS` が
+ *                     `device-setup.ts`/`admin-html.ts` で平文ハードコードされて
+ *                     いるのと同じ位置づけ)、既存の origins:* / app-orgs と同じ
+ *                     KV allowlist 規約に揃える方が GCP Secret Manager 側の
+ *                     provisioning が要らず単純。
  *
  * At runtime the worker reads `origins:<WORKER_ENV>` ∪ `origins:dev` ∪ `origins:wt`
  * and unions them.
@@ -127,6 +136,15 @@ export async function isWorktreeOrigin(
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
     .includes(origin);
+}
+
+/**
+ * Google IdP MCP allowlist (`google-mcp-user-allowlist` KV key). Returns the
+ * raw JSON string as stored (or `""` if unset) — caller (`mcp-auth-callback-
+ * google.ts`'s `parseAllowlist`) is fail-closed on falsy/malformed input.
+ */
+export async function getGoogleMcpUserAllowlist(env: Env): Promise<string> {
+  return readKey(env, "google-mcp-user-allowlist");
 }
 
 /** Test-only cache clear helper. */

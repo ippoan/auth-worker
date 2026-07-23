@@ -114,6 +114,12 @@ export async function handleMcpAdminExec(
   if (!payload) {
     return jsonResponse({ ok: false, error: "invalid_jwt" }, 401);
   }
+  // mcp.admin elevate は GitHub 由来の principal 専用。Google IdP 追加 (issue) で
+  // McpJwtPayload.github_login が optional 化されたため、Google flow の JWT を
+  // 明示的に弾く (mcp-relay-bridge.ts と同じ defense-in-depth)。
+  if (!payload.github_login) {
+    return jsonResponse({ ok: false, error: "invalid_jwt" }, 401);
+  }
   const login = payload.github_login;
 
   // elevate flag check (browser-confirmed within 15min)

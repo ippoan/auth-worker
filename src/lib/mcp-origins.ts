@@ -84,6 +84,30 @@ export function isAllowedResourceOrigin(origin: string, env: Env): boolean {
 }
 
 /**
+ * `resource` origin ごとに `/mcp/authorize` が使う IdP を選ぶ (issue: MCP OAuth に
+ * Google IdP を追加)。
+ *
+ * デフォルトは `"github"` — 既存 consumer (github-mcp-server-rs / gmail-mcp /
+ * cf-access-mcp 例 / secrets-inventory 等) は挙動不変。`MCP_RESOURCE_GOOGLE_ORIGINS`
+ * env (comma-sep origin list) に列挙された origin だけ `"google"` を返す。
+ *
+ * この origin は `MCP_RESOURCE_ORIGINS_ALLOWLIST` にも含まれている必要がある
+ * (resource 自体の許可は従来通りそちらが担う。本 helper は「許可された resource の
+ * うちどの IdP を使うか」のみを決める)。
+ */
+export function mcpIdpForResourceOrigin(
+  origin: string,
+  env: Env,
+): "github" | "google" {
+  const googleOrigins = ((env as Env & { MCP_RESOURCE_GOOGLE_ORIGINS?: string })
+    .MCP_RESOURCE_GOOGLE_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return googleOrigins.includes(origin) ? "google" : "github";
+}
+
+/**
  * `MCP_RESOURCE_ORIGINS_ALLOWLIST` から slug → origin map を作る。slug は
  * hostname の先頭 label (= `security-inventory.ippoan.org` → `security-inventory`)。
  * `mcpRelayOrigin` 自身は含めない (= per-resource metadata の対象は extra RS のみ、

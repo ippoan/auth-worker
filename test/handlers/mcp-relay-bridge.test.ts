@@ -152,6 +152,24 @@ describe("handleMcpRelayBridge — JWT authentication", () => {
     );
     expect(res.status).toBe(403);
   });
+
+  // MCP OAuth に Google IdP を追加: relay は GitHub 由来 binary session 専用なので、
+  // github_login を持たない (= Google flow の) 署名有効な JWT は 401 で弾く。
+  it("returns 401 + WWW-Authenticate when JWT is valid but has no github_login (Google-flow token)", async () => {
+    const { env } = envWithDO();
+    const googleJwt = await signMcpJwt(
+      { sub: "google:alice@example.com", email: "alice@example.com", scope: "mcp.read", aud: AUD },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ auth: `Bearer ${googleJwt}` }),
+      env,
+      "alice",
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(expectedWwwAuth);
+  });
 });
 
 describe("handleMcpRelayBridge — DO forwarding", () => {
@@ -249,6 +267,24 @@ describe("handleMcpRelayBridge — user-less mode (ADR-003)", () => {
     // user === null なので 400 (Missing user) パスには入らず、JWT 检査を走る。
     const res = await handleMcpRelayBridge(
       bridgeReq({ url: "https://mcp.test.example/mcp" }),
+      env,
+      null,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  // MCP OAuth に Google IdP を追加: user-less mode でも github_login が無い
+  // (Google-flow) JWT は 401 で弾き、`doKey = user ?? payload.github_login` が
+  // undefined になる状況を作らせない。
+  it("returns 401 when user is null and JWT has no github_login (Google-flow token)", async () => {
+    const { env } = envWithDO();
+    const googleJwt = await signMcpJwt(
+      { sub: "google:alice@example.com", email: "alice@example.com", scope: "mcp.read", aud: AUD },
+      TEST_SECRET,
+      3600,
+    );
+    const res = await handleMcpRelayBridge(
+      bridgeReq({ url: "https://mcp.test.example/mcp", auth: `Bearer ${googleJwt}` }),
       env,
       null,
     );

@@ -17,7 +17,14 @@
 
 export interface McpJwtPayload {
   sub: string;
-  github_login: string;
+  /**
+   * IdP ごとに片方のみセットされる (不変条件)。GitHub flow は `github_login`、
+   * Google flow (issue: MCP OAuth に Google IdP を追加) は `email`。両方の consumer
+   * は「自分が期待する方が無ければ deny」で扱うこと (相手 IdP の JWT を誤って
+   * 受理しないため — 例: github_token を前提にする relay 系は `github_login` 必須)。
+   */
+  github_login?: string;
+  email?: string;
   scope: string;
   aud: string;
   exp: number; // seconds (Unix epoch)

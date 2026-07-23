@@ -355,6 +355,98 @@ describe("handleMcpAuthorize — RFC 8707 resource parameter", () => {
   });
 });
 
+// MCP OAuth に Google IdP を追加。resource origin が MCP_RESOURCE_GOOGLE_ORIGINS に
+// 列挙されている時だけ Google に redirect する分岐を検証する。
+describe("handleMcpAuthorize — Google IdP branch (MCP OAuth に Google IdP を追加)", () => {
+  const RELAY_ORIGIN = "https://mcp.test.example";
+  const GOOGLE_RESOURCE = `${RELAY_ORIGIN}/kyuyo`;
+
+  async function envWithGoogleOrigin(
+    overrides: Partial<Env> = {},
+  ): Promise<{ env: Env; kv: MockKV; client_id: string }> {
+    const kv = createMockKV() as unknown as MockKV;
+    const env = createMockEnv({
+      MCP_OAUTH_KV: kv,
+      GITHUB_MCP_CLIENT_ID: "gh-test-id",
+      GOOGLE_CLIENT_ID: "google-test-id",
+      OAUTH_STATE_SECRET: "test-state-secret-32chars!!!!!!!",
+      AUTH_WORKER_ORIGIN: "https://auth.test.example",
+      MCP_RESOURCE_ORIGINS_ALLOWLIST: RELAY_ORIGIN,
+      MCP_RESOURCE_GOOGLE_ORIGINS: RELAY_ORIGIN,
+      ...overrides,
+    } as unknown as Partial<Env>);
+    await putDcrClient(env, {
+      client_id: "c-1",
+      client_id_issued_at: 1_000_000,
+      token_endpoint_auth_method: "none",
+      response_types: ["code"],
+      grant_types: ["authorization_code", "refresh_token"],
+      redirect_uris: ["https://claude.ai/cb"],
+    });
+    return { env, kv, client_id: "c-1" };
+  }
+
+  it("redirects to accounts.google.com with openid email scope for a Google-listed resource origin", async () => {
+    const { env, kv, client_id } = await envWithGoogleOrigin();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), resource: GOOGLE_RESOURCE }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.host).toBe("accounts.google.com");
+    expect(loc.pathname).toBe("/o/oauth2/v2/auth");
+    expect(loc.searchParams.get("client_id")).toBe("google-test-id");
+    expect(loc.searchParams.get("redirect_uri")).toBe(
+      "https://auth.test.example/mcp/auth_callback_google",
+    );
+    expect(loc.searchParams.get("response_type")).toBe("code");
+    expect(loc.searchParams.get("scope")).toBe("openid email");
+    expect(loc.searchParams.get("state")).toBeTruthy();
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
+    expect(stored.resource).toBe(GOOGLE_RESOURCE);
+  });
+
+  it("still redirects to GitHub when resource origin is allowed but not in MCP_RESOURCE_GOOGLE_ORIGINS", async () => {
+    const { env, client_id } = await envWithGoogleOrigin({
+      MCP_RESOURCE_GOOGLE_ORIGINS: "https://someone-else.ippoan.org",
+    } as unknown as Partial<Env>);
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), resource: GOOGLE_RESOURCE }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.host).toBe("github.com");
+  });
+
+  it("returns 503 when routed to Google but GOOGLE_CLIENT_ID is missing", async () => {
+    const { env, client_id } = await envWithGoogleOrigin({ GOOGLE_CLIENT_ID: undefined });
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), resource: GOOGLE_RESOURCE }),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("does not write an auth:request KV record when Google client id is missing (guard before KV write)", async () => {
+    const { env, kv, client_id } = await envWithGoogleOrigin({ GOOGLE_CLIENT_ID: undefined });
+    await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), resource: GOOGLE_RESOURCE }),
+      env,
+    );
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"));
+    expect(reqKey).toBeUndefined();
+  });
+
+  it("returns 503 when routed to GitHub (default) but GITHUB_MCP_CLIENT_ID is missing", async () => {
+    const { env, client_id } = await envWithGoogleOrigin({ GITHUB_MCP_CLIENT_ID: undefined });
+    const res = await handleMcpAuthorize(authorizeReq(validParams(client_id)), env);
+    expect(res.status).toBe(503);
+  });
+});
+
 // `params.get(...) ?? ""` の null branch カバー (string-empty vs null は別 branch 扱い)
 describe("handleMcpAuthorize — query param truly missing (?? null branch)", () => {
   it("response_type missing → defaults to '' → unsupported_response_type", async () => {

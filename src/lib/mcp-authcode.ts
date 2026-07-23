@@ -53,7 +53,12 @@ export interface AuthCodeRecord {
   redirect_uri: string;
   code_challenge: string;
   code_challenge_method: "S256";
-  github_login: string;
+  /**
+   * IdP ごとに片方のみセットされる (不変条件)。GitHub flow は `github_login`、
+   * Google flow (issue: MCP OAuth に Google IdP を追加) は `email`。
+   */
+  github_login?: string;
+  email?: string;
   scope: string;
   /** RFC 8707 Resource Indicator (AuthRequestRecord から伝播。詳細は同 doc 参照)。 */
   resource?: string;

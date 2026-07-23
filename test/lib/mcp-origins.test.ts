@@ -14,6 +14,7 @@ import {
   isAllowedResourceOrigin,
   resourceOriginBySlug,
   wwwAuthenticateValue,
+  mcpIdpForResourceOrigin,
 } from "../../src/lib/mcp-origins";
 import { createMockEnv } from "../helpers/mock-env";
 
@@ -139,5 +140,34 @@ describe("resourceOriginBySlug", () => {
     const map = resourceOriginBySlug(env);
     expect(map.size).toBe(1);
     expect(map.get("security-inventory")).toBe("https://security-inventory.ippoan.org");
+  });
+});
+
+describe("mcpIdpForResourceOrigin (MCP OAuth に Google IdP を追加)", () => {
+  it("returns github by default when MCP_RESOURCE_GOOGLE_ORIGINS is unset", () => {
+    const env = createMockEnv();
+    expect(mcpIdpForResourceOrigin("https://gmail-mcp.ippoan.org", env)).toBe("github");
+  });
+
+  it("returns github for an origin not listed in MCP_RESOURCE_GOOGLE_ORIGINS", () => {
+    const env = createMockEnv({
+      MCP_RESOURCE_GOOGLE_ORIGINS: "https://kyuyo-mcp.ippoan.org",
+    } as unknown as Partial<typeof env>);
+    expect(mcpIdpForResourceOrigin("https://gmail-mcp.ippoan.org", env)).toBe("github");
+  });
+
+  it("returns google for an origin listed in MCP_RESOURCE_GOOGLE_ORIGINS", () => {
+    const env = createMockEnv({
+      MCP_RESOURCE_GOOGLE_ORIGINS: "https://kyuyo-mcp.ippoan.org",
+    } as unknown as Partial<typeof env>);
+    expect(mcpIdpForResourceOrigin("https://kyuyo-mcp.ippoan.org", env)).toBe("google");
+  });
+
+  it("handles multiple comma-separated origins with surrounding whitespace", () => {
+    const env = createMockEnv({
+      MCP_RESOURCE_GOOGLE_ORIGINS: " https://a.example , https://kyuyo-mcp.ippoan.org ",
+    } as unknown as Partial<typeof env>);
+    expect(mcpIdpForResourceOrigin("https://kyuyo-mcp.ippoan.org", env)).toBe("google");
+    expect(mcpIdpForResourceOrigin("https://a.example", env)).toBe("google");
   });
 });

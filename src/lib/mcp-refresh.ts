@@ -36,7 +36,12 @@ export const GRACE_TTL_SEC = 60;
 export interface RefreshRecord {
   sub: string;
   scope: string;
-  github_login: string;
+  /**
+   * IdP ごとに片方のみセットされる (不変条件)。GitHub flow は `github_login`、
+   * Google flow (issue: MCP OAuth に Google IdP を追加) は `email`。
+   */
+  github_login?: string;
+  email?: string;
   /**
    * 初回発行時の JWT `aud` claim を保存しておき、rotation 時にそのまま継承する。
    * Authorization Code flow + RFC 8707 Resource Indicator なら MCP server origin、
@@ -87,7 +92,8 @@ export async function issueRefreshToken(
   args: {
     sub: string;
     scope: string;
-    github_login: string;
+    github_login?: string;
+    email?: string;
     aud?: string;
     rotated_from?: string;
   },
@@ -98,8 +104,9 @@ export async function issueRefreshToken(
   const value: Omit<RefreshRecord, "hash"> = {
     sub: args.sub,
     scope: args.scope,
-    github_login: args.github_login,
     expires_at: Date.now() + REFRESH_TTL_SEC * 1000,
+    ...(args.github_login ? { github_login: args.github_login } : {}),
+    ...(args.email ? { email: args.email } : {}),
     ...(args.aud ? { aud: args.aud } : {}),
     ...(args.rotated_from ? { rotated_from: args.rotated_from } : {}),
   };

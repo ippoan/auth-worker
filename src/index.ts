@@ -102,6 +102,7 @@ import {
 } from "./handlers/device-setup";
 import { handlePrintTestPdf } from "./handlers/print-test";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
+import { handleMcpAuthCallbackGoogle } from "./handlers/mcp-auth-callback-google";
 import { handleMcpPairNew } from "./handlers/mcp-pair-new";
 import { handleMcpPairClaim } from "./handlers/mcp-pair-claim";
 import { handleMcpPairCallback } from "./handlers/mcp-pair-callback";
@@ -662,6 +663,9 @@ export default {
           // MCP OAuth Provider — Authorization Code GitHub OAuth callback (Phase 5)
           case "/mcp/auth_callback":
             return await handleMcpAuthCallback(request, env);
+          // MCP OAuth Provider — Authorization Code Google OAuth callback (Google IdP追加)
+          case "/mcp/auth_callback_google":
+            return await handleMcpAuthCallbackGoogle(request, env);
           // MCP OAuth Provider — 1-click pair GitHub OAuth callback (issue #144)
           case "/mcp/pair_callback":
             return await handleMcpPairCallback(request, env);
