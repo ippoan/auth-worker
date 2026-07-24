@@ -41,6 +41,7 @@
  *   400 → binding_mismatch   (comment body が期待 line を含まない)
  *   401 → invalid_token      (Bearer 付きで Anthropic API が OAT を reject)
  *   403 → comment_forbidden  (GitHub が anonymous fetch を reject 401/403)
+ *   403 → access_denied      (`GITHUB_MCP_USER_ALLOWLIST` に comment.user.login が無い)
  *   404 → comment_not_found  (comment が削除済み / 不存在)
  *   429 → rate_limited       (per source IP)
  *   502 → upstream_error     (api.github.com or api.anthropic.com 5xx / network / response 不正)
@@ -55,6 +56,14 @@
  *   - 自分の OAT_hash を yhonda-ohishi の comment に書いた風に偽造: comment は
  *     一意 `comment_url` でしか取れず、`user.login` が attacker login で記録さ
  *     れるため、attacker login にしか bind しない (自爆)。
+ *   - **2026-07-24 修正**: `comment_url` の regex は owner/repo を特定の org
+ *     tracking issue に限定しておらず、任意の public repo/issue にマッチする。
+ *     つまり ACL が無いと「自分の OAT + 自分の GitHub アカウントで任意の
+ *     public repo にコメント投稿」するだけで誰でも自己 binding を作れて
+ *     しまっていた (org 所属チェックの欠落)。`GITHUB_MCP_USER_ALLOWLIST`
+ *     fail-closed チェックを追加し、org 外の login は binding 自体を書かせ
+ *     ない (`grant-via-oat.ts` 側の mint-time チェックが最終防衛線、ここは
+ *     早期拒否)。
  *   - Bearer/hash mismatch: Bearer が付いていれば sha256(OAT) === body.oat_hash
  *     を verify。不一致は confused-deputy 攻撃 (他人の OAT で他人の comment に
  *     書かれた hash を自分の org に bind しようとする) を遮断するため 400 拒否。
@@ -64,6 +73,7 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
+import { isGithubLoginAllowed } from "../lib/mcp-github-grant";
 import {
   extractOrgUuidFromResponse,
   hashOat,
@@ -255,6 +265,23 @@ export async function handleMcpPairRegisterViaGithubComment(
       502,
     );
   }
+
+  // ── ACL check (fail-closed、GITHUB_MCP_USER_ALLOWLIST) ────────────────
+  // 2026-07-24: `comment_url` は任意の GitHub repo/issue にマッチするため、
+  // これが無いと誰でも「自分の OAT + 自分の GitHub アカウントで任意の
+  // public repo にコメント投稿」するだけで自己 binding を作れてしまう。
+  // grant-via-oat 側の mint-time チェック (`grantMcpBindingJwtForGithubLogin`)
+  // が最終防衛線だが、ここでも早期に拒否して無意味な binding を KV に残さない。
+  if (!(await isGithubLoginAllowed(env, login))) {
+    return jsonResponse(
+      {
+        error: "access_denied",
+        error_description: "Your GitHub account is not authorized to use this MCP server.",
+      },
+      403,
+    );
+  }
+
   // body には複数行 / 余計な markdown が含まれてよい。期待 line を含むかどうかだけ
   // 確認する (Claude が orchestrate する際に prefix / suffix を付ける余地)。
   const expected = `oat-binding: ${oatHash} ${nonce}`;
