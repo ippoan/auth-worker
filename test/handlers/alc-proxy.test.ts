@@ -227,6 +227,51 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
     }
   });
 
+  it("token_kind=dev + POST: ALC_PROXY_DEV_WRITE_ALLOWLIST に一致する path は通す", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees", {
+        method: "POST",
+        token: makeJwt(TEST_JWT_SECRET, { token_kind: "dev" }),
+      }),
+      env({ ALC_PROXY_DEV_WRITE_ALLOWLIST: "/api/employees" }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("token_kind=dev + POST: allowlist に無い path は 403 のまま (prefix境界: /api/employees-x は /api/employees を許可しない)", async () => {
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees-x", {
+        method: "POST",
+        token: makeJwt(TEST_JWT_SECRET, { token_kind: "dev" }),
+      }),
+      env({ ALC_PROXY_DEV_WRITE_ALLOWLIST: "/api/employees" }),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("token_kind=dev + POST: allowlist の sub-path (/api/employees/123) も通す", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees/123", {
+        method: "POST",
+        token: makeJwt(TEST_JWT_SECRET, { token_kind: "dev" }),
+      }),
+      env({ ALC_PROXY_DEV_WRITE_ALLOWLIST: "/api/employees" }),
+    );
+    expect(res.status).toBe(200);
+  });
+
   it("token_kind 無し (通常 login token) の POST は forbidden にならない (回帰確認)", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>

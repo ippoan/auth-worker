@@ -17,6 +17,18 @@ ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 # forward 先 + OIDC aud を差し替える。値が実際の tagged URL (backend deploy.yml が
 # pending-release で報告する preview_url) の host と一致するか初回 release で確認する。
 ALC_API_PREVIEW_HOST_SUFFIX = "rust-alc-api-747065218280.asia-northeast1.run.app"
+# issue #433: JWT の `token_kind` claim が `"dev"` (dev-login、issue #423) の
+# tokenで /alc-proxy に非GET/HEAD/OPTIONSが来た時に許可する backend path prefix
+# (comma-sep、例 "/api/vehicle-settings/extract,/api/y-time-export")。
+# 空 = 非GET全拒否 (fail-closed)。判定ロジックは packages/auth-client の
+# `devLoginCore.mjs` (`isDevLoginWriteAllowed`) と同じ prefix-match セマンティクス。
+#
+# consumer 側 (`@ippoan/auth-client` の `devLoginWriteAllowlist`、#429) にも
+# 同種の allowlist があるが、あちらは opt-in かつ per-consumer で「実装/設定
+# し忘れた consumer は無防備」という弱点がある。ここでの allowlist が
+# **唯一の source of truth** — consumer 側の allowlist は今後冗長になる想定
+# (二重管理を避けるため、consumer 側は将来的に簡略化/撤去してよい)。
+ALC_PROXY_DEV_WRITE_ALLOWLIST = ""
 WORKER_ENV = "prod"
 # #434 Phase D: prod でも internal call の認証 token を Google OIDC ID token
 # (aud=alc-api-internal、ALC_API_PROXY_SA_KEY で mint) にする。staging で実証済み。
