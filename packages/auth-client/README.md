@@ -177,5 +177,15 @@ export default createIdentityProxyHandler({
 
 ## 使用先
 
-- [nuxt-pwa-carins](https://github.com/yhonda-ohishi/nuxt-pwa-carins) — メインUI（carins.mtamaramu.com）
-- [nuxt-dtako-logs](https://github.com/yhonda-ohishi/nuxt_dtako_logs) — DTakoログビューワー（ohishi2.mtamaramu.com）
+publish 後の bump PR 自動配布対象 (auth-worker `test.yml` の
+`npm_publish_propagate_repos`) と同期を保つこと:
+
+- [ippoan/nuxt-pwa-carins](https://github.com/ippoan/nuxt-pwa-carins) — メインUI (carins.mtamaramu.com)
+- [ippoan/nuxt-items](https://github.com/ippoan/nuxt-items)
+- [ohishi-exp/nuxt_dtako_logs](https://github.com/ohishi-exp/nuxt_dtako_logs) — DTakoログビューワー
+- [ohishi-exp/nuxt-ichibanboshi](https://github.com/ohishi-exp/nuxt-ichibanboshi)
+- [ohishi-exp/nuxt-ichibanboshi-seikyu](https://github.com/ohishi-exp/nuxt-ichibanboshi-seikyu)
+- [ohishi-exp/nuxt-dtako-admin](https://github.com/ohishi-exp/nuxt-dtako-admin) — dtako.ippoan.org
+- [ippoan/nuxt-trouble](https://github.com/ippoan/nuxt-trouble)
+- [ippoan/nuxt-notify](https://github.com/ippoan/nuxt-notify)
+- [ippoan/alc-app](https://github.com/ippoan/alc-app) (`web/`)
