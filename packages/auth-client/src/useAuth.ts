@@ -9,7 +9,7 @@
  * LINE WORKS OAuth を直接開始する
  */
 import { computed } from 'vue'
-import { useRuntimeConfig, useState } from '#imports'
+import { useRouter, useRuntimeConfig, useState } from '#imports'
 import { decodeJwtClaims, decodeJwtPayloadFromToken } from './jwt'
 
 const AUTH_STORAGE_KEY = 'logi_auth'
@@ -185,6 +185,24 @@ export const useAuth = () => {
 
     // Clean fragment from URL without reload
     history.replaceState(null, '', window.location.pathname + window.location.search)
+    // Nuxt では router が起動時に捕捉した hash 込み URL (initialURL) を復元する
+    // ナビゲーションが後から確定し、その URL 書き込みが上の replaceState を
+    // 上書きして `#token=...` がアドレスバー/履歴に残ることがある (#445)。
+    // router.isReady() では早すぎる — 復元を行うナビゲーション (fullPath に
+    // #token= を含む) は isReady 解決後に確定することを実機計測で確認済み
+    // (isReady +1.9ms → 復元 afterEach +6.4ms)。最初の afterEach で hash に
+    // token= が残っていれば再除去する。冪等・一回きりで解除。
+    try {
+      const stop = useRouter().afterEach(() => {
+        stop()
+        if (!window.location.hash.includes('token=')) return
+        const url = new URL(window.location.href)
+        url.searchParams.delete('lw_callback')
+        history.replaceState(null, '', url.pathname + (url.search || ''))
+      })
+    } catch {
+      // router コンテキスト外 (composable 直呼びのテスト等) では即時除去のみ
+    }
     return true
   }
 

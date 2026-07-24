@@ -23,7 +23,6 @@
  * アプリ固有の前処理 (WOFF 認証 / backend 種別ガード等) は消費側 plugin で
  * initAuthSession() の前に行い、自前で認証を確立した場合は呼ばない。
  */
-import { useRouter } from '#imports'
 import { useAuth } from './useAuth'
 
 export interface InitAuthSessionOptions {
@@ -90,26 +89,14 @@ export function initAuthSession(options: InitAuthSessionOptions = {}): void {
     // auth-worker は `#token=...&expires_at=...&org_id=...`（+ 場合により `?lw_callback=1`）で
     // 返すため、fragment と lw_callback を除去する。cleanPath に hash を含めない＝ fragment 除去。
     // `?lw_callback` の有無に関わらず常に実行する（lw_callback を付けないアプリでも token を消す）。
-    const cleanupUrl = (): void => {
-      if (!window.location.hash.includes('token=')) return
-      const currentUrl = new URL(window.location.href)
-      currentUrl.searchParams.delete('lw_callback')
-      const cleanPath = currentUrl.pathname + (currentUrl.search || '')
-      history.replaceState(null, '', cleanPath)
-    }
-    cleanupUrl()
-    // Vue Router は初期ナビゲーション確定時に hash 込みの URL を復元するため、
-    // 上の replaceState が上書きされて `#token=...` がアドレスバーに残ることが
-    // ある (#445)。router 確定後に冪等な再クリーンアップを仕込む
-    // (hash に token= が残っている時だけ再実行するので副作用なし)。
-    try {
-      const router = useRouter()
-      void router.isReady().then(cleanupUrl, cleanupUrl)
-    } catch {
-      // Nuxt plugin コンテキスト外 (テスト等) では router が取れない —
-      // 次善策として router 復元より後段になりやすい macrotask で再試行
-      setTimeout(cleanupUrl, 0)
-    }
+    // Vue Router が hash 込み URL を復元して上書きする競合 (#445) への
+    // 再クリーンアップは consumeFragment 側 (afterEach) が担う — isReady() は
+    // 復元ナビゲーションより先に解決するため、ここで再実行しても効かない
+    // ことが実機計測で確認済み (#445)。
+    const currentUrl = new URL(window.location.href)
+    currentUrl.searchParams.delete('lw_callback')
+    const cleanPath = currentUrl.pathname + (currentUrl.search || '')
+    history.replaceState(null, '', cleanPath)
   } else {
     // 2. localStorage から復元
     loadFromStorage()
