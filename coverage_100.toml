@@ -216,6 +216,15 @@ branches = true
 path = "src/handlers/mcp-pair-register-via-github-comment.ts"
 branches = true
 
+# issue #423/#424: dev-login (localhost 検証用 dev JWT)
+[[files]]
+path = "src/lib/dev-login.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/dev-login-token.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]

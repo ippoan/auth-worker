@@ -41,6 +41,14 @@ import { decodeJwtPayload } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 import { verifyOAuthState } from "../lib/security";
 
+/**
+ * issue #424 (dev-login): `email → google_sub` の cache TTL。`mintDevToken` が
+ * `upsertGoogleUser` を呼ぶのに必要な google_sub を、MCP Google IdP flow が
+ * (scope `openid email` のため) 通常は捨てている ID token の `sub` claim から
+ * 拾って保存しておく。再認可のたびに更新されるので 30日で十分。
+ */
+const GOOGLE_SUB_CACHE_TTL_SEC = 60 * 60 * 24 * 30;
+
 /** ACL parse は fail-closed: JSON 不正 / 非 array / 非 string 混在 → deny all */
 function parseAllowlist(raw: string | undefined): string[] {
   if (!raw) return [];
@@ -152,6 +160,7 @@ export async function handleMcpAuthCallbackGoogle(
   // Google token endpoint から TLS で直接受け取ったものなので署名検証は省略し
   // claims を decode する (google-callback.ts と同じ判断)。email_verified のみ確認。
   const idClaims = decodeJwtPayload(idToken) as {
+    sub?: string;
     email?: string;
     email_verified?: boolean;
   } | null;
@@ -176,6 +185,15 @@ export async function handleMcpAuthCallbackGoogle(
       "Your Google account is not authorized to use this MCP server",
       reqRec.client_state,
     );
+  }
+
+  // issue #424 (dev-login): この認可済み email の google_sub を cache しておく。
+  // best-effort — 書き込みに失敗しても MCP OAuth の主要フロー自体は継続する
+  // (dev-login tool 呼び出し時に google_sub_not_cached で弾かれるだけ)。
+  if (idClaims.sub) {
+    await env.MCP_OAUTH_KV.put(`google_sub:${email}`, idClaims.sub, {
+      expirationTtl: GOOGLE_SUB_CACHE_TTL_SEC,
+    });
   }
 
   // ── success: auth code 発行 (github_token 相当の保存は無い) ──
