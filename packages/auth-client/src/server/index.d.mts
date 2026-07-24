@@ -198,6 +198,16 @@ export interface AuthWorkerProxyOptions {
   devLoginEnabled?: boolean | ((event: H3Event) => boolean)
   /** dev cookie 名 (default 'logi_auth_token_dev') */
   devCookieName?: string
+  /**
+   * 2026-07-24: consumer が dev-login 用の `AUTH_WORKER` binding を prod に
+   * 向けた時の安全弁。**未指定 (default) なら無制限** (既存 consumer に非破壊)。
+   * 値 (または event 解決関数の戻り値) を渡すと、GET/HEAD/OPTIONS 以外の
+   * method は path が配列のいずれかの prefix と一致しない限り 403 になる
+   * (`isDevLoginWriteAllowed` 参照)。dev token は本番 JWT と同じ鍵で署名されて
+   * おり (issue #423 の残存リスク)、権限昇格ではなく「検証中の未検証ローカル
+   * コードが事故で prod に書き込む」事故を防ぐためのもの。
+   */
+  devLoginWriteAllowlist?: string[] | ((event: H3Event) => string[] | undefined)
 }
 
 /**
@@ -311,6 +321,23 @@ export declare function devCookieOptions(expiresIn?: number): {
   path: '/'
   maxAge?: number
 }
+
+/** GET/HEAD/OPTIONS は allowlist の対象外 (常に安全)。 */
+export declare function isSafeMethod(method: string): boolean
+
+/** カンマ区切りの path prefix 文字列を配列にパースする (空/undefined は空配列)。 */
+export declare function parseDevLoginWriteAllowlist(raw: unknown): string[]
+
+/**
+ * method/path が allowlist で許可されているか判定する。safe method は
+ * allowlist に関係なく常に許可、それ以外は prefix 完全一致 (`prefix` または
+ * `${prefix}/...`) の時のみ許可。
+ */
+export declare function isDevLoginWriteAllowed(
+  method: string,
+  path: string,
+  allowlist: string[],
+): boolean
 
 export interface DevLoginCallbackOptions {
   /** auth-worker origin (code 交換先)。値 or event から解決する関数 */

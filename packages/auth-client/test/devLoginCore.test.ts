@@ -3,7 +3,10 @@ import {
   DEV_COOKIE_NAME,
   buildDevTokenExchangeRequest,
   devCookieOptions,
+  isDevLoginWriteAllowed,
+  isSafeMethod,
   normalizeDevTokenExchangeResult,
+  parseDevLoginWriteAllowlist,
 } from '../src/server/devLoginCore.mjs'
 
 /** base64url エンコード（UTF-8 safe）でテスト用 JWT payload を作る */
@@ -99,6 +102,68 @@ describe('devCookieOptions', () => {
       sameSite: 'lax',
       path: '/',
     })
+  })
+})
+
+describe('isSafeMethod', () => {
+  it('GET/HEAD/OPTIONS は true', () => {
+    expect(isSafeMethod('GET')).toBe(true)
+    expect(isSafeMethod('HEAD')).toBe(true)
+    expect(isSafeMethod('OPTIONS')).toBe(true)
+  })
+
+  it('POST/PUT/PATCH/DELETE は false', () => {
+    expect(isSafeMethod('POST')).toBe(false)
+    expect(isSafeMethod('PUT')).toBe(false)
+    expect(isSafeMethod('PATCH')).toBe(false)
+    expect(isSafeMethod('DELETE')).toBe(false)
+  })
+})
+
+describe('parseDevLoginWriteAllowlist', () => {
+  it('カンマ区切りをtrimして配列にする', () => {
+    expect(parseDevLoginWriteAllowlist('api/foo, api/bar ,api/baz')).toEqual([
+      'api/foo',
+      'api/bar',
+      'api/baz',
+    ])
+  })
+
+  it('空文字/undefined/非文字列は空配列', () => {
+    expect(parseDevLoginWriteAllowlist('')).toEqual([])
+    expect(parseDevLoginWriteAllowlist('   ')).toEqual([])
+    expect(parseDevLoginWriteAllowlist(undefined)).toEqual([])
+    expect(parseDevLoginWriteAllowlist(123)).toEqual([])
+  })
+
+  it('空エントリ (連続カンマ) は除外する', () => {
+    expect(parseDevLoginWriteAllowlist('api/foo,,api/bar')).toEqual(['api/foo', 'api/bar'])
+  })
+})
+
+describe('isDevLoginWriteAllowed', () => {
+  it('safe method は allowlist が空でも常に許可', () => {
+    expect(isDevLoginWriteAllowed('GET', 'api/anything', [])).toBe(true)
+  })
+
+  it('非safe methodはallowlistに完全一致すれば許可', () => {
+    expect(isDevLoginWriteAllowed('POST', 'api/foo', ['api/foo'])).toBe(true)
+  })
+
+  it('非safe methodはallowlistのprefix配下 (/区切り) なら許可', () => {
+    expect(isDevLoginWriteAllowed('POST', 'api/foo/sub', ['api/foo'])).toBe(true)
+  })
+
+  it('prefix境界を跨いだ誤許可はしない (api/foo は api/foo-bar を許可しない)', () => {
+    expect(isDevLoginWriteAllowed('POST', 'api/foo-bar', ['api/foo'])).toBe(false)
+  })
+
+  it('allowlistに無ければ拒否', () => {
+    expect(isDevLoginWriteAllowed('DELETE', 'api/other', ['api/foo'])).toBe(false)
+  })
+
+  it('allowlistが空なら非safe methodは全拒否', () => {
+    expect(isDevLoginWriteAllowed('POST', 'api/foo', [])).toBe(false)
   })
 })
 

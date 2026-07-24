@@ -51,3 +51,45 @@ export function devCookieOptions(expiresIn) {
     ...(typeof expiresIn === 'number' ? { maxAge: expiresIn } : {}),
   }
 }
+
+/**
+ * dev-login write allowlist (2026-07-24、consumer が prod backend に向けた
+ * `AUTH_WORKER` service binding を使う時の安全弁)。
+ *
+ * dev token は `logi_auth_token` と同じ `JWT_SECRET` で署名されているため、
+ * consumer が dev-login 用の `AUTH_WORKER` service binding を prod
+ * auth-worker に向けると、dev token はそのまま prod の `/alc-proxy` を通る
+ * (issue #423 が「残存リスク(受容)」と明記した「dev tokenの本番持ち込み」)。
+ * ここで守っているのは権限昇格ではなく、**検証中の未検証ローカルコードが
+ * 事故で prod に書き込む**リスク — read/write とも consumer の通常ロール権限
+ * の範囲内。よって write を一律禁止せず、consumer が起動時に明示登録した
+ * path prefix だけを一時的に通す allowlist 方式にした。
+ */
+
+/** GET/HEAD/OPTIONS はデータを変更しないため allowlist の対象外 (常に許可)。 */
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+export function isSafeMethod(method) {
+  return SAFE_METHODS.has(method)
+}
+
+/** カンマ区切りの path prefix 文字列を配列にパースする (空/undefined は空配列)。 */
+export function parseDevLoginWriteAllowlist(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return []
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+/**
+ * method/path が allowlist で許可されているか判定する。
+ * safe method (GET/HEAD/OPTIONS) は allowlist に関係なく常に許可。
+ * それ以外は `allowlist` のいずれかの prefix と完全一致 or `${prefix}/` で
+ * 始まる時のみ許可 (境界を跨いだ誤許可を防ぐ、例: "api/foo" は
+ * "api/foo-bar" を許可しない)。
+ */
+export function isDevLoginWriteAllowed(method, path, allowlist) {
+  if (isSafeMethod(method)) return true
+  return allowlist.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))
+}
