@@ -37,6 +37,7 @@
  *   400 → invalid_request   (Authorization 欠落 / body JSON 不正)
  *   401 → invalid_token     (GitHub token が api.github.com で reject)
  *   403 → forbidden_scope   (`mcp.admin` を要求した、または aud が allowlist 外)
+ *   403 → access_denied     (`GITHUB_MCP_USER_ALLOWLIST` に login が無い)
  *   429 → rate_limited      (10/min per github_token hash)
  *   502 → upstream_error    (api.github.com が 5xx / network)
  *   503 → server_error      (MCP_JWT_SECRET 等 env 未設定)
@@ -45,6 +46,15 @@
  *   - 「GitHub OAuth token == user identity assertion」を trust する。これは
  *     auth-worker が既に `/mcp/authorize` の GitHub callback で行っている trust
  *     と等価。直接 token を受ける代わりに browser redirect を skip する。
+ *   - **2026-07-24 修正**: このハンドラだけ `GITHUB_MCP_USER_ALLOWLIST` の
+ *     fail-closed ACL チェックが欠落しており、`read:user` scope を持つ任意の
+ *     GitHub token 保有者 (org 所属不問) が prod署名の binding_jwt を取得
+ *     できる状態だった。同じ trust 経由の他 4 箇所 (`mcp-pair-callback.ts` /
+ *     `mcp-elevate.ts` / `mcp-auth-callback.ts` / `mcp-device-callback.ts`)
+ *     は全て実装済みだったにも関わらず、このハンドラ追加時に書き忘れていた。
+ *     再発防止のため `grantMcpBindingJwtForGithubLogin`
+ *     (`../lib/mcp-github-grant.ts`) に ACL チェックを内蔵し、GitHub login
+ *     から binding_jwt を mint する経路はこの関数を必ず経由させる。
  *   - Token 自体は KV に保存しない (passthrough verify のみ)。binding_jwt mint
  *     後は GitHub token は捨てる。
  *   - `mcp.admin` scope は本 path で発行**しない** (browser elevate flow #149
@@ -62,7 +72,8 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
+import { grantMcpBindingJwtForGithubLogin } from "../lib/mcp-github-grant";
+import { resolveMcpJwtSecret } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 import { checkAndBumpGrantRateLimit, hashRefreshToken } from "../lib/mcp-pair";
 
@@ -248,24 +259,31 @@ export async function handleMcpPairGrantViaGithub(
     );
   }
 
-  // ── mint binding_jwt ────────────────────────────────────────────────
-  // sub / github_login の両方を埋める (`/mcp/pair/grant` と同じ shape)。
-  // consumer (binary) 側の `/mcp/introspect` は両方を読むため。
-  const bindingJwt = await signMcpJwt(
-    {
-      sub: `github:${ghUser.login}`,
-      github_login: ghUser.login,
-      scope: requestedScope,
-      aud: requestedAud,
-    },
-    jwtSecret,
-    BINDING_JWT_TTL_SEC,
-  );
+  // ── ACL check + mint binding_jwt (fail-closed、GITHUB_MCP_USER_ALLOWLIST) ──
+  // 2026-07-24: このハンドラだけ ACL チェックが欠落していたため、他の
+  // GitHub identity → grant 経路 (pair_callback / elevate / auth_callback /
+  // device_callback) と同じ allowlist を、その 4 箇所と共通の入口
+  // (`grantMcpBindingJwtForGithubLogin`) 経由で強制する。
+  const grant = await grantMcpBindingJwtForGithubLogin(env, jwtSecret, {
+    login: ghUser.login,
+    scope: requestedScope,
+    aud: requestedAud,
+    ttlSec: BINDING_JWT_TTL_SEC,
+  });
+  if (!grant.ok) {
+    return jsonResponse(
+      {
+        error: "access_denied",
+        error_description: "Your GitHub account is not authorized to use this MCP server.",
+      },
+      403,
+    );
+  }
 
   const mcpUrl = `${mcpRelayOrigin(env)}/u/${ghUser.login}/mcp`;
 
   return jsonResponse({
-    binding_jwt: bindingJwt,
+    binding_jwt: grant.jwt,
     mcp_url: mcpUrl,
     github_login: ghUser.login,
     github_id: ghUser.id,

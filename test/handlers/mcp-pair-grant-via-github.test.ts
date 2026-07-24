@@ -5,6 +5,7 @@
  * - Authorization header parsing (400)
  * - body invalid JSON (400)
  * - audience allowlist (403)
+ * - GITHUB_MCP_USER_ALLOWLIST ACL (403 access_denied、2026-07-24 修正の regression test)
  * - forbidden scope (mcp.admin) (403)
  * - rate limit (10/min) (429)
  * - GitHub token rejected by api.github.com (401)
@@ -33,6 +34,10 @@ function envWith(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
     MCP_OAUTH_KV: kv,
     AUTH_WORKER_ORIGIN: ISSUER,
     MCP_JWT_SECRET,
+    // 2026-07-24: ACL 修正後は allowlist が無いと全て 403 になるため、既存
+    // happy-path テスト (login=alice) が通るよう default で alice を含める。
+    // ACL 自体のテストは明示的に上書きする (下の describe ブロック参照)。
+    GITHUB_MCP_USER_ALLOWLIST: '["alice"]',
     ...overrides,
   });
   return { env, kv };
@@ -225,6 +230,65 @@ describe("handleMcpPairGrantViaGithub — audience allowlist", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { aud: string };
     expect(body.aud).toBe("ref-files-mcp-server-rs");
+  });
+});
+
+describe("handleMcpPairGrantViaGithub — GITHUB_MCP_USER_ALLOWLIST ACL (2026-07-24 修正)", () => {
+  it("403 access_denied when allowlist is unset (fail-closed)", async () => {
+    mockGithubUser(ALICE);
+    const { env } = envWith({ GITHUB_MCP_USER_ALLOWLIST: undefined });
+    const res = await handleMcpPairGrantViaGithub(
+      buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("access_denied");
+  });
+
+  it("403 access_denied when allowlist is malformed JSON (fail-closed)", async () => {
+    mockGithubUser(ALICE);
+    const { env } = envWith({ GITHUB_MCP_USER_ALLOWLIST: "not-json" } as Partial<Env>);
+    const res = await handleMcpPairGrantViaGithub(
+      buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("access_denied");
+  });
+
+  it("403 access_denied when login is not in allowlist", async () => {
+    mockGithubUser(ALICE);
+    const { env } = envWith({ GITHUB_MCP_USER_ALLOWLIST: '["bob","carol"]' } as Partial<Env>);
+    const res = await handleMcpPairGrantViaGithub(
+      buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("access_denied");
+  });
+
+  it("does not mint a binding_jwt when denied (no upstream leak of a valid token)", async () => {
+    mockGithubUser(ALICE);
+    const { env } = envWith({ GITHUB_MCP_USER_ALLOWLIST: '["bob"]' } as Partial<Env>);
+    const res = await handleMcpPairGrantViaGithub(
+      buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }),
+      env,
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.binding_jwt).toBeUndefined();
+  });
+
+  it("200 when login is included among multiple allowlist entries", async () => {
+    mockGithubUser(ALICE);
+    const { env } = envWith({ GITHUB_MCP_USER_ALLOWLIST: '["bob","alice","carol"]' } as Partial<Env>);
+    const res = await handleMcpPairGrantViaGithub(
+      buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });
 
