@@ -8,6 +8,7 @@ import {
 import type { Env } from "../../src/index";
 import { signMcpJwt } from "../../src/lib/mcp-jwt";
 import { encryptWithKey } from "../../src/lib/mcp-crypto";
+import { DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY } from "../../src/lib/dev-login";
 
 const ISSUER = "https://auth.test.example";
 const TEST_MCP_JWT_SECRET = "test-mcp-jwt-secret-32chars!";
@@ -685,7 +686,8 @@ describe("POST /mcp/tools — dev-login tools (issue #423/#424)", () => {
   }
 
   it("tools/list includes dev-login tools and does not require a github_token", async () => {
-    const { env } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: ALLOWLIST });
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
     const jwt = await googleUserJwt();
     const res = await handleMcpTools(
       await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
@@ -699,7 +701,8 @@ describe("POST /mcp/tools — dev-login tools (issue #423/#424)", () => {
   });
 
   it("issue_dev_token mints a dev JWT for an allowed Google-IdP subject", async () => {
-    const { env, kv } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: ALLOWLIST });
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
     kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
     globalThis.fetch = vi.fn().mockResolvedValue(internalUserResponse());
     const jwt = await googleUserJwt();
@@ -722,7 +725,8 @@ describe("POST /mcp/tools — dev-login tools (issue #423/#424)", () => {
   });
 
   it("issue_dev_login_url returns a localhost callback URL with a one-time code", async () => {
-    const { env, kv } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: ALLOWLIST });
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
     kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
     globalThis.fetch = vi.fn().mockResolvedValue(internalUserResponse());
     const jwt = await googleUserJwt();
@@ -744,7 +748,8 @@ describe("POST /mcp/tools — dev-login tools (issue #423/#424)", () => {
   });
 
   it("issue_dev_login_url rejects an out-of-range port", async () => {
-    const { env } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: ALLOWLIST });
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
     const jwt = await googleUserJwt();
     const res = await handleMcpTools(
       await authedReq(jwt, {
@@ -762,8 +767,9 @@ describe("POST /mcp/tools — dev-login tools (issue #423/#424)", () => {
     expect(body.result.content[0]!.text).toContain("port must be");
   });
 
-  it("issue_dev_token rejects a subject not in DEV_LOGIN_ALLOWED_SUBJECTS", async () => {
-    const { env } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: ALLOWLIST });
+  it("issue_dev_token rejects a subject not in the allowlist", async () => {
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
     const jwt = await googleUserJwt({ email: "someone-else@example.com" });
     const res = await handleMcpTools(
       await authedReq(jwt, {
@@ -782,9 +788,8 @@ describe("POST /mcp/tools — dev-login tools (issue #423/#424)", () => {
   });
 
   it("issue_dev_token rejects a GitHub-IdP session (no email)", async () => {
-    const { env, kv } = envWithKv({
-      DEV_LOGIN_ALLOWED_SUBJECTS: JSON.stringify(["github:alice"]),
-    });
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = JSON.stringify(["github:alice"]);
     await seedUserToken(kv, "alice", "gho_x");
     const jwt = await userJwt();
     const res = await handleMcpTools(

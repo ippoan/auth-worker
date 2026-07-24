@@ -277,11 +277,6 @@ export interface Env {
    *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed).
    *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */
   GITHUB_MCP_USER_ALLOWLIST?: SecretBinding;
-  /** JSON array of MCP JWT `sub` values (e.g. `["google:m.tama.ramu@gmail.com"]`)
-   *  allowed to call the `issue_dev_token` / `issue_dev_login_url` MCP tools
-   *  (issue #423/#424 — localhost dev-login). Missing / malformed → deny all
-   *  (fail-closed, same convention as `GITHUB_MCP_USER_ALLOWLIST`). */
-  DEV_LOGIN_ALLOWED_SUBJECTS?: SecretBinding;
   /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens)。
    *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
   MCP_OAUTH_KV?: KVNamespace;

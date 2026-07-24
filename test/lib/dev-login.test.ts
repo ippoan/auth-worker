@@ -4,6 +4,7 @@ import type { Env } from "../../src/index";
 import type { McpJwtPayload } from "../../src/lib/mcp-jwt";
 import { decodeJwtPayload, verifyJwt } from "../../src/lib/jwt";
 import {
+  DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY,
   DEV_TOKEN_TTL_SEC,
   consumeDevLoginCode,
   issueDevLoginCode,
@@ -14,10 +15,9 @@ const ALLOWED_SUB = "google:dev@example.com";
 const ALLOWLIST = JSON.stringify([ALLOWED_SUB]);
 
 function envWithKv(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
-  const kv = createMockKV() as MockKV;
+  const kv = createMockKV({ [DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY]: ALLOWLIST }) as MockKV;
   const env = createMockEnv({
     MCP_OAUTH_KV: kv,
-    DEV_LOGIN_ALLOWED_SUBJECTS: ALLOWLIST,
     ...overrides,
   });
   return { env, kv };
@@ -77,26 +77,30 @@ describe("mintDevToken", () => {
     expect(result).toEqual({ kind: "error", error: "server_error", status: 503 });
   });
 
-  it("returns 403 when DEV_LOGIN_ALLOWED_SUBJECTS is unset (fail-closed)", async () => {
-    const { env } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: undefined });
+  it("returns 403 when the allowlist KV key is unset (fail-closed)", async () => {
+    const { env, kv } = envWithKv();
+    delete kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY];
     const result = await mintDevToken(env, payload());
     expect(result).toEqual({ kind: "error", error: "dev_login_not_configured", status: 403 });
   });
 
-  it("returns 403 when DEV_LOGIN_ALLOWED_SUBJECTS is malformed JSON (fail-closed)", async () => {
-    const { env } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: "not-json" });
+  it("returns 403 when the allowlist KV value is malformed JSON (fail-closed)", async () => {
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = "not-json";
     const result = await mintDevToken(env, payload());
     expect(result).toEqual({ kind: "error", error: "dev_login_not_configured", status: 403 });
   });
 
-  it("returns 403 when DEV_LOGIN_ALLOWED_SUBJECTS is valid JSON but not an array (fail-closed)", async () => {
-    const { env } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: JSON.stringify({ a: 1 }) });
+  it("returns 403 when the allowlist KV value is valid JSON but not an array (fail-closed)", async () => {
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = JSON.stringify({ a: 1 });
     const result = await mintDevToken(env, payload());
     expect(result).toEqual({ kind: "error", error: "dev_login_not_configured", status: 403 });
   });
 
-  it("returns 403 when DEV_LOGIN_ALLOWED_SUBJECTS is not a JSON array of strings", async () => {
-    const { env } = envWithKv({ DEV_LOGIN_ALLOWED_SUBJECTS: JSON.stringify([1, 2]) });
+  it("returns 403 when the allowlist KV value is not a JSON array of strings", async () => {
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = JSON.stringify([1, 2]);
     const result = await mintDevToken(env, payload());
     expect(result).toEqual({ kind: "error", error: "dev_login_not_configured", status: 403 });
   });

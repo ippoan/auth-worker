@@ -12,6 +12,12 @@
  * 使って既存の `upsertGoogleUser` を呼ぶ。rust-alc-api 側は google_sub が
  * 一致する既存ユーザーには name/email を書き換えない (新規作成時のみ使う) ので、
  * 既にテナントに属している開発者アカウントに対しては副作用ゼロの read 相当。
+ *
+ * 許可 subject は `GITHUB_MCP_USER_ALLOWLIST` のような Secrets Store secret では
+ * なく、既に bind 済みの `MCP_OAUTH_KV` に直接 JSON array を置く
+ * (`DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY`)。値自体は「どの MCP subject を許可するか」
+ * という設定であって秘密の値ではなく、wrangler.toml へ新規 Secrets Store binding
+ * を足す必要も無いため (`config.ts` の DEVELOPER_EMAILS と同じ判断)。
  */
 import type { Env } from "../index";
 import { upsertGoogleUser } from "./alc-internal";
@@ -23,13 +29,16 @@ import { resolveSecret } from "./secret";
 export const DEV_TOKEN_TTL_SEC = 1800;
 /** one-shot code の TTL。Cloudflare KV `expirationTtl` の最小値 (60s) と一致。 */
 export const DEV_CODE_TTL_SEC = 60;
+/** 許可 subject 一覧 (JSON array) を置く `MCP_OAUTH_KV` の key。
+ *  `wrangler kv key put --binding=MCP_OAUTH_KV dev_login_allowed_subjects '["google:you@example.com"]'` で投入する。 */
+export const DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY = "dev_login_allowed_subjects";
 
 export type MintDevTokenResult =
   | { kind: "ok"; token: string; expires_in: number }
   | { kind: "error"; error: string; status: number };
 
 /** fail-closed allowlist parse (`GITHUB_MCP_USER_ALLOWLIST` と同方針、mcp-elevate.ts 参照)。 */
-function parseAllowedSubjects(raw: string | undefined): string[] | null {
+function parseAllowedSubjects(raw: string | null): string[] | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -45,7 +54,7 @@ function parseAllowedSubjects(raw: string | undefined): string[] | null {
  * MCP 認可済み `payload` (`/mcp/tools` の Bearer JWT payload) から dev JWT を
  * 発行する。
  *
- *  - `DEV_LOGIN_ALLOWED_SUBJECTS` 未設定/不正 → fail-closed (403)
+ *  - `MCP_OAUTH_KV["dev_login_allowed_subjects"]` 未設定/不正 → fail-closed (403)
  *  - `payload.sub` が allowlist に無い → 403
  *  - Google IdP flow 以外 (`payload.email` 無し) → 403 (dev-login は Google IdP 限定)
  *  - `google_sub:<email>` キャッシュ無し (MCP Google 再認可が必要) → 403
@@ -63,7 +72,7 @@ export async function mintDevToken(
     return { kind: "error", error: "server_error", status: 503 };
   }
   const allowlist = parseAllowedSubjects(
-    (await resolveSecret(env.DEV_LOGIN_ALLOWED_SUBJECTS)) ?? undefined,
+    await env.MCP_OAUTH_KV.get(DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY),
   );
   if (allowlist === null) {
     return { kind: "error", error: "dev_login_not_configured", status: 403 };
