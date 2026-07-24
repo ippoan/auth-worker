@@ -187,6 +187,7 @@ export async function handleMcpPairClaim(
       github_login: session.github_login,
       scope,
       aud: MCP_AUD,
+      iss: env.AUTH_WORKER_ORIGIN,
     },
     jwtSecret,
     BINDING_JWT_TTL_SEC,

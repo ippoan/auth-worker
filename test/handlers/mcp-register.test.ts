@@ -1,5 +1,9 @@
 /**
  * `handleMcpRegister` (RFC 7591 DCR) unit test (Phase 5 / #128).
+ *
+ * - env / body validation
+ * - rate limit (10/min per source IP, distinct keyspace from /mcp/pair/new — issue #432)
+ * - successful registration
  */
 
 import { describe, it, expect } from "vitest";
@@ -89,6 +93,66 @@ describe("handleMcpRegister — env / body validation", () => {
       env,
     );
     expect(res.status).toBe(400);
+  });
+});
+
+describe("handleMcpRegister — rate limit (issue #432)", () => {
+  it("429 after 10 registrations in same minute (per source IP)", async () => {
+    const { env } = envWithKv();
+    const req = () =>
+      new Request("https://mcp-staging.example/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": "9.9.9.9" },
+        body: JSON.stringify({ redirect_uris: ["https://x.example/cb"] }),
+      });
+    for (let i = 0; i < 10; i += 1) {
+      const res = await handleMcpRegister(req(), env);
+      expect(res.status).toBe(201);
+    }
+    const res = await handleMcpRegister(req(), env);
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("rate_limited");
+  });
+
+  it("does not rate-limit across different source IPs", async () => {
+    const { env } = envWithKv();
+    const reqFrom = (ip: string) =>
+      new Request("https://mcp-staging.example/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+        body: JSON.stringify({ redirect_uris: ["https://x.example/cb"] }),
+      });
+    for (let i = 0; i < 10; i += 1) {
+      const res = await handleMcpRegister(reqFrom("1.1.1.1"), env);
+      expect(res.status).toBe(201);
+    }
+    const res = await handleMcpRegister(reqFrom("2.2.2.2"), env);
+    expect(res.status).toBe(201);
+  });
+
+  it("does not share rate-limit budget with /mcp/pair/new (distinct keyspace)", async () => {
+    const { env, kv } = envWithKv();
+    const now = Date.now();
+    const { checkAndBumpRateLimit } = await import("../../src/lib/mcp-pair");
+    // Exhaust the /mcp/pair/new budget for this IP.
+    for (let i = 0; i < 10; i += 1) {
+      expect(await checkAndBumpRateLimit(env, "3.3.3.3", now)).toBe(true);
+    }
+    expect(await checkAndBumpRateLimit(env, "3.3.3.3", now)).toBe(false);
+    // DCR from the same IP is unaffected (separate `mcp/dcr_rate` keyspace).
+    const res = await handleMcpRegister(
+      new Request("https://mcp-staging.example/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": "3.3.3.3" },
+        body: JSON.stringify({ redirect_uris: ["https://x.example/cb"] }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(201);
+    // DCR's own (distinct) keyspace got bumped instead — proves it isn't
+    // sharing the exhausted `mcp/pair_rate` counter.
+    expect(kv._data[`mcp/dcr_rate/3.3.3.3/${Math.floor(now / 60_000)}`]).toBe("1");
   });
 });
 

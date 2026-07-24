@@ -92,6 +92,7 @@ export async function grantMcpBindingJwtForGithubLogin(
       github_login: params.login,
       scope: params.scope,
       aud: params.aud,
+      iss: env.AUTH_WORKER_ORIGIN,
     },
     jwtSecret,
     params.ttlSec,

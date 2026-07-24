@@ -122,6 +122,7 @@ export async function handleMcpPairGrant(
       github_login: rec.github_login,
       scope: rec.requested_scope,
       aud: MCP_AUD,
+      iss: env.AUTH_WORKER_ORIGIN,
     },
     jwtSecret,
     BINDING_JWT_TTL_SEC,
