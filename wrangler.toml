@@ -57,8 +57,13 @@ MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://
 # MCP OAuth に Google IdP を追加: 上記 MCP_RESOURCE_ORIGINS_ALLOWLIST の部分集合で、
 # `/mcp/authorize` が GitHub でなく Google に redirect する origin (comma-sep)。
 # 空なら全 origin が既定の github のまま (既存 consumer は挙動不変)。個別 origin を
-# 追加する consumer 側 PR でここに足す (現時点では未使用、空のまま)。
-MCP_RESOURCE_GOOGLE_ORIGINS = ""
+# 追加する consumer 側 PR でここに足す。
+# auth-worker自身のrelay origin (mcpRelayOrigin(env) が auth.ippoan.org から
+# 導出する mcp.ippoan.org、および接続クライアントがresourceに直接
+# auth.ippoan.org自身を指定するケースの両方をカバー) をGoogle IdPに向ける
+# — dev-login (issue #423) のMCPツール (issue_dev_login_url等) はGoogle IdP
+# の認可を前提とするため (issue #438)。
+MCP_RESOURCE_GOOGLE_ORIGINS = "https://auth.ippoan.org,https://mcp.ippoan.org"
 
 [[kv_namespaces]]
 binding = "AUTH_CONFIG"
