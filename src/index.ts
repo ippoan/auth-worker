@@ -111,6 +111,7 @@ import { handleMcpPairGrantViaGithub } from "./handlers/mcp-pair-grant-via-githu
 import { handleMcpPairGrantViaOat } from "./handlers/mcp-pair-grant-via-oat";
 import { handleMcpPairRegisterViaGithubComment } from "./handlers/mcp-pair-register-via-github-comment";
 import { handleMcpTools } from "./handlers/mcp-tools";
+import { handleDevLoginToken } from "./handlers/dev-login-token";
 import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
 import { handleMcpElevateStart, handleMcpElevateCallback } from "./handlers/mcp-elevate";
@@ -276,6 +277,11 @@ export interface Env {
    *  Example: `["yhonda-ohishi"]`. Missing / malformed → deny all (fail-closed).
    *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */
   GITHUB_MCP_USER_ALLOWLIST?: SecretBinding;
+  /** JSON array of MCP JWT `sub` values (e.g. `["google:m.tama.ramu@gmail.com"]`)
+   *  allowed to call the `issue_dev_token` / `issue_dev_login_url` MCP tools
+   *  (issue #423/#424 — localhost dev-login). Missing / malformed → deny all
+   *  (fail-closed, same convention as `GITHUB_MCP_USER_ALLOWLIST`). */
+  DEV_LOGIN_ALLOWED_SUBJECTS?: SecretBinding;
   /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens)。
    *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
   MCP_OAUTH_KV?: KVNamespace;
@@ -895,6 +901,10 @@ export default {
           // 同じ handler は dispatchMcpRelay (mcp.ippoan.org host) 経由でも到達可能。
           case "/mcp/tools":
             return await handleMcpTools(request, env);
+          // issue #423/#424: dev-login one-time code → dev JWT 交換
+          // (consumer 側 `__dev/callback`、issue #425 が server-to-server で叩く)。
+          case "/dev-login/token":
+            return await handleDevLoginToken(request, env);
           // Phase 1 admin auth (issue #42 follow-up) — binary-facing admin proxy。
           // MCP JWT + KV elevate flag で gate して GitHub App installation token
           // 経由で branch protection 系を実行する。

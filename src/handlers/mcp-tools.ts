@@ -30,6 +30,7 @@
  */
 
 import type { Env } from "../index";
+import { issueDevLoginCode, mintDevToken } from "../lib/dev-login";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import { mcpRelayOrigin, wwwAuthenticateValue } from "../lib/mcp-origins";
@@ -62,6 +63,15 @@ interface JsonRpcError {
 
 type JsonRpcResponse = JsonRpcSuccess | JsonRpcError;
 
+/** `tool.call` に渡す実行 context。 */
+interface ToolCallCtx {
+  env: Env;
+  payload: McpJwtPayload;
+  /** `requiresGithubToken: true` のツールにのみ意味を持つ値 (解決済み)。
+   *  `false` のツールでは空文字 (未使用)。 */
+  ghToken: string;
+}
+
 interface ToolDef {
   name: string;
   description: string;
@@ -69,9 +79,22 @@ interface ToolDef {
   inputSchema: Record<string, unknown>;
   /** Minimum MCP scope required to call this tool. */
   requiredScope: "mcp.read" | "mcp.write";
-  /** Implementation. `args` is the validated `params.arguments` blob;
-   *  `ghToken` is the user's GitHub API token (already decrypted). */
-  call: (args: Record<string, unknown>, ghToken: string) => Promise<unknown>;
+  /** true なら呼び出し前に github_token (KV `github_token:<sub>`) の解決を必須にする
+   *  (無ければ JSON-RPC error)。dev-login 系ツールは GitHub token を使わないので false。 */
+  requiresGithubToken: boolean;
+  /** Implementation. `args` is the validated `params.arguments` blob. */
+  call: (args: Record<string, unknown>, ctx: ToolCallCtx) => Promise<unknown>;
+}
+
+/** dev-login tool (`issue_dev_token` / `issue_dev_login_url`) 用のエラー。
+ *  GhError と同様、`dispatchToolsCall` の catch で `isError:true` content に変換する。 */
+class DevLoginError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = "DevLoginError";
+  }
 }
 
 function rpcError(
@@ -196,7 +219,8 @@ const TOOLS: ToolDef[] = [
     description: "Get the GitHub profile of the authenticated user (login, name, email-if-public). Useful as a smoke test.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     requiredScope: "mcp.read",
-    call: async (_args, ghToken) => ghGet("/user", ghToken),
+    requiresGithubToken: true,
+    call: async (_args, ctx) => ghGet("/user", ctx.ghToken),
   },
   {
     name: "github_get_repo",
@@ -211,11 +235,12 @@ const TOOLS: ToolDef[] = [
       additionalProperties: false,
     },
     requiredScope: "mcp.read",
-    call: async (args, ghToken) => {
+    requiresGithubToken: true,
+    call: async (args, ctx) => {
       const owner = asString(args["owner"]);
       const repo = asString(args["repo"]);
       if (!owner || !repo) throw new GhError(400, "owner and repo are required");
-      return ghGet(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, ghToken);
+      return ghGet(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, ctx.ghToken);
     },
   },
   {
@@ -233,7 +258,8 @@ const TOOLS: ToolDef[] = [
       additionalProperties: false,
     },
     requiredScope: "mcp.read",
-    call: async (args, ghToken) => {
+    requiresGithubToken: true,
+    call: async (args, ctx) => {
       const owner = asString(args["owner"]);
       const repo = asString(args["repo"]);
       if (!owner || !repo) throw new GhError(400, "owner and repo are required");
@@ -243,7 +269,7 @@ const TOOLS: ToolDef[] = [
         ? Math.min(100, Math.max(1, perPageRaw))
         : 30;
       const qs = `?state=${encodeURIComponent(state)}&per_page=${perPage}`;
-      return ghGet(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues${qs}`, ghToken);
+      return ghGet(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues${qs}`, ctx.ghToken);
     },
   },
   {
@@ -261,7 +287,8 @@ const TOOLS: ToolDef[] = [
       additionalProperties: false,
     },
     requiredScope: "mcp.read",
-    call: async (args, ghToken) => {
+    requiresGithubToken: true,
+    call: async (args, ctx) => {
       const owner = asString(args["owner"]);
       const repo = asString(args["repo"]);
       if (!owner || !repo) throw new GhError(400, "owner and repo are required");
@@ -271,7 +298,7 @@ const TOOLS: ToolDef[] = [
         ? Math.min(100, Math.max(1, perPageRaw))
         : 30;
       const qs = `?state=${encodeURIComponent(state)}&per_page=${perPage}`;
-      return ghGet(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls${qs}`, ghToken);
+      return ghGet(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls${qs}`, ctx.ghToken);
     },
   },
   {
@@ -289,7 +316,8 @@ const TOOLS: ToolDef[] = [
       additionalProperties: false,
     },
     requiredScope: "mcp.write",
-    call: async (args, ghToken) => {
+    requiresGithubToken: true,
+    call: async (args, ctx) => {
       const owner = asString(args["owner"]);
       const repo = asString(args["repo"]);
       const title = asString(args["title"]);
@@ -300,8 +328,58 @@ const TOOLS: ToolDef[] = [
       return ghPost(
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`,
         body !== undefined ? { title, body } : { title },
-        ghToken,
+        ctx.ghToken,
       );
+    },
+  },
+  {
+    name: "issue_dev_token",
+    description:
+      "Issue a short-lived (30 min, no refresh) dev session JWT for localhost " +
+      "browser/curl verification (issue #423/#424). Only works for pre-approved " +
+      "subjects (DEV_LOGIN_ALLOWED_SUBJECTS).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (_args, ctx) => {
+      const result = await mintDevToken(ctx.env, ctx.payload);
+      if (result.kind === "error") throw new DevLoginError(result.status, result.error);
+      return {
+        access_token: result.token,
+        token_type: "Bearer",
+        expires_in: result.expires_in,
+      };
+    },
+  },
+  {
+    name: "issue_dev_login_url",
+    description:
+      "Issue a one-time http://localhost:<port>/__dev/callback?code=... URL " +
+      "(60s TTL, single use) for browser-based dev-login verification (issue #423/#424).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        port: { type: "integer", minimum: 1024, maximum: 65535 },
+      },
+      required: ["port"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const portRaw = args["port"];
+      if (
+        typeof portRaw !== "number" ||
+        !Number.isInteger(portRaw) ||
+        portRaw < 1024 ||
+        portRaw > 65535
+      ) {
+        throw new DevLoginError(400, "port must be an integer in [1024, 65535]");
+      }
+      const result = await mintDevToken(ctx.env, ctx.payload);
+      if (result.kind === "error") throw new DevLoginError(result.status, result.error);
+      const code = await issueDevLoginCode(ctx.env, result.token);
+      return { url: `http://localhost:${portRaw}/__dev/callback?code=${code}` };
     },
   },
 ];
@@ -311,22 +389,20 @@ const TOOL_BY_NAME: Record<string, ToolDef> = Object.fromEntries(
 );
 
 /**
- * Authenticate the request: verify Bearer JWT + look up github_token.
- * Returns `{kind:"ok"}` with the payload + decrypted github_token, or
- * `{kind:"error"}` carrying an HTTP `Response` to return immediately.
+ * Authenticate the request: verify Bearer JWT only.
+ * Returns `{kind:"ok"}` with the payload, or `{kind:"error"}` carrying an
+ * HTTP `Response` to return immediately.
+ *
+ * github_token 解決 (dev-login 系ツールには不要) は `resolveGithubToken` に
+ * 分離し、`dispatchToolsCall` が `tool.requiresGithubToken` の時だけ呼ぶ。
  */
 type AuthGate =
-  | { kind: "ok"; payload: McpJwtPayload; ghToken: string }
+  | { kind: "ok"; payload: McpJwtPayload }
   | { kind: "error"; response: Response };
 
 async function authenticate(request: Request, env: Env): Promise<AuthGate> {
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
-  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
-  if (
-    !env.MCP_OAUTH_KV ||
-    !jwtSecret ||
-    !ssoKey
-  ) {
+  if (!env.MCP_OAUTH_KV || !jwtSecret) {
     return {
       kind: "error",
       response: jsonResponse(
@@ -354,29 +430,38 @@ async function authenticate(request: Request, env: Env): Promise<AuthGate> {
       response: unauthorized(env, { error: "invalid_token", error_description: "JWT verification failed" }),
     };
   }
-  const encrypted = await env.MCP_OAUTH_KV.get(`github_token:${payload.sub}`);
+  return { kind: "ok", payload };
+}
+
+type GithubTokenResolution =
+  | { kind: "ok"; token: string }
+  | { kind: "error"; code: number; message: string };
+
+/**
+ * `requiresGithubToken: true` なツール呼び出し専用の github_token 解決。
+ * 旧 `authenticate()` が全メソッドに強制していたものを tool-call 単位に局所化
+ * したもの (dev-login 系ツールは github_token を持たない Google IdP セッション
+ * からも呼べる必要があるため)。
+ */
+async function resolveGithubToken(env: Env, sub: string): Promise<GithubTokenResolution> {
+  const ssoKey = await resolveSecret(env.SSO_ENCRYPTION_KEY);
+  if (!ssoKey) {
+    return { kind: "error", code: -32603, message: "SSO_ENCRYPTION_KEY not configured" };
+  }
+  const encrypted = await env.MCP_OAUTH_KV!.get(`github_token:${sub}`);
   if (!encrypted) {
     return {
       kind: "error",
-      response: jsonResponse(
-        { error: "no_github_token", error_description: "Re-authorize via the MCP OAuth flow to refresh the GitHub token." },
-        403,
-      ),
+      code: -32001,
+      message: "no_github_token: re-authorize via the MCP OAuth flow to refresh the GitHub token",
     };
   }
-  let ghToken: string;
   try {
-    ghToken = await decryptWithKey(encrypted, ssoKey);
+    const token = await decryptWithKey(encrypted, ssoKey);
+    return { kind: "ok", token };
   } catch {
-    return {
-      kind: "error",
-      response: jsonResponse(
-        { error: "server_error", error_description: "Failed to decrypt stored GitHub token" },
-        500,
-      ),
-    };
+    return { kind: "error", code: -32603, message: "failed to decrypt stored GitHub token" };
   }
-  return { kind: "ok", payload, ghToken };
 }
 
 function dispatchInitialize(id: string | number | null): JsonRpcResponse {
@@ -406,8 +491,8 @@ function dispatchToolsList(id: string | number | null, scope: string): JsonRpcRe
 async function dispatchToolsCall(
   id: string | number | null,
   params: unknown,
+  env: Env,
   payload: McpJwtPayload,
-  ghToken: string,
 ): Promise<JsonRpcResponse> {
   if (!isObject(params)) {
     return rpcError(id, -32602, "params must be an object with `name` and `arguments`");
@@ -420,9 +505,15 @@ async function dispatchToolsCall(
   if (!scopeIncludes(payload.scope, tool.requiredScope)) {
     return rpcError(id, -32000, `insufficient scope: ${tool.requiredScope} required`);
   }
+  let ghToken = "";
+  if (tool.requiresGithubToken) {
+    const resolved = await resolveGithubToken(env, payload.sub);
+    if (resolved.kind === "error") return rpcError(id, resolved.code, resolved.message);
+    ghToken = resolved.token;
+  }
   const args = isObject(tp.arguments) ? tp.arguments : {};
   try {
-    const result = await tool.call(args, ghToken);
+    const result = await tool.call(args, { env, payload, ghToken });
     // MCP spec: `tools/call.result.content` is an array of content items.
     // For structured data we wrap as a single `text` content with stringified JSON.
     return rpcOk(id, {
@@ -438,14 +529,20 @@ async function dispatchToolsCall(
         isError: true,
       });
     }
+    if (e instanceof DevLoginError) {
+      return rpcOk(id, {
+        content: [{ type: "text", text: `dev-login error ${e.status}: ${e.message}` }],
+        isError: true,
+      });
+    }
     return rpcError(id, -32603, e instanceof Error ? e.message : "internal error");
   }
 }
 
 async function dispatch(
   req: JsonRpcRequest,
+  env: Env,
   payload: McpJwtPayload,
-  ghToken: string,
 ): Promise<JsonRpcResponse> {
   const id = req.id ?? null;
   switch (req.method) {
@@ -456,7 +553,7 @@ async function dispatch(
     case "tools/list":
       return dispatchToolsList(id, payload.scope);
     case "tools/call":
-      return await dispatchToolsCall(id, req.params, payload, ghToken);
+      return await dispatchToolsCall(id, req.params, env, payload);
     default:
       return rpcError(id, -32601, `method not found: ${req.method}`);
   }
@@ -480,7 +577,7 @@ export async function handleMcpTools(request: Request, env: Env): Promise<Respon
       if (r.kind === "error") {
         responses.push(rpcError(null, -32600, r.message));
       } else {
-        responses.push(await dispatch(r.request, gate.payload, gate.ghToken));
+        responses.push(await dispatch(r.request, env, gate.payload));
       }
     }
     return jsonResponse(responses);
@@ -489,7 +586,7 @@ export async function handleMcpTools(request: Request, env: Env): Promise<Respon
   if (v.kind === "error") {
     return jsonResponse(rpcError(null, -32600, v.message));
   }
-  const resp = await dispatch(v.request, gate.payload, gate.ghToken);
+  const resp = await dispatch(v.request, env, gate.payload);
   return jsonResponse(resp);
 }
 
