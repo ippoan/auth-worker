@@ -70,23 +70,52 @@ service = "cf-flickr-cam-worker"
 binding = "ALC_RECORDER"
 service = "alc-recorder"
 
-# ⚠️ MCP_OAUTH_KV は top-level (prod) には **意図的に bind しない**。
-# これは欠落ではなく guardrail: prod `auth.ippoan.org/mcp/pair/grant-via-oat`
-# を `MCP_OAUTH_KV not bound` (503) で無効化し、OAT→JWT mint を
-# staging (`auth-staging.ippoan.org`) 経由に限定する設計。MCP スタックは
-# staging を実運用として扱う (staging=prod)。staging には
-# `[[env.staging.kv_namespaces]]` で bind 済み。
-# 「prod に binding が無い＝欠落」と勘違いして AUTH_CONFIG と同様に
-# 再追加しないこと。過去に誤って追加 → revert した経緯あり (Refs #241 / #242)。
+# ─── MCP_OAUTH_KV (issue #432: prod で MCP OAuth Provider を有効化) ──────────
 #
-# 2026-07-24 (issue #432): 上記ガードは実は「KV 未 bind」という副作用に
-# 安全性を依存させた粗い設計で、grant-via-oat 以外の headless 経路
-# (grant-via-github は KV 非依存、register-via-github-comment) には効かない。
-# 3 経路共通の明示的 kill switch として `MCP_HEADLESS_GRANT_ENABLED` を
-# `isHeadlessGrantEnabled()` (`src/lib/mcp-github-grant.ts`) 経由で追加した
-# (下記 `[env.staging.vars]` にのみ `"1"` を設定)。将来 prod に `MCP_OAUTH_KV`
-# を bind する時 (#432 rollout) も、この flag を prod で明示的に立てるまで
-# 3 経路は 503 のまま — KV bind と headless 経路の解禁が誤って同時に起きない。
+# 経緯: 2026-07-24 以前は top-level (prod) に **意図的に bind しない**運用
+# だった — prod `auth.ippoan.org` の DCR/authorize/token/device flow/introspect/
+# revoke/elevate/dev-login 等 (`env.MCP_OAUTH_KV` を参照する約 20 ハンドラ)
+# を丸ごと `MCP_OAUTH_KV not bound` (503) で無効化し、MCP OAuth Provider の
+# 実運用を staging (`auth-staging.ippoan.org`、"staging=prod" 運用) に限定する
+# という guardrail だった。「prod に binding が無い＝欠落」と勘違いして
+# AUTH_CONFIG と同様に再追加しないこと、という注意書きだったが、これは
+# 「守りたいのは人間の同意を経ない発行経路の遮断であって KV の有無ではない」
+# という実際の意図とズレた実装で、grant-via-github (KV 非依存) には元々
+# 効いていなかった (Refs #241 / #242 — 過去に誤って追加 → revert した経緯)。
+#
+# 2026-07-24 (issue #432 step 2, PR #434): headless (ブラウザ同意なし)
+# binding_jwt 発行/bind 経路 3 つ (grant-via-oat / grant-via-github /
+# register-via-github-comment) の共通 kill switch `MCP_HEADLESS_GRANT_ENABLED`
+# を `isHeadlessGrantEnabled()` (`src/lib/mcp-github-grant.ts`) 経由で追加し、
+# KV bind の有無から独立させた (下記 `[env.staging.vars]` にのみ `"1"` を設定、
+# prod top-level には入れない)。
+#
+# 2026-07-24 (issue #432 step 3): 上記 kill switch により KV bind と headless
+# 経路の解禁が分離されたので、prod にも bind して DCR/authorize/token/device
+# flow/introspect 等 (headless 3 経路を除く) を有効化する。
+#
+# id は **新規 namespace を作らず、既存の `AUTH_CONFIG` (id=
+# f13ecae4b69043819c09f606abb84797) と同一 namespace を re-use** している
+# (staging の MCP_OAUTH_KV とは別 — staging の既存データを prod に持ち込まない
+# という #432 の要件は満たしつつ、CF リソースを新規作成しない選択)。key
+# prefix が衝突しないことを事前に確認済み: AUTH_CONFIG 側は `origins:*` /
+# `app-orgs` / `google-mcp-user-allowlist` / `devpair:dc:*` / `devpair:uc:*` /
+# `device:*` (`src/lib/config.ts` / `device-pair.ts` / `device.ts`)、MCP OAuth
+# Provider 側は `device_code:` / `user_code:` / `dcr:client:` / `mcp/*` /
+# `oat_hash:` / `org_uuid:` / `refresh:` (`src/lib/mcp-*.ts`) で完全に別系統。
+# `AUTH_CONFIG` 側の `.list()` 呼び出しは全て prefix 指定済みなので、MCP 側の
+# key が紛れ込むこともない。
+#
+# **注意**: この binding だけでは headless 3 経路は解禁されない
+# (`MCP_HEADLESS_GRANT_ENABLED` を prod で明示的に `"1"` にするまで 503 のまま)。
+# また consumer 側 (`@ippoan/mcp-cf-workers` 経由で introspect を呼ぶ gmail-mcp /
+# kyuyo-mcp 等) は `AUTH_WORKER_ORIGIN` 未設定だと prod をデフォルトで向く
+# (`DEFAULT_AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"`) ため、この bind
+# 以降は「設定漏れ consumer が気づかず prod を使い始める」変化が起きる
+# (Refs #435 — service binding化での構造的解消を別途検討中)。
+[[kv_namespaces]]
+binding = "MCP_OAUTH_KV"
+id = "f13ecae4b69043819c09f606abb84797"
 
 # ─── INTERNAL_SHARED_SECRET (Secrets Store binding) ─────────────────────────
 # `ref-files-worker` と同じ account-level Secrets Store entry を bind し、

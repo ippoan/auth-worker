@@ -27,6 +27,34 @@ describe("mcp-jwt", () => {
     expect(payload!.exp - payload!.iat).toBe(3600);
   });
 
+  it("sign + verify roundtrip carries an explicit iss claim (issue #432)", async () => {
+    const token = await signMcpJwt(
+      {
+        sub: "github:alice",
+        github_login: "alice",
+        scope: "read:user",
+        aud: AUD,
+        iss: "https://auth.ippoan.example",
+      },
+      SECRET,
+      3600,
+    );
+    const payload = await verifyMcpJwt(token, SECRET, AUD);
+    expect(payload).not.toBeNull();
+    expect(payload!.iss).toBe("https://auth.ippoan.example");
+  });
+
+  it("verify does not reject a legacy token minted without iss (non-breaking rollout)", async () => {
+    const token = await signMcpJwt(
+      { sub: "github:alice", github_login: "alice", scope: "read:user", aud: AUD },
+      SECRET,
+      3600,
+    );
+    const payload = await verifyMcpJwt(token, SECRET, AUD);
+    expect(payload).not.toBeNull();
+    expect(payload!.iss).toBeUndefined();
+  });
+
   it("signMcpJwt throws when secret is empty", async () => {
     await expect(
       signMcpJwt({ sub: "x", github_login: "x", scope: "", aud: AUD }, "", 3600),
