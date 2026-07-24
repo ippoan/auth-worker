@@ -80,6 +80,38 @@ function jsonError(status: number, error: string): Response {
   });
 }
 
+/**
+ * issue #433 — `token_kind=dev` の write enforcement で使う allowlist ロジック。
+ * `packages/auth-client/src/server/devLoginCore.mjs` (`isDevLoginWriteAllowed`)
+ * と同じ semantics を、consumer 側パッケージに依存せず auth-worker 内で
+ * 自己完結させたもの (この enforcement 自体が「唯一の source of truth」なので、
+ * consumer 側実装への依存を持たせない)。
+ */
+
+/** GET/HEAD/OPTIONS はデータを変更しないため allowlist の対象外 (常に許可)。 */
+function isSafeMethod(method: string): boolean {
+  return method === "GET" || method === "HEAD" || method === "OPTIONS";
+}
+
+/** カンマ区切りの path prefix 文字列を配列にパースする (空/undefined は空配列)。 */
+function parseDevWriteAllowlist(raw: string | undefined): string[] {
+  if (!raw || !raw.trim()) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * path が allowlist で許可されているか判定する。いずれかの entry と完全一致
+ * or `${entry}/` で始まる時のみ許可 (境界を跨いだ誤許可を防ぐ、例:
+ * "/api/foo" は "/api/foo-bar" を許可しない)。safe method の判定は呼び出し側
+ * (`isSafeMethod`) で別途行う。
+ */
+function isDevWriteAllowed(path: string, allowlist: readonly string[]): boolean {
+  return allowlist.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
 export async function handleAlcProxy(request: Request, env: Env): Promise<Response> {
   // ── env guard ────────────────────────────────────────────────────────────
   const jwtSecret = await resolveSecret(env.JWT_SECRET);
@@ -128,6 +160,29 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   if (!checkAppTenant(env, origin, tenantId, email)) return jsonError(401, "Unauthorized");
   if (!tenantId) return jsonError(401, "Unauthorized");
 
+  // ── token_kind=dev の read-only enforcement (issue #433) ──────────────────
+  // dev-login (#423) が発行する JWT は logi_auth_token と同じ JWT_SECRET で
+  // 署名されており、手動で prod host の cookie に移すと ③④ の検証をそのまま
+  // 通ってしまう (#423 が「残存リスク (受容)」と明記した経路)。
+  //
+  // consumer 側 (`@ippoan/auth-client` の `devLoginWriteAllowlist`、#429) にも
+  // 同種の allowlist があるが、あちらは opt-in かつ per-consumer で「実装/設定
+  // し忘れた consumer は無防備」という弱点がある。ここでの
+  // `ALC_PROXY_DEV_WRITE_ALLOWLIST` (wrangler.toml top-level `[vars]`、起動時
+  // 設定) を **唯一の source of truth** とし、判定ロジックは consumer 側
+  // `devLoginCore.mjs` (`isDevLoginWriteAllowed`) と同じ prefix-match
+  // セマンティクスにする (safe method は常に許可、それ以外は allowlist の
+  // いずれかの entry と完全一致 or `${entry}/` で始まる時のみ許可)。
+  const tokenKind = (payload.token_kind as string | undefined) || "";
+  const backendPath = new URL(request.url).pathname.slice(ROUTE_PREFIX.length) || "/";
+  if (
+    tokenKind === "dev" &&
+    !isSafeMethod(request.method) &&
+    !isDevWriteAllowed(backendPath, parseDevWriteAllowlist(env.ALC_PROXY_DEV_WRITE_ALLOWLIST))
+  ) {
+    return jsonError(403, "dev_token_write_forbidden");
+  }
+
   // ── flip 前 preview override (Refs ippoan/ci-dashboard#472) ───────────────
   // proof (①) + JWT/ACL 通過後のみ評価する。不正値は 400 で loud fail —
   // 黙って prod に流すと「flip 前を検証したつもりで prod を叩いていた」事故に
@@ -152,8 +207,8 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   }
 
   // ── forward: targetOrigin + (/alc-proxy 以降の path) ──────────────────────
+  // (backendPath は上の #433 enforcement で計算済みのものを再利用)
   const url = new URL(request.url);
-  const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
   const target = `${targetOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
 
   const fwdHeaders: Record<string, string> = {

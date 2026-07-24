@@ -144,6 +144,12 @@ export interface Env {
    *  (= 同一 service の tagged revision URL) に一致する時だけ forward 先と
    *  OIDC aud を差し替える。未設定なら override 要求は 400 (fail-closed)。 */
   ALC_API_PREVIEW_HOST_SUFFIX?: string;
+  /** issue #433: JWT の `token_kind` claim が `"dev"` (dev-login、issue #423)
+   *  の token で `/alc-proxy` に非 GET/HEAD/OPTIONS が来た時に許可する backend
+   *  path prefix (comma-sep)。空/未設定 = 非GET全拒否 (fail-closed)。唯一の
+   *  source of truth — consumer 側 (`@ippoan/auth-client` の
+   *  `devLoginWriteAllowlist`) は将来的に冗長になる想定。 */
+  ALC_PROXY_DEV_WRITE_ALLOWLIST?: string;
   /** staging Cloud Run の rust-alc-api。Bot Config Import (developer 専用) 用 proxy 先。
    *  未設定なら handler 内で本番 staging URL に fallback する。 */
   ALC_API_STAGING_ORIGIN?: string;

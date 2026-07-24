@@ -26,8 +26,15 @@ export const DEL_USER_ID = "dddddddd-0002-0002-0002-dddddddddddd";
  * HS256 JWT。auth-worker (handleMyOrgs / handleSwitchOrg) が `env.JWT_SECRET`
  * で署名検証して X-Tenant-ID + X-User-* を注入する (rust-alc-api#434)。検証鍵と
  * 一致させたい呼び出し側のため `secret` を渡せる (default は live 用 JWT_SECRET)。
+ *
+ * `overrides`: base payload に merge する追加/上書き claim (issue #433:
+ * `token_kind: "dev"` を注入した dev-login token を組み立てるため)。省略時は
+ * 既存呼び出し全箇所と同じ挙動 (非破壊)。
  */
-export function makeJwt(secret: string = JWT_SECRET): string {
+export function makeJwt(
+  secret: string = JWT_SECRET,
+  overrides: Record<string, unknown> = {},
+): string {
   const header = { alg: "HS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
   const payload = {
@@ -38,6 +45,7 @@ export function makeJwt(secret: string = JWT_SECRET): string {
     role: "admin",
     iat: now,
     exp: now + 3600,
+    ...overrides,
   };
   const b64 = (obj: unknown) =>
     Buffer.from(JSON.stringify(obj)).toString("base64url");
