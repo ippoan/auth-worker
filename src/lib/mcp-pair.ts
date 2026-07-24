@@ -157,9 +157,14 @@ export async function deletePair(env: Env, pair_code: string): Promise<void> {
 }
 
 /**
- * 同一 IP からの POST /mcp/pair/new を 1 分窓で 10 回までに制限する。
+ * 同一 IP からの POST を 1 分窓で `limitPerMinute` 回までに制限する。
  * Cloudflare KV の eventual consistency 上、厳密 limit ではないが
- * abuse 抑止 (botnet による pair_code 大量生成) には十分。
+ * abuse 抑止 (botnet による大量生成) には十分。
+ *
+ * `keyPrefix`: 呼び出し元 endpoint ごとに keyspace を分離する (issue #432 —
+ * DCR (`mcp-register.ts`) に rate limit を足す際、`/mcp/pair/new` と同じ
+ * counter を共有すると無関係な endpoint 同士が互いの残量を消費してしまう
+ * ため)。省略時は既存呼び出し (`/mcp/pair/new` 等) と同じ `mcp/pair_rate`。
  *
  * 戻り値: 制限を越えていれば false (= reject)。bind 不在は許容 (true)。
  */
@@ -168,10 +173,11 @@ export async function checkAndBumpRateLimit(
   ip: string,
   now: number,
   limitPerMinute = 10,
+  keyPrefix = "mcp/pair_rate",
 ): Promise<boolean> {
   if (!env.MCP_OAUTH_KV) return true;
   const minute = Math.floor(now / 60_000);
-  const key = `mcp/pair_rate/${ip}/${minute}`;
+  const key = `${keyPrefix}/${ip}/${minute}`;
   const cur = await env.MCP_OAUTH_KV.get(key);
   const n = cur ? Number.parseInt(cur, 10) : 0;
   if (!Number.isFinite(n) || n >= limitPerMinute) return false;

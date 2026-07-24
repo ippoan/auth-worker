@@ -27,6 +27,26 @@ export interface McpJwtPayload {
   email?: string;
   scope: string;
   aud: string;
+  /**
+   * 発行元 (`env.AUTH_WORKER_ORIGIN` — 例: `https://auth.ippoan.org` /
+   * `https://auth-staging.ippoan.org`)。issue #432: `MCP_JWT_SECRET` は
+   * prod/staging で同一の Secrets Store entry (`INTERNAL_SHARED_SECRET`) を
+   * 指しており、この claim が無いと「どちらの環境が発行したか」を JWT 単体
+   * からは一切区別できない (署名検証だけでは prod 発行と staging 発行が
+   * 見分けられない)。prod で MCP OAuth Provider を有効化する際の監査・
+   * 将来の環境別選択的失効の布石として **sign 側では必須付与**する。
+   *
+   * `verifyMcpJwt` / `verifyMcpJwtSignatureOnly` は **この claim をまだ検証
+   * しない** (非破壊: 導入時点で既に飛び交っている iss 無しの旧トークンを
+   * 引き続き受理する必要があるため)。値を要求する consumer 側の検証は
+   * 別途の設計判断 (Refs #435)。
+   *
+   * 型としては optional — テストの fixture 生成箇所まで一律に必須化すると
+   * このケース限りの機械的な差分が数十箇所に膨らむため。**実際に JWT を
+   * mint する本番 handler 側は必ず明示的に渡すこと**(全 `signMcpJwt` 呼び
+   * 出し箇所は本 PR で対応済み)。
+   */
+  iss?: string;
   exp: number; // seconds (Unix epoch)
   iat: number; // seconds (Unix epoch)
 }

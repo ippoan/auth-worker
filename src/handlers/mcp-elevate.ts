@@ -82,7 +82,7 @@ async function mintJwtPickup(env: Env, login: string): Promise<void> {
   if (!ssoKey) throw new Error("SSO_ENCRYPTION_KEY not bound");
   const sub = `github:${login}`;
   const accessToken = await signMcpJwt(
-    { sub, github_login: login, scope: PICKUP_SCOPE, aud: PICKUP_AUD },
+    { sub, github_login: login, scope: PICKUP_SCOPE, aud: PICKUP_AUD, iss: env.AUTH_WORKER_ORIGIN },
     jwtSecret,
     PICKUP_TTL_SEC,
   );

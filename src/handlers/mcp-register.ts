@@ -34,6 +34,12 @@
  * 注: Anthropic Claude.ai は `mcp-staging.ippoan.org/register` 直 hit するので
  * `dispatchMcpRelay` 経由で本 handler が呼ばれる。`auth-staging.ippoan.org/mcp/register`
  * 経由でも spec 準拠の場所として呼べる。
+ *
+ * Rate limit (issue #432): DCR は仕様上無認証な public endpoint なので、
+ * 他の headless grant 系と同じ `checkAndBumpRateLimit` (per-IP, 10/min) を
+ * `mcp/dcr_rate` keyspace で適用する。無ければ無認証 POST 連打で
+ * `dcr:client:*` (TTL 90d) を KV に書き放題になり、prod で issue #432 の
+ * ロールアウト (KV bind) をする前に埋めておくべき穴として指摘された。
  */
 
 import type { Env } from "../index";
@@ -42,6 +48,9 @@ import {
   type DcrClientRecord,
   putDcrClient,
 } from "../lib/mcp-dcr";
+import { checkAndBumpRateLimit } from "../lib/mcp-pair";
+
+const DCR_RATE_KEY_PREFIX = "mcp/dcr_rate";
 
 /** redirect_uri 文法チェック: https:// または http://localhost(:port)? のみ。 */
 function isValidRedirectUri(uri: string): boolean {
@@ -70,6 +79,23 @@ export async function handleMcpRegister(
 ): Promise<Response> {
   if (!env.MCP_OAUTH_KV) {
     return dcrError("server_error", "MCP OAuth Provider not configured", 503);
+  }
+
+  // ── per-IP rate limit (10/min) — 無認証 endpoint なので必須 (issue #432) ──
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  const okRate = await checkAndBumpRateLimit(
+    env,
+    ip,
+    Date.now(),
+    10,
+    DCR_RATE_KEY_PREFIX,
+  );
+  if (!okRate) {
+    return dcrError(
+      "rate_limited",
+      "too many registration requests; retry in 1 minute",
+      429,
+    );
   }
 
   let body: unknown;
