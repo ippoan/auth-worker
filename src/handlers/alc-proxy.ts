@@ -128,6 +128,21 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   if (!checkAppTenant(env, origin, tenantId, email)) return jsonError(401, "Unauthorized");
   if (!tenantId) return jsonError(401, "Unauthorized");
 
+  // ── token_kind=dev の read-only enforcement (issue #433) ──────────────────
+  // dev-login (#423) が発行する JWT は logi_auth_token と同じ JWT_SECRET で
+  // 署名されており、手動で prod host の cookie に移すと ③④ の検証をそのまま
+  // 通ってしまう (#423 が「残存リスク (受容)」と明記した経路)。consumer 側
+  // (`@ippoan/auth-client` の `devLoginWriteAllowlist`、#429) は起動時の明示
+  // allowlist で緩和しているが opt-in かつ per-consumer で、ここを通さない
+  // consumer や設定漏れがあれば無防備になる。ここでは allowlist を複製せず、
+  // 「dev token は非GET一律拒否」という単純なハード backstop を 1 箇所だけに
+  // 持たせる (defense-in-depth — 個別 consumer の allowlist が無くても
+  // /alc-proxy 自体が書き込みを許さない)。
+  const tokenKind = (payload.token_kind as string | undefined) || "";
+  if (tokenKind === "dev" && request.method !== "GET" && request.method !== "HEAD") {
+    return jsonError(403, "dev_token_write_forbidden");
+  }
+
   // ── flip 前 preview override (Refs ippoan/ci-dashboard#472) ───────────────
   // proof (①) + JWT/ACL 通過後のみ評価する。不正値は 400 で loud fail —
   // 黙って prod に流すと「flip 前を検証したつもりで prod を叩いていた」事故に
