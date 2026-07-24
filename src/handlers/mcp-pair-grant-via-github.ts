@@ -40,7 +40,8 @@
  *   403 → access_denied     (`GITHUB_MCP_USER_ALLOWLIST` に login が無い)
  *   429 → rate_limited      (10/min per github_token hash)
  *   502 → upstream_error    (api.github.com が 5xx / network)
- *   503 → server_error      (MCP_JWT_SECRET 等 env 未設定)
+ *   503 → server_error      (MCP_JWT_SECRET 等 env 未設定、または
+ *                            `MCP_HEADLESS_GRANT_ENABLED` kill switch 未設定 — issue #432)
  *
  * Security:
  *   - 「GitHub OAuth token == user identity assertion」を trust する。これは
@@ -72,7 +73,10 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { grantMcpBindingJwtForGithubLogin } from "../lib/mcp-github-grant";
+import {
+  grantMcpBindingJwtForGithubLogin,
+  isHeadlessGrantEnabled,
+} from "../lib/mcp-github-grant";
 import { resolveMcpJwtSecret } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
 import { checkAndBumpGrantRateLimit, hashRefreshToken } from "../lib/mcp-pair";
@@ -120,6 +124,17 @@ export async function handleMcpPairGrantViaGithub(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  // ── headless grant kill switch (#432、KV bind の有無から独立) ──────────
+  if (!isHeadlessGrantEnabled(env)) {
+    return jsonResponse(
+      {
+        error: "server_error",
+        error_description: "headless grant disabled (MCP_HEADLESS_GRANT_ENABLED not set)",
+      },
+      503,
+    );
+  }
+
   // ── env guard ────────────────────────────────────────────────────────
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (!jwtSecret || !env.AUTH_WORKER_ORIGIN) {

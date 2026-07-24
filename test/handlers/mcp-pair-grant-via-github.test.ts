@@ -2,6 +2,7 @@
  * `handleMcpPairGrantViaGithub` — `POST /mcp/pair/grant-via-github` テスト。
  *
  * - env guard (503)
+ * - MCP_HEADLESS_GRANT_ENABLED kill switch (503、issue #432 regression test)
  * - Authorization header parsing (400)
  * - body invalid JSON (400)
  * - audience allowlist (403)
@@ -38,6 +39,10 @@ function envWith(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
     // happy-path テスト (login=alice) が通るよう default で alice を含める。
     // ACL 自体のテストは明示的に上書きする (下の describe ブロック参照)。
     GITHUB_MCP_USER_ALLOWLIST: '["alice"]',
+    // issue #432: kill switch 未設定だと全て 503 になるため、既存テストが
+    // 通るよう default で有効化する。kill switch 自体のテストは明示的に
+    // 上書きする (下の describe ブロック参照)。
+    MCP_HEADLESS_GRANT_ENABLED: "1",
     ...overrides,
   });
   return { env, kv };
@@ -123,6 +128,46 @@ describe("handleMcpPairGrantViaGithub — env guards", () => {
     expect(res.status).toBe(503);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("server_error");
+  });
+});
+
+describe("handleMcpPairGrantViaGithub — MCP_HEADLESS_GRANT_ENABLED kill switch (issue #432)", () => {
+  it("503 when unset (fail-closed)", async () => {
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: undefined });
+    const res = await handleMcpPairGrantViaGithub(
+      buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }),
+      env,
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("server_error");
+  });
+
+  it("503 when set to a truthy-looking but non-'1' value (fail-closed)", async () => {
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: "true" } as Partial<Env>);
+    const res = await handleMcpPairGrantViaGithub(
+      buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("does not call api.github.com when kill switch is off (fails closed before upstream)", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: undefined });
+    await handleMcpPairGrantViaGithub(buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }), env);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("200 when explicitly set to '1'", async () => {
+    mockGithubUser(ALICE);
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: "1" });
+    const res = await handleMcpPairGrantViaGithub(
+      buildReq({ auth: `Bearer ${GITHUB_TOKEN}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });
 
