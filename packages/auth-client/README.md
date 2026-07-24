@@ -125,6 +125,49 @@ export default createApiProxyHandler({
 - `createApiProxyHandler` — Authorization 転送 + JWT→X-Tenant-ID 変換 + binary/JSON 透過
 - `extractTenantIdFromAuth` / `decodeJwtPayloadFromToken` — JWT util の再 export
 
+### dev-login: localhost ブラウザ検証 (issue #423/#425)
+
+`wrangler dev --remote` の localhost には本番 `.ippoan.org` cookie が届かないため、
+MCP (`issue_dev_login_url` tool) が発行するワンタイム code を `__dev/callback` で
+`logi_auth_token_dev` cookie に交換し、proxy handler 側で `logi_auth_token` として
+backend に転送する。**localhost 専用**（`preview-*.ippoan.org` は SSO が素で効くため
+対象外）。DEV_LOGIN ガードは consumer 側の責務 — `[env.dev.vars]` にのみ
+`DEV_LOGIN="true"` を定義し、本番 vars には定義しない (未定義なら 404)。
+
+```typescript
+// server/routes/__dev/callback.get.ts
+import { createDevLoginCallbackHandler } from '@ippoan/auth-client/server'
+
+export default defineEventHandler((event) => {
+  if (useRuntimeConfig(event).public.devLogin !== 'true') {
+    throw createError({ statusCode: 404 })
+  }
+  return createDevLoginCallbackHandler({
+    authWorkerUrl: () => useRuntimeConfig(event).public.authWorkerUrl as string,
+  })(event)
+})
+```
+
+```typescript
+// server/api/proxy/[...path].ts — 既存 proxy handler に devLoginEnabled を足すだけ
+export default createIdentityProxyHandler({
+  // ...backendUrl / authWorkerUrl / sharedSecret は既存のまま
+  devLoginEnabled: event => useRuntimeConfig(event).public.devLogin === 'true',
+})
+```
+
+- `createDevLoginCallbackHandler` — code を `POST {authWorkerUrl}/dev-login/token`
+  に server-to-server 交換し、`token_kind=dev` を確認できたら
+  `logi_auth_token_dev` を HttpOnly / SameSite=Lax / host-only で Set-Cookie して
+  `/` へ 302 する。署名の再検証はしない（交換自体が TLS 越しの server-to-server
+  呼び出しで、auth-worker 自身が署名した token しか返らないため）
+- `createApiProxyHandler` / `createAuthWorkerProxyHandler` / `createIdentityProxyHandler`
+  の `devLoginEnabled` オプション — 通常 cookie (`logi_auth_token`) が無いとき
+  `logi_auth_token_dev` をフォールバックとして拾う。`devLoginEnabled` 未指定
+  (default) の consumer には非破壊
+- dev token TTL は 30 分・refresh なし。期限切れ後は MCP で `issue_dev_login_url`
+  を再発行する
+
 ## 使用先
 
 - [nuxt-pwa-carins](https://github.com/yhonda-ohishi/nuxt-pwa-carins) — メインUI（carins.mtamaramu.com）

@@ -53,3 +53,12 @@ export {
 
 // rust-alc-api#434 step 3: Cloud Run IAM lockdown 用の OIDC ID token mint。
 export { mintGoogleIdToken } from './oidc.mjs'
+
+// issue #423/#425: dev-login `__dev/callback` (localhost 検証用 dev cookie 発行)。
+export { createDevLoginCallbackHandler } from './devLogin.mjs'
+export {
+  DEV_COOKIE_NAME,
+  buildDevTokenExchangeRequest,
+  normalizeDevTokenExchangeResult,
+  devCookieOptions,
+} from './devLoginCore.mjs'

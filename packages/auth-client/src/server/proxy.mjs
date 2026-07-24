@@ -40,9 +40,32 @@ import {
 } from './proxyCore.mjs'
 import { introspectToken } from './introspectCore.mjs'
 import { mintGoogleIdToken } from './oidc.mjs'
+import { DEV_COOKIE_NAME } from './devLoginCore.mjs'
 
 /** logi_auth_token cookie の既定名 (auth.mjs と同じ)。 */
 const DEFAULT_COOKIE_NAME = 'logi_auth_token'
+
+/**
+ * browser JWT を cookie / Bearer から解決する (issue #423/#425 dev-login bridge 対応)。
+ * 通常 cookie が無く `devLoginEnabled` の consumer では `logi_auth_token_dev` を
+ * フォールバックとして拾う — backend へは (このモジュールが元々そうしているとおり)
+ * 常に `logi_auth_token` 相当として転送されるため、Rust 側は無変更のまま通る。
+ * `DEV_LOGIN` 未定義の consumer は `devLoginEnabled` を渡さない限り無効 (非破壊)。
+ */
+function resolveAuthToken(event, options) {
+  const cookieName = options.cookieName ?? DEFAULT_COOKIE_NAME
+  const primary = getCookie(event, cookieName)
+  if (primary) return primary
+
+  const devLoginEnabled =
+    typeof options.devLoginEnabled === 'function' ? options.devLoginEnabled(event) : options.devLoginEnabled
+  if (devLoginEnabled) {
+    const devToken = getCookie(event, options.devCookieName ?? DEV_COOKIE_NAME)
+    if (devToken) return devToken
+  }
+
+  return bearerToken(getHeader(event, 'authorization'))
+}
 
 /**
  * flip 前 preview override cookie 名 (Refs ippoan/ci-dashboard#472)。
@@ -148,9 +171,7 @@ export function createAuthWorkerProxyHandler(options) {
     const proxyFetch = options.authWorkerFetch(event)
     const origin = options.origin ?? getRequestURL(event).origin
 
-    const token =
-      getCookie(event, options.cookieName ?? DEFAULT_COOKIE_NAME) ??
-      bearerToken(getHeader(event, 'authorization'))
+    const token = resolveAuthToken(event, options)
 
     const path = getRouterParam(event, 'path') || ''
     const headers = buildAlcProxyHeaders({
@@ -229,9 +250,7 @@ export function createIdentityProxyHandler(options) {
     const sharedSecret = resolve(options.sharedSecret)
     const fetchImpl = options.introspectFetch ? options.introspectFetch(event) : undefined
 
-    const token =
-      getCookie(event, options.cookieName ?? DEFAULT_COOKIE_NAME) ??
-      bearerToken(getHeader(event, 'authorization'))
+    const token = resolveAuthToken(event, options)
     const origin = options.origin ?? getRequestURL(event).origin
 
     const result = await introspectToken({
