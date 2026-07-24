@@ -48,6 +48,7 @@
  *   400 → invalid_request   (Authorization 欠落 / body JSON 不正)
  *   401 → invalid_token     (Anthropic API が OAT を reject)
  *   403 → forbidden_scope   (mcp.admin / aud allowlist 外)
+ *   403 → access_denied     (`GITHUB_MCP_USER_ALLOWLIST` に github_login が無い)
  *   404 → not_bound         (org_uuid / oat_hash 共に KV に無い → register 必要)
  *   429 → rate_limited      (10/min per OAT_hash)
  *   502 → upstream_error    (api.anthropic.com 5xx / network)
@@ -61,11 +62,20 @@
  *   - OAT validity check を Anthropic API (`/v1/models`) に渡し、revoked OAT で
  *     stale binding を引かれて binding_jwt を盗まれる経路を塞ぐ。同 fetch から
  *     `anthropic-organization-id` header を抽出して org_uuid を取得。
+ *   - **2026-07-24 修正**: `register-via-github-comment` (binding 書き込み側) は
+ *     comment_url を任意の GitHub repo/issue にマッチさせ org 所属チェックを
+ *     持たない。誰でも「自分の OAT + 自分の GitHub アカウントで任意の public
+ *     repo にコメント投稿」するだけで自己 binding を作れてしまうため、その
+ *     binding を実際の権限に変換する本 mint 処理側で
+ *     `GITHUB_MCP_USER_ALLOWLIST` を強制する (`grantMcpBindingJwtForGithubLogin`、
+ *     `../lib/mcp-github-grant.ts`。`mcp-pair-grant-via-github.ts` の ACL 欠落
+ *     修正 #430 と同じ入口を共用)。
  */
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { resolveMcpJwtSecret, signMcpJwt } from "../lib/mcp-jwt";
+import { grantMcpBindingJwtForGithubLogin } from "../lib/mcp-github-grant";
+import { resolveMcpJwtSecret } from "../lib/mcp-jwt";
 import {
   extractOrgUuidFromResponse,
   getOatBinding,
@@ -281,22 +291,34 @@ export async function handleMcpPairGrantViaOat(
     }
   }
 
-  // ── mint binding_jwt ────────────────────────────────────────────────
-  const bindingJwt = await signMcpJwt(
-    {
-      sub: `github:${binding.github_login}`,
-      github_login: binding.github_login,
-      scope: requestedScope,
-      aud: requestedAud,
-    },
-    jwtSecret,
-    BINDING_JWT_TTL_SEC,
-  );
+  // ── ACL check + mint binding_jwt (fail-closed、GITHUB_MCP_USER_ALLOWLIST) ──
+  // 2026-07-24: `register-via-github-comment` は comment_url を任意の GitHub
+  // repo/issue にマッチさせており org 所属チェックを持たない。つまり誰でも
+  // 「自分の OAT + 自分の GitHub アカウントで任意の public repo にコメント
+  // 投稿」するだけで自己 binding (oat_hash/org_uuid → 自分の github_login)
+  // を作れる。この mint 手前で allowlist を強制することで、その自己
+  // binding が実際の権限 (binding_jwt) に変換されるのを防ぐ (mcp-pair-
+  // grant-via-github.ts の ACL 欠落修正 #430 と同じパターン・同じ入口)。
+  const grant = await grantMcpBindingJwtForGithubLogin(env, jwtSecret, {
+    login: binding.github_login,
+    scope: requestedScope,
+    aud: requestedAud,
+    ttlSec: BINDING_JWT_TTL_SEC,
+  });
+  if (!grant.ok) {
+    return jsonResponse(
+      {
+        error: "access_denied",
+        error_description: "Your GitHub account is not authorized to use this MCP server.",
+      },
+      403,
+    );
+  }
 
   const mcpUrl = `${mcpRelayOrigin(env)}/u/${binding.github_login}/mcp`;
 
   return jsonResponse({
-    binding_jwt: bindingJwt,
+    binding_jwt: grant.jwt,
     mcp_url: mcpUrl,
     github_login: binding.github_login,
     org_uuid: orgUuid,

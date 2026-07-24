@@ -13,6 +13,7 @@
  * - GitHub comment fetch: 404 / 401 / 403 / 5xx / network
  * - comment shape: missing user.login / body
  * - binding line missing (400 binding_mismatch)
+ * - GITHUB_MCP_USER_ALLOWLIST ACL (403 access_denied、2026-07-24 修正の regression test)
  * - 正常系: KV に binding を書き込み、TTL 30d、github_login echo
  * - #176 Bearer OAT path: dual binding write (oat_hash + org_uuid)
  * - #176 oat_hash mismatch with Bearer (400)
@@ -47,6 +48,10 @@ function envWith(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
   const env = createMockEnv({
     MCP_OAUTH_KV: kv,
     AUTH_WORKER_ORIGIN: ISSUER,
+    // 2026-07-24: ACL 修正後は allowlist が無いと全て 403 になるため、既存
+    // happy-path テスト (login=yhonda-ohishi / alice) が通るよう default で
+    // 両方を含める。ACL 自体のテストは明示的に上書きする (下の describe 参照)。
+    GITHUB_MCP_USER_ALLOWLIST: '["yhonda-ohishi","alice"]',
     ...overrides,
   });
   return { env, kv };
@@ -499,6 +504,51 @@ describe("handleMcpPairRegisterViaGithubComment — comment shape errors", () =>
       env,
     );
     expect(res.status).toBe(400);
+  });
+});
+
+describe("handleMcpPairRegisterViaGithubComment — GITHUB_MCP_USER_ALLOWLIST ACL (2026-07-24 修正)", () => {
+  it("403 access_denied + no KV write when comment.user.login is not in allowlist", async () => {
+    mockGithubComment({
+      body: { user: { login: "mallory" }, body: `oat-binding: ${OAT_HASH} ${NONCE}` },
+    });
+    const { env, kv } = envWith({ GITHUB_MCP_USER_ALLOWLIST: '["yhonda-ohishi"]' } as Partial<Env>);
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("access_denied");
+    expect(kv._data[`oat_hash:${OAT_HASH}`]).toBeUndefined();
+  });
+
+  it("403 access_denied when allowlist is unset (fail-closed)", async () => {
+    mockGithubComment();
+    const { env } = envWith({ GITHUB_MCP_USER_ALLOWLIST: undefined });
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("access_denied");
+  });
+
+  it("200 when comment.user.login is in allowlist", async () => {
+    mockGithubComment(); // login: yhonda-ohishi (default)
+    const { env } = envWith({ GITHUB_MCP_USER_ALLOWLIST: '["yhonda-ohishi"]' } as Partial<Env>);
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });
 
