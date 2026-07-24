@@ -78,6 +78,15 @@ service = "alc-recorder"
 # `[[env.staging.kv_namespaces]]` で bind 済み。
 # 「prod に binding が無い＝欠落」と勘違いして AUTH_CONFIG と同様に
 # 再追加しないこと。過去に誤って追加 → revert した経緯あり (Refs #241 / #242)。
+#
+# 2026-07-24 (issue #432): 上記ガードは実は「KV 未 bind」という副作用に
+# 安全性を依存させた粗い設計で、grant-via-oat 以外の headless 経路
+# (grant-via-github は KV 非依存、register-via-github-comment) には効かない。
+# 3 経路共通の明示的 kill switch として `MCP_HEADLESS_GRANT_ENABLED` を
+# `isHeadlessGrantEnabled()` (`src/lib/mcp-github-grant.ts`) 経由で追加した
+# (下記 `[env.staging.vars]` にのみ `"1"` を設定)。将来 prod に `MCP_OAUTH_KV`
+# を bind する時 (#432 rollout) も、この flag を prod で明示的に立てるまで
+# 3 経路は 503 のまま — KV bind と headless 経路の解禁が誤って同時に起きない。
 
 # ─── INTERNAL_SHARED_SECRET (Secrets Store binding) ─────────────────────────
 # `ref-files-worker` と同じ account-level Secrets Store entry を bind し、
@@ -349,6 +358,11 @@ EGOV_CLIENT_ID = "K26XGOmbDusxfKsp"
 # See top-level [vars] for rationale. Same value on staging + prod per
 # `src/handlers/mcp-relay-bridge.ts` header comment (Phase 2 design).
 MCP_JWT_AUDIENCE_ALLOWLIST = "github-mcp-server-rs,ref-files-mcp-server-rs"
+# issue #432: headless (ブラウザ同意なし) binding_jwt 発行/bind 経路 3 つ
+# (grant-via-oat / grant-via-github / register-via-github-comment) の kill
+# switch。staging のみ有効化 (MCP スタックは staging を実運用として扱う)。
+# prod top-level [vars] には #432 のロールアウト手順を踏むまで入れない。
+MCP_HEADLESS_GRANT_ENABLED = "1"
 # Refs ippoan/secrets-inventory#43: URL aud origin allowlist (staging 用)。
 # staging custom domain 配下も足したいが、secrets-inventory は prod URL の
 # まま staging deploy しているため同じ entry を流用する。

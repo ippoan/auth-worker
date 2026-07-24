@@ -52,7 +52,8 @@
  *   404 → not_bound         (org_uuid / oat_hash 共に KV に無い → register 必要)
  *   429 → rate_limited      (10/min per OAT_hash)
  *   502 → upstream_error    (api.anthropic.com 5xx / network)
- *   503 → server_error      (env / KV 未設定)
+ *   503 → server_error      (env / KV 未設定、または `MCP_HEADLESS_GRANT_ENABLED`
+ *                            kill switch 未設定 — issue #432)
  *
  * Security:
  *   - OAT 自体は KV に保存しない (hash / org_uuid のみ key として使う)。
@@ -74,7 +75,10 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { grantMcpBindingJwtForGithubLogin } from "../lib/mcp-github-grant";
+import {
+  grantMcpBindingJwtForGithubLogin,
+  isHeadlessGrantEnabled,
+} from "../lib/mcp-github-grant";
 import { resolveMcpJwtSecret } from "../lib/mcp-jwt";
 import {
   extractOrgUuidFromResponse,
@@ -115,6 +119,17 @@ export async function handleMcpPairGrantViaOat(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  // ── headless grant kill switch (#432、KV bind の有無から独立) ──────────
+  if (!isHeadlessGrantEnabled(env)) {
+    return jsonResponse(
+      {
+        error: "server_error",
+        error_description: "headless grant disabled (MCP_HEADLESS_GRANT_ENABLED not set)",
+      },
+      503,
+    );
+  }
+
   // ── env / KV guard ───────────────────────────────────────────────────
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (!jwtSecret || !env.AUTH_WORKER_ORIGIN) {

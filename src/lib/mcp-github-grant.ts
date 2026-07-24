@@ -41,6 +41,28 @@ export async function isGithubLoginAllowed(env: Env, login: string): Promise<boo
   return allowlist.includes(login);
 }
 
+/**
+ * headless (ブラウザの同意を経ない) binding_jwt 発行/bind 経路 3 つ
+ * (`grant-via-oat` / `grant-via-github` / `register-via-github-comment`) の
+ * 共通 kill switch (issue #432)。
+ *
+ * 従来この 3 経路は `MCP_OAUTH_KV` を prod に intentionally unbind すること
+ * (wrangler.toml 参照) で副作用的に無効化されていた。だがこれは「守りたい
+ * のは人間の同意を経ない発行経路の遮断であって、KV の所在ではない」という
+ * 実際の意図とズレた実装で、prod に `MCP_OAUTH_KV` を bind した瞬間 (#432
+ * rollout でいずれ行う) 無警告で 3 経路とも開いてしまう。本 flag を KV bind
+ * の有無から独立させ、未設定 = fail-closed (503) を維持したまま KV だけ
+ * 先に bind できるようにする。
+ *
+ * 有効化してよいのは「ブラウザの同意なしの binding_jwt 発行」を運用上許容
+ * した env のみ (現状 staging のみ、MCP スタックは staging を実運用として
+ * 扱う)。prod で立てる際は #432 のロールアウト手順 (新規 KV namespace 作成
+ * → secrets 投入確認 → 本 flag 有効化 → curl で 503→200 遷移確認) を踏むこと。
+ */
+export function isHeadlessGrantEnabled(env: Env): boolean {
+  return env.MCP_HEADLESS_GRANT_ENABLED === "1";
+}
+
 export interface GrantMcpBindingJwtParams {
   login: string;
   scope: string;

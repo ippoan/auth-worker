@@ -4,6 +4,7 @@
  * (issues ippoan/auth-worker#174, #176)。
  *
  * - env / KV guard (503)
+ * - MCP_HEADLESS_GRANT_ENABLED kill switch (503、issue #432 regression test)
  * - rate limit per IP (429)
  * - Content-Type check (400)
  * - invalid JSON body (400)
@@ -52,6 +53,10 @@ function envWith(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
     // happy-path テスト (login=yhonda-ohishi / alice) が通るよう default で
     // 両方を含める。ACL 自体のテストは明示的に上書きする (下の describe 参照)。
     GITHUB_MCP_USER_ALLOWLIST: '["yhonda-ohishi","alice"]',
+    // issue #432: kill switch 未設定だと全て 503 になるため、既存テストが
+    // 通るよう default で有効化する。kill switch 自体のテストは明示的に
+    // 上書きする (下の describe ブロック参照)。
+    MCP_HEADLESS_GRANT_ENABLED: "1",
     ...overrides,
   });
   return { env, kv };
@@ -184,7 +189,10 @@ afterEach(() => {
 
 describe("handleMcpPairRegisterViaGithubComment — env guards", () => {
   it("503 when MCP_OAUTH_KV not bound", async () => {
-    const env = createMockEnv({ AUTH_WORKER_ORIGIN: ISSUER });
+    const env = createMockEnv({
+      AUTH_WORKER_ORIGIN: ISSUER,
+      MCP_HEADLESS_GRANT_ENABLED: "1",
+    });
     delete (env as { MCP_OAUTH_KV?: unknown }).MCP_OAUTH_KV;
     const res = await handleMcpPairRegisterViaGithubComment(
       buildReq({
@@ -193,6 +201,57 @@ describe("handleMcpPairRegisterViaGithubComment — env guards", () => {
       env,
     );
     expect(res.status).toBe(503);
+  });
+});
+
+describe("handleMcpPairRegisterViaGithubComment — MCP_HEADLESS_GRANT_ENABLED kill switch (issue #432)", () => {
+  it("503 when unset (fail-closed)", async () => {
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: undefined });
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+      }),
+      env,
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("server_error");
+  });
+
+  it("503 when set to a truthy-looking but non-'1' value (fail-closed)", async () => {
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: "true" } as Partial<Env>);
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+      }),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("does not call api.github.com when kill switch is off (fails closed before upstream)", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: undefined });
+    await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+      }),
+      env,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("200 when explicitly set to '1'", async () => {
+    mockGithubComment();
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: "1" });
+    const res = await handleMcpPairRegisterViaGithubComment(
+      buildReq({
+        body: { comment_url: COMMENT_URL, oat_hash: OAT_HASH, nonce: NONCE },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });
 

@@ -280,6 +280,15 @@ export interface Env {
   /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens)。
    *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
   MCP_OAUTH_KV?: KVNamespace;
+  /** headless (ブラウザ同意なし) binding_jwt 発行/bind 経路 3 つ
+   *  (`grant-via-oat` / `grant-via-github` / `register-via-github-comment`)
+   *  の共通 kill switch (issue #432)。`"1"` の時のみ有効、それ以外 (未設定
+   *  含む) は 503 で fail-closed。`isHeadlessGrantEnabled()`
+   *  (`lib/mcp-github-grant.ts`) 経由でのみ読むこと。
+   *  現状 staging の `[env.staging.vars]` にのみ `"1"` を設定 (staging を
+   *  実運用として扱う MCP スタックの方針)。prod で立てる際は #432 の
+   *  ロールアウト手順を踏むこと。 */
+  MCP_HEADLESS_GRANT_ENABLED?: string;
   /** MCP relay 用 Durable Object Namespace (github_login ごとに 1 instance)。
    *  binary 側 (`github-mcp-server-rs`) からの outbound WebSocket を保持し、
    *  Claude Code Web からの bridge request を frame に変換して転送する。

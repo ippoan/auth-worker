@@ -45,7 +45,8 @@
  *   404 → comment_not_found  (comment が削除済み / 不存在)
  *   429 → rate_limited       (per source IP)
  *   502 → upstream_error     (api.github.com or api.anthropic.com 5xx / network / response 不正)
- *   503 → server_error       (KV 未設定)
+ *   503 → server_error       (KV 未設定、または `MCP_HEADLESS_GRANT_ENABLED`
+ *                             kill switch 未設定 — issue #432)
  *
  * Security:
  *   - 偽装攻撃: `comment.user.login` は GitHub server-side で enforce、第三者は
@@ -73,7 +74,7 @@
 
 import type { Env } from "../index";
 import { jsonResponse } from "../lib/errors";
-import { isGithubLoginAllowed } from "../lib/mcp-github-grant";
+import { isGithubLoginAllowed, isHeadlessGrantEnabled } from "../lib/mcp-github-grant";
 import {
   extractOrgUuidFromResponse,
   hashOat,
@@ -113,6 +114,16 @@ export async function handleMcpPairRegisterViaGithubComment(
   if (!env.MCP_OAUTH_KV) {
     return jsonResponse(
       { error: "server_error", error_description: "MCP_OAUTH_KV not bound" },
+      503,
+    );
+  }
+  // ── headless grant kill switch (#432、KV bind の有無から独立) ──────────
+  if (!isHeadlessGrantEnabled(env)) {
+    return jsonResponse(
+      {
+        error: "server_error",
+        error_description: "headless grant disabled (MCP_HEADLESS_GRANT_ENABLED not set)",
+      },
       503,
     );
   }

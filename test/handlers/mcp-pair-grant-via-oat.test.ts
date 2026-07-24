@@ -3,6 +3,7 @@
  * (issues ippoan/auth-worker#174, #176)。
  *
  * - env / KV guard (503)
+ * - MCP_HEADLESS_GRANT_ENABLED kill switch (503、issue #432 regression test)
  * - Authorization header parsing (400)
  * - body invalid JSON (400)
  * - audience allowlist (403)
@@ -45,6 +46,10 @@ function envWith(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
     // happy-path テスト (github_login=alice) が通るよう default で alice を
     // 含める。ACL 自体のテストは明示的に上書きする (下の describe 参照)。
     GITHUB_MCP_USER_ALLOWLIST: '["alice"]',
+    // issue #432: kill switch 未設定だと全て 503 になるため、既存テストが
+    // 通るよう default で有効化する。kill switch 自体のテストは明示的に
+    // 上書きする (下の describe ブロック参照)。
+    MCP_HEADLESS_GRANT_ENABLED: "1",
     ...overrides,
   });
   return { env, kv };
@@ -148,6 +153,7 @@ describe("handleMcpPairGrantViaOat — env guards", () => {
     const env = createMockEnv({
       AUTH_WORKER_ORIGIN: ISSUER,
       MCP_JWT_SECRET,
+      MCP_HEADLESS_GRANT_ENABLED: "1",
     });
     delete (env as { MCP_OAUTH_KV?: unknown }).MCP_OAUTH_KV;
     const res = await handleMcpPairGrantViaOat(
@@ -157,6 +163,49 @@ describe("handleMcpPairGrantViaOat — env guards", () => {
     expect(res.status).toBe(503);
     const body = (await res.json()) as { error_description: string };
     expect(body.error_description).toMatch(/MCP_OAUTH_KV/);
+  });
+});
+
+describe("handleMcpPairGrantViaOat — MCP_HEADLESS_GRANT_ENABLED kill switch (issue #432)", () => {
+  it("503 when unset (fail-closed)", async () => {
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: undefined });
+    await bindAlice(env);
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("server_error");
+  });
+
+  it("503 when set to a truthy-looking but non-'1' value (fail-closed)", async () => {
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: "true" } as Partial<Env>);
+    await bindAlice(env);
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("does not call api.anthropic.com when kill switch is off (fails closed before upstream)", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: undefined });
+    await handleMcpPairGrantViaOat(buildReq({ auth: `Bearer ${OAT}` }), env);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("200 when explicitly set to '1'", async () => {
+    mockAnthropic();
+    const { env } = envWith({ MCP_HEADLESS_GRANT_ENABLED: "1" });
+    await bindAlice(env);
+    const res = await handleMcpPairGrantViaOat(
+      buildReq({ auth: `Bearer ${OAT}` }),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });
 
