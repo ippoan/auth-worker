@@ -698,6 +698,25 @@ describe("POST /mcp/tools — dev-login tools (issue #423/#424)", () => {
     const names = body.result.tools.map((t) => t.name);
     expect(names).toContain("issue_dev_token");
     expect(names).toContain("issue_dev_login_url");
+    // Refs #438: github_login が無いGoogle IdP セッションでは、呼んでも必ず
+    // no_github_token で失敗するrequiresGithubToken系ツールを一覧に出さない
+    // ("一覧にあるのに呼べない" 体験の防止)。
+    expect(names).not.toContain("github_get_authenticated_user");
+    expect(names).not.toContain("github_create_issue");
+  });
+
+  it("tools/list includes github tools for a GitHub-IdP session (unchanged)", async () => {
+    const { env } = envWithKv();
+    const jwt = await userJwt();
+    const res = await handleMcpTools(
+      await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { result: { tools: Array<{ name: string }> } };
+    const names = body.result.tools.map((t) => t.name);
+    expect(names).toContain("github_get_authenticated_user");
+    expect(names).toContain("github_create_issue");
   });
 
   it("issue_dev_token mints a dev JWT for an allowed Google-IdP subject", async () => {

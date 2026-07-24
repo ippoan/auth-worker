@@ -497,8 +497,16 @@ function dispatchInitialize(id: string | number | null): JsonRpcResponse {
   });
 }
 
-function dispatchToolsList(id: string | number | null, scope: string): JsonRpcResponse {
-  const visible = TOOLS.filter((t) => scopeIncludes(scope, t.requiredScope));
+function dispatchToolsList(id: string | number | null, payload: McpJwtPayload): JsonRpcResponse {
+  // `requiresGithubToken` なツールは github_token (KV `github_token:<sub>`、
+  // GitHub flow の callback でのみ保存される) が無いと呼んでも
+  // `no_github_token` で必ず失敗する。Google flow セッション (`github_login` 無し
+  // — 不変条件は McpJwtPayload 参照) には最初から出さない (Refs #438、Google IdP
+  // surface `/mcp/google` 接続時に「一覧にあるのに呼べない」体験を防ぐ)。
+  const hasGithubIdentity = typeof payload.github_login === "string";
+  const visible = TOOLS.filter(
+    (t) => scopeIncludes(payload.scope, t.requiredScope) && (hasGithubIdentity || !t.requiresGithubToken),
+  );
   return rpcOk(id, {
     tools: visible.map((t) => ({
       name: t.name,
@@ -571,7 +579,7 @@ async function dispatch(
     case "ping":
       return rpcOk(id, {});
     case "tools/list":
-      return dispatchToolsList(id, payload.scope);
+      return dispatchToolsList(id, payload);
     case "tools/call":
       return await dispatchToolsCall(id, req.params, env, payload);
     default:
