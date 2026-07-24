@@ -53,6 +53,24 @@ export function devCookieOptions(expiresIn) {
 }
 
 /**
+ * 成功時リダイレクト先の Location を組み立てる (純粋関数)。
+ *
+ * httpOnly cookie だけでは SPA consumer が dev セッションを確立できない —
+ * `initAuthSession` (client 側) は fragment / localStorage / 非 httpOnly cookie
+ * しか読めず、未認証と判定して通常ログイン (`redirectToLogin`) へ飛ばして
+ * しまう (localhost は prod auth-worker の redirect_uri 許可外なので
+ * "Invalid or missing redirect_uri" で死ぬ)。そこで通常ログインの
+ * auth-worker handoff と同じ `#token=...` fragment で token を手渡す。
+ * fragment はサーバーに送信されず、`consumeFragment` が localStorage 保存後に
+ * `history.replaceState` で即座に除去する。org_id / expires は dev token の
+ * claims (`tenant_id` / `exp`) へのフォールバックで解決されるため、fragment
+ * には token のみ載せる。
+ */
+export function buildDevRedirectLocation(redirectTo, token) {
+  return `${redirectTo}#token=${encodeURIComponent(token)}`
+}
+
+/**
  * dev-login write allowlist (2026-07-24、consumer が prod backend に向けた
  * `AUTH_WORKER` service binding を使う時の安全弁)。
  *

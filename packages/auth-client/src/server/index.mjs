@@ -58,6 +58,7 @@ export { mintGoogleIdToken } from './oidc.mjs'
 export { createDevLoginCallbackHandler } from './devLogin.mjs'
 export {
   DEV_COOKIE_NAME,
+  buildDevRedirectLocation,
   buildDevTokenExchangeRequest,
   normalizeDevTokenExchangeResult,
   devCookieOptions,
