@@ -322,6 +322,13 @@ export declare function devCookieOptions(expiresIn?: number): {
   maxAge?: number
 }
 
+/**
+ * 成功時リダイレクト先の Location (`{redirectTo}#token=...`)。SPA の
+ * `consumeFragment` がクライアント側セッションを確立できるようにする
+ * fragment handoff (通常ログインの auth-worker handoff と同方式)。
+ */
+export declare function buildDevRedirectLocation(redirectTo: string, token: string): string
+
 /** GET/HEAD/OPTIONS は allowlist の対象外 (常に安全)。 */
 export declare function isSafeMethod(method: string): boolean
 

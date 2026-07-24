@@ -5,7 +5,11 @@
  * `http://localhost:<port>/__dev/callback?code=...` を人間が開いたときに
  * 叩かれる。code を auth-worker `POST /dev-login/token` に server-to-server
  * で交換し、`token_kind=dev` を確認できたら `logi_auth_token_dev` を
- * host-only cookie として立てて `/` へ 302 する。
+ * host-only cookie として立て、`/#token=...` (fragment handoff) へ 302 する。
+ * cookie は server route (`/api/proxy/*` の dev フォールバック) 用、fragment は
+ * SPA (`initAuthSession`/`consumeFragment`) のクライアント側セッション確立用 —
+ * 後者が無いと SPA が未認証判定で通常ログインへ飛ばしてしまう
+ * (詳細は devLoginCore.mjs の `buildDevRedirectLocation` を参照)。
  *
  * **DEV_LOGIN ガードは呼び出し側の責務**: このパッケージは Hono ではなく
  * h3/Nitro 前提のため、consumer は `[env.dev.vars] DEV_LOGIN="true"` の
@@ -19,6 +23,7 @@
 import { createError, defineEventHandler, getQuery, sendRedirect, setCookie } from 'h3'
 import {
   DEV_COOKIE_NAME,
+  buildDevRedirectLocation,
   buildDevTokenExchangeRequest,
   devCookieOptions,
   normalizeDevTokenExchangeResult,
@@ -63,6 +68,6 @@ export function createDevLoginCallbackHandler(options) {
     }
 
     setCookie(event, cookieName, result.token, devCookieOptions(result.expiresIn))
-    return sendRedirect(event, redirectTo)
+    return sendRedirect(event, buildDevRedirectLocation(redirectTo, result.token))
   })
 }

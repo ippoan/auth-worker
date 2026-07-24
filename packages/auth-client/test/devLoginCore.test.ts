@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   DEV_COOKIE_NAME,
+  buildDevRedirectLocation,
   buildDevTokenExchangeRequest,
   devCookieOptions,
   isDevLoginWriteAllowed,
@@ -164,6 +165,21 @@ describe('isDevLoginWriteAllowed', () => {
 
   it('allowlistが空なら非safe methodは全拒否', () => {
     expect(isDevLoginWriteAllowed('POST', 'api/foo', [])).toBe(false)
+  })
+})
+
+describe('buildDevRedirectLocation', () => {
+  it('redirectTo に #token= fragment を付けて返す (SPA の consumeFragment 用)', () => {
+    const token = makeToken({ token_kind: 'dev', tenant_id: 't1', exp: 123 })
+    expect(buildDevRedirectLocation('/', token)).toBe(`/#token=${encodeURIComponent(token)}`)
+  })
+
+  it('redirectTo が deep link でも fragment を末尾に足す', () => {
+    expect(buildDevRedirectLocation('/dashboard?tab=1', 'tok')).toBe('/dashboard?tab=1#token=tok')
+  })
+
+  it('token は encodeURIComponent される (base64url の . はそのまま安全)', () => {
+    expect(buildDevRedirectLocation('/', 'a.b+c')).toBe('/#token=a.b%2Bc')
   })
 })
 
