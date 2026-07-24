@@ -142,6 +142,15 @@ export interface IdentityProxyOptions {
   pathPrefix?: string
   /** cookie 名 (default 'logi_auth_token') */
   cookieName?: string
+  /**
+   * issue #423/#425: dev-login bridge を有効化する。true (または event 解決関数が
+   * true を返す) の consumer は `cookieName` が無いとき `devCookieName` を
+   * フォールバックとして拾い、backend へは通常 cookie と同様に転送する。
+   * 未指定 (default false) の consumer には非破壊。
+   */
+  devLoginEnabled?: boolean | ((event: H3Event) => boolean)
+  /** dev cookie 名 (default 'logi_auth_token_dev') */
+  devCookieName?: string
   /** introspect cache TTL cap (ms) */
   ttlMs?: number
   /**
@@ -185,6 +194,10 @@ export interface AuthWorkerProxyOptions {
   proxyPrefix?: string
   /** cookie 名 (default 'logi_auth_token') */
   cookieName?: string
+  /** issue #423/#425: dev-login bridge を有効化する (`IdentityProxyOptions.devLoginEnabled` 参照)。 */
+  devLoginEnabled?: boolean | ((event: H3Event) => boolean)
+  /** dev cookie 名 (default 'logi_auth_token_dev') */
+  devCookieName?: string
 }
 
 /**
@@ -273,3 +286,47 @@ export {
   decodeJwtPayloadFromToken,
   extractTenantIdFromAuth,
 } from '../jwt-core.mjs'
+
+// ----- dev-login (issue #423/#425) -----
+
+export declare const DEV_COOKIE_NAME: string
+
+export declare function buildDevTokenExchangeRequest(opts: {
+  authWorkerUrl: string
+  code: string
+}): { url: string; init: RequestInit }
+
+export type DevTokenExchangeResult =
+  | { ok: false }
+  | { ok: true; token: string; expiresIn?: number }
+
+export declare function normalizeDevTokenExchangeResult(
+  status: number,
+  data: unknown,
+): DevTokenExchangeResult
+
+export declare function devCookieOptions(expiresIn?: number): {
+  httpOnly: true
+  sameSite: 'lax'
+  path: '/'
+  maxAge?: number
+}
+
+export interface DevLoginCallbackOptions {
+  /** auth-worker origin (code 交換先)。値 or event から解決する関数 */
+  authWorkerUrl: string | ((event: H3Event) => string)
+  /** 成功時のリダイレクト先 (default '/') */
+  redirectTo?: string
+  /** code 交換用 fetch (test 注入 / CF service binding 用、default: global fetch) */
+  fetchImpl?: typeof fetch
+  /** dev cookie 名 (default 'logi_auth_token_dev') */
+  cookieName?: string
+}
+
+/**
+ * dev-login `__dev/callback` の h3 handler。code を auth-worker
+ * `POST /dev-login/token` に交換し、`token_kind=dev` を確認できたら
+ * dev cookie を Set-Cookie して redirectTo へ 302 する。DEV_LOGIN ガード
+ * (本番 404) は consumer 側のルート登録責務。
+ */
+export declare function createDevLoginCallbackHandler(options: DevLoginCallbackOptions): EventHandler
