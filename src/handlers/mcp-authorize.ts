@@ -15,7 +15,9 @@
  *
  * Process:
  *   1. param 検証 + DCR client_id lookup + redirect_uri 一致確認
- *   2. `resource` origin から IdP を決定 (`mcpIdpForResourceOrigin`、既定は github)
+ *   2. IdP を決定 — `resource` origin の `mcpIdpForResourceOrigin` 判定、無ければ
+ *      surface 既定 (`opts.idpDefault`、`/mcp/authorize` は github /
+ *      `/mcp/google/authorize` は google — issue #438)
  *   3. auth request id (UUID) 生成 → KV `auth:request:<id>` に context 保存 (TTL 10m)
  *   4. state HMAC を `{provider:"github_mcp_authcode"|"google_mcp_authcode", auth_request_id}` で生成
  *   5. GitHub または Google の OAuth authorize URL に 302 redirect
@@ -58,6 +60,14 @@ function redirectErrorResponse(
 export async function handleMcpAuthorize(
   request: Request,
   env: Env,
+  opts?: {
+    /**
+     * resource 未指定時 (および resource origin が MCP_RESOURCE_GOOGLE_ORIGINS に
+     * 無い時) に使う既定 IdP。省略時 "github" (既存挙動)。Google IdP surface の
+     * `/mcp/google/authorize` (issue #438) は "google" を渡す。
+     */
+    idpDefault?: "github" | "google";
+  },
 ): Promise<Response> {
   // ── env guard (IdP 非依存分のみ。GitHub/Google の client id は resource から
   //    IdP を決めた後、使う方だけ guard する — 片方しか設定してない環境でも
@@ -135,15 +145,22 @@ export async function handleMcpAuthorize(
     resource = resourceRaw;
   }
 
-  // ── resource origin から IdP を決定 (issue: MCP OAuth に Google IdP を追加)。
-  //    resource 未指定 (legacy client) はデフォルトの github に倒れる。google 分岐は
-  //    `resource !== undefined` の内側にネストし、TS に `resource: string` を
-  //    narrowing させる — idp==="google" は常に resource 有りという不変条件を
-  //    型レベルでも表現し、github 分岐と違って「resource 無し」の dead branch を
-  //    作らない (coverage 100% gate 対応)。──
+  // ── IdP を決定 (issue: MCP OAuth に Google IdP を追加 / issue #438)。
+  //    優先順: ① resource origin が MCP_RESOURCE_GOOGLE_ORIGINS に列挙されていれば
+  //    google (kyuyo-mcp 型 — client 側コードが resource を明示する構成)。
+  //    ② それ以外は surface 既定 (`opts.idpDefault`)。既定 surface (`/mcp/authorize`)
+  //    は github なので既存 consumer は挙動不変。Google IdP surface
+  //    (`/mcp/google/authorize`) は resource 未指定 (claude.ai custom connector が
+  //    `resource` を送らない実挙動) でも google に振れる。──
   const issuer = env.AUTH_WORKER_ORIGIN;
+  const idp: "github" | "google" =
+    opts?.idpDefault === "google" ||
+    (resource !== undefined &&
+      mcpIdpForResourceOrigin(new URL(resource).origin, env) === "google")
+      ? "google"
+      : "github";
 
-  if (resource !== undefined && mcpIdpForResourceOrigin(new URL(resource).origin, env) === "google") {
+  if (idp === "google") {
     const googleClientId = await resolveSecret(env.GOOGLE_CLIENT_ID);
     if (!googleClientId) {
       return jsonResponse({ error: "server_error", error_description: "MCP OAuth Provider not configured" }, 503);
@@ -157,7 +174,7 @@ export async function handleMcpAuthorize(
       code_challenge_method: "S256",
       client_state: state,
       scope,
-      resource,
+      ...(resource !== undefined ? { resource } : {}),
       expires_at: Date.now() + AUTH_REQUEST_TTL_SEC * 1000,
     };
     await putAuthRequest(env, rec);

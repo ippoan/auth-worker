@@ -22,6 +22,19 @@
 
 import type { Env } from "../index";
 
+/**
+ * Google IdP surface (issue #438) の path prefix。
+ *
+ * claude.ai の「カスタムコネクタを追加」は `/mcp/authorize` に RFC 8707 `resource`
+ * パラメータを送らない (実ログ確認済み) ため、resource origin ベースの
+ * `mcpIdpForResourceOrigin` では Google IdP に振れない。そこで auth-worker 自身の
+ * native MCP endpoint (`/mcp/tools` 相当) の別名として `<origin>/mcp/google` を
+ * 用意し、この surface 経由の OAuth discovery chain (401 WWW-Authenticate →
+ * PRM → AS metadata → `/mcp/google/authorize`) では resource 未指定でも Google を
+ * 既定 IdP にする。既定 surface (`/mcp/authorize`) は GitHub 既定のまま不変。
+ */
+export const MCP_GOOGLE_SURFACE_PATH = "/mcp/google";
+
 /** AS origin から MCP relay (RS) origin を導出。env 追加なしで prod / staging 両対応。 */
 export function mcpRelayOrigin(env: Env): string {
   const auth = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
@@ -70,12 +83,18 @@ export function resourceMetadataUrlFor(slug: string, env: Env): string {
  */
 export function allowedResourceOrigins(env: Env): Set<string> {
   const relayOrigin = mcpRelayOrigin(env);
+  // issue #438: auth-worker 自身の origin も許可する。Google IdP surface の PRM は
+  // `resource: <auth origin>/mcp/google` を advertise するため、client がそれを
+  // RFC 8707 resource として echo してきた時に invalid_target で落とさない。
+  // AS 自身 = RS (native /mcp/tools・/mcp/google) の構成なので confused-deputy には
+  // ならない (別サーバーへの audience 誤 bind が起きない)。
+  const authOrigin = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
   const extra = ((env as Env & { MCP_RESOURCE_ORIGINS_ALLOWLIST?: string })
     .MCP_RESOURCE_ORIGINS_ALLOWLIST ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  return new Set<string>([relayOrigin, ...extra]);
+  return new Set<string>([relayOrigin, authOrigin, ...extra]);
 }
 
 /** `allowedResourceOrigins` に origin が含まれるか。 */
@@ -147,6 +166,17 @@ export function resourceOriginBySlug(env: Env): Map<string, string> {
  * client (Anthropic Claude.ai backend / VSCode MCP Inspector etc.) はこれを見て
  * AS の metadata 一式を発見し OAuth Device Flow を開始する。
  */
-export function wwwAuthenticateValue(env: Env): string {
-  return `Bearer realm="MCP", resource_metadata="${resourceMetadataUrl(env)}"`;
+export function wwwAuthenticateValue(
+  env: Env,
+  surface: "default" | "google" = "default",
+): string {
+  // issue #438: Google IdP surface (`POST /mcp/google`) の 401 は surface 専用の
+  // PRM (`/.well-known/oauth-protected-resource/mcp/google`) に誘導する。client は
+  // そこから issuer `<origin>/mcp/google` の AS metadata → `/mcp/google/authorize`
+  // に到達し、resource 未指定でも Google IdP 既定になる。
+  const md =
+    surface === "google"
+      ? `${resourceMetadataUrl(env)}${MCP_GOOGLE_SURFACE_PATH}`
+      : resourceMetadataUrl(env);
+  return `Bearer realm="MCP", resource_metadata="${md}"`;
 }

@@ -445,6 +445,79 @@ describe("handleMcpAuthorize — Google IdP branch (MCP OAuth に Google IdP を
     const res = await handleMcpAuthorize(authorizeReq(validParams(client_id)), env);
     expect(res.status).toBe(503);
   });
+
+  // issue #438: Google IdP surface (`/mcp/google/authorize` → idpDefault: "google")。
+  // claude.ai custom connector は resource を送らないため、resource 無しでも
+  // Google に振れることを検証する。既定 surface (opts 無し) は GitHub のまま。
+  describe("idpDefault: 'google' (issue #438 Google IdP surface)", () => {
+    it("redirects to accounts.google.com without any resource parameter", async () => {
+      const { env, kv, client_id } = await envWithGoogleOrigin({
+        MCP_RESOURCE_GOOGLE_ORIGINS: "",
+      } as unknown as Partial<Env>);
+      const res = await handleMcpAuthorize(
+        authorizeReq(validParams(client_id)),
+        env,
+        { idpDefault: "google" },
+      );
+      expect(res.status).toBe(302);
+      const loc = new URL(res.headers.get("Location")!);
+      expect(loc.host).toBe("accounts.google.com");
+      expect(loc.searchParams.get("scope")).toBe("openid email");
+      // resource 未指定なので auth request record にも resource は積まれない
+      const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+      const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
+      expect(stored.resource).toBeUndefined();
+    });
+
+    it("keeps google even when an allowed resource origin is NOT in MCP_RESOURCE_GOOGLE_ORIGINS (surface default wins)", async () => {
+      const { env, kv, client_id } = await envWithGoogleOrigin({
+        MCP_RESOURCE_GOOGLE_ORIGINS: "",
+      } as unknown as Partial<Env>);
+      const res = await handleMcpAuthorize(
+        authorizeReq({ ...validParams(client_id), resource: GOOGLE_RESOURCE }),
+        env,
+        { idpDefault: "google" },
+      );
+      expect(res.status).toBe(302);
+      const loc = new URL(res.headers.get("Location")!);
+      expect(loc.host).toBe("accounts.google.com");
+      // resource は record に echo される (token aud binding 用)
+      const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+      const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
+      expect(stored.resource).toBe(GOOGLE_RESOURCE);
+    });
+
+    it("accepts resource = <auth origin>/mcp/google (the google-surface PRM resource)", async () => {
+      const { env, client_id } = await envWithGoogleOrigin({
+        MCP_RESOURCE_GOOGLE_ORIGINS: "",
+      } as unknown as Partial<Env>);
+      const res = await handleMcpAuthorize(
+        authorizeReq({
+          ...validParams(client_id),
+          resource: "https://auth.test.example/mcp/google",
+        }),
+        env,
+        { idpDefault: "google" },
+      );
+      expect(res.status).toBe(302);
+      const loc = new URL(res.headers.get("Location")!);
+      expect(loc.host).toBe("accounts.google.com");
+    });
+
+    it("explicit idpDefault: 'github' behaves like the default surface (no resource → GitHub)", async () => {
+      const { env, client_id } = await envWithGoogleOrigin({
+        MCP_RESOURCE_GOOGLE_ORIGINS: "",
+      } as unknown as Partial<Env>);
+      const res = await handleMcpAuthorize(
+        authorizeReq(validParams(client_id)),
+        env,
+        { idpDefault: "github" },
+      );
+      expect(res.status).toBe(302);
+      const loc = new URL(res.headers.get("Location")!);
+      expect(loc.host).toBe("github.com");
+    });
+  });
 });
 
 // `params.get(...) ?? ""` の null branch カバー (string-empty vs null は別 branch 扱い)

@@ -633,6 +633,14 @@ export default {
           // MCP OAuth Provider — AS metadata (RFC 8414)
           case "/.well-known/oauth-authorization-server":
             return handleMcpAsMetadata(request, env);
+          // issue #438: Google IdP surface (issuer `<origin>/mcp/google`) の
+          // AS metadata。client 実装差を吸収するため RFC 8414 path-inserted 形 /
+          // legacy post-path 形 / OIDC discovery 形の全 alias で同 variant を返す。
+          case "/.well-known/oauth-authorization-server/mcp/google":
+          case "/mcp/google/.well-known/oauth-authorization-server":
+          case "/.well-known/openid-configuration/mcp/google":
+          case "/mcp/google/.well-known/openid-configuration":
+            return handleMcpAsMetadata(request, env, "google");
           // MCP OAuth Provider — Protected Resource metadata (RFC 9728, Phase 4 / issue #126)
           // client は MCP relay URL の 401 応答 `WWW-Authenticate.resource_metadata`
           // 経由で本 endpoint を踏み、authorization_servers から AS metadata を発見する
@@ -676,6 +684,12 @@ export default {
           // MCP OAuth Provider — Authorization Code flow start (Phase 5 / issue #128)
           case "/mcp/authorize":
             return await handleMcpAuthorize(request, env);
+          // issue #438: Google IdP surface の authorize。claude.ai custom connector
+          // は `resource` パラメータを送らないため、resource origin 判定では
+          // Google IdP に振れない — この専用 path は resource 未指定でも Google 既定。
+          // 既定 surface (`/mcp/authorize`) の GitHub 既定は不変 (既存 consumer 保護)。
+          case "/mcp/google/authorize":
+            return await handleMcpAuthorize(request, env, { idpDefault: "google" });
           // MCP OAuth Provider — Authorization Code GitHub OAuth callback (Phase 5)
           case "/mcp/auth_callback":
             return await handleMcpAuthCallback(request, env);
@@ -910,6 +924,13 @@ export default {
           // auth host 上でも受けることで binary なしで MCP server として機能する。
           // 同じ handler は dispatchMcpRelay (mcp.ippoan.org host) 経由でも到達可能。
           case "/mcp/tools":
+            return await handleMcpTools(request, env);
+          // issue #438: Google IdP surface の MCP data plane。handler は native
+          // tools (`/mcp/tools`) と同一 — 差分は 401 時の WWW-Authenticate が
+          // surface 専用 PRM を指すことだけ (handler 内で path から判定)。
+          // claude.ai custom connector にはこの URL (`<origin>/mcp/google`) を
+          // 直接入力させる。
+          case "/mcp/google":
             return await handleMcpTools(request, env);
           // issue #423/#424: dev-login one-time code → dev JWT 交換
           // (consumer 側 `__dev/callback`、issue #425 が server-to-server で叩く)。

@@ -822,4 +822,77 @@ describe("POST /mcp/tools — relay-origin aud", () => {
     const body = await res.json() as { result: unknown };
     expect(body.result).toEqual({});
   });
+
+  // issue #438: Google IdP surface の PRM は resource `<auth origin>/mcp/google`
+  // を advertise するので、その URL が aud で焼かれた JWT も受理する。
+  it("accepts JWT whose aud is <auth origin>/mcp/google (issue #438)", async () => {
+    const { env } = envWithKv();
+    const jwt = await userJwt({ aud: `${ISSUER}/mcp/google` });
+    const res = await handleMcpTools(
+      await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "ping" }),
+      env,
+    );
+    const body = await res.json() as { result: unknown };
+    expect(body.result).toEqual({});
+  });
+
+  it("still rejects JWT with an unrelated origin aud", async () => {
+    const { env } = envWithKv();
+    const jwt = await userJwt({ aud: "https://attacker.example/mcp" });
+    const res = await handleMcpTools(
+      await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "ping" }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+// issue #438: Google IdP surface (`POST /mcp/google`) の 401 は surface 専用 PRM
+// (`/.well-known/oauth-protected-resource/mcp/google`) へ誘導する。
+describe("POST /mcp/google — google-surface WWW-Authenticate", () => {
+  it("401 without Bearer points resource_metadata at the /mcp/google PRM", async () => {
+    const { env } = envWithKv();
+    const req = new Request(`${ISSUER}/mcp/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "ping" }),
+    });
+    const res = await handleMcpTools(req, env);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(
+      `Bearer realm="MCP", resource_metadata="${ISSUER}/.well-known/oauth-protected-resource/mcp/google"`,
+    );
+  });
+
+  it("401 on the default /mcp/tools path keeps the base PRM URL", async () => {
+    const { env } = envWithKv();
+    const req = new Request(`${ISSUER}/mcp/tools`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "ping" }),
+    });
+    const res = await handleMcpTools(req, env);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe(
+      `Bearer realm="MCP", resource_metadata="${ISSUER}/.well-known/oauth-protected-resource"`,
+    );
+  });
+
+  it("tools work identically on /mcp/google once authenticated (same handler)", async () => {
+    const { env } = envWithKv();
+    const jwt = await googleUserJwt();
+    const req = new Request(`${ISSUER}/mcp/google`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    const res = await handleMcpTools(req, env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { result: { tools: Array<{ name: string }> } };
+    const names = body.result.tools.map((t) => t.name);
+    expect(names).toContain("issue_dev_login_url");
+  });
 });

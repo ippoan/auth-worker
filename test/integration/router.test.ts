@@ -332,7 +332,14 @@ describe("Router (index.ts)", () => {
     ["/logout", "logout"],
     ["/api/bot-config/export?tenant_id=abc", "bot-export"],
     ["/.well-known/oauth-authorization-server", "mcp-as-metadata"],
+    // issue #438: Google IdP surface の AS metadata alias 4 種。
+    ["/.well-known/oauth-authorization-server/mcp/google", "mcp-as-metadata"],
+    ["/mcp/google/.well-known/oauth-authorization-server", "mcp-as-metadata"],
+    ["/.well-known/openid-configuration/mcp/google", "mcp-as-metadata"],
+    ["/mcp/google/.well-known/openid-configuration", "mcp-as-metadata"],
     ["/.well-known/oauth-protected-resource", "mcp-resource-metadata"],
+    // issue #438: Google IdP surface の PRM (path-inserted 形、prefix branch 経由)。
+    ["/.well-known/oauth-protected-resource/mcp/google", "mcp-resource-metadata"],
     // ippoan/secrets-inventory#45 / auth-worker#195: per-resource variant
     // (= dynamic slug suffix routes through the `startsWith` branch in
     // index.ts dispatch).
@@ -341,6 +348,9 @@ describe("Router (index.ts)", () => {
     ["/device?user_code=BCDF-GHJK", "mcp-device-page"],
     ["/mcp/device_callback?code=abc&state=xyz", "mcp-device-callback"],
     ["/mcp/authorize?response_type=code&client_id=x", "mcp-authorize"],
+    // issue #438: Google IdP surface の authorize (idpDefault: "google" 付き —
+    // 引数は下の専用 it で検証)。
+    ["/mcp/google/authorize?response_type=code&client_id=x", "mcp-authorize"],
     ["/mcp/auth_callback?code=ghc&state=xyz", "mcp-auth-callback"],
     ["/mcp/elevate", "mcp-elevate-start"],
     ["/mcp/elevate?return_to=https%3A%2F%2Fclient.example", "mcp-elevate-start"],
@@ -426,6 +436,8 @@ describe("Router (index.ts)", () => {
     ["/mcp/jwt/pickup", "mcp-jwt-pickup"],
     ["/mcp/revoke", "mcp-revoke"],
     ["/mcp/tools", "mcp-tools"],
+    // issue #438: Google IdP surface の MCP data plane (同 handler)。
+    ["/mcp/google", "mcp-tools"],
     ["/dev-login/token", "dev-login-token"],
     ["/mcp/admin/exec", "mcp-admin-exec"],
   ];
@@ -540,6 +552,42 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://mcp-staging.ippoan.org/authorize");
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("mcp-authorize");
+  });
+
+  // issue #438: Google IdP surface — authorize は idpDefault: "google" 付きで、
+  // AS metadata は surface="google" variant で呼ばれることを引数レベルで検証。
+  it("GET /mcp/google/authorize passes { idpDefault: 'google' } to mcp-authorize", async () => {
+    const { handleMcpAuthorize } = await import("../../src/handlers/mcp-authorize");
+    const req = new Request("https://auth.test.example/mcp/google/authorize");
+    await worker.fetch(req, env);
+    expect(vi.mocked(handleMcpAuthorize)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { idpDefault: "google" },
+    );
+  });
+
+  it("GET /mcp/authorize (default surface) passes no idpDefault to mcp-authorize", async () => {
+    const { handleMcpAuthorize } = await import("../../src/handlers/mcp-authorize");
+    const req = new Request("https://auth.test.example/mcp/authorize");
+    await worker.fetch(req, env);
+    expect(vi.mocked(handleMcpAuthorize)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("GET /.well-known/oauth-authorization-server/mcp/google passes surface 'google' to mcp-as-metadata", async () => {
+    const { handleMcpAsMetadata } = await import("../../src/handlers/mcp-as-metadata");
+    const req = new Request(
+      "https://auth.test.example/.well-known/oauth-authorization-server/mcp/google",
+    );
+    await worker.fetch(req, env);
+    expect(vi.mocked(handleMcpAsMetadata)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "google",
+    );
   });
 
   it("auth-staging.* POST /mcp/register → mcp-register handler", async () => {
