@@ -18,6 +18,7 @@
  * .mjs なのは Nitro (rollup) が node_modules の .ts を transpile しないため。
  */
 import {
+  createError,
   defineEventHandler,
   getCookie,
   getHeader,
@@ -40,7 +41,7 @@ import {
 } from './proxyCore.mjs'
 import { introspectToken } from './introspectCore.mjs'
 import { mintGoogleIdToken } from './oidc.mjs'
-import { DEV_COOKIE_NAME } from './devLoginCore.mjs'
+import { DEV_COOKIE_NAME, isDevLoginWriteAllowed } from './devLoginCore.mjs'
 
 /** logi_auth_token cookie の既定名 (auth.mjs と同じ)。 */
 const DEFAULT_COOKIE_NAME = 'logi_auth_token'
@@ -174,6 +175,23 @@ export function createAuthWorkerProxyHandler(options) {
     const token = resolveAuthToken(event, options)
 
     const path = getRouterParam(event, 'path') || ''
+
+    // 2026-07-24: consumer が dev-login 用の AUTH_WORKER binding を prod に
+    // 向けた時の安全弁 (devLoginCore.mjs の isDevLoginWriteAllowed 参照)。
+    // 未指定 (undefined) の consumer には非破壊 — 既定は無制限のまま。
+    if (options.devLoginWriteAllowlist !== undefined) {
+      const allowlist =
+        typeof options.devLoginWriteAllowlist === 'function'
+          ? options.devLoginWriteAllowlist(event)
+          : options.devLoginWriteAllowlist
+      if (!isDevLoginWriteAllowed(event.method, path, allowlist ?? [])) {
+        throw createError({
+          statusCode: 403,
+          statusMessage: `dev-login: ${event.method} ${path} is not in devLoginWriteAllowlist`,
+        })
+      }
+    }
+
     const headers = buildAlcProxyHeaders({
       sharedSecret,
       origin,

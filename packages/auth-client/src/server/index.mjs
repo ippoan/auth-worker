@@ -61,4 +61,7 @@ export {
   buildDevTokenExchangeRequest,
   normalizeDevTokenExchangeResult,
   devCookieOptions,
+  isSafeMethod,
+  parseDevLoginWriteAllowlist,
+  isDevLoginWriteAllowed,
 } from './devLoginCore.mjs'
