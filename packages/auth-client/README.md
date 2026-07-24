@@ -159,8 +159,15 @@ export default createIdentityProxyHandler({
 - `createDevLoginCallbackHandler` — code を `POST {authWorkerUrl}/dev-login/token`
   に server-to-server 交換し、`token_kind=dev` を確認できたら
   `logi_auth_token_dev` を HttpOnly / SameSite=Lax / host-only で Set-Cookie して
-  `/` へ 302 する。署名の再検証はしない（交換自体が TLS 越しの server-to-server
-  呼び出しで、auth-worker 自身が署名した token しか返らないため）
+  `/#token=...` (fragment handoff、#442) へ 302 する。署名の再検証はしない
+  （交換自体が TLS 越しの server-to-server 呼び出しで、auth-worker 自身が
+  署名した token しか返らないため）
+  - cookie は server route (`/api/proxy/*` の dev フォールバック) 用、fragment は
+    SPA (`initAuthSession`/`consumeFragment`) のクライアント側セッション確立用。
+    fragment が無いと SPA は httpOnly cookie を読めず未認証判定 → 通常ログイン →
+    localhost は redirect_uri 許可外で "Invalid or missing redirect_uri" になる
+    (#442 で修正)。org_id / expires は dev token の claims (`tenant_id` / `exp`)
+    フォールバックで解決されるため fragment は token のみ
 - `createApiProxyHandler` / `createAuthWorkerProxyHandler` / `createIdentityProxyHandler`
   の `devLoginEnabled` オプション — 通常 cookie (`logi_auth_token`) が無いとき
   `logi_auth_token_dev` をフォールバックとして拾う。`devLoginEnabled` 未指定
