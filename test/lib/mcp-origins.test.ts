@@ -69,6 +69,19 @@ describe("wwwAuthenticateValue", () => {
       'Bearer realm="MCP", resource_metadata="https://auth-staging.ippoan.org/.well-known/oauth-protected-resource"',
     );
   });
+
+  // issue #438: Google IdP surface の 401 は surface 専用 PRM に誘導する。
+  it("points resource_metadata at the /mcp/google PRM for the google surface", () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org" });
+    expect(wwwAuthenticateValue(env, "google")).toBe(
+      'Bearer realm="MCP", resource_metadata="https://auth-staging.ippoan.org/.well-known/oauth-protected-resource/mcp/google"',
+    );
+  });
+
+  it("explicit surface 'default' equals the no-arg form", () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org" });
+    expect(wwwAuthenticateValue(env, "default")).toBe(wwwAuthenticateValue(env));
+  });
 });
 
 describe("resourceMetadataUrlFor", () => {
@@ -113,6 +126,18 @@ describe("allowedResourceOrigins / isAllowedResourceOrigin", () => {
     expect(isAllowedResourceOrigin("https://mcp-staging.ippoan.org", env)).toBe(true);
     expect(isAllowedResourceOrigin("https://security-inventory.ippoan.org", env)).toBe(true);
     expect(isAllowedResourceOrigin("https://attacker.example", env)).toBe(false);
+  });
+
+  // issue #438: Google IdP surface の PRM が advertise する resource
+  // (`<auth origin>/mcp/google`) の origin = auth-worker 自身も許可する。
+  it("includes the auth-worker origin itself (issue #438 Google IdP surface)", () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org" });
+    expect(isAllowedResourceOrigin("https://auth-staging.ippoan.org", env)).toBe(true);
+  });
+
+  it("falls back to https://auth.ippoan.org for the auth origin entry when AUTH_WORKER_ORIGIN is empty", () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "" });
+    expect(isAllowedResourceOrigin("https://auth.ippoan.org", env)).toBe(true);
   });
 });
 

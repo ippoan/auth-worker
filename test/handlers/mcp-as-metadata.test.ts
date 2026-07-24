@@ -76,3 +76,46 @@ describe("GET /.well-known/oauth-authorization-server", () => {
     expect(body.registration_endpoint).toBe("https://issuer.example/mcp/register");
   });
 });
+
+// issue #438: Google IdP surface variant — issuer は `<origin>/mcp/google`、
+// authorize だけ専用 path。他 endpoint は既定 surface と共有。
+describe("GET AS metadata — google surface (issue #438)", () => {
+  function callGoogle(env: Env): Response {
+    const req = new Request(
+      "https://auth.test.example/.well-known/oauth-authorization-server/mcp/google",
+    );
+    return handleMcpAsMetadata(req, env, "google");
+  }
+
+  it("issuer is <origin>/mcp/google and authorization_endpoint is /mcp/google/authorize", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://issuer.example" });
+    const body = (await callGoogle(env).json()) as {
+      issuer: string;
+      authorization_endpoint: string;
+    };
+    expect(body.issuer).toBe("https://issuer.example/mcp/google");
+    expect(body.authorization_endpoint).toBe("https://issuer.example/mcp/google/authorize");
+  });
+
+  it("token / registration / introspection endpoints stay on the shared paths", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://issuer.example" });
+    const body = (await callGoogle(env).json()) as {
+      token_endpoint: string;
+      registration_endpoint: string;
+      introspection_endpoint: string;
+      device_authorization_endpoint: string;
+    };
+    expect(body.token_endpoint).toBe("https://issuer.example/mcp/token");
+    expect(body.registration_endpoint).toBe("https://issuer.example/mcp/register");
+    expect(body.introspection_endpoint).toBe("https://issuer.example/mcp/introspect");
+    expect(body.device_authorization_endpoint).toBe(
+      "https://issuer.example/mcp/device_authorization",
+    );
+  });
+
+  it("falls back to https://auth.ippoan.org when AUTH_WORKER_ORIGIN is empty", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "" });
+    const body = (await callGoogle(env).json()) as { issuer: string };
+    expect(body.issuer).toBe("https://auth.ippoan.org/mcp/google");
+  });
+});

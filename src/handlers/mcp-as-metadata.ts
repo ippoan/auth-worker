@@ -20,18 +20,34 @@
 
 import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
+import { MCP_GOOGLE_SURFACE_PATH } from "../lib/mcp-origins";
 
-export function handleMcpAsMetadata(_request: Request, env: Env): Response {
-  const issuer = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
+/**
+ * @param surface "google" の時は Google IdP surface (issue #438) 用 variant を返す:
+ *   issuer は `<origin>/mcp/google` (RFC 8414 path-inserted well-known で discovery
+ *   される)、authorization_endpoint は resource 未指定でも Google 既定になる
+ *   `/mcp/google/authorize`。token / register 等の他 endpoint は既定 surface と共有。
+ */
+export function handleMcpAsMetadata(
+  _request: Request,
+  env: Env,
+  surface: "default" | "google" = "default",
+): Response {
+  const origin = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
+  const issuer = surface === "google" ? `${origin}${MCP_GOOGLE_SURFACE_PATH}` : origin;
   const res = corsJsonResponse({
     issuer,
-    device_authorization_endpoint: `${issuer}/mcp/device_authorization`,
-    token_endpoint: `${issuer}/mcp/token`,
-    introspection_endpoint: `${issuer}/mcp/introspect`,
+    device_authorization_endpoint: `${origin}/mcp/device_authorization`,
+    token_endpoint: `${origin}/mcp/token`,
+    introspection_endpoint: `${origin}/mcp/introspect`,
     // Phase 5 (issue #128): Browser client (Anthropic Claude.ai 等) 向け
-    // Authorization Code grant + Dynamic Client Registration を追加
-    authorization_endpoint: `${issuer}/mcp/authorize`,
-    registration_endpoint: `${issuer}/mcp/register`,
+    // Authorization Code grant + Dynamic Client Registration を追加。
+    // Google IdP surface では authorize だけ専用 path に差し替える (issue #438)。
+    authorization_endpoint:
+      surface === "google"
+        ? `${origin}${MCP_GOOGLE_SURFACE_PATH}/authorize`
+        : `${origin}/mcp/authorize`,
+    registration_endpoint: `${origin}/mcp/register`,
     grant_types_supported: [
       "urn:ietf:params:oauth:grant-type:device_code",
       "authorization_code",

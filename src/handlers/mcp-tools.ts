@@ -33,7 +33,11 @@ import type { Env } from "../index";
 import { issueDevLoginCode, mintDevToken } from "../lib/dev-login";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
-import { mcpRelayOrigin, wwwAuthenticateValue } from "../lib/mcp-origins";
+import {
+  MCP_GOOGLE_SURFACE_PATH,
+  mcpRelayOrigin,
+  wwwAuthenticateValue,
+} from "../lib/mcp-origins";
 import { resolveSecret } from "../lib/secret";
 
 const MCP_AUD_LEGACY = "github-mcp-server-rs";
@@ -123,12 +127,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function unauthorized(env: Env, body: unknown): Response {
+function unauthorized(
+  env: Env,
+  body: unknown,
+  surface: "default" | "google" = "default",
+): Response {
   return new Response(JSON.stringify(body), {
     status: 401,
     headers: {
       "Content-Type": "application/json",
-      "WWW-Authenticate": wwwAuthenticateValue(env),
+      "WWW-Authenticate": wwwAuthenticateValue(env, surface),
       "Cache-Control": "no-store",
     },
   });
@@ -401,6 +409,10 @@ type AuthGate =
   | { kind: "error"; response: Response };
 
 async function authenticate(request: Request, env: Env): Promise<AuthGate> {
+  // issue #438: Google IdP surface (`POST /mcp/google`) 経由の 401 は surface 専用
+  // PRM に誘導する (discovery chain が Google 既定の authorize に繋がる)。
+  const surface: "default" | "google" =
+    new URL(request.url).pathname === MCP_GOOGLE_SURFACE_PATH ? "google" : "default";
   const jwtSecret = await resolveMcpJwtSecret(env.MCP_JWT_SECRET);
   if (!env.MCP_OAUTH_KV || !jwtSecret) {
     return {
@@ -416,18 +428,26 @@ async function authenticate(request: Request, env: Env): Promise<AuthGate> {
   if (!m || !m[1]) {
     return {
       kind: "error",
-      response: unauthorized(env, { error: "unauthorized", error_description: "Bearer token required" }),
+      response: unauthorized(env, { error: "unauthorized", error_description: "Bearer token required" }, surface),
     };
   }
   const relayOrigin = mcpRelayOrigin(env);
+  // issue #438: Google IdP surface の PRM は resource `<auth origin>/mcp/google` を
+  // advertise するため、client がそれを RFC 8707 で echo すると aud は auth origin
+  // 配下の URL で焼かれる。relay origin と並んで auth origin も受理する
+  // (native tools は auth-worker 自身 = 同一 RS なので audience 逸脱ではない)。
+  const authOrigin = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
   const payload = await verifyMcpJwt(m[1], jwtSecret, (aud) => {
     if (aud === MCP_AUD_LEGACY) return true;
-    try { return new URL(aud).origin === relayOrigin; } catch { return false; }
+    try {
+      const origin = new URL(aud).origin;
+      return origin === relayOrigin || origin === authOrigin;
+    } catch { return false; }
   });
   if (!payload) {
     return {
       kind: "error",
-      response: unauthorized(env, { error: "invalid_token", error_description: "JWT verification failed" }),
+      response: unauthorized(env, { error: "invalid_token", error_description: "JWT verification failed" }, surface),
     };
   }
   return { kind: "ok", payload };

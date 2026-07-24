@@ -25,11 +25,41 @@
 
 import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
-import { mcpRelayOrigin, resourceOriginBySlug } from "../lib/mcp-origins";
+import {
+  MCP_GOOGLE_SURFACE_PATH,
+  mcpRelayOrigin,
+  resourceOriginBySlug,
+} from "../lib/mcp-origins";
 
 export function handleMcpResourceMetadata(request: Request, env: Env): Response {
   const issuer = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
   const url = new URL(request.url);
+  // issue #438: Google IdP surface の PRM (RFC 9728 path-inserted 形 —
+  // resource `<origin>/mcp/google` に対する well-known URL)。authorization_servers
+  // に path 付き issuer `<origin>/mcp/google` を返し、client を Google 既定の
+  // AS metadata (`/.well-known/oauth-authorization-server/mcp/google`) へ誘導する。
+  // slug 方式 (`[A-Za-z0-9-]+` 1 segment、MCP_RESOURCE_ORIGINS_ALLOWLIST 突合) とは
+  // 独立した固定 path なので、slug regex より前に明示 match する。
+  if (
+    new RegExp(
+      `^/\\.well-known/oauth-protected-resource${MCP_GOOGLE_SURFACE_PATH}/?$`,
+    ).test(url.pathname)
+  ) {
+    const res = corsJsonResponse({
+      resource: `${issuer}${MCP_GOOGLE_SURFACE_PATH}`,
+      authorization_servers: [`${issuer}${MCP_GOOGLE_SURFACE_PATH}`],
+      bearer_methods_supported: ["header"],
+      scopes_supported: [
+        "mcp.read",
+        "mcp.write",
+        "mcp.workflow",
+        "mcp.project",
+        "offline_access",
+      ],
+    });
+    res.headers.set("Cache-Control", "public, max-age=3600");
+    return res;
+  }
   // path 末尾 segment が slug。base path (= `/.well-known/oauth-protected-
   // resource` ぴったり) の場合は slug 無し扱い (= mcpRelayOrigin)。
   const m = /^\/\.well-known\/oauth-protected-resource(?:\/([A-Za-z0-9-]+))?\/?$/.exec(

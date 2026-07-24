@@ -62,6 +62,48 @@ describe("GET /.well-known/oauth-protected-resource", () => {
   });
 });
 
+// issue #438: Google IdP surface の PRM。resource は `<auth origin>/mcp/google`、
+// authorization_servers は path 付き issuer `<auth origin>/mcp/google` を返す。
+describe("GET /.well-known/oauth-protected-resource/mcp/google (issue #438)", () => {
+  function callPath(env: Env, path: string): Response {
+    const req = new Request(`https://auth.test.example${path}`);
+    return handleMcpResourceMetadata(req, env);
+  }
+
+  it("returns the google-surface resource + path-scoped authorization server", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org" });
+    const res = callPath(env, "/.well-known/oauth-protected-resource/mcp/google");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("public, max-age=3600");
+    const body = (await res.json()) as {
+      resource: string;
+      authorization_servers: string[];
+      bearer_methods_supported: string[];
+      scopes_supported: string[];
+    };
+    expect(body.resource).toBe("https://auth-staging.ippoan.org/mcp/google");
+    expect(body.authorization_servers).toEqual([
+      "https://auth-staging.ippoan.org/mcp/google",
+    ]);
+    expect(body.bearer_methods_supported).toEqual(["header"]);
+    expect(body.scopes_supported).toContain("mcp.read");
+  });
+
+  it("accepts a trailing slash", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org" });
+    const res = callPath(env, "/.well-known/oauth-protected-resource/mcp/google/");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { resource: string };
+    expect(body.resource).toBe("https://auth-staging.ippoan.org/mcp/google");
+  });
+
+  it("does not treat other two-segment suffixes as the google surface (404 via slug regex)", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org" });
+    const res = callPath(env, "/.well-known/oauth-protected-resource/mcp/other");
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("GET /.well-known/oauth-protected-resource/<slug>", () => {
   function callPath(env: Env, path: string): Response {
     const req = new Request(`https://auth.test.example${path}`);
