@@ -75,6 +75,10 @@ export function handleMcpAsMetadata(
     // client (Anthropic Claude.ai 等) は本 flag を見て `/authorize` `/mcp/token`
     // に `resource=https://mcp-staging.ippoan.org` を載せる。
     resource_indicators_supported: true,
+    // RFC 9207 §2.3 (issue #449): authorization response に `iss` を載せる AS は
+    // 本 flag の advertise が MUST。client は callback の `iss` を issuer と
+    // 単純文字列比較して mix-up attack を防ぐ (MCP spec 2026-07-28 で導入)。
+    authorization_response_iss_parameter_supported: true,
   });
   // AS metadata は静的なので edge cache を許可 (corsJsonResponse は
   // Cache-Control を付けないので後付け)

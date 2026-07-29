@@ -119,3 +119,14 @@ describe("GET AS metadata — google surface (issue #438)", () => {
     expect(body.issuer).toBe("https://auth.ippoan.org/mcp/google");
   });
 });
+
+// RFC 9207 §2.3 (issue #449): iss を載せる AS は本 flag の advertise が MUST。
+describe("handleMcpAsMetadata — RFC 9207 advertisement (issue #449)", () => {
+  it("advertises authorization_response_iss_parameter_supported on both surfaces", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://auth.test.example" });
+    const def = await handleMcpAsMetadata(new Request("https://auth.test.example/.well-known/oauth-authorization-server"), env).json() as Record<string, unknown>;
+    expect(def["authorization_response_iss_parameter_supported"]).toBe(true);
+    const goog = await handleMcpAsMetadata(new Request("https://auth.test.example/mcp/google/.well-known/oauth-authorization-server"), env, "google").json() as Record<string, unknown>;
+    expect(goog["authorization_response_iss_parameter_supported"]).toBe(true);
+  });
+});

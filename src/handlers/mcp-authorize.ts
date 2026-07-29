@@ -38,22 +38,32 @@ import {
   putAuthRequest,
 } from "../lib/mcp-authcode";
 import { getDcrClient } from "../lib/mcp-dcr";
-import { isAllowedResourceOrigin, mcpIdpForResourceOrigin } from "../lib/mcp-origins";
+import {
+  MCP_GOOGLE_SURFACE_PATH,
+  isAllowedResourceOrigin,
+  mcpIdpForResourceOrigin,
+} from "../lib/mcp-origins";
 import { mcpToGithubScope, normalizeMcpScope, parseMcpScope } from "../lib/mcp-scope";
 import { resolveSecret } from "../lib/secret";
 import { generateOAuthState } from "../lib/security";
 
-/** redirect 先 URL に `error` を query string で乗せる helper (RFC 6749 §4.1.2.1)。 */
+/**
+ * redirect 先 URL に `error` を query string で乗せる helper (RFC 6749 §4.1.2.1)。
+ * RFC 9207 §2 は error response を含む全 authorization response に `iss` を
+ * 要求するため、surface issuer も常に載せる (issue #449)。
+ */
 function redirectErrorResponse(
   redirectUri: string,
   error: string,
   description: string,
   state: string | null,
+  iss: string,
 ): Response {
   const u = new URL(redirectUri);
   u.searchParams.set("error", error);
   u.searchParams.set("error_description", description);
   if (state) u.searchParams.set("state", state);
+  u.searchParams.set("iss", iss);
   return Response.redirect(u.toString(), 302);
 }
 
@@ -103,15 +113,23 @@ export async function handleMcpAuthorize(
     return jsonResponse({ error: "invalid_request", error_description: "redirect_uri not registered for this client" }, 400);
   }
 
+  // ── RFC 9207 (issue #449): authorization response に載せる `iss`。client は
+  //    AS metadata で見た issuer と単純文字列比較するため、surface の issuer
+  //    (既定 = origin / Google IdP surface = `<origin>/mcp/google`) をそのまま使う ──
+  const issForResponse =
+    opts?.idpDefault === "google"
+      ? `${env.AUTH_WORKER_ORIGIN}${MCP_GOOGLE_SURFACE_PATH}`
+      : env.AUTH_WORKER_ORIGIN;
+
   // ── ここから後の error は redirect_uri 経由で返す ──
   if (response_type !== "code") {
-    return redirectErrorResponse(redirect_uri, "unsupported_response_type", "response_type must be 'code'", state || null);
+    return redirectErrorResponse(redirect_uri, "unsupported_response_type", "response_type must be 'code'", state || null, issForResponse);
   }
   if (!code_challenge) {
-    return redirectErrorResponse(redirect_uri, "invalid_request", "code_challenge is required (PKCE mandatory)", state || null);
+    return redirectErrorResponse(redirect_uri, "invalid_request", "code_challenge is required (PKCE mandatory)", state || null, issForResponse);
   }
   if (code_challenge_method !== "S256") {
-    return redirectErrorResponse(redirect_uri, "invalid_request", "code_challenge_method must be 'S256'", state || null);
+    return redirectErrorResponse(redirect_uri, "invalid_request", "code_challenge_method must be 'S256'", state || null, issForResponse);
   }
 
   // ── RFC 8707 Resource Indicator (MCP Authorization spec 2025-06-18 で必須化) ──
@@ -140,6 +158,7 @@ export async function handleMcpAuthorize(
         "invalid_target",
         "resource origin must equal this MCP server's canonical origin",
         state || null,
+        issForResponse,
       );
     }
     resource = resourceRaw;
@@ -175,6 +194,7 @@ export async function handleMcpAuthorize(
       client_state: state,
       scope,
       ...(resource !== undefined ? { resource } : {}),
+      iss: issForResponse,
       expires_at: Date.now() + AUTH_REQUEST_TTL_SEC * 1000,
     };
     await putAuthRequest(env, rec);
@@ -208,6 +228,7 @@ export async function handleMcpAuthorize(
     client_state: state,
     scope,
     ...(resource !== undefined ? { resource } : {}),
+    iss: issForResponse,
     expires_at: Date.now() + AUTH_REQUEST_TTL_SEC * 1000,
   };
   await putAuthRequest(env, rec);
