@@ -438,3 +438,46 @@ describe("handleMcpAuthCallbackGoogle — success", () => {
     expect(loc.searchParams.has("state")).toBe(false);
   });
 });
+
+// RFC 9207 (issue #449): Google callback も redirect back に `iss` を載せる。
+// Google IdP surface (issue #438) 発の record は iss = <origin>/mcp/google。
+describe("handleMcpAuthCallbackGoogle — RFC 9207 iss parameter (issue #449)", () => {
+  it("error redirect carries the surface iss recorded on the AuthRequestRecord", async () => {
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
+    await env.MCP_OAUTH_KV!.put(
+      "auth:request:ar-iss",
+      JSON.stringify({
+        id: "ar-iss",
+        client_id: "c-1",
+        redirect_uri: "https://claude.ai/cb",
+        code_challenge: "abc",
+        code_challenge_method: "S256",
+        client_state: "csrf-1",
+        scope: "",
+        iss: `${ISSUER}/mcp/google`,
+        expires_at: Date.now() + 60_000,
+      }),
+    );
+    const state = await buildState("ar-iss");
+    const res = await handleMcpAuthCallbackGoogle(
+      callbackReq({ state, error: "access_denied" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("iss")).toBe(`${ISSUER}/mcp/google`);
+  });
+
+  it("falls back to AUTH_WORKER_ORIGIN for legacy records without iss", async () => {
+    const { env } = envWithKv({}, DEFAULT_ALLOWLIST_RAW);
+    await seedAuthRequest(env);
+    const state = await buildState("ar-1");
+    const res = await handleMcpAuthCallbackGoogle(
+      callbackReq({ state, error: "access_denied" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("iss")).toBe(ISSUER);
+  });
+});

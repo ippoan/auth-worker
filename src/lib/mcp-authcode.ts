@@ -43,6 +43,14 @@ export interface AuthRequestRecord {
    * optional。
    */
   resource?: string;
+  /**
+   * RFC 9207 (issue #449): authorization response (callback の redirect back) に
+   * 載せる `iss` 値。surface で issuer が異なる (既定 = `AUTH_WORKER_ORIGIN`、
+   * Google IdP surface = `<origin>/mcp/google` — issue #438) ため `/authorize`
+   * 時点の surface を記録する。旧 record (フィールド無し) は callback 側で
+   * `AUTH_WORKER_ORIGIN` に fallback。
+   */
+  iss?: string;
   expires_at: number;
 }
 

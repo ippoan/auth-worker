@@ -421,3 +421,66 @@ describe("handleMcpAuthCallback — success", () => {
     expect(loc.searchParams.has("state")).toBe(false);
   });
 });
+
+// RFC 9207 (issue #449): callback の redirect back (成功・error 両方) に `iss` を載せる。
+describe("handleMcpAuthCallback — RFC 9207 iss parameter (issue #449)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it("success redirect carries iss recorded on the AuthRequestRecord", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+        .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+    );
+    const { env } = envWithKv();
+    await env.MCP_OAUTH_KV!.put(
+      "auth:request:ar-iss",
+      JSON.stringify({
+        id: "ar-iss",
+        client_id: "c-1",
+        redirect_uri: "https://claude.ai/cb",
+        code_challenge: "abc",
+        code_challenge_method: "S256",
+        client_state: "csrf-1",
+        scope: "",
+        iss: "https://auth.test.example",
+        expires_at: Date.now() + 60_000,
+      }),
+    );
+    const state = await buildState("ar-iss");
+    const res = await handleMcpAuthCallback(callbackReq({ state, code: "ghc" }), env);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("iss")).toBe("https://auth.test.example");
+  });
+
+  it("falls back to AUTH_WORKER_ORIGIN for legacy records without iss (success path)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(jsonResp({ access_token: "ghpat" }))
+        .mockResolvedValueOnce(jsonResp({ login: "alice" })),
+    );
+    const { env } = envWithKv();
+    await seedAuthRequest(env); // iss を記録しない旧 record
+    const state = await buildState("ar-1");
+    const res = await handleMcpAuthCallback(callbackReq({ state, code: "ghc" }), env);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("iss")).toBe(ISSUER);
+  });
+
+  it("error redirect (user cancelled) also carries iss", async () => {
+    const { env } = envWithKv();
+    await seedAuthRequest(env);
+    const state = await buildState("ar-1");
+    const res = await handleMcpAuthCallback(callbackReq({ state, error: "access_denied" }), env);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("error")).toBe("access_denied");
+    expect(loc.searchParams.get("iss")).toBe(ISSUER);
+  });
+});

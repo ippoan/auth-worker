@@ -61,16 +61,24 @@ function parseAllowlist(raw: string | undefined): string[] {
   }
 }
 
+/**
+ * RFC 9207 §2 (issue #449): error response を含む全 authorization response に
+ * `iss` を載せる。値は `/authorize` 時に記録した surface issuer
+ * (`AuthRequestRecord.iss` — Google IdP surface は `<origin>/mcp/google`)、
+ * 旧 record は呼び出し側で origin に fallback。
+ */
 function redirectError(
   redirectUri: string,
   error: string,
   description: string,
   clientState: string,
+  iss: string,
 ): Response {
   const u = new URL(redirectUri);
   u.searchParams.set("error", error);
   u.searchParams.set("error_description", description);
   if (clientState) u.searchParams.set("state", clientState);
+  u.searchParams.set("iss", iss);
   return Response.redirect(u.toString(), 302);
 }
 
@@ -109,6 +117,8 @@ export async function handleMcpAuthCallbackGoogle(
   if (!reqRec) {
     return jsonResponse({ error: "invalid_request", error_description: "auth request expired or not found" }, 400);
   }
+  // RFC 9207 (issue #449): 旧 record (iss 未記録) は既定 surface の issuer に fallback
+  const issForResponse = reqRec.iss ?? env.AUTH_WORKER_ORIGIN;
 
   // ── Google 側 user キャンセル ──
   if (googleError) {
@@ -118,6 +128,7 @@ export async function handleMcpAuthCallbackGoogle(
       "access_denied",
       "Google authorization was cancelled or denied",
       reqRec.client_state,
+      issForResponse,
     );
   }
   if (!googleCode) {
@@ -153,6 +164,7 @@ export async function handleMcpAuthCallbackGoogle(
       "server_error",
       "Failed to exchange authorization code with Google",
       reqRec.client_state,
+      issForResponse,
     );
   }
 
@@ -171,6 +183,7 @@ export async function handleMcpAuthCallbackGoogle(
       "server_error",
       "Failed to fetch verified Google account email",
       reqRec.client_state,
+      issForResponse,
     );
   }
   const email = idClaims.email.toLowerCase();
@@ -184,6 +197,7 @@ export async function handleMcpAuthCallbackGoogle(
       "access_denied",
       "Your Google account is not authorized to use this MCP server",
       reqRec.client_state,
+      issForResponse,
     );
   }
 
@@ -212,9 +226,10 @@ export async function handleMcpAuthCallbackGoogle(
   await putAuthCode(env, codeRec);
   await deleteAuthRequest(env, reqRec.id);
 
-  // ── client redirect_uri に code + 元 state を載せて戻す ──
+  // ── client redirect_uri に code + 元 state + iss (RFC 9207) を載せて戻す ──
   const dest = new URL(reqRec.redirect_uri);
   dest.searchParams.set("code", code);
   if (reqRec.client_state) dest.searchParams.set("state", reqRec.client_state);
+  dest.searchParams.set("iss", issForResponse);
   return Response.redirect(dest.toString(), 302);
 }

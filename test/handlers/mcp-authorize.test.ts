@@ -553,3 +553,41 @@ describe("handleMcpAuthorize — query param truly missing (?? null branch)", ()
     expect(stored.client_state).toBe("");
   });
 });
+
+// RFC 9207 (issue #449): 全 authorization response (error redirect 含む) に `iss` を
+// 載せ、surface issuer を AuthRequestRecord に記録する。
+describe("handleMcpAuthorize — RFC 9207 iss parameter (issue #449)", () => {
+  it("error redirect carries iss = AUTH_WORKER_ORIGIN on the default surface", async () => {
+    const { env, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), response_type: "token" }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("error")).toBe("unsupported_response_type");
+    expect(loc.searchParams.get("iss")).toBe("https://auth.test.example");
+  });
+
+  it("error redirect carries iss = <origin>/mcp/google under idpDefault google (issue #438 surface)", async () => {
+    const { env, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(client_id), code_challenge: "" }),
+      env,
+      { idpDefault: "google" },
+    );
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.searchParams.get("error")).toBe("invalid_request");
+    expect(loc.searchParams.get("iss")).toBe("https://auth.test.example/mcp/google");
+  });
+
+  it("stores iss on the AuthRequestRecord (GitHub path, default surface)", async () => {
+    const { env, kv, client_id } = await envWithRegisteredClient();
+    const res = await handleMcpAuthorize(authorizeReq(validParams(client_id)), env);
+    expect(res.status).toBe(302);
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { iss?: string };
+    expect(stored.iss).toBe("https://auth.test.example");
+  });
+});
