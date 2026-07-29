@@ -2,7 +2,7 @@
  * `handleMcpAuthorize` (RFC 6749 §4.1) unit test (Phase 5 / #128).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { handleMcpAuthorize } from "../../src/handlers/mcp-authorize";
 import { putDcrClient } from "../../src/lib/mcp-dcr";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
@@ -589,5 +589,83 @@ describe("handleMcpAuthorize — RFC 9207 iss parameter (issue #449)", () => {
     const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
     const stored = JSON.parse(kv._data[reqKey]!) as { iss?: string };
     expect(stored.iss).toBe("https://auth.test.example");
+  });
+});
+
+// CIMD (SEP-991、issue #449 PR-B): client_id が HTTPS URL のとき metadata 文書を
+// 取得して DCR record の代わりに使う。
+describe("handleMcpAuthorize — CIMD client_id (issue #449 PR-B)", () => {
+  const CIMD_ID = "https://app.example.com/oauth/client-metadata.json";
+  const cimdDoc = {
+    client_id: CIMD_ID,
+    client_name: "Example MCP Client",
+    redirect_uris: ["https://claude.ai/cb"],
+    token_endpoint_auth_method: "none",
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function envForCimd(): { env: Env; kv: MockKV } {
+    const kv = createMockKV() as unknown as MockKV;
+    const env = createMockEnv({
+      MCP_OAUTH_KV: kv,
+      GITHUB_MCP_CLIENT_ID: "gh-test-id",
+      OAUTH_STATE_SECRET: "test-state-secret-32chars!!!!!!!",
+      AUTH_WORKER_ORIGIN: "https://auth.test.example",
+    });
+    return { env, kv };
+  }
+
+  it("accepts a CIMD client_id and proceeds to the GitHub redirect", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(cimdDoc), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const { env, kv } = envForCimd();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(CIMD_ID) }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get("Location")!).origin).toBe("https://github.com");
+    // AuthRequestRecord には URL 形式の client_id がそのまま入る (token 交換の
+    // client_id 同値比較は無変更で機能する)
+    const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+    const stored = JSON.parse(kv._data[reqKey]!) as { client_id: string };
+    expect(stored.client_id).toBe(CIMD_ID);
+  });
+
+  it("returns 400 invalid_client when the metadata document cannot be fetched", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network down")));
+    const { env } = envForCimd();
+    const res = await handleMcpAuthorize(authorizeReq(validParams(CIMD_ID)), env);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_client");
+  });
+
+  it("returns 400 when redirect_uri is not listed in the metadata document", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(cimdDoc), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const { env } = envForCimd();
+    const res = await handleMcpAuthorize(
+      authorizeReq({ ...validParams(CIMD_ID), redirect_uri: "https://attacker.example/cb" }),
+      env,
+    );
+    expect(res.status).toBe(400);
   });
 });

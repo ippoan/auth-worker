@@ -37,6 +37,7 @@ import {
   AUTH_REQUEST_TTL_SEC,
   putAuthRequest,
 } from "../lib/mcp-authcode";
+import { fetchCimdClient, isCimdClientId } from "../lib/mcp-cimd";
 import { getDcrClient } from "../lib/mcp-dcr";
 import {
   MCP_GOOGLE_SURFACE_PATH,
@@ -100,12 +101,16 @@ export async function handleMcpAuthorize(
   const code_challenge_method = params.get("code_challenge_method") ?? "";
   const scope = normalizeMcpScope(params.get("scope") ?? "");
 
-  // ── client_id / redirect_uri は DCR と照合。失敗時は redirect せず 400 表示
-  //    (spec §4.1.2.1: redirect_uri が信用できないので) ──
+  // ── client_id / redirect_uri の照合。失敗時は redirect せず 400 表示
+  //    (spec §4.1.2.1: redirect_uri が信用できないので)。
+  //    client_id が HTTPS URL なら CIMD (SEP-991、issue #449 PR-B) として
+  //    metadata 文書を取得・検証、それ以外は従来の DCR lookup ──
   if (!client_id) {
     return jsonResponse({ error: "invalid_request", error_description: "client_id is required" }, 400);
   }
-  const client = await getDcrClient(env, client_id);
+  const client = isCimdClientId(client_id)
+    ? await fetchCimdClient(env, client_id)
+    : await getDcrClient(env, client_id);
   if (!client) {
     return jsonResponse({ error: "invalid_client", error_description: "client_id not found" }, 400);
   }

@@ -130,3 +130,14 @@ describe("handleMcpAsMetadata — RFC 9207 advertisement (issue #449)", () => {
     expect(goog["authorization_response_iss_parameter_supported"]).toBe(true);
   });
 });
+
+// CIMD (SEP-991、issue #449 PR-B) の advertise。
+describe("handleMcpAsMetadata — CIMD advertisement (issue #449 PR-B)", () => {
+  it("advertises client_id_metadata_document_supported on both surfaces", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://auth.test.example" });
+    const def = await handleMcpAsMetadata(new Request("https://auth.test.example/.well-known/oauth-authorization-server"), env).json() as Record<string, unknown>;
+    expect(def["client_id_metadata_document_supported"]).toBe(true);
+    const goog = await handleMcpAsMetadata(new Request("https://auth.test.example/mcp/google/.well-known/oauth-authorization-server"), env, "google").json() as Record<string, unknown>;
+    expect(goog["client_id_metadata_document_supported"]).toBe(true);
+  });
+});

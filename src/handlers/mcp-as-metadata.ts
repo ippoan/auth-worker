@@ -79,6 +79,10 @@ export function handleMcpAsMetadata(
     // 本 flag の advertise が MUST。client は callback の `iss` を issuer と
     // 単純文字列比較して mix-up attack を防ぐ (MCP spec 2026-07-28 で導入)。
     authorization_response_iss_parameter_supported: true,
+    // CIMD (SEP-991、issue #449 PR-B): client_id に HTTPS URL を受け付ける旨を
+    // advertise。client (claude.ai / Claude Code は対応済み) は本 flag を見て
+    // DCR (`registration_endpoint`) より CIMD を優先する (MCP spec 2026-07-28)。
+    client_id_metadata_document_supported: true,
   });
   // AS metadata は静的なので edge cache を許可 (corsJsonResponse は
   // Cache-Control を付けないので後付け)
