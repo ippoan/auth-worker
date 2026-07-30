@@ -48,14 +48,19 @@ function envWithKv(): { env: Env; kv: MockKV } {
   return { env, kv };
 }
 
-/** `mcp-cimd-reject` ログの reason を集める。 */
+/** `mcp-cimd-reject` ログの reason 一覧。 */
 let rejectLog: string[];
+/** console.warn に出た生の行 (「文書本文を出していない」検証用)。 */
+let warnLines: string[];
 let warnSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   rejectLog = [];
+  warnLines = [];
   warnSpy = vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
-    const parsed = JSON.parse(String(line)) as { msg: string; reason: string };
+    const text = String(line);
+    warnLines.push(text);
+    const parsed = JSON.parse(text) as { msg: string; reason: string };
     if (parsed.msg === "mcp-cimd-reject") rejectLog.push(parsed.reason);
   });
 });
@@ -297,11 +302,10 @@ describe("fetchCimdClient — fetch + validation", () => {
       Promise.resolve(docResp(JSON.stringify(validDoc({ client_id: "https://evil.example/x" })))),
     );
     await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch);
-    const lines = warnSpy.mock.calls.map((c) => String(c[0]));
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).not.toContain("evil.example");
-    expect(lines[0]).not.toContain("Example MCP Client");
-    expect(JSON.parse(lines[0]!)).toEqual({
+    expect(warnLines).toHaveLength(1);
+    expect(warnLines[0]).not.toContain("evil.example");
+    expect(warnLines[0]).not.toContain("Example MCP Client");
+    expect(JSON.parse(warnLines[0]!)).toEqual({
       msg: "mcp-cimd-reject",
       reason: "client_id_mismatch",
       client_id: CID,
