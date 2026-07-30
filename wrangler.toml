@@ -11,6 +11,10 @@ preview_urls = true
 AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
 ALC_API_ORIGIN = "https://alc-api.ippoan.org"
 ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
+# GCP 側 rust-ichibanboshi (打刻の受け口、Cloud Run --no-allow-unauthenticated)。
+# `/ichibanboshi-proxy/*` の forward 先 兼 OIDC の audience
+# (Refs ohishi-exp/rust-ichibanboshi#205 の 04b)。
+ICHIBANBOSHI_ORIGIN = "https://rust-ichibanboshi-747065218280.asia-northeast1.run.app"
 # flip 前 preview override (Refs ippoan/ci-dashboard#472) が許可する rust-alc-api
 # prod service の Cloud Run host suffix。/alc-proxy は X-Alc-Preview-Api-Base の
 # host が `<tag>---<この suffix>` (同一 service の tagged revision URL) の時だけ
@@ -214,6 +218,16 @@ secret_name = "JWT_SECRET"
 binding = "ALC_API_PROXY_SA_KEY"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "ALC_API_PROXY_SA_KEY"
+
+# ohishi-exp/rust-ichibanboshi#205 の 04b: `/ichibanboshi-proxy/*` が OIDC ID token を
+# mint して rust-ichibanboshi (Cloud Run) に到達するための run.invoker SA key。
+# **ALC_API_PROXY_SA_KEY とは別 SA** — rust-ichibanboshi service **だけ** に
+# run.invoker を付けた SA にする (project 全体に付けると分けた意味が無い)。
+# 未投入なら /ichibanboshi-proxy は 503 で fail-closed。
+[[secrets_store_secrets]]
+binding = "ICHIBANBOSHI_PROXY_SA_KEY"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "ICHIBANBOSHI_PROXY_SA_KEY"
 
 [[secrets_store_secrets]]
 binding = "GITHUB_MCP_CLIENT_ID"
