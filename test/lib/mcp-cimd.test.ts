@@ -2,9 +2,14 @@
  * `lib/mcp-cimd.ts` (CIMD / SEP-991、issue #449 PR-B) unit test。
  *
  * fetch は `fetchImpl` 注入 (binding-jwt の introspectFetch と同じ流儀) で stub。
+ *
+ * stub は `workerdFetch` で包む — 本 repo は vanilla vitest (node/undici) で走るが、
+ * undici は workerd が拒否する RequestInit を受け付けてしまう。CIMD (#449 PR-B) の事故は
+ * `redirect: "error"` が workerd で TypeError になるのを node の stub が
+ * 見逃したまま prod に出た事故なので、stub 側で runtime の検証を再現する。
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   CIMD_MAX_BODY_BYTES,
   cacheTtlSecFromHeader,
@@ -12,6 +17,7 @@ import {
   isCimdClientId,
 } from "../../src/lib/mcp-cimd";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
+import { workerdFetch } from "../helpers/workerd-fetch";
 import type { Env } from "../../src/index";
 
 const CID = "https://app.example.com/oauth/client-metadata.json";
@@ -41,6 +47,22 @@ function envWithKv(): { env: Env; kv: MockKV } {
   const env = createMockEnv({ MCP_OAUTH_KV: kv });
   return { env, kv };
 }
+
+/** `mcp-cimd-reject` ログの reason を集める。 */
+let rejectLog: string[];
+let warnSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  rejectLog = [];
+  warnSpy = vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+    const parsed = JSON.parse(String(line)) as { msg: string; reason: string };
+    if (parsed.msg === "mcp-cimd-reject") rejectLog.push(parsed.reason);
+  });
+});
+
+afterEach(() => {
+  warnSpy.mockRestore();
+});
 
 describe("isCimdClientId", () => {
   it("accepts an https URL with a path component", () => {
@@ -92,8 +114,10 @@ describe("cacheTtlSecFromHeader", () => {
 describe("fetchCimdClient — fetch + validation", () => {
   it("fetches, validates, caches, and returns the client", async () => {
     const { env, kv } = envWithKv();
-    const fetchImpl = vi.fn().mockResolvedValue(
-      docResp(validDoc({ scope: "mcp.read" }), { headers: { "Cache-Control": "max-age=600" } }),
+    const fetchImpl = workerdFetch(() =>
+      Promise.resolve(
+        docResp(validDoc({ scope: "mcp.read" }), { headers: { "Cache-Control": "max-age=600" } }),
+      ),
     );
     const client = await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch);
     expect(client).toEqual({
@@ -102,8 +126,11 @@ describe("fetchCimdClient — fetch + validation", () => {
       redirect_uris: ["https://app.example.com/cb"],
       scope: "mcp.read",
     });
-    // redirect 追跡なしで呼んでいる
-    expect(fetchImpl).toHaveBeenCalledWith(CID, expect.objectContaining({ redirect: "error" }));
+    // redirect 追跡なし。workerd が受け付ける値は "follow" / "manual" だけなので
+    // "manual" + 3xx 拒否で実装する (Refs #449 — "error" は fetch 前に TypeError)
+    expect(fetchImpl).toHaveBeenCalledWith(CID, expect.objectContaining({ redirect: "manual" }));
+    // 成功経路では reject ログを出さない
+    expect(rejectLog).toEqual([]);
     // KV に生 JSON がキャッシュされる
     expect(kv._data[`cimd:client:${CID}`]).toBeDefined();
   });
@@ -117,78 +144,173 @@ describe("fetchCimdClient — fetch + validation", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("refetches when the cached document no longer validates", async () => {
+  it("deletes the broken cache entry and refetches when it no longer validates", async () => {
     const { env, kv } = envWithKv();
     kv._data[`cimd:client:${CID}`] = "broken{{{";
-    const fetchImpl = vi.fn().mockResolvedValue(docResp(validDoc()));
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(validDoc())));
     const client = await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch);
     expect(client?.client_id).toBe(CID);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(rejectLog).toEqual(["cache_json_parse_failed"]);
+    // 壊れた値を残すと TTL 切れまで同じ失敗を繰り返す — 上書きされていること
+    expect(kv._data[`cimd:client:${CID}`]).toBe(JSON.stringify(validDoc()));
+  });
+
+  it("deletes a cached document whose client_id no longer matches", async () => {
+    const { env, kv } = envWithKv();
+    kv._data[`cimd:client:${CID}`] = JSON.stringify(
+      validDoc({ client_id: "https://evil.example/other.json" }),
+    );
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(validDoc())));
+    const client = await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch);
+    expect(client?.client_id).toBe(CID);
+    expect(rejectLog).toEqual(["cache_client_id_mismatch"]);
+  });
+
+  it("deletes the broken cache entry even when the refetch also fails", async () => {
+    const { env, kv } = envWithKv();
+    kv._data[`cimd:client:${CID}`] = "broken{{{";
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(validDoc(), { status: 500 })));
+    expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(kv._data[`cimd:client:${CID}`]).toBeUndefined();
+    expect(rejectLog).toEqual(["cache_json_parse_failed", "http_error"]);
   });
 
   it("works without MCP_OAUTH_KV (no cache read/write)", async () => {
     const env = createMockEnv({ MCP_OAUTH_KV: undefined });
-    const fetchImpl = vi.fn().mockResolvedValue(docResp(validDoc()));
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(validDoc())));
     const client = await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch);
     expect(client?.client_id).toBe(CID);
   });
 
-  it("returns null when fetch throws (network error / redirect: error / timeout)", async () => {
+  it("returns null and logs fetch_threw when fetch throws (network error / timeout)", async () => {
     const { env } = envWithKv();
-    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("redirected"));
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("Network connection lost."));
     expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual(["fetch_threw"]);
   });
 
-  it("returns null on non-2xx status", async () => {
+  it("logs fetch_threw for a non-Error rejection", async () => {
     const { env } = envWithKv();
-    const fetchImpl = vi.fn().mockResolvedValue(docResp(validDoc(), { status: 404 }));
+    const fetchImpl = vi.fn().mockRejectedValue("boom");
     expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual(["fetch_threw"]);
+  });
+
+  // 回帰 (Refs #449): workerd は `redirect: "error"` を fetch 前に TypeError で拒否する。
+  // それを catch で潰していたため全 CIMD client が invalid_client になっていた。
+  it("does not pass a redirect mode that the Workers runtime rejects", async () => {
+    const { env } = envWithKv();
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(validDoc())));
+    expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).not.toBeNull();
+    const init = fetchImpl.mock.calls[0]?.[1] as RequestInit;
+    expect(["follow", "manual"]).toContain(init.redirect);
+  });
+
+  it.each([301, 302, 307, 308])(
+    "returns null and logs redirect_not_followed on %i",
+    async (status) => {
+      const { env } = envWithKv();
+      const fetchImpl = workerdFetch(() =>
+        Promise.resolve(
+          new Response(null, { status, headers: { location: "https://app.example.com/moved" } }),
+        ),
+      );
+      expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+      expect(rejectLog).toEqual(["redirect_not_followed"]);
+    },
+  );
+
+  it("logs redirect_not_followed with a null location when the header is absent", async () => {
+    const { env } = envWithKv();
+    const fetchImpl = workerdFetch(() => Promise.resolve(new Response(null, { status: 304 })));
+    expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual(["redirect_not_followed"]);
+  });
+
+  it("returns null and logs http_error on non-2xx status", async () => {
+    const { env } = envWithKv();
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(validDoc(), { status: 404 })));
+    expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual(["http_error"]);
   });
 
   it("returns null when content-length exceeds the cap", async () => {
     const { env } = envWithKv();
-    const fetchImpl = vi.fn().mockResolvedValue(
-      docResp(validDoc(), { headers: { "content-length": String(CIMD_MAX_BODY_BYTES + 1) } }),
+    const fetchImpl = workerdFetch(() =>
+      Promise.resolve(
+        docResp(validDoc(), { headers: { "content-length": String(CIMD_MAX_BODY_BYTES + 1) } }),
+      ),
     );
     expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual(["content_length_too_large"]);
   });
 
   it("returns null when the body itself exceeds the cap (no content-length)", async () => {
     const { env } = envWithKv();
     const huge = `{"pad":"${"x".repeat(CIMD_MAX_BODY_BYTES)}"}`;
-    const fetchImpl = vi.fn().mockResolvedValue(docResp(huge));
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(huge)));
     expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual(["body_too_large"]);
   });
 
   it("returns null when reading the body throws", async () => {
     const { env } = envWithKv();
     const resp = docResp(validDoc());
     vi.spyOn(resp, "text").mockRejectedValue(new Error("stream error"));
-    const fetchImpl = vi.fn().mockResolvedValue(resp);
+    const fetchImpl = workerdFetch(() => Promise.resolve(resp));
     expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual(["body_read_threw"]);
+  });
+
+  it("logs body_read_threw for a non-Error rejection", async () => {
+    const { env } = envWithKv();
+    const resp = docResp(validDoc());
+    vi.spyOn(resp, "text").mockRejectedValue("boom");
+    const fetchImpl = workerdFetch(() => Promise.resolve(resp));
+    expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual(["body_read_threw"]);
   });
 
   it.each([
-    ["malformed JSON", "not-json{{{"],
-    ["non-object JSON", JSON.stringify("a string")],
-    ["null JSON", JSON.stringify(null)],
-    ["array JSON", JSON.stringify([1, 2])],
-    ["client_id mismatch", JSON.stringify(validDoc({ client_id: "https://evil.example/other.json" }))],
-    ["client_name missing", JSON.stringify((() => { const d = validDoc(); delete d["client_name"]; return d; })())],
-    ["client_name empty", JSON.stringify(validDoc({ client_name: "" }))],
-    ["redirect_uris missing", JSON.stringify((() => { const d = validDoc(); delete d["redirect_uris"]; return d; })())],
-    ["redirect_uris empty", JSON.stringify(validDoc({ redirect_uris: [] }))],
-    ["redirect_uris non-string member", JSON.stringify(validDoc({ redirect_uris: ["https://a.example/cb", 42] }))],
-    ["token_endpoint_auth_method not 'none'", JSON.stringify(validDoc({ token_endpoint_auth_method: "private_key_jwt" }))],
-  ])("returns null for %s", async (_label, body) => {
+    ["malformed JSON", "not-json{{{", "json_parse_failed"],
+    ["non-object JSON", JSON.stringify("a string"), "not_json_object"],
+    ["null JSON", JSON.stringify(null), "not_json_object"],
+    ["array JSON", JSON.stringify([1, 2]), "not_json_object"],
+    ["client_id mismatch", JSON.stringify(validDoc({ client_id: "https://evil.example/other.json" })), "client_id_mismatch"],
+    ["client_name missing", JSON.stringify((() => { const d = validDoc(); delete d["client_name"]; return d; })()), "client_name_invalid"],
+    ["client_name empty", JSON.stringify(validDoc({ client_name: "" })), "client_name_invalid"],
+    ["redirect_uris missing", JSON.stringify((() => { const d = validDoc(); delete d["redirect_uris"]; return d; })()), "redirect_uris_invalid"],
+    ["redirect_uris empty", JSON.stringify(validDoc({ redirect_uris: [] })), "redirect_uris_invalid"],
+    ["redirect_uris non-string member", JSON.stringify(validDoc({ redirect_uris: ["https://a.example/cb", 42] })), "redirect_uris_invalid"],
+    ["token_endpoint_auth_method not 'none'", JSON.stringify(validDoc({ token_endpoint_auth_method: "private_key_jwt" })), "auth_method_unsupported"],
+  ])("returns null for %s and logs the reason", async (_label, body, reason) => {
     const { env } = envWithKv();
-    const fetchImpl = vi.fn().mockResolvedValue(docResp(body as string));
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(body as string)));
     expect(await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch)).toBeNull();
+    expect(rejectLog).toEqual([reason]);
+  });
+
+  it("never puts the document body into the reject log", async () => {
+    const { env } = envWithKv();
+    const fetchImpl = workerdFetch(() =>
+      Promise.resolve(docResp(JSON.stringify(validDoc({ client_id: "https://evil.example/x" })))),
+    );
+    await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch);
+    const lines = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain("evil.example");
+    expect(lines[0]).not.toContain("Example MCP Client");
+    expect(JSON.parse(lines[0]!)).toEqual({
+      msg: "mcp-cimd-reject",
+      reason: "client_id_mismatch",
+      client_id: CID,
+    });
   });
 
   it("omits scope when the document does not carry a string scope", async () => {
     const { env } = envWithKv();
-    const fetchImpl = vi.fn().mockResolvedValue(docResp(validDoc({ scope: 123 })));
+    const fetchImpl = workerdFetch(() => Promise.resolve(docResp(validDoc({ scope: 123 }))));
     const client = await fetchCimdClient(env, CID, fetchImpl as unknown as typeof fetch);
     expect(client).not.toBeNull();
     expect("scope" in client!).toBe(false);

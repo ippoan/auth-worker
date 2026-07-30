@@ -105,6 +105,12 @@ branches = true
 path = "src/lib/mcp-scope.ts"
 branches = true
 
+# CIMD (#449 PR-B / #451)。失敗が全経路 null に潰れて理由が残らない作りだったため、
+# 分岐が 1 つでも未検証のまま増えないよう gate に載せる。
+[[files]]
+path = "src/lib/mcp-cimd.ts"
+branches = true
+
 [[files]]
 path = "src/handlers/mcp-register.ts"
 branches = true
