@@ -6,6 +6,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { handleMcpAuthorize } from "../../src/handlers/mcp-authorize";
 import { putDcrClient } from "../../src/lib/mcp-dcr";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
+import { workerdFetchResolving } from "../helpers/workerd-fetch";
 import type { Env } from "../../src/index";
 
 async function envWithRegisteredClient(
@@ -619,13 +620,16 @@ describe("handleMcpAuthorize — CIMD client_id (issue #449 PR-B)", () => {
   }
 
   it("accepts a CIMD client_id and proceeds to the GitHub redirect", async () => {
+    // 素の vi.fn() ではなく workerdFetch を通す — workerd が拒否する
+    // RequestInit (CIMD の `redirect: "error"`、Refs #449) を node 上で検知するため
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify(cimdDoc), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
+      workerdFetchResolving(
+        () =>
+          new Response(JSON.stringify(cimdDoc), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
       ),
     );
     const { env, kv } = envForCimd();
@@ -652,13 +656,16 @@ describe("handleMcpAuthorize — CIMD client_id (issue #449 PR-B)", () => {
   });
 
   it("returns 400 when redirect_uri is not listed in the metadata document", async () => {
+    // 素の vi.fn() ではなく workerdFetch を通す — workerd が拒否する
+    // RequestInit (CIMD の `redirect: "error"`、Refs #449) を node 上で検知するため
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify(cimdDoc), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
+      workerdFetchResolving(
+        () =>
+          new Response(JSON.stringify(cimdDoc), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
       ),
     );
     const { env } = envForCimd();

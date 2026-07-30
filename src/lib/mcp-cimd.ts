@@ -16,11 +16,17 @@
  *   - https + path 必須、fragment / userinfo 禁止 (draft §3.1)
  *   - localhost / private / link-local ホストは拒否 (Workers egress では元々
  *     到達不能だが belt-and-braces)
- *   - redirect 追跡なし (`redirect: "error"`)、タイムアウト 5s、本文 64KB 上限
+ *   - redirect 追跡なし (`redirect: "manual"` + 3xx 明示拒否)、タイムアウト 5s、
+ *     本文 64KB 上限
  *
  * キャッシュ: KV `cimd:client:<url>` に Cache-Control max-age を [60s, 24h] に
  * clamp して保存 (spec の SHOULD "cache metadata respecting HTTP cache headers")。
- * 未指定は 300s。
+ * 未指定は 300s。検証に落ちたキャッシュ値は削除して fetch し直す。
+ *
+ * 観測: 失敗は全経路 null に潰れる (呼び出し側は `invalid_client` 一本) ため、
+ * 理由を `mcp-cimd-reject` の 1 行 JSON で必ず残す。ログが無いと外から
+ * 「取得できていない」以上のことが分からない (#449 PR-B の CIMD でこれに詰まった)。
+ * 文書の中身は出さない — `client_id` は公開 metadata URL なので出す。
  */
 
 import type { Env } from "../index";
@@ -89,32 +95,55 @@ export function cacheTtlSecFromHeader(cacheControl: string | null): number {
   return Math.min(CACHE_TTL_MAX_SEC, Math.max(CACHE_TTL_MIN_SEC, n));
 }
 
-function parseCimdDocument(clientId: string, raw: string): CimdClient | null {
+/**
+ * 検証失敗を理由コード付きで返すため `CimdClient | null` ではなく discriminated
+ * union にしている (理由は `mcp-cimd-reject` ログに出す)。
+ */
+type ParseResult = { client: CimdClient } | { reason: string };
+
+function parseCimdDocument(clientId: string, raw: string): ParseResult {
   let doc: unknown;
   try {
     doc = JSON.parse(raw);
   } catch {
-    return null;
+    return { reason: "json_parse_failed" };
   }
-  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return null;
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
+    return { reason: "not_json_object" };
+  }
   const d = doc as Record<string, unknown>;
   // MUST: 文書の client_id は document URL と完全一致 (単純文字列比較、正規化なし)
-  if (d["client_id"] !== clientId) return null;
+  if (d["client_id"] !== clientId) return { reason: "client_id_mismatch" };
   // MUST: client_name / redirect_uris を含む (MCP spec の required properties)
-  if (typeof d["client_name"] !== "string" || d["client_name"] === "") return null;
+  if (typeof d["client_name"] !== "string" || d["client_name"] === "") {
+    return { reason: "client_name_invalid" };
+  }
   const uris = d["redirect_uris"];
-  if (!Array.isArray(uris) || uris.length === 0) return null;
-  if (!uris.every((x) => typeof x === "string")) return null;
+  if (!Array.isArray(uris) || uris.length === 0) return { reason: "redirect_uris_invalid" };
+  if (!uris.every((x) => typeof x === "string")) return { reason: "redirect_uris_invalid" };
   // 本 AS は public client のみ (DCR と同じ)。他の auth 方式を要求する文書は拒否
   const tam = d["token_endpoint_auth_method"];
-  if (tam !== undefined && tam !== "none") return null;
+  if (tam !== undefined && tam !== "none") return { reason: "auth_method_unsupported" };
   const scope = d["scope"];
   return {
-    client_id: clientId,
-    client_name: d["client_name"],
-    redirect_uris: uris as string[],
-    ...(typeof scope === "string" ? { scope } : {}),
+    client: {
+      client_id: clientId,
+      client_name: d["client_name"],
+      redirect_uris: uris as string[],
+      ...(typeof scope === "string" ? { scope } : {}),
+    },
   };
+}
+
+/**
+ * 失敗理由を 1 行 JSON で残して null を返す。`detail` に文書本文は入れない。
+ * `client_id` は CIMD 文書の公開 URL なのでそのまま出す。
+ */
+function reject(clientId: string, reason: string, detail?: Record<string, unknown>): null {
+  console.warn(
+    JSON.stringify({ msg: "mcp-cimd-reject", reason, client_id: clientId, ...(detail ?? {}) }),
+  );
+  return null;
 }
 
 /**
@@ -134,42 +163,66 @@ export async function fetchCimdClient(
     const cached = await kv.get(cacheKey);
     if (cached) {
       const parsed = parseCimdDocument(clientId, cached);
-      if (parsed) return parsed;
-      // cache が壊れていたら fetch し直す (fallthrough)
+      if ("client" in parsed) return parsed.client;
+      // 壊れたキャッシュは削除してから fetch し直す。消さないと TTL (最長 24h)
+      // が切れるまで同じ値を読み続けて恒久的に失敗する。
+      reject(clientId, `cache_${parsed.reason}`);
+      await kv.delete(cacheKey);
     }
   }
 
   let resp: Response;
   try {
     resp = await fetchImpl(clientId, {
-      redirect: "error",
+      // workerd は `redirect: "error"` を受け付けず fetch 前に TypeError を投げる
+      // ("\"error\" won't be implemented since it does not make sense at the edge;
+      // use \"manual\" and check the response status code")。"error" だと下の catch が
+      // 全 CIMD client を無言で invalid_client に潰す (Refs #449)。runtime の指示どおり
+      // "manual" + 3xx 明示拒否で「redirect 追跡なし」を実装する。
+      redirect: "manual",
       signal: AbortSignal.timeout(CIMD_FETCH_TIMEOUT_MS),
       headers: {
         Accept: "application/json",
         "User-Agent": "auth-worker-cimd",
       },
     });
-  } catch {
-    return null;
+  } catch (e: unknown) {
+    return reject(clientId, "fetch_threw", {
+      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    });
   }
-  if (!resp.ok) return null;
+  // redirect: "manual" では 3xx がそのまま返る。追跡しない方針なので拒否するが、
+  // CDN 側の正規化 1 つで全 client が落ちる経路なのでログには必ず残す。
+  if (resp.status >= 300 && resp.status < 400) {
+    return reject(clientId, "redirect_not_followed", {
+      status: resp.status,
+      location: resp.headers.get("location") ?? null,
+    });
+  }
+  if (!resp.ok) return reject(clientId, "http_error", { status: resp.status });
   const contentLength = Number(resp.headers.get("content-length") ?? "0");
-  if (contentLength > CIMD_MAX_BODY_BYTES) return null;
+  if (contentLength > CIMD_MAX_BODY_BYTES) {
+    return reject(clientId, "content_length_too_large", { content_length: contentLength });
+  }
   let raw: string;
   try {
     raw = await resp.text();
-  } catch {
-    return null;
+  } catch (e: unknown) {
+    return reject(clientId, "body_read_threw", {
+      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    });
   }
-  if (raw.length > CIMD_MAX_BODY_BYTES) return null;
+  if (raw.length > CIMD_MAX_BODY_BYTES) {
+    return reject(clientId, "body_too_large", { bytes: raw.length });
+  }
 
-  const client = parseCimdDocument(clientId, raw);
-  if (!client) return null;
+  const parsed = parseCimdDocument(clientId, raw);
+  if (!("client" in parsed)) return reject(clientId, parsed.reason);
 
   if (kv) {
     await kv.put(cacheKey, raw, {
       expirationTtl: cacheTtlSecFromHeader(resp.headers.get("cache-control")),
     });
   }
-  return client;
+  return parsed.client;
 }
