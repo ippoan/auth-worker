@@ -148,10 +148,10 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
     );
     expect(res.status).toBe(200);
     expect(seen).toHaveLength(1);
-    expect(seen[0].url).toBe(
+    expect(seen[0]!.url).toBe(
       `${ORIGIN}/api/kintai/timecard/signatures?month=2026-07&driver_cd=1130`,
     );
-    const h = seen[0].init.headers as Record<string, string>;
+    const h = seen[0]!.init.headers as Record<string, string>;
     expect(h.Authorization).toBe("Bearer fake-oidc-token");
     expect(h["X-Tenant-ID"]).toBe(TENANT);
   });
@@ -169,11 +169,11 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
     );
     expect(res.status).toBe(200);
     expect(seen).toHaveLength(1);
-    expect(seen[0].url).toBe(`${ORIGIN}/api/kintai/timecard`);
-    expect(seen[0].init.method).toBe("POST");
-    const h = seen[0].init.headers as Record<string, string>;
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/timecard`);
+    expect(seen[0]!.init.method).toBe("POST");
+    const h = seen[0]!.init.headers as Record<string, string>;
     expect(h["Content-Type"]).toBe("application/json");
-    expect(new TextDecoder().decode(seen[0].init.body as ArrayBuffer)).toBe(body);
+    expect(new TextDecoder().decode(seen[0]!.init.body as ArrayBuffer)).toBe(body);
   });
 
   it("**caller の Authorization は forward しない** — transport は OIDC に差し替える", async () => {
@@ -182,14 +182,14 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
       req(SIGNATURES, { headers: { Authorization: "Bearer caller-token" } }),
       env(),
     );
-    const h = seen[0].init.headers as Record<string, string>;
+    const h = seen[0]!.init.headers as Record<string, string>;
     expect(h.Authorization).toBe("Bearer fake-oidc-token");
   });
 
   it("origin の末尾スラッシュは二重にならない", async () => {
     const seen = captureFetch();
     await handleIchibanboshiProxy(req(SIGNATURES), env({ ICHIBANBOSHI_ORIGIN: `${ORIGIN}/` }));
-    expect(seen[0].url).toBe(`${ORIGIN}/api/kintai/timecard/signatures`);
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/timecard/signatures`);
   });
 
   it("OIDC mint に失敗したら 502 (呼び出し側の 4xx と混ぜない)", async () => {
