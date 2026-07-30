@@ -23,6 +23,7 @@ import { handleAlcProxy } from "./handlers/alc-proxy";
 import { handleAlcInternalProxy } from "./handlers/alc-internal-proxy";
 import { handleDeviceDataProxy } from "./handlers/device-data-proxy";
 import { handleOhishiLogiProxy } from "./handlers/ohishi-logi-proxy";
+import { handleIchibanboshiProxy } from "./handlers/ichibanboshi-proxy";
 import { handleCfFlickrCamWorkerProxy } from "./handlers/cf-flickr-cam-worker-proxy";
 import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
@@ -184,6 +185,16 @@ export interface Env {
    *  のみ付与、blast radius を分離)。Secrets Store binding、未設定なら
    *  `/ohishi-logi-proxy` は 503 (fail-closed)。 */
   OHISHI_LOGI_PROXY_SA_KEY?: SecretBinding;
+  /** GCP 側 rust-ichibanboshi (Cloud Run、打刻の受け口) の origin。
+   *  `/ichibanboshi-proxy/*` が forward 先として使う。未設定なら 503 (fail-closed)。
+   *  Refs ohishi-exp/rust-ichibanboshi#205 の 04b。 */
+  ICHIBANBOSHI_ORIGIN?: string;
+  /** `/ichibanboshi-proxy/*` が Google OIDC ID token を mint して
+   *  `--no-allow-unauthenticated` の rust-ichibanboshi に到達するための
+   *  run.invoker SA key (JSON)。**ALC_API_PROXY_SA_KEY とは別の SA**
+   *  (rust-ichibanboshi service 限定の run.invoker のみ付与、blast radius を分離 —
+   *  ohishi-logi と同じ流儀)。Secrets Store binding、未設定なら 503 (fail-closed)。 */
+  ICHIBANBOSHI_PROXY_SA_KEY?: SecretBinding;
   /** `/cf-flickr-cam-worker-proxy/*` の forward 先 (service binding)。
    *  Flickr OAuth1.0a callback (ブラウザ経由リダイレクト) と運用者向け UI だけを
    *  公開するための唯一の到達経路。cf-flickr-cam-worker 自体は `workers_dev: false`
@@ -493,6 +504,13 @@ export default {
       // `/cam/*` RPC を叩く経路。device-data-proxy と同パターンだが tenant 束縛は無い。
       if (url.pathname.startsWith("/ohishi-logi-proxy/")) {
         return handleOhishiLogiProxy(request, env);
+      }
+
+      // ohishi-exp/rust-ichibanboshi#205 の 04b: dtako relay が打刻を GCP 側の
+      // rust-ichibanboshi (Cloud Run、非公開) へ渡す経路。alc-internal-proxy と
+      // 同じ shared-secret proof + path allowlist + OIDC mint だが、backend も SA も別。
+      if (url.pathname.startsWith("/ichibanboshi-proxy/")) {
+        return handleIchibanboshiProxy(request, env);
       }
 
       // ippoan/cf-flickr-cam-worker#3, #4: Flickr OAuth1.0a callback (ブラウザ
