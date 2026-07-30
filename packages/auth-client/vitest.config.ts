@@ -12,6 +12,7 @@ export default defineConfig({
       reporter: ["text", "json-summary", "html"],
       reportsDirectory: "./coverage",
       include: [
+        "src/chunkReload.ts",
         "src/createAuthFetch.ts",
         "src/jwt.ts",
         "src/jwt-core.mjs",

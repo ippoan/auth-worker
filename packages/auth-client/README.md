@@ -36,6 +36,30 @@ export { useAuth } from '@yhonda-ohishi-pub-dev/auth-client'
 export type { AuthState } from '@yhonda-ohishi-pub-dev/auth-client'
 ```
 
+## chunk load 失敗の自動復旧 (`@ippoan/auth-client/module`)
+
+Cloudflare Workers Static Assets は**存在しないアセットの 404 にも**
+`cache-control: public, max-age=31536000, immutable` を付けて返す。release 直後に
+`/_nuxt/*.js` の 404 を一度踏むと、ブラウザがその 404 を 1 年間保持し、通常のリロードでは
+永久に復旧しない。認証初期化が終わるまで spinner を出す `app.vue` を持つ consumer では
+「真っ暗なまま起動しない」症状になる (実害: ippoan/nuxt-trouble#236)。
+
+Nuxt module を 1 行足すと、chunk load 失敗を検知して**HTTP キャッシュをバイパスして
+取り直してから**リロードする client plugin が入る:
+
+```typescript
+export default defineNuxtConfig({
+  modules: ['@ippoan/auth-client/module'],
+})
+```
+
+module は同時に `experimental.emitRouteChunkError: 'manual'` を設定する。Nuxt 既定の
+`'automatic'` は素のリロードをするだけで HTTP キャッシュをバイパスしないため、これを
+consumer 側で書き忘れると**対策が黙って無効化される**。module 経由なら設定漏れが起きない。
+
+- リロードは 60 秒の時間窓で最大 2 回まで。超えたら画面に案内を出して止まる (無限リロード防止)
+- 無効化する場合は `ippoanAuthClient: { chunkReload: false }`
+
 ## API
 
 ```typescript
