@@ -15,6 +15,7 @@ const ORIGIN = "https://rust-ichibanboshi.test.example";
 const TIMECARD = "/ichibanboshi-proxy/api/kintai/timecard";
 const SIGNATURES = "/ichibanboshi-proxy/api/kintai/timecard/signatures";
 const WINDOW = "/ichibanboshi-proxy/api/kintai/timecard/window";
+const RECALC = "/ichibanboshi-proxy/api/kintai/recalc";
 
 const originalFetch = globalThis.fetch;
 afterAll(() => {
@@ -113,12 +114,46 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
     expect(asGet.status).toBe(403);
   });
 
-  it("prefix 一致では通さない (allowlist は完全一致)", async () => {
-    const res = await handleIchibanboshiProxy(
-      req("/ichibanboshi-proxy/api/kintai/timecard/other"),
+  it("**全量再計算は GET (preview) と POST (書ける方) の両方を通す**", async () => {
+    const seen = captureFetch();
+    const preview = await handleIchibanboshiProxy(
+      req(`${RECALC}?month=2026-07&after_driver_cd=1130&stale_only=true`),
       env(),
     );
-    expect(res.status).toBe(403);
+    expect(preview.status).toBe(200);
+    expect(seen[0]!.url).toBe(
+      `${ORIGIN}/api/kintai/recalc?month=2026-07&after_driver_cd=1130&stale_only=true`,
+    );
+
+    const body = JSON.stringify({ month: "2026-07", apply: true });
+    const applied = await handleIchibanboshiProxy(
+      req(RECALC, { method: "POST", body, headers: { "content-type": "application/json" } }),
+      env(),
+    );
+    expect(applied.status).toBe(200);
+    expect(seen[1]!.url).toBe(`${ORIGIN}/api/kintai/recalc`);
+    expect(seen[1]!.init.method).toBe("POST");
+    // `apply` は body にしか無い — 素通しできていないと全量再計算が起動しない
+    expect(new TextDecoder().decode(seen[1]!.init.body as ArrayBuffer)).toBe(body);
+  });
+
+  it("全量再計算も登録した 2 method 以外は 403 (PUT / DELETE)", async () => {
+    for (const method of ["PUT", "DELETE", "PATCH"]) {
+      const res = await handleIchibanboshiProxy(req(RECALC, { method }), env());
+      expect(res.status, method).toBe(403);
+    }
+  });
+
+  it("prefix 一致では通さない (allowlist は完全一致)", async () => {
+    for (const p of [
+      "/ichibanboshi-proxy/api/kintai/timecard/other",
+      // 未登録。`recalc` が通るからといって下位 path が開くわけではない
+      "/ichibanboshi-proxy/api/kintai/recalc/apply",
+      "/ichibanboshi-proxy/api/kintai/recalc2",
+    ]) {
+      const res = await handleIchibanboshiProxy(req(p), env());
+      expect(res.status, p).toBe(403);
+    }
   });
 
   it("method が違えば 403 (受け口は POST、署名は GET)", async () => {
