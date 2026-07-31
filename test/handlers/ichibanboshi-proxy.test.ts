@@ -16,6 +16,7 @@ const TIMECARD = "/ichibanboshi-proxy/api/kintai/timecard";
 const SIGNATURES = "/ichibanboshi-proxy/api/kintai/timecard/signatures";
 const WINDOW = "/ichibanboshi-proxy/api/kintai/timecard/window";
 const RECALC = "/ichibanboshi-proxy/api/kintai/recalc";
+const DAY_SUMMARIES = "/ichibanboshi-proxy/api/kintai/day-summaries";
 
 const originalFetch = globalThis.fetch;
 afterAll(() => {
@@ -85,8 +86,10 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
   });
 
   // ── ② path + method allowlist ─────────────────────────────────────────────
-  it("**読み出し経路は通さない。** 打刻の口以外は 403", async () => {
+  it("**テナントを名乗れる読み出し経路は通さない。** 登録した口以外は 403", async () => {
     for (const p of [
+      // 受け口が `X-Tenant-ID` で読み先を決める側。ここを通すと shared secret だけで
+      // 他テナントを引ける (`day-summaries` が通るのは受け口がヘッダを読まないから)
       "/ichibanboshi-proxy/api/kintai/daily",
       "/ichibanboshi-proxy/api/kintai/kosoku-daily",
       "/ichibanboshi-proxy/api/uriage/by-person",
@@ -137,6 +140,26 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
     expect(new TextDecoder().decode(seen[1]!.init.body as ArrayBuffer)).toBe(body);
   });
 
+  it("**畳んだ結果の読み出しは GET を query ごと通す** (突合を行単位でやる口)", async () => {
+    const seen = captureFetch();
+    const res = await handleIchibanboshiProxy(
+      req(`${DAY_SUMMARIES}?month=2026-06&driver=1130`),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/day-summaries?month=2026-06&driver=1130`);
+    const h = seen[0]!.init.headers as Record<string, string>;
+    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+  });
+
+  it("**畳んだ結果は読むだけ。** GET 以外は 403 (書き込みに化けさせない)", async () => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const res = await handleIchibanboshiProxy(req(DAY_SUMMARIES, { method }), env());
+      expect(res.status, method).toBe(403);
+    }
+  });
+
   it("全量再計算も登録した 2 method 以外は 403 (PUT / DELETE)", async () => {
     for (const method of ["PUT", "DELETE", "PATCH"]) {
       const res = await handleIchibanboshiProxy(req(RECALC, { method }), env());
@@ -150,6 +173,10 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
       // 未登録。`recalc` が通るからといって下位 path が開くわけではない
       "/ichibanboshi-proxy/api/kintai/recalc/apply",
       "/ichibanboshi-proxy/api/kintai/recalc2",
+      // 綴り違いは通らない (完全一致。この罠は #205 で何度も出ている)
+      "/ichibanboshi-proxy/api/kintai/day_summaries",
+      "/ichibanboshi-proxy/api/kintai/day-summary",
+      "/ichibanboshi-proxy/api/kintai/day-summaries/2026-06",
     ]) {
       const res = await handleIchibanboshiProxy(req(p), env());
       expect(res.status, p).toBe(403);
