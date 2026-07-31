@@ -49,15 +49,27 @@ const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
  * 持つ RPC surface だからで、こちらは数本しか無い。prefix にすると
  * `/api/kintai/*` の読み出し経路 (`/daily` `/kosoku-daily` 等) まで開いてしまう。
  *
- * **勤務データを返す経路をここに足さないこと** (`/daily` `/kosoku-daily` `/events` 等)。
- * この関門は `X-Tenant-ID` を素直に信用する — relay が KV から解決した値を握っている
- * 前提の ingest 用だから。データを返す口を同じ関門に通すと shared secret だけで他
- * テナントのデータを引けることになる (`alc-internal-proxy` が data 経路を弾いている
- * 理由と同じ)。
+ * **テナントをリクエストが名乗れる読み出し経路をここに足さないこと**
+ * (`/daily` `/kosoku-daily` `/events` 等)。この関門は `X-Tenant-ID` を素直に信用する —
+ * relay が KV から解決した値を握っている前提の ingest 用だから。受け口が
+ * `X-Tenant-ID` で読み先を決める口を同じ関門に通すと、shared secret だけで他テナントの
+ * データを引けることになる (`alc-internal-proxy` が data 経路を弾いている理由と同じ)。
  *
- * GET が混じっているのはこの線引きによる。`signatures` (相手が既に持っている署名) と
- * `recalc` の preview (畳み直すと何件変わるか) が返すのは**運ぶ手順そのものの状態**
- * — 乗務員CD と件数 — であって、勤務時間や賃金は載らない。
+ * GET が混じっているのはこの線引きによる。
+ *
+ *   - `signatures` (相手が既に持っている署名) と `recalc` の preview (畳み直すと何件
+ *     変わるか) が返すのは**運ぶ手順そのものの状態** — 乗務員CD と件数 — であって、
+ *     勤務時間や賃金は載らない。
+ *   - `day-summaries` は勤務データ (分数) を返すが、**受け口が `X-Tenant-ID` を読まない**
+ *     — 読み先は instance の設定 (`[kintai_events] tenant_id`) で固定されている
+ *     (`rust-ichibanboshi` の `src/routes/kintai_day_summaries.rs`)。ヘッダを差し替えても
+ *     引ける先が変わらないので、上の「他テナントを名乗れる」根拠が当たらない。
+ *     **金額は含まない** (識別情報 + 分数のみ) ので `/kyuyo/*` と同じ in-service gate
+ *     側でもない。
+ *
+ * **受け口がヘッダでテナントを決めるように変わったら、その entry をここから外すこと。**
+ * この allowlist が安全なのは受け口の実装が設定 pin だからで、ヘッダ方式に倒れた瞬間に
+ * 根拠が静かに崩れる。
  */
 const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   // **窓ぶんをまるごと受けて、変わった日だけ書く** (ohishi-exp/rust-ichibanboshi#228)。
@@ -72,6 +84,13 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   // 「読むだけのつもりが全乗務員を書き直す」を method の打ち間違いで作れてしまう
   { path: "/api/kintai/recalc", method: "POST" },
   { path: "/api/kintai/recalc", method: "GET" },
+  // 畳んだ結果の読み出し (ohishi-exp/rust-ichibanboshi#205 の 18)。オンプレ基準との
+  // 突合を総数から**行単位**へ上げるための口で、`乗務員CD|暦日|開始時刻` をキーに
+  // 分数 11 列を返す。
+  //
+  // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)。ここに書き込み側を
+  // 足さないこと — 足すなら受け口の doc と合わせて別 PR で
+  { path: "/api/kintai/day-summaries", method: "GET" },
   // 以下 2 本は旧経路 (乗務員ごとに署名を引いて差分だけ運ぶ)。まだ外していない —
   // 窓の経路が本番で回りきったら別 PR で削る
   { path: "/api/kintai/timecard", method: "POST" },
