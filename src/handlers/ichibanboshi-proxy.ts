@@ -16,7 +16,7 @@
  * blast radius を service 単位で切る)。
  *
  *   ① consumer worker proof — `X-Alc-Proxy-Secret` を constant-time 比較 (fail-closed)。
- *   ② path allowlist — 打刻の経路のみ。method も固定する。
+ *   ② path allowlist — 打刻の経路と、その畳み直しのみ。method も固定する。
  *   ③ tenant — `X-Tenant-ID` 必須。**relay が KV から解決した値**で、ここでは検証しない
  *      (relay を shared secret で信用する = alc-internal-proxy の `shared-secret` と同じ扱い)。
  *   ④ OIDC mint — `ICHIBANBOSHI_PROXY_SA_KEY` (run.invoker) で aud=service URL。
@@ -49,15 +49,29 @@ const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
  * 持つ RPC surface だからで、こちらは数本しか無い。prefix にすると
  * `/api/kintai/*` の読み出し経路 (`/daily` `/kosoku-daily` 等) まで開いてしまう。
  *
- * **読み出し経路をここに足さないこと。** 打刻の受け口は `X-Tenant-ID` を素直に
- * 信用する ingest で、それを前提に relay が値を握っている。読み出しを同じ関門に
- * 通すと shared secret だけで他テナントのデータを引けることになる
- * (`alc-internal-proxy` が data 経路を弾いている理由と同じ)。
+ * **勤務データを返す経路をここに足さないこと** (`/daily` `/kosoku-daily` `/events` 等)。
+ * この関門は `X-Tenant-ID` を素直に信用する — relay が KV から解決した値を握っている
+ * 前提の ingest 用だから。データを返す口を同じ関門に通すと shared secret だけで他
+ * テナントのデータを引けることになる (`alc-internal-proxy` が data 経路を弾いている
+ * 理由と同じ)。
+ *
+ * GET が混じっているのはこの線引きによる。`signatures` (相手が既に持っている署名) と
+ * `recalc` の preview (畳み直すと何件変わるか) が返すのは**運ぶ手順そのものの状態**
+ * — 乗務員CD と件数 — であって、勤務時間や賃金は載らない。
  */
 const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   // **窓ぶんをまるごと受けて、変わった日だけ書く** (ohishi-exp/rust-ichibanboshi#228)。
   // いまの経路はこれ 1 本で、GCP への往復は 1 回だけ
   { path: "/api/kintai/timecard/window", method: "POST" },
+  // 全量再計算 (ohishi-exp/rust-ichibanboshi#237)。窓の受け口が畳み直すのは打刻が
+  // 変わった乗務員だけなので、`kosoku.rs` の deploy や TOML の閾値変更で**全乗務員が
+  // 一斉に stale** になる側はこちらが受け持つ (`after_driver_cd` でページングする)。
+  //
+  // **書けるのは POST だけ。** GET は preview で 1 行も書かない (受け口側が
+  // `apply` を POST の body にしか置いていない)。ここで両方 POST にすると
+  // 「読むだけのつもりが全乗務員を書き直す」を method の打ち間違いで作れてしまう
+  { path: "/api/kintai/recalc", method: "POST" },
+  { path: "/api/kintai/recalc", method: "GET" },
   // 以下 2 本は旧経路 (乗務員ごとに署名を引いて差分だけ運ぶ)。まだ外していない —
   // 窓の経路が本番で回りきったら別 PR で削る
   { path: "/api/kintai/timecard", method: "POST" },
