@@ -14,6 +14,7 @@ const TENANT = "11111111-1111-1111-1111-111111111111";
 const ORIGIN = "https://rust-ichibanboshi.test.example";
 const TIMECARD = "/ichibanboshi-proxy/api/kintai/timecard";
 const SIGNATURES = "/ichibanboshi-proxy/api/kintai/timecard/signatures";
+const WINDOW = "/ichibanboshi-proxy/api/kintai/timecard/window";
 
 const originalFetch = globalThis.fetch;
 afterAll(() => {
@@ -83,7 +84,7 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
   });
 
   // ── ② path + method allowlist ─────────────────────────────────────────────
-  it("**読み出し経路は通さない。** 打刻の 2 本以外は 403", async () => {
+  it("**読み出し経路は通さない。** 打刻の口以外は 403", async () => {
     for (const p of [
       "/ichibanboshi-proxy/api/kintai/daily",
       "/ichibanboshi-proxy/api/kintai/kosoku-daily",
@@ -94,6 +95,22 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
       const res = await handleIchibanboshiProxy(req(p), env());
       expect(res.status, p).toBe(403);
     }
+  });
+
+  it("**窓ぶんの受け口 (POST) を通す。** GCP への往復はこれ 1 本", async () => {
+    const seen = captureFetch();
+    const body = JSON.stringify({ months: ["2026-05", "2026-06"], drivers: [1130], events: [] });
+    const res = await handleIchibanboshiProxy(
+      req(WINDOW, { method: "POST", body, headers: { "content-type": "application/json" } }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/timecard/window`);
+    expect(new TextDecoder().decode(seen[0]!.init.body as ArrayBuffer)).toBe(body);
+
+    // 読み出しに化けさせない — GET は通さない
+    const asGet = await handleIchibanboshiProxy(req(WINDOW, { method: "GET" }), env());
+    expect(asGet.status).toBe(403);
   });
 
   it("prefix 一致では通さない (allowlist は完全一致)", async () => {
