@@ -16,7 +16,7 @@
  * blast radius を service 単位で切る)。
  *
  *   ① consumer worker proof — `X-Alc-Proxy-Secret` を constant-time 比較 (fail-closed)。
- *   ② path allowlist — 打刻の 2 経路のみ。method も固定する。
+ *   ② path allowlist — 打刻の経路のみ。method も固定する。
  *   ③ tenant — `X-Tenant-ID` 必須。**relay が KV から解決した値**で、ここでは検証しない
  *      (relay を shared secret で信用する = alc-internal-proxy の `shared-secret` と同じ扱い)。
  *   ④ OIDC mint — `ICHIBANBOSHI_PROXY_SA_KEY` (run.invoker) で aud=service URL。
@@ -46,7 +46,7 @@ const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
  * forward を許可する (path, method) の組。**完全一致**で持つ。
  *
  * `ohishi-logi-proxy` は prefix 一致だが、あちらは動的セグメント (日付/ファイル名) を
- * 持つ RPC surface だからで、こちらは 2 本しか無い。prefix にすると
+ * 持つ RPC surface だからで、こちらは数本しか無い。prefix にすると
  * `/api/kintai/*` の読み出し経路 (`/daily` `/kosoku-daily` 等) まで開いてしまう。
  *
  * **読み出し経路をここに足さないこと。** 打刻の受け口は `X-Tenant-ID` を素直に
@@ -55,9 +55,12 @@ const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
  * (`alc-internal-proxy` が data 経路を弾いている理由と同じ)。
  */
 const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
-  // 差分の日だけを反映する (受け口)
+  // **窓ぶんをまるごと受けて、変わった日だけ書く** (ohishi-exp/rust-ichibanboshi#228)。
+  // いまの経路はこれ 1 本で、GCP への往復は 1 回だけ
+  { path: "/api/kintai/timecard/window", method: "POST" },
+  // 以下 2 本は旧経路 (乗務員ごとに署名を引いて差分だけ運ぶ)。まだ外していない —
+  // 窓の経路が本番で回りきったら別 PR で削る
   { path: "/api/kintai/timecard", method: "POST" },
-  // 相手が既に持っている (乗務員, 暦日) の署名。全量送信を避けるために先に引く
   { path: "/api/kintai/timecard/signatures", method: "GET" },
 ];
 
