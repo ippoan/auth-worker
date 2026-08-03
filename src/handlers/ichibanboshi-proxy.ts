@@ -66,6 +66,9 @@ const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
  *     引ける先が変わらないので、上の「他テナントを名乗れる」根拠が当たらない。
  *     **金額は含まない** (識別情報 + 分数のみ) ので `/kyuyo/*` と同じ in-service gate
  *     側でもない。
+ *   - `stale-months` は `day-summaries` と**同じ受け口の作り** (`ReadTenant` の設定 pin、
+ *     `X-Tenant-ID` を読まない) で、返すのは月・乗務員数・`logic_version` だけ。
+ *     勤務時間も金額も載らない (`rust-ichibanboshi` の `src/routes/stale_months.rs`)。
  *
  * **受け口がヘッダでテナントを決めるように変わったら、その entry をここから外すこと。**
  * この allowlist が安全なのは受け口の実装が設定 pin だからで、ヘッダ方式に倒れた瞬間に
@@ -91,6 +94,19 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)。ここに書き込み側を
   // 足さないこと — 足すなら受け口の doc と合わせて別 PR で
   { path: "/api/kintai/day-summaries", method: "GET" },
+  // 月ごとに「畳み直しが要るか」だけを返す軽い口 (ohishi-exp/rust-ichibanboshi#288、
+  // Refs ohishi-exp/nuxt-dtako-admin#620)。月タブの丸を塗るために 12 か月ぶんを
+  // 引くので、`recalc` の preview (約 50 秒) では代用できない — 受け口は
+  // Postgres 1 往復で数十 ms。
+  //
+  // **`day-summaries` と同じ根拠で通している。** 受け口 (`src/routes/stale_months.rs`)
+  // は `X-Tenant-ID` を読まず、読み先は `[kintai_events] tenant_id` の設定 pin で
+  // 固定される。返すのも月・乗務員数・`logic_version` だけで、**勤務時間も金額も
+  // 載らない**。
+  //
+  // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)。畳み直し自体は
+  // `recalc` の仕事で、こちらは「要るかどうか」しか答えない
+  { path: "/api/kintai/stale-months", method: "GET" },
   // 以下 2 本は旧経路 (乗務員ごとに署名を引いて差分だけ運ぶ)。まだ外していない —
   // 窓の経路が本番で回りきったら別 PR で削る
   { path: "/api/kintai/timecard", method: "POST" },

@@ -17,6 +17,7 @@ const SIGNATURES = "/ichibanboshi-proxy/api/kintai/timecard/signatures";
 const WINDOW = "/ichibanboshi-proxy/api/kintai/timecard/window";
 const RECALC = "/ichibanboshi-proxy/api/kintai/recalc";
 const DAY_SUMMARIES = "/ichibanboshi-proxy/api/kintai/day-summaries";
+const STALE_MONTHS = "/ichibanboshi-proxy/api/kintai/stale-months";
 
 const originalFetch = globalThis.fetch;
 afterAll(() => {
@@ -160,6 +161,26 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
     }
   });
 
+  it("**月別 stale の読み出しも GET を query ごと通す** (月タブの丸を塗る口)", async () => {
+    const seen = captureFetch();
+    const res = await handleIchibanboshiProxy(
+      req(`${STALE_MONTHS}?from=2025-07&to=2026-06`),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/stale-months?from=2025-07&to=2026-06`);
+    const h = seen[0]!.init.headers as Record<string, string>;
+    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+  });
+
+  it("**月別 stale も読むだけ。** GET 以外は 403 (畳み直しは recalc の仕事)", async () => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const res = await handleIchibanboshiProxy(req(STALE_MONTHS, { method }), env());
+      expect(res.status, method).toBe(403);
+    }
+  });
+
   it("全量再計算も登録した 2 method 以外は 403 (PUT / DELETE)", async () => {
     for (const method of ["PUT", "DELETE", "PATCH"]) {
       const res = await handleIchibanboshiProxy(req(RECALC, { method }), env());
@@ -177,6 +198,9 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
       "/ichibanboshi-proxy/api/kintai/day_summaries",
       "/ichibanboshi-proxy/api/kintai/day-summary",
       "/ichibanboshi-proxy/api/kintai/day-summaries/2026-06",
+      "/ichibanboshi-proxy/api/kintai/stale_months",
+      "/ichibanboshi-proxy/api/kintai/stale-month",
+      "/ichibanboshi-proxy/api/kintai/stale-months/2026-06",
     ]) {
       const res = await handleIchibanboshiProxy(req(p), env());
       expect(res.status, p).toBe(403);
