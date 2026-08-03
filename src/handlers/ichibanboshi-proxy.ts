@@ -69,6 +69,8 @@ const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
  *   - `stale-months` は `day-summaries` と**同じ受け口の作り** (`ReadTenant` の設定 pin、
  *     `X-Tenant-ID` を読まない) で、返すのは月・乗務員数・`logic_version` だけ。
  *     勤務時間も金額も載らない (`rust-ichibanboshi` の `src/routes/stale_months.rs`)。
+ *   - `unko-gaps` も同じ受け口の作りで、返すのは運行NO (22 桁) と乗務員CD。
+ *     **識別子だけで勤務データではない** (`rust-ichibanboshi` の `src/routes/unko_gaps.rs`)。
  *
  * **受け口がヘッダでテナントを決めるように変わったら、その entry をここから外すこと。**
  * この allowlist が安全なのは受け口の実装が設定 pin だからで、ヘッダ方式に倒れた瞬間に
@@ -107,6 +109,17 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)。畳み直し自体は
   // `recalc` の仕事で、こちらは「要るかどうか」しか答えない
   { path: "/api/kintai/stale-months", method: "GET" },
+  // 取り込み漏れ候補 (`also_in_month`) の**運行NO** (ohishi-exp/rust-ichibanboshi#289、
+  // Refs ohishi-exp/nuxt-dtako-admin#623)。画面の「取り込み直す」ボタンが③の口へ
+  // 渡す 22 桁を返す。件数だけの `stale-months` と違い運行NO の実物を返すが、
+  // **識別子であって勤務データではない** (分数も金額も載らない)。
+  //
+  // **`stale-months` / `day-summaries` と同じ根拠。** 受け口
+  // (`src/routes/unko_gaps.rs`) は `X-Tenant-ID` を読まず、読み先は
+  // `[kintai_events] tenant_id` の設定 pin で固定される。
+  //
+  // **GET だけ。** 受け口に `POST` は無い (取り込み直しは別の口の仕事)
+  { path: "/api/kintai/unko-gaps", method: "GET" },
   // 以下 2 本は旧経路 (乗務員ごとに署名を引いて差分だけ運ぶ)。まだ外していない —
   // 窓の経路が本番で回りきったら別 PR で削る
   { path: "/api/kintai/timecard", method: "POST" },

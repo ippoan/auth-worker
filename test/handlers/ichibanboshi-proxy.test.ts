@@ -18,6 +18,7 @@ const WINDOW = "/ichibanboshi-proxy/api/kintai/timecard/window";
 const RECALC = "/ichibanboshi-proxy/api/kintai/recalc";
 const DAY_SUMMARIES = "/ichibanboshi-proxy/api/kintai/day-summaries";
 const STALE_MONTHS = "/ichibanboshi-proxy/api/kintai/stale-months";
+const UNKO_GAPS = "/ichibanboshi-proxy/api/kintai/unko-gaps";
 
 const originalFetch = globalThis.fetch;
 afterAll(() => {
@@ -181,6 +182,26 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
     }
   });
 
+  it("**取り込み漏れ候補の運行NO も GET を query ごと通す**", async () => {
+    const seen = captureFetch();
+    const res = await handleIchibanboshiProxy(
+      req(`${UNKO_GAPS}?month=2026-06&driver_cd=1445`),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/unko-gaps?month=2026-06&driver_cd=1445`);
+    const h = seen[0]!.init.headers as Record<string, string>;
+    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+  });
+
+  it("**運行NO も読むだけ。** GET 以外は 403 (取り込み直しは別の口)", async () => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const res = await handleIchibanboshiProxy(req(UNKO_GAPS, { method }), env());
+      expect(res.status, method).toBe(403);
+    }
+  });
+
   it("全量再計算も登録した 2 method 以外は 403 (PUT / DELETE)", async () => {
     for (const method of ["PUT", "DELETE", "PATCH"]) {
       const res = await handleIchibanboshiProxy(req(RECALC, { method }), env());
@@ -201,6 +222,9 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
       "/ichibanboshi-proxy/api/kintai/stale_months",
       "/ichibanboshi-proxy/api/kintai/stale-month",
       "/ichibanboshi-proxy/api/kintai/stale-months/2026-06",
+      "/ichibanboshi-proxy/api/kintai/unko_gaps",
+      "/ichibanboshi-proxy/api/kintai/unko-gap",
+      "/ichibanboshi-proxy/api/kintai/unko-gaps/2026-06",
     ]) {
       const res = await handleIchibanboshiProxy(req(p), env());
       expect(res.status, p).toBe(403);
