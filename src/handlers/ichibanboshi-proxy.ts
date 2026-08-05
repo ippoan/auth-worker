@@ -120,6 +120,29 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   //
   // **GET だけ。** 受け口に `POST` は無い (取り込み直しは別の口の仕事)
   { path: "/api/kintai/unko-gaps", method: "GET" },
+  // 賃金確定値の月次スナップショット (Refs ohishi-exp/nuxt-dtako-admin#677、
+  // 受け口は ohishi-exp/rust-ichibanboshi#293)。
+  //
+  // ★★ **この allowlist で初めて「金額」を通す entry。** 上の doc が挙げる 2 つの
+  // 根拠のうち ①(受け口が `X-Tenant-ID` を読まない) は満たすが、
+  // ②(金額を含まない) は満たさない — 基本給・残業代・支払い実績が載る。
+  // それでも通すのは:
+  //
+  // - 読み書きする `kintai.wage_snapshot` は Supabase にあり、そこへ繋がるのは GCP の
+  //   インスタンスだけ。**Supabase の接続情報を ohishi-data (local) に置かない**方針
+  //   (資格情報をここ 1 箇所に集約する設計) なので、この経路以外に到達手段が無い
+  // - 受け口 (`src/routes/wage_snapshot.rs`) は `ReadTenant` の設定 pin で
+  //   `X-Tenant-ID` を読まない。**他テナントの金額は引けない**
+  // - 叩けるのは shared secret を持つ relay だけで、relay 側の `/restraint-api/*` が
+  //   auth-worker JWT + 閲覧者 email で認可している。`comp_id` も relay が認可済みの
+  //   値で上書きする (呼び出し元に名乗らせない)
+  //
+  // **受け口がヘッダでテナントを決めるように変わったら、真っ先にここを外すこと。**
+  // 金額が乗っているぶん、他の entry より事故の代償が大きい。
+  //
+  // POST は保存 (同一テナント内の置き換え)、GET は期間集計の読み出し。
+  { path: "/api/kintai/wage-snapshot", method: "POST" },
+  { path: "/api/kintai/wage-range", method: "GET" },
   // 以下 2 本は旧経路 (乗務員ごとに署名を引いて差分だけ運ぶ)。まだ外していない —
   // 窓の経路が本番で回りきったら別 PR で削る
   { path: "/api/kintai/timecard", method: "POST" },
