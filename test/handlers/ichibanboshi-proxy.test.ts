@@ -19,6 +19,8 @@ const RECALC = "/ichibanboshi-proxy/api/kintai/recalc";
 const DAY_SUMMARIES = "/ichibanboshi-proxy/api/kintai/day-summaries";
 const STALE_MONTHS = "/ichibanboshi-proxy/api/kintai/stale-months";
 const UNKO_GAPS = "/ichibanboshi-proxy/api/kintai/unko-gaps";
+const WAGE_SNAPSHOT = "/ichibanboshi-proxy/api/kintai/wage-snapshot";
+const WAGE_RANGE = "/ichibanboshi-proxy/api/kintai/wage-range";
 
 const originalFetch = globalThis.fetch;
 afterAll(() => {
@@ -195,6 +197,40 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
     expect(h.Authorization).toBe("Bearer fake-oidc-token");
   });
 
+  it("**賃金スナップショットは POST で保存できる** (この allowlist で唯一の金額)", async () => {
+    const seen = captureFetch();
+    const res = await handleIchibanboshiProxy(
+      req(WAGE_SNAPSHOT, { method: "POST", body: JSON.stringify({ month: "2026-01" }) }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/wage-snapshot`);
+    expect(seen[0]!.init.method).toBe("POST");
+  });
+
+  it("**期間集計は GET を query ごと通す**", async () => {
+    const seen = captureFetch();
+    const res = await handleIchibanboshiProxy(
+      req(`${WAGE_RANGE}?comp=c&from=2026-01&to=2026-06&source=gcp`),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/wage-range?comp=c&from=2026-01&to=2026-06&source=gcp`);
+  });
+
+  /** 保存は POST だけ、読みは GET だけ。取り違えで「読むつもりが書く」を作らない。 */
+  it("賃金スナップショットの method 取り違えは 403", async () => {
+    for (const method of ["GET", "PUT", "PATCH", "DELETE"]) {
+      const res = await handleIchibanboshiProxy(req(WAGE_SNAPSHOT, { method }), env());
+      expect(res.status, `snapshot ${method}`).toBe(403);
+    }
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const res = await handleIchibanboshiProxy(req(WAGE_RANGE, { method }), env());
+      expect(res.status, `range ${method}`).toBe(403);
+    }
+  });
+
   it("**運行NO も読むだけ。** GET 以外は 403 (取り込み直しは別の口)", async () => {
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
       const res = await handleIchibanboshiProxy(req(UNKO_GAPS, { method }), env());
@@ -225,6 +261,11 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
       "/ichibanboshi-proxy/api/kintai/unko_gaps",
       "/ichibanboshi-proxy/api/kintai/unko-gap",
       "/ichibanboshi-proxy/api/kintai/unko-gaps/2026-06",
+      "/ichibanboshi-proxy/api/kintai/wage_snapshot",
+      "/ichibanboshi-proxy/api/kintai/wage-snapshots",
+      "/ichibanboshi-proxy/api/kintai/wage-snapshot/2026-01",
+      "/ichibanboshi-proxy/api/kintai/wage_range",
+      "/ichibanboshi-proxy/api/kintai/wage-ranges",
     ]) {
       const res = await handleIchibanboshiProxy(req(p), env());
       expect(res.status, p).toBe(403);
