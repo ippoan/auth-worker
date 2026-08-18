@@ -6,7 +6,8 @@ name: skills-check
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # ready_for_review を含めるのは test.yml と同じ理由 (draft 解除で再実行させる)。
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read

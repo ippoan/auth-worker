@@ -6,6 +6,12 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+    # 既定は [opened, synchronize, reopened] で **ready_for_review が入らない**。
+    # draft で出した PR を ready にしても CI が再実行されず、draft 時の run
+    # (Auto Merge が skipping のまま) が最新のまま残って merge に進めなくなる。
+    # 本 repo は「本番に出したくない変更は draft で出す」運用なので、draft 解除を
+    # CI の再実行契機として明示する。types を書く以上、既定の 3 種も列挙が要る。
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: write
