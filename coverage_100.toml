@@ -231,6 +231,17 @@ branches = true
 path = "src/handlers/dev-login-token.ts"
 branches = true
 
+# Cloudflare Access 向け OIDC surface の署名鍵基盤 + JWKS。
+# 鍵の parse を fail-open にすると「JWKS には出ているのに検証が通らない」形の
+# 障害になるため、分岐が 1 つも未検証のまま増えないよう gate に載せる。
+[[files]]
+path = "src/lib/oidc-signing-key.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/oidc-jwks.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]

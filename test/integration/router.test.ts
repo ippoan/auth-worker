@@ -129,6 +129,9 @@ vi.mock("../../src/handlers/lineworks-webhook", () => ({
 vi.mock("../../src/handlers/line-webhook", () => ({
   handleLineWebhook: vi.fn(() => new Response("line-webhook")),
 }));
+vi.mock("../../src/handlers/oidc-jwks", () => ({
+  handleOidcJwks: vi.fn(() => new Response("oidc-jwks")),
+}));
 vi.mock("../../src/handlers/mcp-as-metadata", () => ({
   handleMcpAsMetadata: vi.fn(() => new Response("mcp-as-metadata")),
 }));
@@ -331,6 +334,8 @@ describe("Router (index.ts)", () => {
     ["/redirect?to=https://app1.test.example", "redirect"],
     ["/logout", "logout"],
     ["/api/bot-config/export?tenant_id=abc", "bot-export"],
+    // Cloudflare Access 向け OIDC surface の JWKS (issuer `<origin>/oidc`)。
+    ["/oidc/.well-known/jwks.json", "oidc-jwks"],
     ["/.well-known/oauth-authorization-server", "mcp-as-metadata"],
     // issue #438: Google IdP surface の AS metadata alias 4 種。
     ["/.well-known/oauth-authorization-server/mcp/google", "mcp-as-metadata"],
