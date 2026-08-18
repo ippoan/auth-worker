@@ -4,11 +4,13 @@ import { createMockEnv } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 async function generatePrivateJwkJson(): Promise<{ jwk: Record<string, string>; d: string }> {
-  const { privateKey } = await crypto.subtle.generateKey(
+  // generateKey の戻り値は `CryptoKey | CryptoKeyPair`。ECDSA は必ず pair なので
+  // 明示する (test/tsconfig.json の型で narrowing が効かないため)。
+  const { privateKey } = (await crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" },
     true,
     ["sign", "verify"],
-  );
+  )) as CryptoKeyPair;
   const jwk = (await crypto.subtle.exportKey("jwk", privateKey)) as JsonWebKey;
   return {
     jwk: { kty: "EC", crv: "P-256", x: jwk.x!, y: jwk.y!, d: jwk.d! },

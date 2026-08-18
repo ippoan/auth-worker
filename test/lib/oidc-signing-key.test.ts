@@ -11,11 +11,13 @@ import {
 
 /** テスト用に本物の ES256 私有 JWK を作る (固定鍵を repo に置かないため)。 */
 async function generateJwk(): Promise<OidcJwk> {
-  const { privateKey } = await crypto.subtle.generateKey(
+  // generateKey の戻り値は `CryptoKey | CryptoKeyPair`。ECDSA は必ず pair なので
+  // 明示する (test/tsconfig.json の型で narrowing が効かないため)。
+  const { privateKey } = (await crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" },
     true,
     ["sign", "verify"],
-  );
+  )) as CryptoKeyPair;
   const jwk = (await crypto.subtle.exportKey("jwk", privateKey)) as JsonWebKey;
   return {
     kty: "EC",
