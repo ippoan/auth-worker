@@ -132,6 +132,18 @@ vi.mock("../../src/handlers/line-webhook", () => ({
 vi.mock("../../src/handlers/oidc-jwks", () => ({
   handleOidcJwks: vi.fn(() => new Response("oidc-jwks")),
 }));
+vi.mock("../../src/handlers/oidc-discovery", () => ({
+  handleOidcDiscovery: vi.fn(() => new Response("oidc-discovery")),
+}));
+vi.mock("../../src/handlers/oidc-authorize", () => ({
+  handleOidcAuthorize: vi.fn(() => new Response("oidc-authorize")),
+}));
+vi.mock("../../src/handlers/oidc-token", () => ({
+  handleOidcToken: vi.fn(() => new Response("oidc-token")),
+}));
+vi.mock("../../src/handlers/oidc-userinfo", () => ({
+  handleOidcUserinfo: vi.fn(() => new Response("oidc-userinfo")),
+}));
 vi.mock("../../src/handlers/mcp-as-metadata", () => ({
   handleMcpAsMetadata: vi.fn(() => new Response("mcp-as-metadata")),
 }));
@@ -336,6 +348,11 @@ describe("Router (index.ts)", () => {
     ["/api/bot-config/export?tenant_id=abc", "bot-export"],
     // Cloudflare Access 向け OIDC surface の JWKS (issuer `<origin>/oidc`)。
     ["/oidc/.well-known/jwks.json", "oidc-jwks"],
+    // discovery は OIDC 形 / RFC 8414 path-inserted 形の両 alias。
+    ["/oidc/.well-known/openid-configuration", "oidc-discovery"],
+    ["/.well-known/openid-configuration/oidc", "oidc-discovery"],
+    ["/oidc/authorize?response_type=code&client_id=cf-access", "oidc-authorize"],
+    ["/oidc/userinfo", "oidc-userinfo"],
     ["/.well-known/oauth-authorization-server", "mcp-as-metadata"],
     // issue #438: Google IdP surface の AS metadata alias 4 種。
     ["/.well-known/oauth-authorization-server/mcp/google", "mcp-as-metadata"],
@@ -436,6 +453,7 @@ describe("Router (index.ts)", () => {
     ["/mcp/device_authorization", "mcp-device-authorization"],
     ["/device/verify", "mcp-device-verify"],
     ["/device/proceed", "mcp-device-proceed"],
+    ["/oidc/token", "oidc-token"],
     ["/mcp/token", "mcp-token"],
     ["/mcp/introspect", "mcp-introspect"],
     ["/mcp/jwt/pickup", "mcp-jwt-pickup"],
