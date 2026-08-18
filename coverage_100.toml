@@ -242,6 +242,36 @@ branches = true
 path = "src/handlers/oidc-jwks.ts"
 branches = true
 
+# Access 向け OIDC surface 本体。client 認証 / code の single-use / PKCE / open
+# redirect の防止がすべてここの分岐に載るので、未検証の分岐を許さない。
+[[files]]
+path = "src/lib/oidc-clients.ts"
+branches = true
+
+[[files]]
+path = "src/lib/oidc-authcode.ts"
+branches = true
+
+[[files]]
+path = "src/lib/oidc-surface.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/oidc-discovery.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/oidc-authorize.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/oidc-token.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/oidc-userinfo.ts"
+branches = true
+
 # --- Router ---
 
 [[files]]
