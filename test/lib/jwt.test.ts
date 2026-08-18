@@ -136,6 +136,69 @@ describe("verifyJwt", () => {
     // expectedEnv 未指定 → env 不一致でも accept
     expect(await verifyJwt(token, SECRET)).not.toBeNull();
   });
+
+  // 回帰: verifyJwt の payload decoder が atob 直呼び (latin1) だった頃、`name` の
+  // ような多バイト claim が mojibake になっていた。identity ヘッダ注入や id_token の
+  // claim 引き回しでそのまま下流 (rust-alc-api / Access) に流れるので、UTF-8 safe な
+  // decoder を使っていることをここで固定する。signTestJwt は btoa 直呼びで多バイトを
+  // encode できないため、production と同じ signJwt で発行する。
+  describe("multi-byte (UTF-8) claims", () => {
+    const now = () => Math.floor(Date.now() / 1000);
+
+    it("preserves a Japanese name claim through sign → verify", async () => {
+      const token = await signJwt(
+        { sub: "u1", name: "大石 太郎", email: "t@example.com", exp: now() + 3600 },
+        SECRET,
+      );
+      const payload = await verifyJwt(token, SECRET);
+      expect(payload).not.toBeNull();
+      expect(payload!.name).toBe("大石 太郎");
+      expect(payload!.email).toBe("t@example.com");
+    });
+
+    it("preserves multi-byte claims used for identity headers (org / role)", async () => {
+      const token = await signJwt(
+        {
+          sub: "u1",
+          tenant_id: "t1",
+          org_name: "株式会社いっぽあん",
+          role: "管理者",
+          exp: now() + 3600,
+        },
+        SECRET,
+      );
+      const payload = await verifyJwt(token, SECRET);
+      expect(payload!.org_name).toBe("株式会社いっぽあん");
+      expect(payload!.role).toBe("管理者");
+    });
+
+    it("preserves 4-byte code points (emoji / surrogate pairs)", async () => {
+      const token = await signJwt({ sub: "u1", name: "🐕 ポチ", exp: now() + 3600 }, SECRET);
+      const payload = await verifyJwt(token, SECRET);
+      expect(payload!.name).toBe("🐕 ポチ");
+    });
+
+    it("verifyJwt and decodeJwtPayload agree on multi-byte claims", async () => {
+      // 二段構え (検証は verifyJwt / claim 取り出しは decodeJwtPayload) を 1 本に
+      // 戻せる根拠。両者の payload が一致していれば verifyJwt だけで足りる。
+      const token = await signJwt(
+        { sub: "u1", name: "大石 太郎", env: "staging", exp: now() + 3600 },
+        SECRET,
+      );
+      const verified = await verifyJwt(token, SECRET, "staging");
+      expect(verified).toEqual(decodeJwtPayload(token));
+    });
+
+    it("leaves ASCII claims byte-identical (非破壊)", async () => {
+      const token = await signJwt(
+        { sub: "u1", email: "plain@example.com", role: "admin", exp: now() + 3600 },
+        SECRET,
+      );
+      const payload = await verifyJwt(token, SECRET);
+      expect(payload!.email).toBe("plain@example.com");
+      expect(payload!.role).toBe("admin");
+    });
+  });
 });
 
 // Refs rust-alc-api#434: auth-worker が cookie JWT を再署名 (rust の鍵不整合による
