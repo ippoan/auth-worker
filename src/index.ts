@@ -56,6 +56,7 @@ import { corsPreflight } from "./lib/errors";
 import { handleLineworksWebhook, handleLineworksRefresh } from "./handlers/lineworks-webhook";
 import { handleLineWebhook } from "./handlers/line-webhook";
 import { handleMcpAsMetadata } from "./handlers/mcp-as-metadata";
+import { handleOidcJwks } from "./handlers/oidc-jwks";
 import { handleMcpResourceMetadata } from "./handlers/mcp-resource-metadata";
 import { handleMcpDeviceAuthorization } from "./handlers/mcp-device-authorization";
 import { handleMcpDevicePage } from "./handlers/mcp-device-page";
@@ -276,6 +277,18 @@ export interface Env {
    *  - `SecretsStoreSecret` — 実 deploy 環境 (`.get()` 経由で値取得)
    *  値の取り出しは `resolveMcpJwtSecret(env.MCP_JWT_SECRET)` を必ず通すこと。 */
   MCP_JWT_SECRET?: string | SecretsStoreSecret;
+  /** Cloudflare Access 向け OIDC surface (`/oidc/*`) の `id_token` を署名する
+   *  **ES256 私有鍵**。値は私有 JWK の JSON 配列 (先頭 = 現用、以降は JWKS に
+   *  出すだけの旧鍵) で、`resolveOidcSigningKeys()` 経由でのみ読む。
+   *
+   *  既存の HS256 系 (`JWT_SECRET` / `MCP_JWT_SECRET`) とは **用途も鍵も完全に
+   *  別**。Access は id_token を JWKS で検証するため対称鍵が原理的に使えず、
+   *  ここだけ非対称鍵を持つ。逆にこの鍵は id_token 以外の署名に使わないこと
+   *  (`logi_auth_token` / MCP access token の形式は不変)。
+   *
+   *  未 bind / 壊れている場合は `/oidc/*` が 503 になるだけで、既存経路には
+   *  一切影響しない (fail-closed かつ局所)。 */
+  ACCESS_OIDC_SIGNING_KEY?: SecretBinding;
   /** Rust binary (github-mcp-server-rs / ref-files-mcp-server-rs) が
    *  /mcp/introspect を叩く際の認証用。Bearer header で送られる固定共有鍵。
    *
@@ -648,6 +661,11 @@ export default {
             return await handleRedirect(request, env);
           case "/logout":
             return await handleLogout(request, env);
+          // Cloudflare Access 向け OIDC surface (issuer `<origin>/oidc`) の JWKS。
+          // Access は IdP 登録の "Certs URL" にここを指し、id_token を検証する。
+          // 既存 `/mcp/*` surface とは issuer も鍵も別 (HS256 経路には触らない)。
+          case "/oidc/.well-known/jwks.json":
+            return await handleOidcJwks(request, env);
           // MCP OAuth Provider — AS metadata (RFC 8414)
           case "/.well-known/oauth-authorization-server":
             return handleMcpAsMetadata(request, env);
