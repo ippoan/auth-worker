@@ -57,6 +57,10 @@ import { handleLineworksWebhook, handleLineworksRefresh } from "./handlers/linew
 import { handleLineWebhook } from "./handlers/line-webhook";
 import { handleMcpAsMetadata } from "./handlers/mcp-as-metadata";
 import { handleOidcJwks } from "./handlers/oidc-jwks";
+import { handleOidcDiscovery } from "./handlers/oidc-discovery";
+import { handleOidcAuthorize } from "./handlers/oidc-authorize";
+import { handleOidcToken } from "./handlers/oidc-token";
+import { handleOidcUserinfo } from "./handlers/oidc-userinfo";
 import { handleMcpResourceMetadata } from "./handlers/mcp-resource-metadata";
 import { handleMcpDeviceAuthorization } from "./handlers/mcp-device-authorization";
 import { handleMcpDevicePage } from "./handlers/mcp-device-page";
@@ -289,6 +293,15 @@ export interface Env {
    *  未 bind / 壊れている場合は `/oidc/*` が 503 になるだけで、既存経路には
    *  一切影響しない (fail-closed かつ局所)。 */
   ACCESS_OIDC_SIGNING_KEY?: SecretBinding;
+  /** Cloudflare Access 向け OIDC surface (`/oidc/*`) の client レジストリ。
+   *  値は `{client_id, client_secret, redirect_uris[]}` の JSON 配列で、
+   *  `resolveOidcClients()` 経由でのみ読む。
+   *
+   *  MCP surface の DCR (動的登録・public client) とは**別物**。Access は
+   *  client_secret を持つ confidential client で、管理画面で 1 回設定して
+   *  長期間動かす種類の client なので動的登録の利点が無い。未 bind なら
+   *  `/oidc/authorize` `/oidc/token` が 503 になるだけ。 */
+  ACCESS_OIDC_CLIENTS?: SecretBinding;
   /** Rust binary (github-mcp-server-rs / ref-files-mcp-server-rs) が
    *  /mcp/introspect を叩く際の認証用。Bearer header で送られる固定共有鍵。
    *
@@ -666,6 +679,17 @@ export default {
           // 既存 `/mcp/*` surface とは issuer も鍵も別 (HS256 経路には触らない)。
           case "/oidc/.well-known/jwks.json":
             return await handleOidcJwks(request, env);
+          // discovery。issuer が `<origin>/oidc` なので OIDC 形 / RFC 8414 の
+          // path-inserted 形の両方で引けるようにする (client 実装差の吸収)。
+          case "/oidc/.well-known/openid-configuration":
+          case "/.well-known/openid-configuration/oidc":
+            return handleOidcDiscovery(request, env);
+          // Access が user を送り込む認可 endpoint。既存 logi_auth_token が
+          // あれば IdP に飛ばさずその場で code を返す (= 追加ログインゼロ)。
+          case "/oidc/authorize":
+            return await handleOidcAuthorize(request, env);
+          case "/oidc/userinfo":
+            return await handleOidcUserinfo(request, env);
           // MCP OAuth Provider — AS metadata (RFC 8414)
           case "/.well-known/oauth-authorization-server":
             return handleMcpAsMetadata(request, env);
@@ -924,6 +948,11 @@ export default {
           case "/device/proceed":
             return await handleMcpDeviceProceed(request, env);
           // MCP OAuth Provider — Token endpoint (Phase 3 device_code/refresh + Phase 5 authorization_code)
+          // Cloudflare Access 向け OIDC surface の token endpoint。
+          // client_secret を持つ confidential client 用で、返すのは ES256 の
+          // id_token (MCP surface の public client / HS256 とは別物)。
+          case "/oidc/token":
+            return await handleOidcToken(request, env);
           case "/mcp/token":
             return await handleMcpToken(request, env);
           // MCP OAuth Provider — Dynamic Client Registration (Phase 5 / issue #128, RFC 7591)
