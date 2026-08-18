@@ -185,6 +185,34 @@ binding = "MCP_JWT_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "INTERNAL_SHARED_SECRET"
 
+# Cloudflare Access 向け OIDC surface (`/oidc/*`) の設定 2 点。
+#
+#   ACCESS_OIDC_SIGNING_KEY — id_token を署名する ES256 私有 JWK の JSON 配列
+#                             (先頭が現用、以降は JWKS に出すだけの旧鍵)
+#   ACCESS_OIDC_CLIENTS     — client レジストリ (client_id / client_secret /
+#                             redirect_uris の JSON 配列)
+#
+# **既存の HS256 系 (JWT_SECRET / MCP_JWT_SECRET) とは用途も鍵も別。** Access は
+# id_token を JWKS で検証するため、共有秘密の対称署名は原理的に使えない。この鍵は
+# id_token 以外の署名には使わない。
+#
+# prod / staging で **別 entry** にする (MCP_JWT_SECRET のように同 entry を共有
+# しない)。issuer が環境ごとに違う以上、staging の鍵で署名された id_token が prod の
+# JWKS で検証できてしまう状態を作らないため。
+#
+# 生成・投入・ローテーションは docs/access-oidc.md。
+# **Secrets Store に実体が無い状態でこの binding を宣言すると `wrangler deploy` が
+# 失敗する** ので、entry を作ってからこの宣言を merge すること。
+[[secrets_store_secrets]]
+binding = "ACCESS_OIDC_SIGNING_KEY"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "ACCESS_OIDC_SIGNING_KEY"
+
+[[secrets_store_secrets]]
+binding = "ACCESS_OIDC_CLIENTS"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "ACCESS_OIDC_CLIENTS"
+
 # 2026-05-25 (Refs #204): `.dev.vars` 由来の prod secret 一式を Workers secret
 # (`wrangler secret put`) から CF Secrets Store binding に移行。secret-verify-gcp.yml
 # が secret_name を auto-extract → GCP backup を CI で検証してくれる効果も入る。
@@ -484,6 +512,17 @@ secret_name = "INTERNAL_SHARED_SECRET"
 binding = "MCP_JWT_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "INTERNAL_SHARED_SECRET"
+
+# Access 向け OIDC surface の設定 (staging 専用 entry、prod 側コメント参照)。
+[[env.staging.secrets_store_secrets]]
+binding = "ACCESS_OIDC_SIGNING_KEY"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "ACCESS_OIDC_SIGNING_KEY_STAGING"
+
+[[env.staging.secrets_store_secrets]]
+binding = "ACCESS_OIDC_CLIENTS"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "ACCESS_OIDC_CLIENTS_STAGING"
 
 # ci-dashboard 専用 secret。OAuth Code + PKCE consumer (`@ippoan/auth-client-worker`
 # 経由) なので MCP 系 secret (`mcp-internal-shared-secret-*`) は使わず、ci-dashboard
