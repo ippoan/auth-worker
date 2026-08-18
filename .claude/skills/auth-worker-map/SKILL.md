@@ -2,7 +2,7 @@
 name: auth-worker-map
 generated-from: auth-worker:49b042de61e1e80069321114f8e525dfb570ad27
 paths: [src/, packages/]
-description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」等。
+description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
 
 # auth-worker-map — ippoan/auth-worker 構造ナビゲーション
@@ -28,6 +28,7 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
 | **login / join / 雑** | `login-page` `login-api` `join-*` `logout` `top-page` `redirect` | ブラウザ login フロー。`top-page` は session JWT 検証に加えて **dangling tenant 検知**: rust `/api/my-orgs` (verifiedIdentityHeaders 前段 proxy) が 0 件なら **`/logout` へ 302** (tenants 行欠落セッションの早期検出、2026-07-13 本番で hub ingest FK 500 の形で顕在化)。**`/login` へ飛ばすと「同 account→同 tenant_id→同じ空 my-orgs」で login 無限ループになる** (初版のバグ、本番で発生) ため、session を破棄して login で止まる `/logout` にする。判定不能 (rust 障害・claim 不足・応答形不正) は fail-open、`?woff=1` は gate 対象外 |
 | **device token** (無人 box / キオスク) | `device` `device-pair` + `src/lib/device{,-pair}.ts` | smb-watch 等の無人 box / alc-app キオスク向け。pairing (`/device/pair`・headless `/device/pair/start·approve·token`・server-to-server `/device/pair-internal`) で `device_id`+`device_secret` 発行 → `/device/token` で短命 device JWT (HS256・`JWT_SECRET` 共有・`/auth/introspect` 検証可) を mint。role は allowlist (`device-uploader` = carins upload / `device-kiosk` = alc-app、Refs rust-alc-api#434)。`/device/revoke` で失効。`/device/pair-internal` は `X-Internal-Shared-Secret` (`INTERNAL_SHARED_SECRET*`) 認証の server-to-server mint (AlcoholChecker provisioning / rust-alc-api#495 kiosk 端末 re-pair)。`replace_label: true` で同一 (tenant_id, label) の旧 credential を KV 二次索引 (`device-label:<tenant>:<label>`) 経由で revoke してから再発行 (dormant credential 対策)。OTA 後のバージョン再照会は queryVersion 成功まで期限内リトライ (再起動でゾンビ WS が /connected に残り初回照会がタイムアウトするため #389)。**毒 cookie 自動破棄 (#387)**: /top と /device/setup は「cookie 有り + 検証全滅」応答に `clearAuthCookieVariants` (Domain 付き/host-only 両方の Max-Age=0) を付けて自動回復させる。/top は `getAuthCookies` で同名 cookie 全候補を verify (host-only と Domain 付き併存の shadowing 耐性)。staging↔prod は同じ `logi_auth_token`/Domain=.ippoan.org を共有するため env claim 不一致の毒 cookie が発生し得る。CoreS3 / AtomS3 印刷ブリッジの USB provisioning は `device-setup` — **機種 (kind) 分離** (ippoan/alc-app-s3#38): `DEVICE_KINDS` テーブル (cores3 = `device-hub` / atoms3-print = `device-print`) が role・OTA firmware URL・manifest を 1:1 に束ね、pair は body.kind で role を決定、list は両 role を kind 付きで返し (一覧の各行に「再登録」ボタン — その行の label/kind のまま WebSerial provisioning を再実行。Web インストーラーの再フラッシュは NVS ごと消して credential が飛ぶため、その復旧導線)、OTA/version の gate (`managedDeviceKind`) と `latest?kind=` の最新版照会も機種別。developer アカウント (`DEVELOPER_EMAILS`) には CoreS3 の OTA URL を dev ビルド (mem-hud、`devAppUrl` = alc-hub-cores3-dev-app.bin) へ切り替える checkbox を表示 — 開発機の /device/setup 更新でメモリ HUD が消える問題への対処 (ippoan/alc-app-s3#44。URL 欄は誰でも自由編集可のため UI 出し分けのみ、server 側 enforcement 無し)。**p4-gw (Unit PoE-P4 GW、ippoan/alc-gw-p4#15)**: cf-alc-recorder への WS常設接続 (recorder_link) と OTA (esp_https_ota) を実装済みなので `DEVICE_KINDS["p4-gw"]` の appUrl/manifestUrl は GitHub Releases (alc-gw-p4/.github/workflows/release.yml、Cloudflare Pages 配布の cores3/atoms3-print とは別経路) の固定URL — 安定版は `releases/latest`、dev版は main push の度に上書きされる `releases/download/dev`。CoreS3と同じ developer 限定 dev-build checkbox (`dev-build-p4-gw`) も追加済み — 詳細は従来どおり (`GET /device/setup` = WebSerial ページ / `POST /device/setup/pair` = cookie session mint / `GET /device/setup/list` = テナントの登録済み一覧、`listDeviceRecordsByTenant` で `device:` prefix 全走査 + tenant filter / **OTA**: `POST /device/setup/ota` = 遠隔更新トリガ・`GET /device/setup/ota/:id` = 進捗ポーリング。`ALC_RECORDER` service binding 経由で cf-alc-recorder の下り command API (`Authorization: <INTERNAL_SHARED_SECRET>`) に `{action:"ota",url}` を push、進捗は device が返す command_result を透過。device_id は tenant 所属を verify してから叩く。**GW**: `POST /device/setup/gw` = Windows GW (alc-gw) ハブ URL の遠隔設定 (`{action:"gw_url",url}` — url は ws(s):// のみ) / url 省略で接続状態照会 (`{action:"gw_status"}` → `{connected,url}`)。同じ command 経路・結果は `/device/setup/ota/:id` 透過で取得。UI は一覧行の「GW設定 / GW確認」ボタン (CoreS3 かつ WS 接続中のみ、alc-app-s3#81 の firmware 側 action と対))。**拠点デバイス相互認証 (Refs #406、2026-07-19)**: `role=device-gateway` (alc-gw / P4) を追加し、`DeviceRecord.site_id` で hub/gateway の 1:1 束縛を表す。**site_id の既定は hub 自身の `device_id`** (`createDeviceCredential` が role=device-hub かつ siteId 省略時に自動付与、人手採番不要 — hub 交換で device_id が変われば site_id も変わり GW 側の再ポイントで追従する設計、alc-app に拠点レジストリができるまでの暫定)。`POST /device/hub-token` (`device_id`+`device_secret`+`nonce` → TTL60s・`aud:"hub"` の JWT mint、role が `HUB_TOKEN_ELIGIBLE_ROLES` かつ site_id 設定済みのみ) / `POST /device/introspect` (device credential 認証 + 他デバイスの hub token を検証、ESP32 側に JWKS 検証を実装させないための REST 代替) / `POST /device/site/backfill` (shared-secret、server-to-server で既存 hub に site_id 事後付与) / `POST /device/setup/site` (cookie session、`/device/setup` 一覧の「設定」ボタンから — site_id 省略時は device_id 自身を既定にする、`managedDeviceKind` で tenant 越境を防ぐ)。JWKS は意図的に新設していない (検証は introspection のみで完結させる設計、本リポジトリに非対称鍵基盤が無いこととも整合)。 |
 | **印刷ブリッジ テスト** | `print-test` | AtomS3 印刷ブリッジ (ippoan/alc-app-s3#38) の検証支援。`GET /print/test.pdf` = 生成時刻入りテスト PDF (**公開・認証無し** — デバイスの HTTP GET は認証ヘッダを付けないため。PDF は xref オフセットを計算した正規構造で、プリンターの PDF ダイレクトプリント検証も兼ねる #37)。`GET /device/print-test` = login-gated WebSerial ページ (device-setup と同作法): PING 準備ハンドシェイク → `PRINTER ADDR` → `PRINT <PDF url>` を注入し `EVT PRINT_*` の進捗/結果を表示 |
+| **Cloudflare Access 向け OIDC surface** | `src/handlers/oidc-*` (`/oidc/*`) | Access の generic OIDC IdP になる (issuer = `<origin>/oidc`)。**既存セッションで無言に通すのが目的** — 下表参照。MCP surface (`/mcp/*`) とは issuer も鍵も client 種別も別 |
 | **health** | `health` `health-oauth` | ヘルスチェック (health-oauth は Bearer JWT 要、Refs auth-worker#209) |
 | **Durable Objects** | `src/durable_objects/{mcp-session-do,lineworks-webhook-do}.ts` | MCP session 状態 / LINE WORKS webhook |
 
@@ -84,6 +85,42 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
   cache)。`createIdentityProxyHandler` の `oidcServiceAccountKey` option を渡すと
   `Authorization: Bearer <id_token>` を付けて Cloud Run IAM lockdown 下の rust-alc-api に到達
   (未設定なら非破壊・無効)。`./server` の named export。
+
+## Cloudflare Access 向け OIDC surface (`/oidc/*`)
+
+Cloudflare Access の **generic OIDC プロバイダ**として auth-worker を使う口。
+Access に守らせたホスト名 (実例: オンプレ RDP 中継の `rdp.ippoan.org`) へ入るとき、
+**管理画面に既にログインしている利用者に追加ログインを一切させない**のが目的。
+
+| path | handler | 備考 |
+|---|---|---|
+| `GET /oidc/.well-known/openid-configuration` (+ `/.well-known/openid-configuration/oidc`) | `oidc-discovery` | issuer は **`<origin>/oidc`**。Access の設定は URL 手入力なので必須ではないが、issuer を名乗る以上 publish する |
+| `GET /oidc/authorize` | `oidc-authorize` | **`logi_auth_token` があればその場で code を出す** (IdP へ飛ばさない)。無い/期限切れの時だけ既存 `/login` に送り、戻り先に自分を渡す |
+| `POST /oidc/token` | `oidc-token` | code → `id_token` (ES256) + userinfo 用 access_token。`authorization_code` のみ (refresh は出さない — 寿命は Access の session が持つ) |
+| `GET /oidc/userinfo` | `oidc-userinfo` | `tenant_id` / `role` / `org_slug` を custom claim として返す |
+| `GET /oidc/.well-known/jwks.json` | `oidc-jwks` | Access が `id_token` を検証する鍵 |
+
+### `/mcp/*` と混ぜない
+
+| | MCP surface | この surface |
+|---|---|---|
+| issuer | `<origin>` / `<origin>/mcp/google` | **`<origin>/oidc`** |
+| client | public (DCR、`auth_methods: ["none"]`) | **confidential** (`client_secret_post/basic`)。管理画面で 1 回設定して長く使う種類なので動的登録の利点が無い |
+| 署名 | HS256 (`JWT_SECRET` / `MCP_JWT_SECRET`) | **ES256** (`ACCESS_OIDC_SIGNING_KEY`)。Access は JWKS で検証するので対称鍵が原理的に使えない |
+| 目的 | 外部 IdP の identity を**取りに行く** | 自分が持っている identity を**渡す** |
+
+**`ACCESS_OIDC_SIGNING_KEY` は id_token 以外の署名に使わない** (`logi_auth_token` /
+MCP access token の形式は不変)。`ACCESS_OIDC_CLIENTS` (`{client_id, client_secret,
+redirect_uris[]}` の JSON 配列) と併せて未 bind なら **`/oidc/*` だけが 503** になり、
+既存経路には影響しない (fail-closed かつ局所)。
+
+### 消費側
+
+Access アプリの policy は `tenant_id` claim / email で書ける。origin 側 (例:
+`ohishi-exp/rust-ichibanboshi` の `rdp-relay`) は `Cf-Access-Jwt-Assertion` を team の
+JWKS で検証する二段目の壁を持つ。ブラウザ側の作法 (WebSocket は 302 を辿れないので
+接続前に Access cookie を確保する) は `nuxt-dtako-admin-map` skill。
+
 
 ## CI / publish
 
