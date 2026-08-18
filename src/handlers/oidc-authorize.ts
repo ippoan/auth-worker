@@ -21,7 +21,7 @@
 import type { Env } from "../index";
 import { getAuthCookies } from "../lib/cookies";
 import { errorResponse } from "../lib/errors";
-import { decodeJwtPayload, verifyJwt } from "../lib/jwt";
+import { verifyJwt } from "../lib/jwt";
 import {
   OIDC_CODE_TTL_SEC,
   generateOidcOpaqueToken,
@@ -69,18 +69,12 @@ async function identityFromSession(
   const secret = await resolveSecret(env.JWT_SECRET);
   if (!secret) return null;
   for (const token of getAuthCookies(request)) {
-    // claim の**取り出し**は decodeJwtPayload を使う。verifyJwt の内部 decoder は
-    // atob 直呼びで UTF-8 を復元できず、`name` のような多バイト claim が文字化け
-    // する (decodeJwtPayload だけが UTF-8 safe)。id_token の `name` はそのまま
-    // Access の管理画面や監査ログに出るので、ここで化けさせない。jwt.ts 側は
-    // 既存 consumer が多数ぶら下がる共有経路なので触らない。
-    //
-    // 形が壊れた cookie は署名検証より前にここで落とす (crypto を回す前に弾ける)。
-    const payload = decodeJwtPayload(token);
+    // 署名 / exp / env claim の検証と claim の取り出しはどちらも verifyJwt 1 本。
+    // 以前は verifyJwt の payload decoder が atob 直呼び (latin1) で `name` の
+    // ような多バイト claim を化けさせたため、取り出しだけ decodeJwtPayload に
+    // 逃がす二段構えにしていたが、jwt.ts 側が UTF-8 safe になったので不要。
+    const payload = await verifyJwt(token, secret, env.WORKER_ENV);
     if (!payload) continue;
-    // **署名 / exp / env claim の検証は verifyJwt が唯一の正**。上の decode は
-    // 検証を一切兼ねないので、この行を通らない限り payload を信用しないこと。
-    if (!(await verifyJwt(token, secret, env.WORKER_ENV))) continue;
     const sub = typeof payload.sub === "string" ? payload.sub : "";
     const email = typeof payload.email === "string" ? payload.email : "";
     // sub / email が無いトークンは Access に渡しても identity にならないので通さない。

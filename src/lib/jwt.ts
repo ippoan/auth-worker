@@ -46,7 +46,11 @@ export async function verifyJwt(
 
   let payload: JwtPayload;
   try {
-    payload = JSON.parse(base64UrlDecode(payloadB64)) as JwtPayload;
+    // payload は UTF-8 safe な decoder を使う (`decodeJwtPayload` と同じ)。
+    // atob 直呼び (= `base64UrlDecode`) は latin1 解釈なので `name: "大石 太郎"` の
+    // ような多バイト claim が mojibake になる。header は alg しか見ず ASCII 固定
+    // なのでそのままで良い。
+    payload = JSON.parse(base64UrlDecodeUtf8(payloadB64)) as JwtPayload;
   } catch {
     return null;
   }
@@ -118,7 +122,7 @@ function base64UrlEncodeStr(s: string): string {
   return base64UrlEncodeBytes(new TextEncoder().encode(s));
 }
 
-/** base64url → UTF-8 文字列 (decodeJwtPayload 用、多バイト claim を保つ)。 */
+/** base64url → UTF-8 文字列 (JWT payload の decode 用、多バイト claim を保つ)。 */
 function base64UrlDecodeUtf8(data: string): string {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
   const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
@@ -126,6 +130,7 @@ function base64UrlDecodeUtf8(data: string): string {
   return new TextDecoder().decode(bytes);
 }
 
+/** base64url → latin1 文字列 (header 専用。alg しか見ないので ASCII 固定)。 */
 function base64UrlDecode(data: string): string {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
   const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
