@@ -32,10 +32,14 @@ describe("renderAdminNotifyPage", () => {
     expect(html).toContain("グループ管理");
   });
 
-  it("uses sessionStorage auth_token + redirects to /login if missing", () => {
+  it("#474: 共通門番 (cookie → sessionStorage) を使い、無ければ /login へ飛ばす", () => {
     const html = renderAdminNotifyPage(ORIGIN);
+    expect(html).toContain("__adminAuth.requireToken('/admin/notify/callback')");
+    // 門番は cookie を先に見る (fragment 無し cookie 配送でループしないこと)
+    expect(html).toContain("document.cookie");
+    expect(html).toContain("logi_auth_token");
+    // sessionStorage は後方互換として残す
     expect(html).toContain("sessionStorage.getItem('auth_token')");
-    expect(html).toContain("/admin/notify/callback");
   });
 
   it("calls the expected rust-alc-api endpoints", () => {

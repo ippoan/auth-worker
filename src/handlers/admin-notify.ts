@@ -1,12 +1,13 @@
 /**
  * /admin/notify — notify recipient / group management
  *
- * /admin/notify          — 静的 HTML 配信 (認証は JS 側で sessionStorage チェック)
- * /admin/notify/callback — ログイン後の着地点 (fragment → sessionStorage → /admin/notify)
+ * /admin/notify          — 静的 HTML 配信 (認証は JS 側の共通門番 = cookie → sessionStorage)
+ * /admin/notify/callback — ログイン後の着地点 (fragment / cookie → sessionStorage → /admin/notify)
  */
 
 import type { Env } from "../index";
 import { renderAdminNotifyPage } from "../lib/admin-notify-html";
+import { renderAdminCallbackPage } from "../lib/admin-callback-html";
 
 export async function handleAdminNotifyPage(
   _request: Request,
@@ -19,26 +20,7 @@ export async function handleAdminNotifyPage(
 }
 
 export async function handleAdminNotifyCallback(): Promise<Response> {
-  const html = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Redirecting...</title></head>
-<body>
-<script>
-  const hash = window.location.hash;
-  if (hash && hash.includes('token=')) {
-    const params = new URLSearchParams(hash.slice(1));
-    const token = params.get('token');
-    if (token) {
-      sessionStorage.setItem('auth_token', token);
-      window.location.replace('/admin/notify');
-    } else {
-      window.location.replace('/admin/notify');
-    }
-  } else {
-    window.location.replace('/admin/notify');
-  }
-</script>
-</body></html>`;
-  return new Response(html, {
+  return new Response(renderAdminCallbackPage("/admin/notify"), {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 }

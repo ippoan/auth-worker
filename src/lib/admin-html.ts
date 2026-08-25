@@ -3,6 +3,8 @@
  * Single-page app with inline JS for JWT auth + API calls
  */
 
+import { renderAdminAuthScript } from "./admin-auth-script";
+
 export function renderAdminSsoPage(
   frontendOrigins: string[] = [],
   backUrl: string = "/top",
@@ -328,6 +330,7 @@ export function renderAdminSsoPage(
     </div>
   </div>
 
+${renderAdminAuthScript()}
   <script>
     let token = null;
     let editing = false;
@@ -335,22 +338,13 @@ export function renderAdminSsoPage(
     let deleteProvider = '';
     const frontendOrigins = ${originsJson};
 
-    // Auth: read JWT from sessionStorage (set by /admin/sso/callback)
+    // Auth: 共通門番 __adminAuth (cookie logi_auth_token → sessionStorage auth_token)
     function initAuth() {
-      token = sessionStorage.getItem('auth_token');
-      // cookie fallback (migration)
-      if (!token) {
-        var m = document.cookie.match(/sso_admin_token=([^;]+)/) ||
-                document.cookie.match(/logi_auth_token=([^;]+)/);
-        if (m && m[1]) {
-          token = m[1];
-          sessionStorage.setItem('auth_token', token);
-        }
-      }
-      if (!token) {
-        window.location.replace('/admin/sso');
-        return;
-      }
+      // #474: cookie (logi_auth_token) → sessionStorage の順で解決する共通門番。
+      // 旧実装は token 無しで自分自身 (/admin/sso) へ replace していたため、
+      // 未ログインだとページの再読み込みだけを繰り返していた。
+      token = window.__adminAuth.requireToken('/admin/sso/callback');
+      if (!token) return;
       try {
         const payload = JSON.parse(atob(token.split('.')[1]));
         const providerLabels = { google: 'Google', lineworks: 'LINE WORKS', password: 'Password' };

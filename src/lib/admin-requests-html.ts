@@ -2,6 +2,8 @@
  * Admin access requests management page HTML
  */
 
+import { renderAdminAuthScript } from "./admin-auth-script";
+
 export function renderAdminRequestsPage(): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -54,21 +56,15 @@ export function renderAdminRequestsPage(): string {
     </div>
     <div id="list"><div class="loading">読み込み中...</div></div>
   </div>
+${renderAdminAuthScript()}
   <script>
     let currentFilter = 'pending';
 
+    // #474: cookie (logi_auth_token) → sessionStorage の順で解決する共通門番。
     function getToken() {
-      // sessionStorage (primary)
-      var t = sessionStorage.getItem('auth_token');
-      if (t) return t;
-      // cookie fallback (migration)
-      var m = document.cookie.match(/sso_admin_token=([^;]+)/) ||
-              document.cookie.match(/logi_auth_token=([^;]+)/);
-      if (m && m[1]) {
-        sessionStorage.setItem('auth_token', m[1]);
-        return m[1];
-      }
-      return null;
+      var t = window.__adminAuth.readToken();
+      if (t) window.__adminAuth.rememberToken(t);
+      return t;
     }
 
     async function apiCall(endpoint, body) {

@@ -4,6 +4,13 @@
 
 export const AUTH_COOKIE = "logi_auth_token";
 
+/**
+ * 旧 admin 画面が使っていた cookie 名 (Path=/admin)。現在は発行しておらず
+ * `/logout` が破棄するだけだが、admin ページの門番 (`admin-auth-script.ts`) が
+ * 後方互換で読むため定数として持つ (ページ JS 側にハードコードを増やさない)。
+ */
+export const LEGACY_ADMIN_COOKIE = "sso_admin_token";
+
 /** Set-Cookie header value for auth token (24h, shared across subdomains) */
 export function setAuthCookie(token: string, hostname: string): string {
   const domain = getParentDomain(hostname);
