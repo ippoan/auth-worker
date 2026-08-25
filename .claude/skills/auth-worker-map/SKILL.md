@@ -65,6 +65,56 @@ Cloudflare Workers (Hono) ベースの認証サービス + 共有パッケージ
 - **`/api/my-orgs` / `/api/switch-org` で raw Bearer を rust-alc-api に素通ししない** (rust-alc-api#434)。rust-alc-api 側は `require_tenant_header` (dumb backend) で **Bearer を読まず X-Tenant-ID + X-User-ID/Email/Role を要求**するため、素通しすると 401 になる (= org 一覧/切替が無言で空になる)。auth-worker が `verifiedIdentityHeaders` で JWT を検証して 4 ヘッダを注入する。JWT には `tenant_id`(UUID) しか無いので tenant 名/slug は rust-alc-api lookup で取る (= この pass-through は必須、auth-worker → rust-alc-api の一方向)。
 - **dev-login (issue #423/#424) は `google_sub` を cache する専用経路が要る**: MCP Google IdP flow (`mcp-auth-callback-google.ts`) は scope が `openid email` のみのため、通常は ID token の `sub` (google_sub) を捨てて `email` だけ auth code に積む。`issue_dev_token`/`issue_dev_login_url` (`mcp-tools.ts`) は既存 `upsertGoogleUser` (rust-alc-api の tenant_id/role lookup) を呼ぶのに google_sub が要るため、callback 側で `google_sub:<email>` を KV に 30日 cache しておく (`mintDevToken` はこの cache が無いと `google_sub_not_cached` で 403)。rust-alc-api への upsert は **既存ユーザーの google_sub 一致時は name/email を書き換えない** ので、この経路は副作用ゼロ (rust-alc-api 側は無修正)。dev JWT は `mcp-jwt.ts` の MCP access token とは別物 — `logi_auth_token` と同じ `JWT_SECRET`/AppClaims 形式に `token_kind:"dev"` を足しただけ (TTL 30分・refresh 無し)。**許可 subject は Secrets Store secret ではなく `MCP_OAUTH_KV` の plain key** (`dev-login.ts::DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY` = `dev_login_allowed_subjects`) — 秘密の値ではなく allowlist 設定なので、`wrangler kv key put --binding=MCP_OAUTH_KV dev_login_allowed_subjects '["google:you@example.com"]'` で直接投入する (secret-inject 不要。prod でも #432 以降 KV bind 済みなので、prod で dev-login を使うには prod 側 namespace にも同 key の投入が必要)。
 
+## ローカルで動かすときの罠 (`wrangler dev`、Refs #474)
+
+**症状から原因が推測しにくい**ものだけ列挙する。`--remote` は使わない前提 (local workerd)。
+
+1. **`.dev.vars` に `JWT_SECRET` を書いても効かない → admin API が全部 401。**
+   `JWT_SECRET` / `GOOGLE_CLIENT_*` 等は `wrangler.toml` の `[[secrets_store_secrets]]`
+   binding で、**binding が `.dev.vars` に勝つ**。local の Secrets Store は空なので
+   `resolveSecret(env.JWT_SECRET)` が `null` を返し、`buildAdminForwardHeaders` が
+   検証に入る前に諦めて **401** になる (理由はログに出ない — `DEBUG` も同じ理由で
+   効かないことがある)。local store に直接入れる (`--remote` を **付けない** = local):
+
+   ```bash
+   npx wrangler secrets-store secret create <store_id> --name JWT_SECRET --value <値> --scopes workers
+   ```
+
+   `<store_id>` は `wrangler.toml` の `[[secrets_store_secrets]]` に書いてある。
+2. **worktree では bundle が build error で落ちる** — `@ippoan/egov-shinsei-sdk` が
+   GitHub Packages の private registry にあり `npm ci` が 401 で入らないため、
+   `src/handlers/egov-redirect.ts` の import が解決できない。`node_modules` を
+   main clone から symlink しているだけだと書き足せないので、**worktree 側の
+   `node_modules` を実ディレクトリにして共有 `node_modules` の各エントリへ symlink を
+   張り直し**、そこに stub package (exports に `./auth` を持つもの) を置く。
+   **stub を置いたままにすると `test/handlers/egov-redirect.test.ts` が
+   「import error」から「assertion 失敗」に変わる**ので、テスト結果を報告する前に
+   元の symlink へ戻すこと。
+3. **`/login` の `isAllowedRedirectUri` を通すには local KV に origin を入れる。**
+
+   ```bash
+   npx wrangler kv key put --binding AUTH_CONFIG --local "origins:prod" "http://<ip>:8787"
+   ```
+
+### cookie 配送を伴う画面をローカルで確認する型
+
+`google-callback` は redirect 先が共有 cookie の届くホストなら token を fragment に
+載せず `Set-Cookie` だけで返す (`authCookieReachesHost`)。**この分岐はローカルでは
+そのまま再現できない**:
+
+- `authCookieReachesHost()` は `localhost` / `127.0.0.1` で **false** を返す
+  (`getParentDomain` が `.` 始まりの親ドメインにならない)。
+- `Domain=.ippoan.org` はローカルホストに張れず、http origin には `Secure` cookie も
+  張れない。
+
+**諦めずに、cookie 名 (`logi_auth_token`) だけ同じにして `Domain` / `Secure` を落とした
+host-only cookie をブラウザ側で仕込む。** これで「cookie あり + `sessionStorage` 空」=
+Google ログイン直後の本番状態が再現でき、ページ側の門番 (`admin-auth-script.ts`) から
+見える情報は本番と同一になる。prod で cookie 配送分岐が成立すること自体は
+`authCookieReachesHost('auth.ippoan.org','auth.ippoan.org') === true` の unit test
+(`test/lib/cookies.test.ts`) が担保しているので、そこをローカルで踏み直す必要はない。
+
+
 ## CCoW から見た auth-worker
 
 - CCoW container の OAT (`/home/claude/.claude/remote/.oauth_token`) → `POST {auth}/mcp/pair/grant-via-oat` で `binding_jwt` を mint (install.sh の silent bootstrap、`secret-inject` skill も同経路)。
