@@ -366,6 +366,61 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
   });
 
+  it("internal-jwt (LINE WORKS 送信): aud=alc-api-internal の Bearer で forward、tenant/secret は載せない (Refs ohishi-exp/nuxt-dtako-admin#874)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/internal/lineworks/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channel_id: TENANT, text: "予約番号: J5JZPEQJ" }),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/internal/lineworks/send");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-internal-jwt");
+    // tenant は rust 側が channel id 引きで解決する。詐称材料を渡さない。
+    expect(h["X-Tenant-ID"]).toBeUndefined();
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
+  });
+
+  it("internal-jwt: LINE WORKS 送信も POST 以外は 403", async () => {
+    for (const method of ["GET", "DELETE", "PUT"]) {
+      const res = await handleAlcInternalProxy(
+        req("/alc-internal-proxy/api/internal/lineworks/send", { method }),
+        env(),
+      );
+      expect(res.status, method).toBe(403);
+    }
+  });
+
+  it("LINE WORKS の tenant 経路 (require_tenant_header) は allowlist に載せない — 403 のまま (#434 再現防止)", async () => {
+    for (const p of [
+      // test-send は名前に反して {text} を渡すだけの汎用テキスト送信で、
+      // /api/internal/lineworks/send と機能はほぼ同じ。だが rust 側は
+      // require_tenant_header (data 経路) で守っており、proxy が forward すると
+      // consumer が X-Alc-Proxy-Secret を持つだけで任意の X-Tenant-ID を名乗れて
+      // しまう = rust-alc-api#434 の脆弱性の再現になる。**似ているからという理由で
+      // ここを allowlist に足さないこと** (browser JWT 経路 = /alc-proxy 専用)。
+      "/alc-internal-proxy/api/notify/lineworks/channels/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/test-send",
+      "/alc-internal-proxy/api/notify/lineworks/channels",
+      // 近いが別物のパス (prefix/suffix ずらし) も落ちること。
+      "/alc-internal-proxy/api/internal/lineworks/send/x",
+      "/alc-internal-proxy/api/internal/lineworks",
+      "/alc-internal-proxy/api/lineworks/send",
+    ]) {
+      const res = await handleAlcInternalProxy(req(p, { method: "POST" }), env());
+      expect(res.status, p).toBe(403);
+    }
+  });
+
   it("internal-jwt: UUID 形式不正の fire path は 403", async () => {
     for (const p of [
       "/alc-internal-proxy/api/internal/trouble/schedules/not-a-uuid/fire",

@@ -65,8 +65,9 @@ type InternalPathClass =
  *   素通しでよい (consumer proof は X-Alc-Proxy-Secret で別途取れている)。
  * - `internal-jwt` は rust の **`require_internal_jwt` (aud=alc-api-internal) 経路**用。
  *   Authorization を `internalAuthToken` (aud=alc-api-internal) に差し替えて forward する。
- *   X-Tenant-ID / X-Internal-Shared-Secret は forward しない (fire は RLS バイパスの
- *   id 引きで tenant を解決する冪等操作)。POST のみ許可。
+ *   X-Tenant-ID / X-Internal-Shared-Secret は forward しない (この経路の rust ハンドラは
+ *   RLS バイパスの id 引き — schedule fire なら schedule id、LINE WORKS 送信なら channel id —
+ *   で tenant を自分で解決するため)。POST のみ許可。
  */
 function classifyInternalPath(path: string): InternalPathClass | null {
   // ── shared-secret: rust の require_internal_shared_secret ingest ──
@@ -97,6 +98,12 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   ) {
     return "internal-jwt";
   }
+  // LINE WORKS への通知テキスト送信 (Refs ohishi-exp/nuxt-dtako-admin#874、ippoan/rust-alc-api
+  // の #874-6)。無人 cron (dtako-scraper-relay) が netprint の予約番号をトークルームへ流す。
+  // 同等の tenant 経路 (`/api/notify/lineworks/channels/{id}/test-send`) は
+  // require_tenant_header なので **絶対に allowlist しない** (browser JWT 経路 = /alc-proxy 専用)。
+  // rust 側は channel_id の id 引き (RLS バイパス) で tenant を解決するため X-Tenant-ID は不要。
+  if (path === "/api/internal/lineworks/send") return "internal-jwt"; // POST 通知送信
 
   return null;
 }
@@ -139,7 +146,7 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
   const pathClass = classifyInternalPath(backendPath);
   if (!pathClass) return jsonError(403, "forbidden");
-  // internal-jwt (schedule fire) は POST のみ許可 (冪等発火以外の操作を通さない)。
+  // internal-jwt は POST のみ許可 (発火 / 送信以外の操作を通さない)。
   if (pathClass === "internal-jwt" && request.method !== "POST") {
     return jsonError(403, "forbidden");
   }
