@@ -3,6 +3,8 @@
  * Single-page app with inline JS for JWT auth + API calls
  */
 
+import { renderAdminAuthScript } from "./admin-auth-script";
+
 export function renderAdminRichMenuPage(): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -222,6 +224,7 @@ export function renderAdminRichMenuPage(): string {
     </div>
   </div>
 
+${renderAdminAuthScript()}
   <script>
     let token = null;
     let selectedBotId = '';
@@ -232,20 +235,8 @@ export function renderAdminRichMenuPage(): string {
     let imageStatus = {}; // richmenuId → boolean (has image)
 
     function initAuth() {
-      token = sessionStorage.getItem('auth_token');
-      // cookie fallback (migration)
-      if (!token) {
-        var m = document.cookie.match(/sso_admin_token=([^;]+)/) ||
-                document.cookie.match(/logi_auth_token=([^;]+)/);
-        if (m && m[1]) {
-          token = m[1];
-          sessionStorage.setItem('auth_token', token);
-        }
-      }
-      if (!token) {
-        const callbackUri = window.location.origin + '/admin/rich-menu/callback';
-        window.location.replace('/login?redirect_uri=' + encodeURIComponent(callbackUri));
-      }
+      // #474: cookie (logi_auth_token) → sessionStorage の順で解決する共通門番。
+      token = window.__adminAuth.requireToken('/admin/rich-menu/callback');
     }
 
     async function api(path, body) {

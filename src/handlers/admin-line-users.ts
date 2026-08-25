@@ -1,13 +1,14 @@
 /**
  * LINE ユーザー管理ページ handlers
  *
- * /admin/line-users          — 静的 HTML 配信（認証は JS 側で sessionStorage チェック）
- * /admin/line-users/callback — ログイン後の着地点。fragment → sessionStorage → /admin/line-users
+ * /admin/line-users          — 静的 HTML 配信（認証は JS 側の共通門番 = cookie → sessionStorage）
+ * /admin/line-users/callback — ログイン後の着地点。fragment / cookie → sessionStorage → /admin/line-users
  */
 
 import type { Env } from "../index";
 import { renderAdminLineUsersPage } from "../lib/admin-line-users-html";
 import { getAllowedOrigins } from "../lib/config";
+import { renderAdminCallbackPage } from "../lib/admin-callback-html";
 
 /** GET /admin/line-users — 常に HTML を返す（認証チェックは JS 側） */
 export async function handleAdminLineUsersPage(
@@ -33,27 +34,7 @@ export async function handleAdminLineUsersPage(
 
 /** GET /admin/line-users/callback — fragment の token を sessionStorage に保存して戻る */
 export async function handleAdminLineUsersCallback(): Promise<Response> {
-  const html = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Redirecting...</title></head>
-<body>
-<script>
-  const hash = window.location.hash;
-  if (hash && hash.includes('token=')) {
-    const params = new URLSearchParams(hash.slice(1));
-    const token = params.get('token');
-    if (token) {
-      sessionStorage.setItem('auth_token', token);
-      window.location.replace('/admin/line-users');
-    } else {
-      window.location.replace('/admin/line-users');
-    }
-  } else {
-    window.location.replace('/admin/line-users');
-  }
-</script>
-</body></html>`;
-
-  return new Response(html, {
+  return new Response(renderAdminCallbackPage("/admin/line-users"), {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 }

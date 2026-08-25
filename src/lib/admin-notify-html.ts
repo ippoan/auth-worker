@@ -6,8 +6,11 @@
  *   2. Recipients — list + edit enabled flag + delete (GET/PUT/DELETE /notify/recipients)
  *   3. Groups — list + CRUD + add/remove members (/notify/groups/*)
  *
- * Auth: sessionStorage `auth_token`, redirect to /login if missing.
+ * Auth: 共通門番 `__adminAuth` (cookie `logi_auth_token` → sessionStorage `auth_token`)。
+ * どちらも無ければ /login へ (Refs #474)。
  */
+
+import { renderAdminAuthScript } from "./admin-auth-script";
 
 export function renderAdminNotifyPage(alcApiOrigin: string): string {
   const apiJson = JSON.stringify(alcApiOrigin);
@@ -108,15 +111,13 @@ export function renderAdminNotifyPage(alcApiOrigin: string): string {
     </div>
   </div>
 
+${renderAdminAuthScript()}
 <script>
 (function(){
   var ALC_API = ${apiJson};
-  var token = sessionStorage.getItem('auth_token');
-  if (!token) {
-    var cb = encodeURIComponent(window.location.origin + '/admin/notify/callback');
-    window.location.replace('/login?redirect_uri=' + cb);
-    return;
-  }
+  // #474: cookie (logi_auth_token) → sessionStorage の順で解決する共通門番。
+  var token = window.__adminAuth.requireToken('/admin/notify/callback');
+  if (!token) return;
 
   function api(path, opts) {
     opts = opts || {};

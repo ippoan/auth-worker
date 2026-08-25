@@ -19,6 +19,16 @@ branches = true
 path = "src/lib/device-pair.ts"
 branches = true
 
+# Refs #474: admin ページ共通の門番 (cookie → sessionStorage)。ここが落ちると
+# 管理画面がログイン無限ループに戻るので 100% を維持する。
+[[files]]
+path = "src/lib/admin-auth-script.ts"
+branches = true
+
+[[files]]
+path = "src/lib/admin-callback-html.ts"
+branches = true
+
 # --- handlers ---
 
 [[files]]

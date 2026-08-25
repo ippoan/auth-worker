@@ -3,6 +3,8 @@
  * Single-page app with inline JS for JWT auth + API calls
  */
 
+import { renderAdminAuthScript } from "./admin-auth-script";
+
 export function renderAdminUsersPage(): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -123,19 +125,13 @@ export function renderAdminUsersPage(): string {
     </form>
   </div>
 
+${renderAdminAuthScript()}
 <script>
+  // #474: cookie (logi_auth_token) → sessionStorage の順で解決する共通門番。
   function getToken() {
-    // sessionStorage (primary)
-    var t = sessionStorage.getItem('auth_token');
-    if (t) return t;
-    // cookie fallback (migration)
-    var m = document.cookie.match(/sso_admin_token=([^;]+)/) ||
-            document.cookie.match(/logi_auth_token=([^;]+)/);
-    if (m && m[1]) {
-      sessionStorage.setItem('auth_token', m[1]);
-      return m[1];
-    }
-    return null;
+    var t = window.__adminAuth.readToken();
+    if (t) window.__adminAuth.rememberToken(t);
+    return t;
   }
 
   function logout() {

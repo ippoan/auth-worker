@@ -36,6 +36,9 @@ describe("handleAdminNotifyCallback", () => {
     const html = await res.text();
     expect(html).toContain("sessionStorage.setItem('auth_token'");
     expect(html).toContain("/admin/notify");
-    expect(html).not.toContain("document.cookie");
+    // #474: cookie 配送 (fragment 無し) でも着地できるよう、共通門番が
+    // document.cookie の logi_auth_token を読む。
+    expect(html).toContain("document.cookie");
+    expect(html).toContain("logi_auth_token");
   });
 });

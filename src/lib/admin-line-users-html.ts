@@ -5,9 +5,11 @@
  *   を生成し、コピー可能リンク + QR (ブラウザ内生成、URL を外部に送らない) で表示。
  * - 一覧: line_user_id を持つ recipient を一覧 + 削除 (/api/line-users/*)。
  *
- * 認証は SSO 設定ページと同方針: sessionStorage の auth_token を JS で読み、
+ * 認証は SSO 設定ページと同方針: 共通門番 __adminAuth (cookie → sessionStorage) で JS が読み、
  * 無ければ /admin/line-users にリダイレクト (= ログインへ)。
  */
+
+import { renderAdminAuthScript } from "./admin-auth-script";
 
 function escapeHtml(s: string): string {
   return s
@@ -92,6 +94,7 @@ export function renderAdminLineUsersPage(
   </div>
 </div>
 
+${renderAdminAuthScript()}
 <script>
   var token = null;
   var tenantId = '';
@@ -115,12 +118,9 @@ export function renderAdminLineUsersPage(
   }
 
   function initAuth() {
-    token = sessionStorage.getItem('auth_token');
-    if (!token) {
-      var m = document.cookie.match(/logi_auth_token=([^;]+)/) || document.cookie.match(/sso_admin_token=([^;]+)/);
-      if (m && m[1]) { token = m[1]; sessionStorage.setItem('auth_token', token); }
-    }
-    if (!token) { window.location.replace('/login?redirect_uri=' + encodeURIComponent(window.location.href)); return false; }
+    // #474: cookie (logi_auth_token) → sessionStorage の順で解決する共通門番。
+    token = window.__adminAuth.requireToken(window.location.href);
+    if (!token) return false;
     try {
       var payload = decodeJwtPayload(token);
       tenantId = payload.tenant_id || payload.org || '';
