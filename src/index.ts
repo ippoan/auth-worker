@@ -302,6 +302,12 @@ export interface Env {
    *  長期間動かす種類の client なので動的登録の利点が無い。未 bind なら
    *  `/oidc/authorize` `/oidc/token` が 503 になるだけ。 */
   ACCESS_OIDC_CLIENTS?: SecretBinding;
+  /** Cloudflare Access の team domain (`<team>.cloudflareaccess.com`)。
+   *  `/logout` が cookie を捨てたあと Access のログアウトへ chain するためだけに
+   *  使う (Refs #477)。**未設定なら chain せず従来どおりの遷移**になるので、
+   *  この var を持たない env (ローカル / 新設 env) でも壊れない。
+   *  秘密ではないので `[vars]` に平文で置く。 */
+  ACCESS_TEAM_DOMAIN?: string;
   /** Rust binary (github-mcp-server-rs / ref-files-mcp-server-rs) が
    *  /mcp/introspect を叩く際の認証用。Bearer header で送られる固定共有鍵。
    *
