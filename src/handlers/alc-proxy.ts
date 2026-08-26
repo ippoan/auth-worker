@@ -10,7 +10,11 @@
  *      `checkAppTenant` の app 単位 ACL を回避できる (handoff #434)。
  *      secret を握る consumer worker からの forward だけを通す関門。
  *   ② cookie / Bearer の browser JWT を **ローカル検証** (JWT_SECRET 所有) + ACL
- *      (origin × tenant、`X-Alc-Proxy-Origin` ヘッダの consumer origin で判定)
+ *      (origin × tenant、`X-Alc-Proxy-Origin` ヘッダの consumer origin で判定)。
+ *      **device 系 token (`aud` 有り / `role ∈ DEVICE_ROLES`) はここで弾く** —
+ *      同じ `JWT_SECRET` で署名されるので署名だけでは区別できず、通すと
+ *      `/device/pair-internal` (shared secret のみ・`tenant_id` は呼び手指定)
+ *      と繋がって任意 tenant の `X-Tenant-ID` 詐称が成立する (#482)
  *   ③ `run.invoker` SA key (`ALC_API_PROXY_SA_KEY`、auth-worker のみ bind) で
  *      Google OIDC ID token を mint
  *   ④ `ALC_API_ORIGIN` (= rust-alc-api、Cloud Run IAM lockdown 後) へ
@@ -28,6 +32,7 @@ import { verifyJwt } from "../lib/jwt";
 import { checkAppTenant, checkOrgAccess } from "../lib/acl";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
+import { DEVICE_ROLES } from "../lib/device";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 
 const ROUTE_PREFIX = "/alc-proxy";
@@ -156,6 +161,36 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   const email = (payload.email as string | undefined) || "";
   const role = (payload.role as string | undefined) || "";
   const sub = (payload.sub as string | undefined) || "";
+
+  // ── device 系 token を弾く (issue #482) ───────────────────────────────────
+  // device JWT (`lib/device.ts::mintDeviceJwt`) は **browser JWT と同じ
+  // `JWT_SECRET`** で署名されるので `verifyJwt` だけでは区別できない。そして
+  // `POST /device/pair-internal` は `INTERNAL_SHARED_SECRET*` (= ここの
+  // `X-Alc-Proxy-Secret` と**同じ secret 集合**) だけで **body の `tenant_id` を
+  // そのまま採用して** credential を mint する。放置すると
+  // 「secret 1 本 → 任意 tenant の device JWT → この route → `X-Tenant-ID` 詐称」
+  // が成立し、`alc-internal-proxy` が path allowlist で data 経路を塞いでいる
+  // 意味 (#434) が隣から無効化される。
+  //
+  // この route は **browser JWT 専用**。device の data 経路は
+  // `/device-data-proxy` (role×path allowlist) 側にあるので、ここで弾いても
+  // 正規の device 用途は失われない。
+  //
+  // 判定は 2 本立てにする:
+  //   ① `aud` が有る → 弾く。device JWT の `aud: "device"` (#482) に加え
+  //      hub-token (`aud: "hub"`) / cam-relay-token (`aud: "cam-relay"`) も
+  //      同じ鍵で署名されるので一緒に落ちる。browser JWT
+  //      (`lib/access-token.ts` / `lib/dev-login.ts`) は `aud` を付けない。
+  //   ② `role` が `DEVICE_ROLES` に有る → 弾く。**① だけでは deploy 前に
+  //      発行済みの device JWT が TTL (1h) の間そのまま通ってしまう** —
+  //      既発行分には `aud` が無いため。role は既発行の token にも即効く。
+  //      device JWT の role は必ず `record.role ?? DEVICE_ROLE` で、
+  //      `record.role` は `normalizeDeviceRole` の allowlist を通った値なので
+  //      `role ∈ DEVICE_ROLES` ⟺ device JWT が成り立つ。browser JWT の role は
+  //      `admin` / `member` で重ならない。
+  if (payload.aud !== undefined || DEVICE_ROLES.has(role)) {
+    return jsonError(401, "Unauthorized");
+  }
   if (!(await checkOrgAccess(env, origin, tenantId, email))) return jsonError(401, "Unauthorized");
   if (!checkAppTenant(env, origin, tenantId, email)) return jsonError(401, "Unauthorized");
   if (!tenantId) return jsonError(401, "Unauthorized");

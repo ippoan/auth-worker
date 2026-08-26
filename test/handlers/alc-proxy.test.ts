@@ -14,6 +14,7 @@ vi.mock("../../src/lib/oidc", () => ({
 
 import { handleAlcProxy, validatePreviewBase } from "../../src/handlers/alc-proxy";
 import { mintGoogleIdToken } from "../../src/lib/oidc";
+import { DEVICE_ROLES, mintDeviceJwt } from "../../src/lib/device";
 
 const ORIGIN = "https://alc.ippoan.org";
 const PROXY_SECRET = "test-internal-shared-secret-32!!";
@@ -306,6 +307,76 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
     const h = (init as RequestInit).headers as Record<string, string>;
     expect(h["Content-Type"]).toBe("application/json");
     expect((init as RequestInit).body).toBeDefined();
+  });
+});
+
+describe("handleAlcProxy: device 系 token を弾く (issue #482)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  /** forward されたら必ず落ちる fetch。401 で止まっていることを「呼ばれない」で示す。 */
+  function noForwardFetch() {
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  it("`/device/token` が出す本物の device JWT は 401 (連鎖 ①→② を切る)", async () => {
+    // #482 の連鎖: `/device/pair-internal` は INTERNAL_SHARED_SECRET* (= この
+    // route の X-Alc-Proxy-Secret と同じ集合) だけで **body の tenant_id を
+    // そのまま**採用して credential を mint できる。その credential から出た
+    // device JWT がここを通ると X-Tenant-ID 詐称が成立する。
+    const e = env();
+    const fetchMock = noForwardFetch();
+    const token = await mintDeviceJwt(
+      e,
+      {
+        device_id: "dev-1",
+        tenant_id: "99999999-9999-9999-9999-999999999999", // 呼び手が選んだ任意 tenant
+        secret_hash: "x",
+        label: "l",
+        role: "device-dtako-relay",
+        created_at: 0,
+        revoked: false,
+      },
+      Math.floor(Date.now() / 1000),
+    );
+
+    const res = await handleAlcProxy(req("/alc-proxy/api/employees", { token }), e);
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([...DEVICE_ROLES])(
+    "role=%s は `aud` が無くても 401 (deploy 前に発行済みの device JWT は TTL 1h 生きるため)",
+    async (role) => {
+      const fetchMock = noForwardFetch();
+      // `aud` を持たない = #482 の deploy より前に mint された device JWT の形。
+      // `aud` の有無だけを見ていると、この 1 時間ぶんが素通りしてしまう。
+      const token = makeJwt(TEST_JWT_SECRET, {
+        role,
+        tenant_id: "99999999-9999-9999-9999-999999999999",
+        env: "prod",
+      });
+      const res = await handleAlcProxy(req("/alc-proxy/api/employees", { token }), env());
+      expect(res.status).toBe(401);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("`aud` が有る token は 401 (hub-token / cam-relay-token も同じ鍵で署名される)", async () => {
+    const fetchMock = noForwardFetch();
+    const token = makeJwt(TEST_JWT_SECRET, { aud: "hub", env: "prod" });
+    const res = await handleAlcProxy(req("/alc-proxy/api/employees", { token }), env());
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("browser JWT (aud 無し・role=admin) はこれまで通り通る", async () => {
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcProxy(req("/alc-proxy/api/employees"), env());
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

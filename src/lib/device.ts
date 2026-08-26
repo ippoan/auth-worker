@@ -402,11 +402,25 @@ export async function verifyDeviceCredential(
   return record;
 }
 
+/** 通常の device JWT の `aud` (Refs #482)。`hub` / `cam-relay` と同じ作法で browser JWT と区別する。 */
+export const DEVICE_JWT_AUDIENCE = "device";
+
 /** device JWT の claims。introspect が読む tenant_id / role / env / exp を持つ。 */
 export interface DeviceJwtClaims {
   sub: string;
   tenant_id: string;
   role: string;
+  /**
+   * 常に `"device"` (Refs #482)。**browser JWT と同じ `JWT_SECRET` で署名される**
+   * ので、署名だけでは両者を区別できない。browser JWT 専用の route
+   * (`/alc-proxy`) が「device 由来の token を弾く」判定に使える正のマーカーを
+   * 持たせる。`hub-token` (`aud: "hub"`) / `cam-relay-token`
+   * (`aud: "cam-relay"`) が既に取っている作法に揃える。
+   *
+   * browser JWT (`lib/access-token.ts` / `lib/dev-login.ts`) は `aud` を
+   * 付けないので、`aud` の有無がそのまま「device 系かどうか」になる。
+   */
+  aud: typeof DEVICE_JWT_AUDIENCE;
   env: string;
   iat: number;
   exp: number;
@@ -417,6 +431,10 @@ export interface DeviceJwtClaims {
  * device JWT を mint する (HS256 / JWT_SECRET)。`/auth/introspect` が
  * verifyJwt(JWT_SECRET, WORKER_ENV) + tenant_id + ACL で検証する。
  * `JWT_SECRET` 未設定なら throw (caller が 500 を返す前提)。
+ *
+ * claims には `aud: "device"` が入る (Refs #482)。browser JWT 専用の route が
+ * device 由来 token を弾くための正のマーカーで、`aud` を読まない既存の受け口
+ * (`/auth/introspect` / `/device-data-proxy` / `/ohishi-logi-proxy`) には影響しない。
  */
 export async function mintDeviceJwt(
   env: DeviceJwtEnv,
@@ -432,6 +450,7 @@ export async function mintDeviceJwt(
     sub: record.device_id,
     tenant_id: record.tenant_id,
     role: record.role ?? DEVICE_ROLE,
+    aud: DEVICE_JWT_AUDIENCE,
     env: env.WORKER_ENV,
     iat: now,
     exp: now + ttlSeconds,
