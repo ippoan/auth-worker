@@ -39,6 +39,11 @@ const ROUTE_PREFIX = "/device-data-proxy";
  * 割り当てない device は何も転送できない (デフォルト拒否)。
  */
 const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Kagoya VPS の dtako ingest 系。**VPS は 2026-08-26 時点で停止中だが、この行は
+  // 意図して残している** — 本番 KV に `device-dtako-ingest` の credential が 4 本
+  // live で残っており、この行だけ先に消すと mint は通ったまま転送だけ 403 になる。
+  // 経緯と撤去条件 (先に 4 本を revoke) は `lib/device.ts` の
+  // `DEVICE_ROLE_DTAKO_INGEST` の doc を見ること (Refs #481)。
   [DEVICE_ROLE_DTAKO_INGEST]: new Set(["/api/dtako-logs/bulk", "/api/upload"]),
   // dtako-scraper-relay (無人 cron) のスクレイプ履歴 (Refs
   // ohishi-exp/nuxt-dtako-admin#931 = 無人実行が履歴に載らない / #933 = 履歴の
