@@ -29,6 +29,13 @@ branches = true
 path = "src/lib/admin-callback-html.ts"
 branches = true
 
+# Refs #477: `/logout` が Cloudflare Access のログアウトへ chain するかどうかの判定。
+# ここが緩むと Access が知らないホストへ returnTo を投げて 400 になり、
+# 「ログアウト後に CF のエラーページで行き止まり」になる。
+[[files]]
+path = "src/lib/access-logout.ts"
+branches = true
+
 # --- handlers ---
 
 [[files]]
@@ -53,6 +60,10 @@ branches = true
 
 [[files]]
 path = "src/handlers/login-page.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/logout.ts"
 branches = true
 
 [[files]]
