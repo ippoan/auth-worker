@@ -85,8 +85,17 @@ export class InternalEntrypoint extends WorkerEntrypoint<Env> {
 
     // ── ② path allowlist。★ ここより前に fetch を一切しない ────────────────────
     //     (allowlist 外は「転送しない」だけでなく、OIDC mint すらしない)
+    //
+    // ★ error は `"forbidden"` に**しない**。`device-data-proxy.ts:86` と
+    // rust-alc-api 側の tenant 拒否がどちらも `403 {"error":"forbidden"}` を返すので、
+    // 揃えると呼び手のログで
+    //   (a) 呼び手が allowlist 外の path を渡した (= 呼び手のコードのバグ)
+    //   (b) 上流がこの tenant を拒否した (= 運用・データ側の問題)
+    // が 1 文字も違わなくなる。直し方が正反対なのに区別が付かない
+    // (実際 ohishi-exp/nuxt-dtako-admin#933 の診断でこの文字列を追って時間を使った)。
+    // **本文だけで「この 403 は allowlist が出した」と断定できる**固有語にしておく。
     const path = input.path || "";
-    if (!FORWARDABLE_PATHS.has(path)) return errorResult(403, "forbidden");
+    if (!FORWARDABLE_PATHS.has(path)) return errorResult(403, "path_not_forwardable");
 
     // ── ③ env guard ──────────────────────────────────────────────────────────
     const saKey = await resolveSecret(this.env.ALC_API_PROXY_SA_KEY);

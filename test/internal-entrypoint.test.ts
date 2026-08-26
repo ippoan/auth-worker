@@ -55,6 +55,9 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
     // ★ ここが肝 — status だけでなく **forward 先の fetch が呼ばれていないこと**まで見る
     // (OIDC mint も含めて 1 回も外に出ない)。
     expect(fetchMock).not.toHaveBeenCalled();
+    // 上流 (rust-alc-api) の tenant 拒否も `403 {"error":"forbidden"}` なので、
+    // allowlist が出した 403 は**本文だけで断定できる**固有語にする。
+    expect(JSON.parse(out.body).error).toBe("path_not_forwardable");
   });
 
   it("path が空でも 403 (デフォルト拒否、転送しない)", async () => {
@@ -65,6 +68,7 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
       method: "GET",
     });
     expect(out.status).toBe(403);
+    expect(JSON.parse(out.body).error).toBe("path_not_forwardable");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -76,7 +80,22 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
       method: "GET",
     });
     expect(out.status).toBe(403);
+    expect(JSON.parse(out.body).error).toBe("path_not_forwardable");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allowlist の 403 は上流/device-data-proxy の 403 と本文で区別できる (#933 の診断で混ざった)", async () => {
+    mockFetch();
+    const out = await rpc().forwardAlcTenantData({
+      tenantId: TENANT,
+      path: "/api/employees",
+      method: "GET",
+    });
+    // `device-data-proxy.ts` の role/path 拒否と rust-alc-api の tenant 拒否は
+    // どちらも `{"error":"forbidden"}`。揃えると呼び手のログで
+    // 「呼び手が path を間違えた」と「上流が tenant を拒否した」が区別できなくなる。
+    expect(out.body).not.toContain("forbidden");
+    expect(out.body).toBe(JSON.stringify({ error: "path_not_forwardable" }));
   });
 
   // ── ★ 受け入れ条件: tenantId 空 ────────────────────────────────────────────
@@ -88,6 +107,7 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
       method: "GET",
     });
     expect(out.status).toBe(400);
+    expect(JSON.parse(out.body).error).toBe("tenant_id required");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
