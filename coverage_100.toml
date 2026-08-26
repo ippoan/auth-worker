@@ -298,3 +298,12 @@ branches = true
 [[files]]
 path = "src/index.ts"
 branches = true
+
+# --- Internal RPC (service binding 越し専用) ---
+
+# Refs #483: `InternalEntrypoint#forwardAlcTenantData` の path allowlist。
+# ここが緩むと「binding を持つ worker なら任意 path を任意 tenant で叩ける」
+# 汎用転送口に化ける (#482 と同じ穴)。allowlist 分岐を含めて 100% を維持する。
+[[files]]
+path = "src/internal-entrypoint.ts"
+branches = true

@@ -131,6 +131,11 @@ import {
 } from "./handlers/api-dashboard-branch-protection";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
+// issue #483: service binding 越しにしか呼べない内部 RPC の口。
+// `[[services]] entrypoint = "InternalEntrypoint"` から解決されるので、
+// **main module (ここ) から named export されている必要がある**。
+// `export default { fetch }` (下) の挙動には一切影響しない — 追加だけ。
+export { InternalEntrypoint } from "./internal-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
 
