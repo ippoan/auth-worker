@@ -18,6 +18,7 @@ import {
   DEVICE_ROLE_PRINT,
   DEVICE_ROLE_GATEWAY,
   DEVICE_JWT_TTL_SECONDS,
+  DEVICE_JWT_AUDIENCE,
   HUB_TOKEN_TTL_SECONDS,
   listAllHubDeviceRecords,
   type DeviceRecord,
@@ -268,6 +269,15 @@ describe("mintDeviceJwt", () => {
     expect(payload!.env).toBe("staging");
     expect(payload!.iat).toBe(NOW);
     expect(payload!.exp).toBe(NOW + DEVICE_JWT_TTL_SECONDS);
+  });
+
+  it('always carries aud="device" (browser JWT と区別する正のマーカー、issue #482)', async () => {
+    // browser JWT (`lib/access-token.ts` / `lib/dev-login.ts`) は `aud` を付けない。
+    // browser JWT 専用の route (`/alc-proxy`) はこの有無で device 系を弾く。
+    const token = await mintDeviceJwt({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, record, NOW);
+    const payload = await verifyJwt(token, SECRET, "staging");
+    expect(payload!.aud).toBe(DEVICE_JWT_AUDIENCE);
+    expect(DEVICE_JWT_AUDIENCE).toBe("device");
   });
 
   it("carries the record's role when set (kiosk)", async () => {
