@@ -61,6 +61,21 @@ export const DEVICE_ROLE_KIOSK = "device-kiosk";
  * device_secret) 自体はサービス・テナントごとに個別発行するため、rotate/revoke
  * の粒度は role 統一後も維持される (role は「できること」、credential は
  * 「誰が」の軸で直交する)。
+ *
+ * ── 2026-08-26 実測: **使われていないが、意図して残している** (Refs #481) ──
+ * Kagoya VPS は停止中 (オーナー確認)、`dtako-scraper` / `browser-render-rust` の
+ * 最終 push も 2026-07-08 / 2026-07-06 で止まっている。それでも撤去しないのは、
+ * 本番 KV の device credential を全件 (37 件) 数えたところ **この role のものが
+ * 4 本 `revoked: false` のまま live** だったため:
+ * `dtako-scraper (Kagoya VPS)` × 3 / `browser-render-rust (Kagoya VPS)` × 1
+ * (いずれも 2026-07-01 発行)。
+ *
+ * `DeviceRecord` は last_used 系のフィールドを持たないので、**KV から言えるのは
+ * 「live な credential がある」までで「直近使われていない」は証明できない**。
+ * この状態で role だけ先に消すと `/device/token` は素通し (mint は `DEVICE_ROLES`
+ * を見ず `record.role` をそのまま載せる) のまま `device-data-proxy` だけが 403 を
+ * 返す — **live な credential が残ったまま経路が死ぬ**形になる。撤去するなら
+ * **先に上記 4 本を revoke してから** role を消すこと。
  */
 export const DEVICE_ROLE_DTAKO_INGEST = "device-dtako-ingest";
 
@@ -68,13 +83,17 @@ export const DEVICE_ROLE_DTAKO_INGEST = "device-dtako-ingest";
  * dtako-scraper-relay (Cloudflare Worker、無人 cron) がスクレイプ履歴を読み書き
  * するための role (Refs ohishi-exp/nuxt-dtako-admin#931 / #933)。
  *
- * **`device-dtako-ingest` と分ける。** あちらは「**同一 VPS・同一運用チーム・
- * 同一機能ドメイン (dtako データの rust-alc-api への ingest)**」を条件に 1 role へ
- * 統一したもので、relay は **箱が違い (Kagoya VPS ではなく Cloudflare Worker)**、
- * **capability も違う (ingest ではなく履歴の読み書き)** ため、その条件に入らない。
+ * **既存 role を再利用せず専用 role を新設した。** この repo の role 分割規則は
+ * 「**箱 (どこで動くか) と capability (何ができるか) が両方そろって初めて 1 role に
+ * まとめる**」で、relay は **Cloudflare Worker の無人 cron** (箱) が **スクレイプ
+ * 履歴の読み書き** (capability) をする、という組み合わせを他のどの role とも共有
+ * しない。dtako という**題材が同じだけでは共用の条件にならない**。
  *
- * 再利用すると **双方向に権限が広がる** — VPS の device が履歴を書けるようになり、
- * relay が要らない `/api/upload` `/api/dtako-logs/bulk` を持つ。
+ * 再利用は **どちらの role の側から見ても権限が広がる** — 相手側の device が
+ * `/api/scraper/history` を書けるようになり、relay は要らない path
+ * (ingest 系の `/api/upload` `/api/dtako-logs/bulk` 等) を持つ。role は
+ * 「盗まれた 1 本の credential で何ができるか」の上限なので、**用途が 1 つ増えるたび
+ * 全 credential の blast radius が広がる**方向には倒さない。
  *
  * 許可 path は `device-data-proxy.ts` の `ROLE_PATH_ALLOWLIST` 側で管理
  * (`/api/scraper/history` + `/api/dtako/events/etags`)。どちらも rust の
