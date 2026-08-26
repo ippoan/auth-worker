@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
-import { DEVICE_ROLE_DTAKO_INGEST } from "../../src/lib/device";
+import { DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_DTAKO_RELAY } from "../../src/lib/device";
 
 // OIDC mint は別ユニットでテスト済み。ここでは handler の flow
 // (device JWT 検証 → role/path allowlist → OIDC mint → forward) を固定する。
@@ -185,5 +185,111 @@ describe("handleDeviceDataProxy (rust-alc-api#434 followup, browser-render-rust 
       env(),
     );
     expect(res.status).toBe(502);
+  });
+});
+
+describe("device-dtako-relay role (ohishi-exp/nuxt-dtako-admin#931 / #933)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function relayToken(): Promise<string> {
+    return signTestJwt(
+      { sub: "device-relay-1", tenant_id: TENANT, role: DEVICE_ROLE_DTAKO_RELAY },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  // ★ #931 (書き) と #933 (読み) が同じ 1 行の allowlist で通ることを固定する。
+  //   allowlist は method を見ないので、GET と POST の両方が同じ path で通る。
+  for (const method of ["GET", "POST"]) {
+    it(`${method} /api/scraper/history を forward する (tenant は device record 由来)`, async () => {
+      const fetchMock = okFetch();
+      const res = await handleDeviceDataProxy(
+        req("/device-data-proxy/api/scraper/history?limit=20", {
+          method,
+          token: await relayToken(),
+          ...(method === "POST"
+            ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ a: 1 }) }
+            : {}),
+        }),
+        env(),
+      );
+      expect(res.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      // query はそのまま forward される (allowlist は pathname だけ見る)。
+      expect(String(url)).toBe("https://alc-api.test.example/api/scraper/history?limit=20");
+      const h = (init as RequestInit).headers as Record<string, string>;
+      expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+      // ★ 呼び手の申告ではなく device record の tenant が入る (詐称不能)。
+      expect(h["X-Tenant-ID"]).toBe(TENANT);
+    });
+  }
+
+  it("GET /api/dtako/events/etags も forward する (#933 の fetchUnsplit)", async () => {
+    const fetchMock = okFetch();
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/dtako/events/etags?date_from=2026-07-01&date_to=2026-07-31", {
+        method: "GET",
+        token: await relayToken(),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "https://alc-api.test.example/api/dtako/events/etags?date_from=2026-07-01&date_to=2026-07-31",
+    );
+  });
+
+  it("★ 呼び手が X-Tenant-ID を詐称しても device record の tenant で上書きされる", async () => {
+    const fetchMock = okFetch();
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/scraper/history", {
+        method: "POST",
+        token: await relayToken(),
+        headers: { "content-type": "application/json", "X-Tenant-ID": "99999999-9999-9999-9999-999999999999" },
+        body: "{}",
+      }),
+      env(),
+    );
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("★ relay role は ingest の path を叩けない (最小権限 — 双方向に広げない)", async () => {
+    const fetchMock = okFetch();
+    for (const p of ["/device-data-proxy/api/upload", "/device-data-proxy/api/dtako-logs/bulk"]) {
+      const res = await handleDeviceDataProxy(req(p, { token: await relayToken() }), env());
+      expect(res.status, p).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ ingest role は履歴の path を叩けない (VPS 側に書き込み権限を渡さない)", async () => {
+    const fetchMock = okFetch();
+    for (const p of [
+      "/device-data-proxy/api/scraper/history",
+      "/device-data-proxy/api/dtako/events/etags",
+    ]) {
+      const res = await handleDeviceDataProxy(req(p, { token: await deviceToken() }), env());
+      expect(res.status, p).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allowlist 外は relay role でも 403", async () => {
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", { token: await relayToken() }),
+      env(),
+    );
+    expect(res.status).toBe(403);
   });
 });
