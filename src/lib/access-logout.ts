@@ -59,36 +59,80 @@ export function normalizeAccessTeamDomain(raw: string | undefined | null): strin
   return parsed.hostname;
 }
 
+/** chain 済みマーカー cookie の名前 (Refs #477 の redirect loop)。 */
+export const ACCESS_LOGOUT_CHAIN_COOKIE = "access_logout_chained";
+
+/** マーカーの寿命 (秒)。redirect loop は数秒で 1 周するので 1 分あれば足りる。 */
+export const ACCESS_LOGOUT_CHAIN_TTL_SEC = 60;
+
+/** 直前に `/logout` を通っているか (= マーカー cookie が生きているか)。 */
+export function hasAccessLogoutChainMarker(request: Request): boolean {
+  const cookie = request.headers.get("Cookie") || "";
+  return new RegExp(`(?:^|;\\s*)${ACCESS_LOGOUT_CHAIN_COOKIE}=1(?:;|$)`).test(cookie);
+}
+
+/** マーカーを張り直す Set-Cookie 値。`/logout` に来るたび寿命を更新する。 */
+export function accessLogoutChainMarkerCookie(): string {
+  return `${ACCESS_LOGOUT_CHAIN_COOKIE}=1; Path=/; Max-Age=${ACCESS_LOGOUT_CHAIN_TTL_SEC}; Secure; SameSite=Lax`;
+}
+
 /**
  * `/logout` が最後に飛ばす先を決める。
  *
- * - chain できるとき: Access のログアウト URL (戻り先 = 本来の遷移先)
- * - できないとき: `redirectTo` をそのまま (= 従来の挙動)
+ * - chain するとき: `{ target: Access のログアウト URL, chained: true }`
+ * - しないとき: `{ target: redirectTo, chained: false }` (= 従来の挙動)
+ *
+ * ## `recentlyChained` が要る理由 — redirect loop を 1 周で止める
+ *
+ * `@ippoan/auth-client` の `initAuthSession` は、auth-worker から `?lw_callback=1` で
+ * 戻ったのにセッションを復元できないと **毒 cookie を捨てる目的で `/logout` を叩く**
+ * (`redirectToLogin({ reauth: true })`)。これは「安く 1 回で済む掃除」の想定で書かれて
+ * いるが、そこに Access ログアウトを無条件で挟むと 1 周ごとに Cloudflare Access を
+ * 丸ごと往復する無限ループになる:
+ *
+ * ```
+ * dtako/?lw_callback=1 → 復元失敗 → /logout → Access ログアウト
+ *   → /login → IdP → dtako/?lw_callback=1 → 復元失敗 → …
+ * ```
+ *
+ * そこで `/logout` を通るたびマーカー cookie を張り直し、**マーカーが生きている間は
+ * chain しない**。人間が押す本物のログアウトは 1 分と空けずに二度は起きないので
+ * 実害が無く、ループの側だけが 1 周で Access から切り離される。
  *
  * @param authOrigin   auth-worker 自身の origin (相対 `redirect_uri` の解決基準)
  * @param authHostname auth-worker 自身のホスト名 (親ドメイン判定に使う)
  * @param redirectTo   `?redirect_uri=` の生値。相対も絶対もあり得る
  * @param accessTeamDomain `ACCESS_TEAM_DOMAIN` var (未設定なら chain しない)
+ * @param recentlyChained  直前にも `/logout` を通っているか (`hasAccessLogoutChainMarker`)
  */
 export function logoutNavigationTarget(
   authOrigin: string,
   authHostname: string,
   redirectTo: string,
   accessTeamDomain: string | undefined | null,
-): string {
+  recentlyChained = false,
+): { target: string; chained: boolean } {
+  const plain = { target: redirectTo, chained: false };
+
+  // 直前にも /logout を通っている = ループの可能性。Access は巻き込まない。
+  if (recentlyChained) return plain;
+
   const team = normalizeAccessTeamDomain(accessTeamDomain);
-  if (!team) return redirectTo;
+  if (!team) return plain;
 
   let returnTo: URL;
   try {
     returnTo = new URL(redirectTo, authOrigin);
   } catch {
-    return redirectTo;
+    return plain;
   }
   // Access の returnTo は https のみ。http/javascript: 等は chain せず素通し。
-  if (returnTo.protocol !== "https:") return redirectTo;
+  if (returnTo.protocol !== "https:") return plain;
   // 自分たちのホストでない戻り先は Access が 400 で弾く → chain しない。
-  if (!authCookieReachesHost(authHostname, returnTo.hostname)) return redirectTo;
+  if (!authCookieReachesHost(authHostname, returnTo.hostname)) return plain;
 
-  return `https://${team}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(returnTo.toString())}`;
+  return {
+    target: `https://${team}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(returnTo.toString())}`,
+    chained: true,
+  };
 }

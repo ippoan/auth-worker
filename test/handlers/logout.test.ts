@@ -105,3 +105,52 @@ describe("handleLogout", () => {
     });
   });
 });
+
+// Refs #477 の redirect loop — `@ippoan/auth-client` の initAuthSession は
+// auth-worker から `?lw_callback=1` で戻ったのにセッションを復元できないと
+// `redirectToLogin({ reauth: true })` = `/logout` を叩く。ここで無条件に Access を
+// 切ると 1 周ごとに Cloudflare Access を往復する無限ループになる。
+describe("handleLogout — Access chain loop guard", () => {
+  const TEAM = "mtamaramu.cloudflareaccess.com";
+  const accessEnv = createMockEnv({ ACCESS_TEAM_DOMAIN: TEAM });
+  const setCookies = (res: Response): string[] => res.headers.getSetCookie();
+
+  it("always (re)issues the marker cookie so a loop keeps refreshing it", async () => {
+    const res = await handleLogout(new Request("https://auth.test.example/logout"), accessEnv);
+    expect(setCookies(res).some((c) => c.startsWith("access_logout_chained=1"))).toBe(true);
+  });
+
+  it("skips the Access chain when the marker is already present", async () => {
+    const req = new Request("https://auth.test.example/logout", {
+      headers: { Cookie: "access_logout_chained=1" },
+    });
+    const html = await (await handleLogout(req, accessEnv)).text();
+    expect(html).toContain("window.location.replace('/login')");
+    expect(html).not.toContain("cdn-cgi/access/logout");
+  });
+
+  it("still clears the auth cookie on the guarded pass", async () => {
+    const req = new Request("https://auth.test.example/logout", {
+      headers: { Cookie: "access_logout_chained=1" },
+    });
+    const res = await handleLogout(req, accessEnv);
+    expect(setCookies(res).some((c) => c.startsWith("logi_auth_token=") && c.includes("Max-Age=0")))
+      .toBe(true);
+  });
+
+  // 1 周目は Access を切り、2 周目以降は切らない = ループが Access から外れる。
+  it("chains only on the first pass of a logout → relogin loop", async () => {
+    const first = await handleLogout(new Request("https://auth.test.example/logout"), accessEnv);
+    expect(await first.text()).toContain("cdn-cgi/access/logout");
+
+    const marker = setCookies(first).find((c) => c.startsWith("access_logout_chained="));
+    expect(marker).toBeDefined();
+    const second = await handleLogout(
+      new Request("https://auth.test.example/logout", {
+        headers: { Cookie: marker!.split(";")[0]! },
+      }),
+      accessEnv,
+    );
+    expect(await second.text()).not.toContain("cdn-cgi/access/logout");
+  });
+});
