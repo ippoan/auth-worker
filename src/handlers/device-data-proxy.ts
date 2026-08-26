@@ -29,7 +29,7 @@ import { extractToken } from "../lib/errors";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
-import { DEVICE_ROLE_DTAKO_INGEST } from "../lib/device";
+import { DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_DTAKO_RELAY } from "../lib/device";
 
 const ROUTE_PREFIX = "/device-data-proxy";
 
@@ -40,6 +40,17 @@ const ROUTE_PREFIX = "/device-data-proxy";
  */
 const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
   [DEVICE_ROLE_DTAKO_INGEST]: new Set(["/api/dtako-logs/bulk", "/api/upload"]),
+  // dtako-scraper-relay (無人 cron) のスクレイプ履歴 (Refs
+  // ohishi-exp/nuxt-dtako-admin#931 = 無人実行が履歴に載らない / #933 = 履歴の
+  // 読みが 403)。どちらも rust の `tenant_router()` = `require_tenant_header` の
+  // data 経路なので `alc-internal-proxy` では通せない (あちらは data 経路を
+  // 意図的に allowlist から外している — #434 の X-Tenant-ID 詐称対策)。
+  //
+  // **この allowlist は method を見ない** (下の `allowed.has(backendPath)`) ので、
+  // `/api/scraper/history` の 1 行で **GET (履歴を読む) と POST (無人実行を
+  // 載せる) の両方**が通る。**意図的にそうしている** — 読めない履歴に書いても
+  // 意味が無く、#931 と #933 は同じ 1 経路で直る。
+  [DEVICE_ROLE_DTAKO_RELAY]: new Set(["/api/scraper/history", "/api/dtako/events/etags"]),
 };
 
 function jsonError(status: number, error: string): Response {

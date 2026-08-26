@@ -65,6 +65,26 @@ export const DEVICE_ROLE_KIOSK = "device-kiosk";
 export const DEVICE_ROLE_DTAKO_INGEST = "device-dtako-ingest";
 
 /**
+ * dtako-scraper-relay (Cloudflare Worker、無人 cron) がスクレイプ履歴を読み書き
+ * するための role (Refs ohishi-exp/nuxt-dtako-admin#931 / #933)。
+ *
+ * **`device-dtako-ingest` と分ける。** あちらは「**同一 VPS・同一運用チーム・
+ * 同一機能ドメイン (dtako データの rust-alc-api への ingest)**」を条件に 1 role へ
+ * 統一したもので、relay は **箱が違い (Kagoya VPS ではなく Cloudflare Worker)**、
+ * **capability も違う (ingest ではなく履歴の読み書き)** ため、その条件に入らない。
+ *
+ * 再利用すると **双方向に権限が広がる** — VPS の device が履歴を書けるようになり、
+ * relay が要らない `/api/upload` `/api/dtako-logs/bulk` を持つ。
+ *
+ * 許可 path は `device-data-proxy.ts` の `ROLE_PATH_ALLOWLIST` 側で管理
+ * (`/api/scraper/history` + `/api/dtako/events/etags`)。どちらも rust の
+ * `tenant_router()` = data 経路なので、**`alc-internal-proxy` では通せない**
+ * (shared secret だけで X-Tenant-ID を詐称できると #434 の再現になるため、
+ * あちらは data 経路を意図的に allowlist から外している)。
+ */
+export const DEVICE_ROLE_DTAKO_RELAY = "device-dtako-relay";
+
+/**
  * cf-flickr-cam-worker (Cloudflare Worker、無人 cron) 用 role。ohishi-logi
  * (Cloud Run、無状態 camera fetcher) の `/cam/*` RPC のみを許可する
  * (Refs ohishi-exp/ohishi-logi#1, ippoan/cf-flickr-cam-worker#1)。
@@ -99,6 +119,7 @@ export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_DTAKO_INGEST,
+  DEVICE_ROLE_DTAKO_RELAY,
   DEVICE_ROLE_CAM_FLICKR,
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,

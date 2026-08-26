@@ -9,6 +9,7 @@ import {
   mintHubToken,
   setDeviceSiteId,
   normalizeDeviceRole,
+  DEVICE_ROLE_DTAKO_RELAY,
   sha256Hex,
   DEVICE_ROLE,
   DEVICE_ROLE_KIOSK,
@@ -46,6 +47,11 @@ describe("normalizeDeviceRole", () => {
     expect(normalizeDeviceRole(DEVICE_ROLE)).toBe(DEVICE_ROLE);
     expect(normalizeDeviceRole(DEVICE_ROLE_KIOSK)).toBe(DEVICE_ROLE_KIOSK);
     expect(normalizeDeviceRole(DEVICE_ROLE_DTAKO_INGEST)).toBe(DEVICE_ROLE_DTAKO_INGEST);
+    // ★ DEVICE_ROLES への登録漏れは throw せず既定に倒れるため、pairing は 201 で
+    //   成功するのに device-data-proxy で 403 になる。ここで固定する
+    //   (Refs ohishi-exp/nuxt-dtako-admin#931)。
+    expect(normalizeDeviceRole(DEVICE_ROLE_DTAKO_RELAY)).toBe(DEVICE_ROLE_DTAKO_RELAY);
+    expect(normalizeDeviceRole(DEVICE_ROLE_DTAKO_RELAY)).not.toBe(DEVICE_ROLE);
     expect(normalizeDeviceRole(DEVICE_ROLE_HUB)).toBe(DEVICE_ROLE_HUB);
     expect(normalizeDeviceRole(DEVICE_ROLE_PRINT)).toBe(DEVICE_ROLE_PRINT);
     expect(normalizeDeviceRole(DEVICE_ROLE_GATEWAY)).toBe(DEVICE_ROLE_GATEWAY);
