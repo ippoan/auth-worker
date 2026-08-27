@@ -41,7 +41,7 @@ import { getLiteralAudAllowlist } from "../lib/mcp-aud";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import { mcpRelayOrigin } from "../lib/mcp-origins";
-import { resolveSecret } from "../lib/secret";
+import { resolveSecret, type SecretBinding } from "../lib/secret";
 
 /**
  * binding_jwt の aud claim 受理 predicate を構築する。
@@ -97,32 +97,6 @@ function constantTimeEquals(a: string, b: string): boolean {
 }
 
 /**
- * Normalise either binding shape into a plain string for comparison.
- *
- * - Worker secret / mock-env test value → already a string, return it.
- * - Secrets Store binding (`SecretsStoreSecret`) → call `.get()` and unwrap.
- * - Missing or unreadable → `null`.
- *
- * Mirrors `ref-files-worker/src/handlers/mcp-introspect.ts`. The dual-mode
- * lets `wrangler secret put` deployments keep working while we cut over
- * both workers to Secrets Store. Once both are on Secrets Store the
- * `string` branch becomes dead code.
- */
-async function resolveSecretBinding(binding: unknown): Promise<string | null> {
-  if (!binding) return null;
-  if (typeof binding === "string") return binding;
-  if (typeof binding === "object" && binding !== null
-      && typeof (binding as { get?: unknown }).get === "function") {
-    try {
-      return await (binding as { get: () => Promise<string> }).get();
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
  * Resolve every `INTERNAL_SHARED_SECRET*` binding on the env (legacy
  * `INTERNAL_SHARED_SECRET` + any per-consumer `INTERNAL_SHARED_SECRET_<NAME>`).
  *
@@ -134,12 +108,19 @@ async function resolveSecretBinding(binding: unknown): Promise<string | null> {
  *
  * Returns `null` only when no candidate is bound — i.e. the env guard
  * should treat this as misconfiguration and return 503.
+ *
+ * binding の正規化 (`string` / `SecretsStoreSecret` の二形態 → `string | null`) は
+ * `lib/secret.ts` の `resolveSecret` に寄せた (Refs #490)。かつては同等の helper を
+ * このファイルの private 実装として持ち、`ref-files-worker/src/handlers/mcp-introspect.ts`
+ * の写しだと注記していたが、mirror 先は既に共有パッケージ
+ * (`@ippoan/mcp-cf-workers/auth` の `resolveSecret`) へ移行済みで、
+ * 取り残されていたのはこちら側だった。
  */
 export async function resolveAllSharedSecrets(env: Env): Promise<string[] | null> {
   const out: string[] = [];
   for (const key of Object.keys(env)) {
     if (!key.startsWith("INTERNAL_SHARED_SECRET")) continue;
-    const value = await resolveSecretBinding((env as unknown as Record<string, unknown>)[key]);
+    const value = await resolveSecret((env as unknown as Record<string, SecretBinding>)[key]);
     if (value) out.push(value);
   }
   return out.length > 0 ? out : null;

@@ -158,10 +158,11 @@ describe("POST /mcp/introspect — internal auth", () => {
 
   // `resolveAllSharedSecrets` must silently drop bindings that fail to resolve
   // to a usable string so a single broken per-consumer entry doesn't take the
-  // whole handler down (issue #189). Exercises three code paths at once:
-  //  - `resolveSecretBinding` final `return null` (object without `.get`)
-  //  - `resolveSecretBinding` catch branch (`.get()` rejects)
-  //  - `resolveAllSharedSecrets` loop's `if (value)` false branch (both above)
+  // whole handler down (issue #189). Exercises two failure shapes at once,
+  // both of which `resolveSecret` (`src/lib/secret.ts`) funnels into `null`:
+  //  - object without `.get` — `.get()` は function ではないので TypeError → catch
+  //  - `.get()` that rejects — catch
+  // どちらも `resolveAllSharedSecrets` loop の `if (value)` false 側を通る。
   it("ignores INTERNAL_SHARED_SECRET_* bindings that fail to resolve (no .get / .get throws)", async () => {
     const { env, kv } = envWithKv({
       INTERNAL_SHARED_SECRET_BROKEN: { foo: 1 },
@@ -562,8 +563,8 @@ describe("POST /mcp/introspect — Google IdP flow (sub prefix google:)", () => 
 // `INTERNAL_SHARED_SECRET` can be either a plain string (legacy `wrangler
 // secret put`, still used by these mock-env fixtures) or a Secrets Store
 // binding (`{ get(): Promise<string> }`). The handler unwraps both through
-// `resolveSecretBinding` (via `resolveAllSharedSecrets`); cover the
-// object-shaped branch here so the dual-mode helper stays at 100% line +
+// `resolveSecret` (`src/lib/secret.ts`, via `resolveAllSharedSecrets`); cover
+// the object-shaped branch here so the dual-mode helper stays at 100% line +
 // branch coverage.
 describe("POST /mcp/introspect — Secrets Store binding (dual-mode)", () => {
   it("unwraps a SecretsStoreSecret-shaped binding via async .get()", async () => {

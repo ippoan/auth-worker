@@ -1,4 +1,5 @@
 import type { Env } from "../index";
+import { resolveSecret, type SecretBinding } from "../lib/secret";
 
 /**
  * `GET /health/secret-fingerprint?name=<binding>&expected=<8hex>` —
@@ -38,8 +39,8 @@ export async function handleSecretFingerprint(
     return jsonResponse({ error: "invalid expected" }, 400);
   }
 
-  const value = await resolveSecretBinding(
-    (env as unknown as Record<string, unknown>)[name],
+  const value = await resolveSecret(
+    (env as unknown as Record<string, SecretBinding>)[name],
   );
   const actual = value ? await sha256Prefix(value) : "";
 
@@ -58,22 +59,6 @@ function jsonResponse(body: unknown, status: number): Response {
       "Access-Control-Allow-Origin": "*",
     },
   });
-}
-
-async function resolveSecretBinding(binding: unknown): Promise<string | null> {
-  if (!binding) return null;
-  if (typeof binding === "string") return binding;
-  if (
-    typeof binding === "object" && binding !== null &&
-    typeof (binding as { get?: unknown }).get === "function"
-  ) {
-    try {
-      return await (binding as { get: () => Promise<string> }).get();
-    } catch {
-      return null;
-    }
-  }
-  return null;
 }
 
 async function sha256Prefix(input: string): Promise<string> {
