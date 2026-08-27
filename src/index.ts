@@ -22,6 +22,7 @@ import { handleMyOrgs } from "./handlers/api-my-orgs";
 import { handleAlcProxy } from "./handlers/alc-proxy";
 import { handleAlcInternalProxy } from "./handlers/alc-internal-proxy";
 import { handleDeviceDataProxy } from "./handlers/device-data-proxy";
+import { handleDeviceNotify } from "./handlers/device-notify";
 import { handleOhishiLogiProxy } from "./handlers/ohishi-logi-proxy";
 import { handleIchibanboshiProxy } from "./handlers/ichibanboshi-proxy";
 import { handleCfFlickrCamWorkerProxy } from "./handlers/cf-flickr-cam-worker-proxy";
@@ -534,6 +535,14 @@ export default {
       // を叩く経路。tenant は device pairing 時に確定済み (client からは詐称不能)。
       if (url.pathname.startsWith("/device-data-proxy/")) {
         return handleDeviceDataProxy(request, env);
+      }
+
+      // ippoan/nuxt-pwa-carins#54: 無人 box (ohishi-exp/smb-watch) が device JWT だけで
+      // LINE WORKS 通知を出す経路。宛先 (recipient_id) は AUTH_CONFIG KV の role→map
+      // で固定し、内部 JWT の mint は auth-worker が代行する (共有 secret をオンプレへ
+      // 置かないため)。path を後ろに繋げる設計ではないので prefix ではなく完全一致。
+      if (url.pathname === "/device-notify") {
+        return handleDeviceNotify(request, env);
       }
 
       // ohishi-exp/ohishi-logi#1 / ippoan/cf-flickr-cam-worker#1: cf-flickr-cam-worker
