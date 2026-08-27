@@ -15,6 +15,8 @@
  * 最小 PR + 100% coverage 安定性を優先し self-contained 実装。
  */
 
+import { resolveSecret, type SecretBinding } from "./secret";
+
 export interface McpJwtPayload {
   sub: string;
   /**
@@ -60,7 +62,7 @@ export interface McpJwtPayload {
  * `INTERNAL_SHARED_SECRET` を point している HS256 鍵に統合済。auth-worker も
  * 同 entry に bind することで、worker 同士の鍵 drift が構造的に消える。
  */
-export type McpJwtSecretBinding = string | SecretsStoreSecret | undefined;
+export type McpJwtSecretBinding = SecretBinding;
 
 /**
  * Resolve `env.MCP_JWT_SECRET` binding to a plain string for HMAC use.
@@ -75,15 +77,7 @@ export type McpJwtSecretBinding = string | SecretsStoreSecret | undefined;
 export async function resolveMcpJwtSecret(
   binding: McpJwtSecretBinding,
 ): Promise<string | null> {
-  if (!binding) return null;
-  // 空文字は上の `!binding` で既に弾いているので、ここでは型判定だけで十分。
-  if (typeof binding === "string") return binding;
-  try {
-    const value = await binding.get();
-    return value || null;
-  } catch {
-    return null;
-  }
+  return resolveSecret(binding);
 }
 
 /**
