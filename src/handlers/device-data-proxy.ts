@@ -29,7 +29,7 @@ import { extractToken } from "../lib/errors";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
-import { DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_DTAKO_RELAY } from "../lib/device";
+import { DEVICE_ROLE, DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_DTAKO_RELAY } from "../lib/device";
 
 const ROUTE_PREFIX = "/device-data-proxy";
 
@@ -56,6 +56,17 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
   // 載せる) の両方**が通る。**意図的にそうしている** — 読めない履歴に書いても
   // 意味が無く、#931 と #933 は同じ 1 経路で直る。
   [DEVICE_ROLE_DTAKO_RELAY]: new Set(["/api/scraper/history", "/api/dtako/events/etags"]),
+  // carins (nuxt-pwa-carins) の車検証ファイル upload。ohishi-data の無人 box
+  // (ohishi-exp/smb-watch) と、ブラウザからの share_target 経由の人間操作が
+  // どちらもこの 1 path に集まる。rust の `require_tenant_header` data 経路
+  // なので `alc-internal-proxy` では通らない (Refs ippoan/nuxt-pwa-carins#54)。
+  //
+  // 上の relay 行と同じく **method を見ない**ので `/api/files` は GET (保存済み
+  // ファイルの一覧) と POST (upload) の両方が通る。**意図的にそうしている** —
+  // carins は同じ path から一覧も取るため。path はこの 1 本だけに絞る
+  // (`lib/device.ts` の `DEVICE_ROLE` doc = 盗難時も「1 tenant の車検証
+  // upload」に blast radius を限定する前提)。
+  [DEVICE_ROLE]: new Set(["/api/files"]),
 };
 
 function jsonError(status: number, error: string): Response {

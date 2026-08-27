@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
-import { DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_DTAKO_RELAY } from "../../src/lib/device";
+import {
+  DEVICE_ROLE,
+  DEVICE_ROLE_DTAKO_INGEST,
+  DEVICE_ROLE_DTAKO_RELAY,
+  DEVICE_ROLE_KIOSK,
+} from "../../src/lib/device";
 
 // OIDC mint は別ユニットでテスト済み。ここでは handler の flow
 // (device JWT 検証 → role/path allowlist → OIDC mint → forward) を固定する。
@@ -102,10 +107,10 @@ describe("handleDeviceDataProxy (rust-alc-api#434 followup, browser-render-rust 
     expect(res.status).toBe(401);
   });
 
-  it("allowlist に無い role は 403", async () => {
+  it("allowlist に無い role は 403 (device-kiosk は route 許可を rust 側で判定する別経路)", async () => {
     const res = await handleDeviceDataProxy(
       req("/device-data-proxy/api/dtako-logs/bulk", {
-        token: await deviceToken({ role: "device-uploader" }),
+        token: await deviceToken({ role: DEVICE_ROLE_KIOSK }),
       }),
       env(),
     );
@@ -288,6 +293,74 @@ describe("device-dtako-relay role (ohishi-exp/nuxt-dtako-admin#931 / #933)", () 
   it("allowlist 外は relay role でも 403", async () => {
     const res = await handleDeviceDataProxy(
       req("/device-data-proxy/api/employees", { token: await relayToken() }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("device-uploader role (carins の車検証 upload、Refs ippoan/nuxt-pwa-carins#54)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function uploaderToken(): Promise<string> {
+    return signTestJwt(
+      { sub: "device-carins-1", tenant_id: TENANT, role: DEVICE_ROLE },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  // ★ smb-watch (無人 box) の保存も、share_target 経由の人間操作も同じ 1 path に
+  //   集まる。allowlist は method を見ないので GET (一覧) / POST (upload) の
+  //   両方が通ることを固定する。
+  for (const method of ["GET", "POST"]) {
+    it(`${method} /api/files を forward する (tenant は device record 由来)`, async () => {
+      const fetchMock = okFetch();
+      const res = await handleDeviceDataProxy(
+        req("/device-data-proxy/api/files", {
+          method,
+          token: await uploaderToken(),
+          ...(method === "POST"
+            ? { headers: { "content-type": "multipart/form-data; boundary=x" }, body: "dummy-multipart-body" }
+            : {}),
+        }),
+        env(),
+      );
+      expect(res.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toBe("https://alc-api.test.example/api/files");
+      const h = (init as RequestInit).headers as Record<string, string>;
+      expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+      // ★ 呼び手の申告ではなく device record の tenant が入る (詐称不能)。
+      expect(h["X-Tenant-ID"]).toBe(TENANT);
+    });
+  }
+
+  it("★ allowlist 外は uploader role でも 403 (盗難時も車検証 upload だけに限定)", async () => {
+    const fetchMock = okFetch();
+    for (const p of [
+      "/device-data-proxy/api/employees",
+      "/device-data-proxy/api/dtako-logs/bulk",
+      "/device-data-proxy/api/scraper/history",
+    ]) {
+      const res = await handleDeviceDataProxy(req(p, { token: await uploaderToken() }), env());
+      expect(res.status, p).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 他 role は /api/files を叩けない (最小権限 — 双方向に広げない)", async () => {
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/files", { token: await deviceToken() }),
       env(),
     );
     expect(res.status).toBe(403);
