@@ -7,8 +7,8 @@
  * に正規化することで、呼び出し側は `if (!value) return 503` の 1 分岐で扱える。
  *
  * `resolveMcpJwtSecret()` (`./mcp-jwt.ts`) と同じパターンを generic 化したもの。
- * MCP_JWT_SECRET 固有 helper は引き続き残し、内部で本 helper を呼ぶ薄ラッパーにする
- * (後方互換維持)。
+ * MCP_JWT_SECRET 固有 helper は後方互換のため引き続き残っており、内部で本 helper を
+ * 呼ぶ薄ラッパーになっている (Refs #492)。
  *
  * Refs #206: PR #205 で `.dev.vars` 由来 7 secret を Secrets Store binding に
  * 移行したが、consumer 側は `env.X` を string として直叩きしていたため
