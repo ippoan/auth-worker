@@ -36,6 +36,12 @@ export const VERIFY_SHOT_MAX_URLS = 5;
 
 export type VerifyEngine = "chromium" | "kitesurf";
 
+/** verify_eval の expression の最大長 (bytes ではなく UTF-16 length)。 */
+export const VERIFY_EVAL_EXPR_MAX = 8192;
+/** verify_eval が inline で返す評価値 (JSON 文字列) の上限。超過分は切り詰めて
+ *  `value_truncated: true` を立てる (大きな値は expression 側で絞ってもらう)。 */
+export const VERIFY_EVAL_VALUE_MAX = 65536;
+
 export class VerifyShotError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -130,47 +136,14 @@ export async function runVerifyShots(
   const results: VerifyShotRow[] = [];
   try {
     for (const target of opts.urls) {
-      const page = await browser.newPage();
-      await page.setViewport({ width: 1280, height: 800 });
-      await page.setCookie({
-        name: "logi_auth_token",
-        value: opts.cookieValue,
-        domain: ".ippoan.org",
-        path: "/",
-        secure: true,
-      });
-      await page.goto(target, { waitUntil: "networkidle0", timeout: 30_000 });
-
-      // Access ログインページの auto-redirect を JS 抜きで再現する (header コメント
-      // 参照)。正常系は 1 hop で抜けるが、state 再発行等で戻るケースに備え 2 回まで。
-      let accessHops = 0;
-      for (let i = 0; i < 2; i++) {
-        const candidate = (await page.evaluate(
-          `(() => {
-            const el = document.querySelector("#data");
-            return el ? el.getAttribute("data-auto-redirect-url") : null;
-          })()`,
-        )) as string | null;
-        const hop = shouldFollowAccessHop(page.url(), candidate, env.ACCESS_TEAM_DOMAIN);
-        if (!hop) break;
-        accessHops++;
-        await page.goto(hop, { waitUntil: "networkidle0", timeout: 30_000 });
-      }
-
-      const png = (await page.screenshot()) as Buffer;
-      const id = generateDeviceCode();
-      await env.MCP_OAUTH_KV.put(
-        `${VERIFY_SHOT_KV_PREFIX}${id}`,
-        base64Encode(new Uint8Array(png)),
-        { expirationTtl: VERIFY_SHOT_TTL_SEC },
-      );
-      const origin = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
+      const { page, accessHops } = await openVerifiedPage(browser, env, target, opts.cookieValue);
+      const shotUrl = await storeScreenshot(page, env);
       results.push({
         url: target,
         final_url: page.url(),
         title: await page.title(),
         access_hops: accessHops,
-        shot_url: `${origin}/mcp/shot/${id}`,
+        shot_url: shotUrl,
       });
       await page.close();
     }
@@ -178,4 +151,145 @@ export async function runVerifyShots(
     await browser.close();
   }
   return { engine: opts.engine, expires_in: VERIFY_SHOT_TTL_SEC, results };
+}
+
+/** verify_screenshot / verify_eval 共通: cookie 注入 → 遷移 → Access hop。 */
+async function openVerifiedPage(
+  browser: Awaited<ReturnType<typeof puppeteer.launch>>,
+  env: Env,
+  target: string,
+  cookieValue: string,
+): Promise<{ page: Awaited<ReturnType<typeof browser.newPage>>; accessHops: number }> {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 800 });
+  await page.setCookie({
+    name: "logi_auth_token",
+    value: cookieValue,
+    domain: ".ippoan.org",
+    path: "/",
+    secure: true,
+  });
+  await page.goto(target, { waitUntil: "networkidle0", timeout: 30_000 });
+
+  // Access ログインページの auto-redirect を JS 抜きで再現する (header コメント
+  // 参照)。正常系は 1 hop で抜けるが、state 再発行等で戻るケースに備え 2 回まで。
+  let accessHops = 0;
+  for (let i = 0; i < 2; i++) {
+    const candidate = (await page.evaluate(
+      `(() => {
+        const el = document.querySelector("#data");
+        return el ? el.getAttribute("data-auto-redirect-url") : null;
+      })()`,
+    )) as string | null;
+    const hop = shouldFollowAccessHop(page.url(), candidate, env.ACCESS_TEAM_DOMAIN);
+    if (!hop) break;
+    accessHops++;
+    await page.goto(hop, { waitUntil: "networkidle0", timeout: 30_000 });
+  }
+  return { page, accessHops };
+}
+
+/** 現在の viewport を PNG で KV (TTL 5 分) に置き、短命 shot_url を返す。 */
+async function storeScreenshot(
+  page: { screenshot: () => Promise<unknown> },
+  env: Env,
+): Promise<string> {
+  const png = (await page.screenshot()) as Buffer;
+  const id = generateDeviceCode();
+  await env.MCP_OAUTH_KV!.put(
+    `${VERIFY_SHOT_KV_PREFIX}${id}`,
+    base64Encode(new Uint8Array(png)),
+    { expirationTtl: VERIFY_SHOT_TTL_SEC },
+  );
+  const origin = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
+  return `${origin}/mcp/shot/${id}`;
+}
+
+/**
+ * 評価値を inline 返却できる JSON 文字列にする。undefined / 循環等の
+ * stringify 不能値は文字列表現に落とし、上限超過は切り詰めて truncated を立てる。
+ */
+export function serializeEvalValue(value: unknown): { text: string; truncated: boolean } {
+  let text: string;
+  try {
+    text = value === undefined ? "undefined" : JSON.stringify(value) ?? String(value);
+  } catch {
+    text = String(value);
+  }
+  if (text.length > VERIFY_EVAL_VALUE_MAX) {
+    return { text: text.slice(0, VERIFY_EVAL_VALUE_MAX), truncated: true };
+  }
+  return { text, truncated: false };
+}
+
+export interface VerifyEvalOutcome {
+  engine: VerifyEngine;
+  url: string;
+  final_url: string;
+  title: string;
+  access_hops: number;
+  /** expression の評価値 (JSON 文字列、上限 VERIFY_EVAL_VALUE_MAX)。 */
+  value: string;
+  value_truncated: boolean;
+  /** screenshot: true の時のみ。評価**後**の画面 (クリック等の副作用込み)。 */
+  shot_url?: string;
+  expires_in?: number;
+}
+
+/**
+ * verify_eval — cookie 注入 + Access hop まで verify_screenshot と同一の経路で
+ * ページを開き、任意の JavaScript 式をページ内で評価して値を返す
+ * (cdp-relay の browser_eval 相当)。navigate は「毎回 url 引数で開き直す」
+ * stateless モデル (call を跨ぐ session 保持は意図的に無い — 必要になったら
+ * Browser Run の session reuse + DO で別 issue)。
+ *
+ * expression はログイン済みページの権限で走るが、書込側は dev JWT の
+ * read-only enforcement (#433) が防波堤になる。
+ */
+export async function runVerifyEval(
+  env: Env,
+  opts: {
+    url: string;
+    expression: string;
+    engine: VerifyEngine;
+    cookieValue: string;
+    screenshot: boolean;
+  },
+): Promise<VerifyEvalOutcome> {
+  const browserBinding: BrowserWorker | undefined = env.BROWSER;
+  if (!browserBinding) {
+    throw new VerifyShotError(503, "browser_binding_not_configured");
+  }
+  if (!env.MCP_OAUTH_KV) {
+    throw new VerifyShotError(503, "MCP_OAUTH_KV not bound");
+  }
+  if (!isAllowedVerifyTarget(opts.url)) {
+    throw new VerifyShotError(400, `url not allowed (https://*.ippoan.org only): ${opts.url}`);
+  }
+
+  const browser =
+    opts.engine === "kitesurf"
+      ? await puppeteer.launch(browserBinding, { browser: "kitesurf" })
+      : await puppeteer.launch(browserBinding);
+  try {
+    const { page, accessHops } = await openVerifiedPage(browser, env, opts.url, opts.cookieValue);
+    const raw = await page.evaluate(opts.expression);
+    const { text, truncated } = serializeEvalValue(raw);
+    const outcome: VerifyEvalOutcome = {
+      engine: opts.engine,
+      url: opts.url,
+      final_url: page.url(),
+      title: await page.title(),
+      access_hops: accessHops,
+      value: text,
+      value_truncated: truncated,
+    };
+    if (opts.screenshot) {
+      outcome.shot_url = await storeScreenshot(page, env);
+      outcome.expires_in = VERIFY_SHOT_TTL_SEC;
+    }
+    return outcome;
+  } finally {
+    await browser.close();
+  }
 }
