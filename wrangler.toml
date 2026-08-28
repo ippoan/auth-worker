@@ -313,6 +313,12 @@ binding = "LINE_LOGIN_CHANNEL_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "line-login-channel-secret"
 
+# Browser Run binding — MCP tool `verify_screenshot` (src/lib/verify-shot.ts) が
+# PR merge 後の本番ページを dev JWT cookie 込みで screenshot するのに使う。
+# 対象は https://*.ippoan.org のみ (SSRF 境界は verify-shot.ts で fail-closed)。
+[browser]
+binding = "BROWSER"
+
 # LINE WORKS webhook 受信用 Durable Object (bot_id ごとに 1 instance)
 [[durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"
@@ -629,6 +635,11 @@ secret_name = "GOOGLE_HEALTH_CLIENT_ID"
 binding = "GOOGLE_HEALTH_CLIENT_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "GOOGLE_HEALTH_CLIENT_SECRET"
+
+# Browser Run binding (staging) — top-level コメント参照。MCP スタックは staging を
+# 実運用として扱うため、verify_screenshot も staging で主に使われる。
+[env.staging.browser]
+binding = "BROWSER"
 
 [[env.staging.durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"

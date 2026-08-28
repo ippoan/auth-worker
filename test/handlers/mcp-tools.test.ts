@@ -828,6 +828,100 @@ describe("POST /mcp/tools — dev-login tools (issue #423/#424)", () => {
   });
 });
 
+describe("POST /mcp/tools — verify_screenshot", () => {
+  async function callVerify(env: Env, args: unknown): Promise<{
+    isError: boolean;
+    content: Array<{ text: string }>;
+  }> {
+    const jwt = await googleUserJwt();
+    const res = await handleMcpTools(
+      await authedReq(jwt, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "verify_screenshot", arguments: args },
+      }),
+      env,
+    );
+    const body = await res.json() as {
+      result: { isError: boolean; content: Array<{ text: string }> };
+    };
+    return body.result;
+  }
+
+  it("tools/list includes verify_screenshot for a Google-IdP session", async () => {
+    const { env } = envWithKv();
+    const jwt = await googleUserJwt();
+    const res = await handleMcpTools(
+      await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      env,
+    );
+    const body = await res.json() as { result: { tools: Array<{ name: string }> } };
+    expect(body.result.tools.map((t) => t.name)).toContain("verify_screenshot");
+  });
+
+  it("requires mcp.write scope", async () => {
+    const { env } = envWithKv();
+    const jwt = await googleUserJwt({ scope: "mcp.read" });
+    const res = await handleMcpTools(
+      await authedReq(jwt, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "verify_screenshot", arguments: { urls: ["https://dtako.ippoan.org/"] } },
+      }),
+      env,
+    );
+    const body = await res.json() as { error: { code: number } };
+    expect(body.error.code).toBe(-32000);
+  });
+
+  it("rejects a missing / non-array urls argument", async () => {
+    const { env } = envWithKv();
+    const result = await callVerify(env, {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("urls must be");
+  });
+
+  it("rejects more than 5 urls", async () => {
+    const { env } = envWithKv();
+    const urls = Array.from({ length: 6 }, (_, i) => `https://dtako.ippoan.org/${i}`);
+    const result = await callVerify(env, { urls });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("urls must be");
+  });
+
+  it("rejects a URL outside *.ippoan.org (fail-closed SSRF boundary)", async () => {
+    const { env } = envWithKv();
+    for (const bad of [
+      "https://evil.example.com/",
+      "https://evil-ippoan.org/",
+      "http://dtako.ippoan.org/",
+    ]) {
+      const result = await callVerify(env, { urls: [bad] });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("url not allowed");
+    }
+  });
+
+  it("rejects an unknown engine value", async () => {
+    const { env } = envWithKv();
+    const result = await callVerify(env, {
+      urls: ["https://dtako.ippoan.org/"],
+      engine: "firefox",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("engine must be");
+  });
+
+  it("503s when the browser binding is not configured (before minting a dev JWT)", async () => {
+    const { env } = envWithKv(); // BROWSER 未設定 (mock env に無い)
+    const result = await callVerify(env, { urls: ["https://dtako.ippoan.org/"] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("browser_binding_not_configured");
+  });
+});
+
 describe("POST /mcp/tools — relay-origin aud", () => {
   it("accepts JWT whose aud is the relay origin (Authorization Code flow)", async () => {
     const relayOrigin = ISSUER.replace(/auth\./, "mcp.");
