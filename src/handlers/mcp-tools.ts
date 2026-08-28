@@ -41,7 +41,9 @@ import {
 import { resolveSecret } from "../lib/secret";
 import {
   isAllowedVerifyTarget,
+  runVerifyEval,
   runVerifyShots,
+  VERIFY_EVAL_EXPR_MAX,
   VERIFY_SHOT_MAX_URLS,
   VerifyShotError,
   type VerifyEngine,
@@ -460,6 +462,72 @@ const TOOLS: ToolDef[] = [
         urls: rawUrls,
         engine,
         cookieValue: minted.token,
+      });
+    },
+  },
+  {
+    name: "verify_eval",
+    description:
+      "Open one https://*.ippoan.org page as a logged-in dev session (same auth " +
+      "path as verify_screenshot) and evaluate a JavaScript expression in the " +
+      "page, returning its JSON-serialized value (e.g. document.body.innerText, " +
+      "a querySelector probe, or an in-page fetch). Stateless: each call opens a " +
+      "fresh browser — 'navigate' is the url argument. Set screenshot:true to " +
+      "also get a short-lived PNG of the page AFTER evaluation (captures click " +
+      "side-effects). Same allowlist gate as issue_dev_token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "https://*.ippoan.org page URL to open" },
+        expression: {
+          type: "string",
+          maxLength: VERIFY_EVAL_EXPR_MAX,
+          description:
+            "JavaScript expression evaluated in the page (async supported via " +
+            "IIFE; the resolved value is returned)",
+        },
+        engine: { type: "string", enum: ["chromium", "kitesurf"] },
+        screenshot: {
+          type: "boolean",
+          description: "also return shot_url of the post-evaluation viewport",
+        },
+      },
+      required: ["url", "expression"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const url = asString(args["url"]);
+      if (!url || !isAllowedVerifyTarget(url)) {
+        throw new VerifyShotError(400, `url not allowed (https://*.ippoan.org only): ${url ?? ""}`);
+      }
+      const expression = asString(args["expression"]);
+      if (!expression || expression.length > VERIFY_EVAL_EXPR_MAX) {
+        throw new VerifyShotError(
+          400,
+          `expression must be a non-empty string (max ${VERIFY_EVAL_EXPR_MAX} chars)`,
+        );
+      }
+      const engineRaw = args["engine"];
+      if (engineRaw !== undefined && engineRaw !== "chromium" && engineRaw !== "kitesurf") {
+        throw new VerifyShotError(400, "engine must be 'chromium' or 'kitesurf'");
+      }
+      const screenshotRaw = args["screenshot"];
+      if (screenshotRaw !== undefined && typeof screenshotRaw !== "boolean") {
+        throw new VerifyShotError(400, "screenshot must be a boolean");
+      }
+      if (!ctx.env.BROWSER) {
+        throw new VerifyShotError(503, "browser_binding_not_configured");
+      }
+      const minted = await mintDevToken(ctx.env, ctx.payload);
+      if (minted.kind === "error") throw new DevLoginError(minted.status, minted.error);
+      return await runVerifyEval(ctx.env, {
+        url,
+        expression,
+        engine: engineRaw === "kitesurf" ? "kitesurf" : "chromium",
+        cookieValue: minted.token,
+        screenshot: screenshotRaw === true,
       });
     },
   },

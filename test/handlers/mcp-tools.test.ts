@@ -922,6 +922,90 @@ describe("POST /mcp/tools — verify_screenshot", () => {
   });
 });
 
+describe("POST /mcp/tools — verify_eval", () => {
+  async function callEval(env: Env, args: unknown): Promise<{
+    isError: boolean;
+    content: Array<{ text: string }>;
+  }> {
+    const jwt = await googleUserJwt();
+    const res = await handleMcpTools(
+      await authedReq(jwt, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "verify_eval", arguments: args },
+      }),
+      env,
+    );
+    const body = await res.json() as {
+      result: { isError: boolean; content: Array<{ text: string }> };
+    };
+    return body.result;
+  }
+
+  it("tools/list includes verify_eval for a Google-IdP session", async () => {
+    const { env } = envWithKv();
+    const jwt = await googleUserJwt();
+    const res = await handleMcpTools(
+      await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      env,
+    );
+    const body = await res.json() as { result: { tools: Array<{ name: string }> } };
+    expect(body.result.tools.map((t) => t.name)).toContain("verify_eval");
+  });
+
+  it("rejects a URL outside *.ippoan.org", async () => {
+    const { env } = envWithKv();
+    const result = await callEval(env, {
+      url: "https://evil.example.com/",
+      expression: "1 + 1",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("url not allowed");
+  });
+
+  it("rejects a missing or oversized expression", async () => {
+    const { env } = envWithKv();
+    const missing = await callEval(env, { url: "https://dtako.ippoan.org/" });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0]!.text).toContain("expression must be");
+    const oversized = await callEval(env, {
+      url: "https://dtako.ippoan.org/",
+      expression: "a".repeat(8193),
+    });
+    expect(oversized.isError).toBe(true);
+    expect(oversized.content[0]!.text).toContain("expression must be");
+  });
+
+  it("rejects a non-boolean screenshot flag and unknown engine", async () => {
+    const { env } = envWithKv();
+    const badShot = await callEval(env, {
+      url: "https://dtako.ippoan.org/",
+      expression: "1",
+      screenshot: "yes",
+    });
+    expect(badShot.isError).toBe(true);
+    expect(badShot.content[0]!.text).toContain("screenshot must be");
+    const badEngine = await callEval(env, {
+      url: "https://dtako.ippoan.org/",
+      expression: "1",
+      engine: "firefox",
+    });
+    expect(badEngine.isError).toBe(true);
+    expect(badEngine.content[0]!.text).toContain("engine must be");
+  });
+
+  it("503s when the browser binding is not configured", async () => {
+    const { env } = envWithKv();
+    const result = await callEval(env, {
+      url: "https://dtako.ippoan.org/",
+      expression: "document.title",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("browser_binding_not_configured");
+  });
+});
+
 describe("POST /mcp/tools — relay-origin aud", () => {
   it("accepts JWT whose aud is the relay origin (Authorization Code flow)", async () => {
     const relayOrigin = ISSUER.replace(/auth\./, "mcp.");

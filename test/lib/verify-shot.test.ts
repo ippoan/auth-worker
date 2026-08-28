@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   isAllowedVerifyTarget,
+  serializeEvalValue,
   shouldFollowAccessHop,
+  VERIFY_EVAL_VALUE_MAX,
 } from "../../src/lib/verify-shot";
 
 describe("isAllowedVerifyTarget", () => {
@@ -70,5 +72,33 @@ describe("shouldFollowAccessHop", () => {
     expect(shouldFollowAccessHop(LOGIN_URL, null, TEAM)).toBe(null);
     expect(shouldFollowAccessHop(LOGIN_URL, AUTHORIZE, undefined)).toBe(null);
     expect(shouldFollowAccessHop("not a url", AUTHORIZE, TEAM)).toBe(null);
+  });
+});
+
+describe("serializeEvalValue", () => {
+  it("JSON-stringifies ordinary values", () => {
+    expect(serializeEvalValue({ a: 1 })).toEqual({ text: '{"a":1}', truncated: false });
+    expect(serializeEvalValue("x")).toEqual({ text: '"x"', truncated: false });
+    expect(serializeEvalValue(null)).toEqual({ text: "null", truncated: false });
+    expect(serializeEvalValue(42)).toEqual({ text: "42", truncated: false });
+  });
+
+  it("represents undefined as the literal string", () => {
+    expect(serializeEvalValue(undefined)).toEqual({ text: "undefined", truncated: false });
+  });
+
+  it("falls back to String() for unstringifiable values", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic["self"] = cyclic;
+    const r = serializeEvalValue(cyclic);
+    expect(r.truncated).toBe(false);
+    expect(typeof r.text).toBe("string");
+  });
+
+  it("truncates over-limit values and flags it", () => {
+    const big = "a".repeat(VERIFY_EVAL_VALUE_MAX + 100);
+    const r = serializeEvalValue(big);
+    expect(r.truncated).toBe(true);
+    expect(r.text.length).toBe(VERIFY_EVAL_VALUE_MAX);
   });
 });
