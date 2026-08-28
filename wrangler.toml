@@ -1,6 +1,12 @@
 name = "auth-worker"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
+# @cloudflare/puppeteer (verify_screenshot、Refs #494) が `node:buffer` を import
+# するため必須 — 無いと deploy 時に "No such module \"node:buffer\"" (code 10021)
+# で validation error になる。src には process/Buffer/node: 参照が無いことを確認
+# 済みで、既存コードへの挙動影響は無い (process.env の population は date >=
+# 2025-04-01 が条件なので、この date では発生しない)。env.staging にも継承される。
+compatibility_flags = ["nodejs_compat"]
 account_id = "24b45709d060d957340180e995f0d373"
 # version ごとの preview URL (<hash>-auth-worker.<subdomain>.workers.dev) を有効化。
 # release-wave の no-traffic stage で upload した version へ、その専用 URL から
