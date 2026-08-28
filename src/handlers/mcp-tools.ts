@@ -39,6 +39,13 @@ import {
   wwwAuthenticateValue,
 } from "../lib/mcp-origins";
 import { resolveSecret } from "../lib/secret";
+import {
+  isAllowedVerifyTarget,
+  runVerifyShots,
+  VERIFY_SHOT_MAX_URLS,
+  VerifyShotError,
+  type VerifyEngine,
+} from "../lib/verify-shot";
 
 const MCP_AUD_LEGACY = "github-mcp-server-rs";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
@@ -390,6 +397,72 @@ const TOOLS: ToolDef[] = [
       return { url: `http://localhost:${portRaw}/__dev/callback?code=${code}` };
     },
   },
+  {
+    name: "verify_screenshot",
+    description:
+      "Screenshot up to 5 https://*.ippoan.org pages as a logged-in dev session " +
+      "(mints a dev JWT internally and injects the logi_auth_token cookie; CF " +
+      "Access passes silently via the auth-worker OIDC IdP). Returns short-lived " +
+      "(5 min) PNG URLs — fetch with `curl -o shot.png <shot_url>`. Intended for " +
+      "post-merge production verification. Same allowlist gate as issue_dev_token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        urls: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: VERIFY_SHOT_MAX_URLS,
+          description: "https://*.ippoan.org page URLs to screenshot (in order)",
+        },
+        engine: {
+          type: "string",
+          enum: ["chromium", "kitesurf"],
+          description:
+            "Browser Run engine. Default chromium (full browser). kitesurf is " +
+            "Cloudflare's lighter agent browser (beta).",
+        },
+      },
+      required: ["urls"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const rawUrls = args["urls"];
+      if (
+        !Array.isArray(rawUrls) ||
+        rawUrls.length === 0 ||
+        rawUrls.length > VERIFY_SHOT_MAX_URLS ||
+        !rawUrls.every((u): u is string => typeof u === "string")
+      ) {
+        throw new VerifyShotError(
+          400,
+          `urls must be a string array (1..${VERIFY_SHOT_MAX_URLS})`,
+        );
+      }
+      const bad = rawUrls.find((u) => !isAllowedVerifyTarget(u));
+      if (bad !== undefined) {
+        throw new VerifyShotError(400, `url not allowed (https://*.ippoan.org only): ${bad}`);
+      }
+      const engineRaw = args["engine"];
+      if (engineRaw !== undefined && engineRaw !== "chromium" && engineRaw !== "kitesurf") {
+        throw new VerifyShotError(400, "engine must be 'chromium' or 'kitesurf'");
+      }
+      const engine: VerifyEngine = engineRaw === "kitesurf" ? "kitesurf" : "chromium";
+      // ブラウザ未 bind は dev JWT を mint する前に落とす (無駄な upsert を避ける)。
+      if (!ctx.env.BROWSER) {
+        throw new VerifyShotError(503, "browser_binding_not_configured");
+      }
+      const minted = await mintDevToken(ctx.env, ctx.payload);
+      if (minted.kind === "error") throw new DevLoginError(minted.status, minted.error);
+      return await runVerifyShots(ctx.env, {
+        urls: rawUrls,
+        engine,
+        cookieValue: minted.token,
+      });
+    },
+  },
 ];
 
 const TOOL_BY_NAME: Record<string, ToolDef> = Object.fromEntries(
@@ -560,6 +633,12 @@ async function dispatchToolsCall(
     if (e instanceof DevLoginError) {
       return rpcOk(id, {
         content: [{ type: "text", text: `dev-login error ${e.status}: ${e.message}` }],
+        isError: true,
+      });
+    }
+    if (e instanceof VerifyShotError) {
+      return rpcOk(id, {
+        content: [{ type: "text", text: `verify-shot error ${e.status}: ${e.message}` }],
         isError: true,
       });
     }

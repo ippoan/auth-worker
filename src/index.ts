@@ -118,6 +118,7 @@ import { handleMcpPairGrantViaGithub } from "./handlers/mcp-pair-grant-via-githu
 import { handleMcpPairGrantViaOat } from "./handlers/mcp-pair-grant-via-oat";
 import { handleMcpPairRegisterViaGithubComment } from "./handlers/mcp-pair-register-via-github-comment";
 import { handleMcpTools } from "./handlers/mcp-tools";
+import { handleMcpShot } from "./handlers/mcp-shot";
 import { handleDevLoginToken } from "./handlers/dev-login-token";
 import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
@@ -139,6 +140,7 @@ export { McpSession } from "./durable_objects/mcp-session-do";
 export { InternalEntrypoint } from "./internal-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
+import type { BrowserWorker } from "@cloudflare/puppeteer";
 
 export interface Env {
   /** Refs #206: `.dev.vars` 由来 prod secret 一式を CF Secrets Store binding に移行
@@ -335,6 +337,10 @@ export interface Env {
   /** KV namespace for MCP OAuth state (device_codes, sessions, refresh tokens)。
    *  Phase 1+ で binding 参照開始。Phase 0 では wrangler.toml に binding 追加のみ。 */
   MCP_OAUTH_KV?: KVNamespace;
+  /** Browser Run binding (`[browser]`) — MCP tool `verify_screenshot`
+   *  (src/lib/verify-shot.ts) が PR merge 後の本番ページを dev JWT cookie 込みで
+   *  screenshot するのに使う。未 bind なら tool は 503 (fail-closed)。 */
+  BROWSER?: BrowserWorker;
   /** headless (ブラウザ同意なし) binding_jwt 発行/bind 経路 3 つ
    *  (`grant-via-oat` / `grant-via-github` / `register-via-github-comment`)
    *  の共通 kill switch (issue #432)。`"1"` の時のみ有効、それ以外 (未設定
@@ -590,6 +596,15 @@ export default {
           }
           if (rest && !rest.includes("/")) {
             return await handleMcpPairClaim(request, env, rest);
+          }
+          return errorResponse(404, "Not found");
+        }
+        // verify_screenshot (src/lib/verify-shot.ts) が発行する短命 PNG の
+        // 配布口。予測不能 id + TTL 5 分 (mcp-shot.ts のコメント参照)。
+        if (url.pathname.startsWith("/mcp/shot/")) {
+          const shotId = url.pathname.slice("/mcp/shot/".length);
+          if (shotId && !shotId.includes("/")) {
+            return await handleMcpShot(request, env, shotId);
           }
           return errorResponse(404, "Not found");
         }

@@ -1,6 +1,12 @@
 name = "auth-worker"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
+# @cloudflare/puppeteer (verify_screenshot、Refs #494) が `node:buffer` を import
+# するため必須 — 無いと deploy 時に "No such module \"node:buffer\"" (code 10021)
+# で validation error になる。src には process/Buffer/node: 参照が無いことを確認
+# 済みで、既存コードへの挙動影響は無い (process.env の population は date >=
+# 2025-04-01 が条件なので、この date では発生しない)。env.staging にも継承される。
+compatibility_flags = ["nodejs_compat"]
 account_id = "24b45709d060d957340180e995f0d373"
 # version ごとの preview URL (<hash>-auth-worker.<subdomain>.workers.dev) を有効化。
 # release-wave の no-traffic stage で upload した version へ、その専用 URL から
@@ -312,6 +318,12 @@ secret_name = "line-login-channel-id"
 binding = "LINE_LOGIN_CHANNEL_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "line-login-channel-secret"
+
+# Browser Run binding — MCP tool `verify_screenshot` (src/lib/verify-shot.ts) が
+# PR merge 後の本番ページを dev JWT cookie 込みで screenshot するのに使う。
+# 対象は https://*.ippoan.org のみ (SSRF 境界は verify-shot.ts で fail-closed)。
+[browser]
+binding = "BROWSER"
 
 # LINE WORKS webhook 受信用 Durable Object (bot_id ごとに 1 instance)
 [[durable_objects.bindings]]
@@ -629,6 +641,11 @@ secret_name = "GOOGLE_HEALTH_CLIENT_ID"
 binding = "GOOGLE_HEALTH_CLIENT_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "GOOGLE_HEALTH_CLIENT_SECRET"
+
+# Browser Run binding (staging) — top-level コメント参照。MCP スタックは staging を
+# 実運用として扱うため、verify_screenshot も staging で主に使われる。
+[env.staging.browser]
+binding = "BROWSER"
 
 [[env.staging.durable_objects.bindings]]
 name = "LINEWORKS_WEBHOOK_DO"

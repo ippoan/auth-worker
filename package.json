@@ -13,6 +13,7 @@
     "check:secrets": "bash scripts/check-secrets-preflight.sh"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.4.0",
     "@ippoan/egov-shinsei-sdk": "^0.1.18-dev"
   },
   "devDependencies": {
