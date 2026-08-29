@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { handleAuthIntrospect } from "../../src/handlers/auth-introspect";
-import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
+import { createMockEnv, createMockKV, TEST_JWT_SECRET } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 import type { Env } from "../../src/index";
 
@@ -260,5 +260,148 @@ describe("POST /auth/introspect — origin / ACL", () => {
     );
     const body = (await res.json()) as { active: boolean };
     expect(body.active).toBe(true);
+  });
+});
+
+
+// ── org_wide (Refs ohishi-exp/nuxt-dtako-admin#1049) ────────────────────────
+// USER_ACL 由来の「テナント境界を越えて org 全体を見てよい人」フラグ。
+// DEVELOPER_EMAILS (UI 専用) とも role とも無関係であることに注意。
+const OHISHI_ORIGIN = "https://dtako-admin.example";
+const APP_ORGS = JSON.stringify({ "dtako-admin": "ohishi-exp" });
+const OHISHI_TENANT_ACL = JSON.stringify({ "ohishi-exp": [PROD_TENANT] });
+const OHISHI_USER_ACL = JSON.stringify({ "ohishi-exp": ["orgwide@example.com"] });
+
+/** ohishi-exp と分類される origin を持つ env (app-orgs を KV に入れる)。 */
+function ohishiEnv(overrides: Partial<Env> = {}): Env {
+  return makeEnv({
+    AUTH_CONFIG: createMockKV({ "app-orgs": APP_ORGS }),
+    TENANT_ACL: OHISHI_TENANT_ACL,
+    USER_ACL: OHISHI_USER_ACL,
+    ...overrides,
+  });
+}
+
+async function introspect(env: Env, token: string, origin: string) {
+  const res = await handleAuthIntrospect(
+    req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token, origin }) }),
+    env,
+  );
+  return (await res.json()) as { active: boolean; org_wide?: boolean; role?: string };
+}
+
+describe("POST /auth/introspect — org_wide", () => {
+  it("org_wide:true when the email is on USER_ACL (tenant not allowlisted)", async () => {
+    const token = await jwt({ tenant_id: OTHER_TENANT, email: "orgwide@example.com" });
+    const body = await introspect(ohishiEnv(), token, OHISHI_ORIGIN);
+    expect(body.active).toBe(true);
+    expect(body.org_wide).toBe(true);
+  });
+
+  // ★ 早期 return の穴の陰性対照。tenant でも email でも通る人は、
+  //   matchesOrgAllowlist を流用した実装だと tenant 側で早期 return して
+  //   org_wide:false になる。
+  it("org_wide:true even when the tenant is ALSO on TENANT_ACL", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "orgwide@example.com" });
+    const body = await introspect(ohishiEnv(), token, OHISHI_ORIGIN);
+    expect(body.active).toBe(true);
+    expect(body.org_wide).toBe(true);
+  });
+
+  it("org_wide:false for a tenant-allowlisted user who is not on USER_ACL", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "someone@example.com" });
+    const body = await introspect(ohishiEnv(), token, OHISHI_ORIGIN);
+    expect(body.active).toBe(true);
+    expect(body.org_wide).toBe(false);
+  });
+
+  it("org_wide is case-insensitive on the email", async () => {
+    const token = await jwt({ tenant_id: OTHER_TENANT, email: "OrgWide@Example.COM" });
+    const body = await introspect(ohishiEnv(), token, OHISHI_ORIGIN);
+    expect(body.org_wide).toBe(true);
+  });
+
+  it("org_wide:false when USER_ACL is emptied (negative control)", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "orgwide@example.com" });
+    const empty = ohishiEnv({ USER_ACL: JSON.stringify({ "ohishi-exp": [] }) });
+    const body = await introspect(empty, token, OHISHI_ORIGIN);
+    expect(body.active).toBe(true);
+    expect(body.org_wide).toBe(false);
+  });
+
+  it("org_wide:false when USER_ACL is unset / malformed (fail-closed)", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "orgwide@example.com" });
+    for (const acl of [undefined, "not-json", JSON.stringify({ "ohishi-exp": "nope" })]) {
+      const body = await introspect(ohishiEnv({ USER_ACL: acl }), token, OHISHI_ORIGIN);
+      expect(body.active).toBe(true);
+      expect(body.org_wide).toBe(false);
+    }
+  });
+
+  it("org_wide:false for a non-ohishi-exp (ippoan) origin even if the email is listed", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "orgwide@example.com" });
+    const body = await introspect(ohishiEnv(), token, APP_ORIGIN);
+    expect(body.active).toBe(true);
+    expect(body.org_wide).toBe(false);
+  });
+
+  it("org_wide:false when app-orgs KV is missing (org unclassifiable → fail-closed)", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "orgwide@example.com" });
+    const noOrgs = makeEnv({ AUTH_CONFIG: createMockKV({}), USER_ACL: OHISHI_USER_ACL });
+    const body = await introspect(noOrgs, token, OHISHI_ORIGIN);
+    expect(body.active).toBe(true);
+    expect(body.org_wide).toBe(false);
+  });
+
+  it("org_wide is independent of role — an admin is not org-wide by itself", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "someone@example.com", role: "admin" });
+    const body = await introspect(ohishiEnv(), token, OHISHI_ORIGIN);
+    expect(body.role).toBe("admin");
+    expect(body.org_wide).toBe(false);
+  });
+
+  it("org_wide is absent from every active:false response (no info leak)", async () => {
+    const env = ohishiEnv();
+    const expired = await jwt({
+      tenant_id: PROD_TENANT,
+      email: "orgwide@example.com",
+      exp: Math.floor(Date.now() / 1000) - 10,
+    });
+    const denied = await jwt({ tenant_id: OTHER_TENANT, email: "nobody@example.com" });
+
+    for (const [token, origin] of [
+      [expired, OHISHI_ORIGIN],
+      [denied, OHISHI_ORIGIN], // ACL で落ちる
+      ["not-a-jwt", OHISHI_ORIGIN],
+    ] as const) {
+      const body = await introspect(env, token, origin);
+      expect(body.active).toBe(false);
+      expect("org_wide" in body).toBe(false);
+    }
+
+    // origin 欠落 / URL 不正 / body 不正 / 401 / 503 も同様。
+    const res401 = await handleAuthIntrospect(
+      req({ auth: "wrong-secret", body: JSON.stringify({ token: expired, origin: OHISHI_ORIGIN }) }),
+      env,
+    );
+    expect("org_wide" in ((await res401.json()) as object)).toBe(false);
+
+    const res503 = await handleAuthIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token: expired, origin: OHISHI_ORIGIN }) }),
+      ohishiEnv({ JWT_SECRET: undefined }),
+    );
+    expect("org_wide" in ((await res503.json()) as object)).toBe(false);
+  });
+
+  it("adding org_wide does not change any allow/deny outcome", async () => {
+    const env = ohishiEnv();
+    // USER_ACL で通る人 / TENANT_ACL で通る人 / どちらでも通らない人。
+    const viaUser = await jwt({ tenant_id: OTHER_TENANT, email: "orgwide@example.com" });
+    const viaTenant = await jwt({ tenant_id: PROD_TENANT, email: "someone@example.com" });
+    const neither = await jwt({ tenant_id: OTHER_TENANT, email: "someone@example.com" });
+
+    expect((await introspect(env, viaUser, OHISHI_ORIGIN)).active).toBe(true);
+    expect((await introspect(env, viaTenant, OHISHI_ORIGIN)).active).toBe(true);
+    expect((await introspect(env, neither, OHISHI_ORIGIN)).active).toBe(false);
   });
 });
