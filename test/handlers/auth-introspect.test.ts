@@ -353,6 +353,17 @@ describe("POST /auth/introspect — org_wide", () => {
     expect(body.org_wide).toBe(false);
   });
 
+  // ★ この直しの本体。TENANT_ACL で通っている人は、これまで USER_ACL に一度も
+  //   触らずに済んでいた (matchesOrgAllowlist の早期 return)。org_wide は必ず
+  //   USER_ACL を読むので、要素の型崩れで introspect ごと落ちてはいけない。
+  it("tenant-allowlisted user still gets active:true / org_wide:false when USER_ACL elements are malformed", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, email: "someone@example.com" });
+    const env = ohishiEnv({ USER_ACL: JSON.stringify({ "ohishi-exp": [1, null, { a: 1 }] }) });
+    const body = await introspect(env, token, OHISHI_ORIGIN);
+    expect(body.active).toBe(true);
+    expect(body.org_wide).toBe(false);
+  });
+
   it("org_wide is independent of role — an admin is not org-wide by itself", async () => {
     const token = await jwt({ tenant_id: PROD_TENANT, email: "someone@example.com", role: "admin" });
     const body = await introspect(ohishiEnv(), token, OHISHI_ORIGIN);

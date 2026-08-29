@@ -226,6 +226,25 @@ describe("isOrgWideUser", () => {
     expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
   });
 
+  // ★ isOrgWideUser は matchesOrgAllowlist と違って **必ず** USER_ACL に触る
+  //   (tenant での早期 return が無い)。要素の型崩れで throw すると、TENANT_ACL で
+  //   通っていた人まで introspect ごと落ちる。要素ごとに非文字列を捨てる。
+  it("returns false (never throws) when USER_ACL contains non-string elements", () => {
+    const env = createMockEnv({
+      USER_ACL: JSON.stringify({ "ohishi-exp": [1, null, { a: 1 }, ["x"], true] }),
+    });
+    expect(() => isOrgWideUser(env, "ohishi-exp", "alice@example.com")).not.toThrow();
+    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
+  });
+
+  it("still matches the string entries when non-strings are mixed in", () => {
+    const env = createMockEnv({
+      USER_ACL: JSON.stringify({ "ohishi-exp": [1, "alice@example.com", null] }),
+    });
+    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
+    expect(isOrgWideUser(env, "ohishi-exp", "bob@example.com")).toBe(false);
+  });
+
   it("returns false when the org key is absent (fail-closed)", () => {
     const env = createMockEnv({ USER_ACL: OHISHI_USER_ACL });
     expect(isOrgWideUser(env, "ippoan", "alice@example.com")).toBe(false);

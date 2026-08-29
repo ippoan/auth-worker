@@ -152,10 +152,21 @@ export function isTenantInOrgAllowlist(
  * Fail-closed via `listFor`: secret missing / unparseable / org value not an
  * array / org key absent → empty list → `false`. Empty `email` → `false`.
  * Comparison is case-insensitive, matching `matchesOrgAllowlist`.
+ *
+ * Non-string elements inside the array are dropped one by one. `listFor` only
+ * checks `Array.isArray`, not the element types, so a typo like
+ * `{"ohishi-exp": [1]}` would otherwise throw here. That matters more than it
+ * does in `matchesOrgAllowlist`: that helper returns early on a TENANT_ACL hit
+ * and never reads USER_ACL for those users, whereas this function *always*
+ * reads it — so a malformed USER_ACL would start breaking logins that
+ * previously succeeded via TENANT_ACL. `listFor` itself is deliberately left
+ * alone (it is shared with the two existing ACL checks).
  */
 export function isOrgWideUser(env: Env, org: string, email?: string): boolean {
   if (!email) return false;
-  const users = listFor(env.USER_ACL, org).map((e) => e.toLowerCase());
+  const users = listFor(env.USER_ACL, org)
+    .filter((e): e is string => typeof e === "string")
+    .map((e) => e.toLowerCase());
   return users.includes(email.toLowerCase());
 }
 
