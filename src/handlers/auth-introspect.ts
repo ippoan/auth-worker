@@ -35,17 +35,39 @@
  *      で origin × tenant_id を判定 (OAuth callback と同じ gate)。
  *
  * Response (RFC 7662 風):
- *   - 有効          : 200 `{ active: true, tenant_id, role, email, sub, exp }`
+ *   - 有効          : 200 `{ active: true, tenant_id, role, email, sub, exp,
+ *                            org_wide }`
  *   - 署名不正 / exp 切れ / env 不一致 / アプリ不許可テナント / origin 欠落:
  *                     200 `{ active: false }` (情報リーク回避)
  *   - 認証失敗      : 401 `{ error: "unauthorized" }`
  *   - 設定不備      : 503 `{ active: false, error: "server_error" }`
  *
+ * `org_wide` (boolean) — **認可の情報** (Refs ohishi-exp/nuxt-dtako-admin#1049):
+ *   この viewer の email が `USER_ACL[org]` に載っているか。`USER_ACL` は
+ *   `checkOrgAccess` で `TENANT_ACL` と OR 合成される「テナントに関係なく
+ *   その人だから通す」allowlist なので、`true` = **テナント境界を越えて org
+ *   全体を見てよい人**。consumer (例 nuxt-dtako-admin の relay) が「自分の
+ *   テナント以外の会社も見せてよいか」を判定する正本はここ 1 つで、consumer
+ *   側に allowlist を持たせない (二重管理の回避)。
+ *
+ *   注意点 3 つ:
+ *   - **`true` は「管理者」でも「開発者」でもない。** role とも無関係
+ *     (`role === "admin"` は別軸で、org 全体閲覧の根拠にはならない)。
+ *   - **`DEVELOPER_EMAILS` (`admin-html.ts` / `device-setup.ts`) とは別物。**
+ *     あちらは UI の出し分け専用で認可ではない。取り違えないこと。
+ *   - **consumer は `undefined` を `false` として扱うこと。** 古い
+ *     auth-worker はこのキーを返さない (additive な変更なので、既存 consumer
+ *     は無視するだけで壊れない)。
+ *
+ *   `active: false` の応答には**含めない** (情報リーク回避の既存方針)。
+ *   `ohishi-exp` 以外の org / 判定不能なら `false` (fail-closed)。
+ *
  * Cache-Control: no-store。consumer 側で short-TTL cache する前提。
  */
 
 import type { Env } from "../index";
-import { checkAppTenant, checkOrgAccess } from "../lib/acl";
+import { checkAppTenant, checkOrgAccess, isOrgWideUser } from "../lib/acl";
+import { classifyOrigin } from "../lib/config";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
@@ -133,6 +155,15 @@ export async function handleAuthIntrospect(
     return jsonNoStore({ active: false });
   }
 
+  // org_wide — 冒頭 doc 参照。USER_ACL 由来の「テナント境界を越えてよい人」。
+  // org は checkOrgAccess と同じ classifyOrigin で引く (ここがズレると常に
+  // false になる)。観測のみで、上の allow/deny 判定には一切影響しない。
+  let orgWide = false;
+  const org = await classifyOrigin(env, origin);
+  if (org === "ohishi-exp") {
+    orgWide = isOrgWideUser(env, org, email);
+  }
+
   return jsonNoStore({
     active: true,
     tenant_id: tenantId,
@@ -143,5 +174,6 @@ export async function handleAuthIntrospect(
     // server 側で安全に行うために返す (Refs #290)。
     sub,
     exp: payload.exp,
+    org_wide: orgWide,
   });
 }

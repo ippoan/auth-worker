@@ -16,6 +16,10 @@
  * TENANT_ACL and USER_ACL are OR-composed: a request passes when *either*
  * the tenant_id or the email is on its org's allowlist. Either secret may
  * be missing; at least one must match for non-bypassed origins.
+ *
+ * `isOrgWideUser` additionally exposes the USER_ACL half of that OR on its
+ * own, so callers can tell *why* a request passed. It only observes; it
+ * never changes whether a request passes.
  */
 
 import type { Env } from "../index";
@@ -125,6 +129,45 @@ export function isTenantInOrgAllowlist(
   email?: string,
 ): boolean {
   return matchesOrgAllowlist(env, org, tenantId, email);
+}
+
+/**
+ * True iff `email` is on `USER_ACL[org]` — i.e. this person is allowlisted
+ * **by identity, independent of which tenant their JWT carries**.
+ *
+ * That is exactly "may look beyond their own tenant inside this org":
+ * `checkOrgAccess` passes them for any `tenant_id`, so they are not bound by
+ * the tenant boundary. This is **authorization data** (`USER_ACL` is the
+ * single source of truth for who may cross tenants) — do not confuse it with
+ * `DEVELOPER_EMAILS` in `admin-html.ts` / `device-setup.ts`, which is a
+ * display-only UI gate and is never consulted for access decisions.
+ *
+ * Deliberately **not** built on `matchesOrgAllowlist`: that helper checks
+ * TENANT_ACL first and returns early, so somebody listed on *both* lists
+ * would never be observed as a USER_ACL match. Here only USER_ACL is read.
+ *
+ * Purely observational — nothing in this function feeds an allow/deny
+ * decision, so adding it cannot change who gets in.
+ *
+ * Fail-closed via `listFor`: secret missing / unparseable / org value not an
+ * array / org key absent → empty list → `false`. Empty `email` → `false`.
+ * Comparison is case-insensitive, matching `matchesOrgAllowlist`.
+ *
+ * Non-string elements inside the array are dropped one by one. `listFor` only
+ * checks `Array.isArray`, not the element types, so a typo like
+ * `{"ohishi-exp": [1]}` would otherwise throw here. That matters more than it
+ * does in `matchesOrgAllowlist`: that helper returns early on a TENANT_ACL hit
+ * and never reads USER_ACL for those users, whereas this function *always*
+ * reads it — so a malformed USER_ACL would start breaking logins that
+ * previously succeeded via TENANT_ACL. `listFor` itself is deliberately left
+ * alone (it is shared with the two existing ACL checks).
+ */
+export function isOrgWideUser(env: Env, org: string, email?: string): boolean {
+  if (!email) return false;
+  const users = listFor(env.USER_ACL, org)
+    .filter((e): e is string => typeof e === "string")
+    .map((e) => e.toLowerCase());
+  return users.includes(email.toLowerCase());
 }
 
 function matchesOrgAllowlist(
