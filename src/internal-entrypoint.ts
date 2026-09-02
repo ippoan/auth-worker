@@ -25,17 +25,30 @@ import { resolveSecret } from "./lib/secret";
 import { mintGoogleIdToken } from "./lib/oidc";
 
 /**
- * rust-alc-api へ転送を許可する path。**この 2 本だけ** (dtako-scraper-relay の
- * スクレイプ履歴、Refs ohishi-exp/nuxt-dtako-admin#931 / #933)。
+ * rust-alc-api へ転送を許可する path。**この 3 本だけ** (呼び手は
+ * dtako-scraper-relay の 1 worker のみ)。
  *
- * `/device-data-proxy` の `ROLE_PATH_ALLOWLIST[device-dtako-relay]` と同じ 2 本で、
+ * - `/api/scraper/history` / `/api/dtako/events/etags` — スクレイプ履歴と etag
+ *   (Refs ohishi-exp/nuxt-dtako-admin#931 / #933)。`/device-data-proxy` の
+ *   `ROLE_PATH_ALLOWLIST[device-dtako-relay]` と同じ 2 本
+ * - `/api/employees/bulk-by-code` — theearth の乗務員マスタを 1 日 5 回
+ *   取り込む口 (Refs ippoan/alc-app-s3#125)。**書き込み (PUT) を通す唯一の path**
+ *
  * **method は見ない** — `/api/scraper/history` の 1 行で GET (履歴を読む =
  * #933) と POST (無人実行を載せる = #931) の両方が通る。読めない履歴に書いても
  * 意味が無いので意図的にそうしている。
+ *
+ * ★ 書き先の tenant は**呼び手が渡す `tenantId` そのもの**で、ここでは絞れない
+ * (この口の identity は `X-Tenant-ID` 注入だけ)。`bulk-by-code` を足せる根拠は
+ * 呼び手側にある — relay の `runDriverMasterSync` は `DTAKO_ACCOUNTS` が持つ
+ * account の tenant_id しか渡さず、request body の tenant_id を読まない
+ * (Refs ohishi-exp/nuxt-dtako-admin#1080)。**呼び手が任意 tenant を渡せる形に
+ * 変わったら、この 1 行の前提が崩れる。**
  */
 const FORWARDABLE_PATHS: ReadonlySet<string> = new Set([
   "/api/scraper/history",
   "/api/dtako/events/etags",
+  "/api/employees/bulk-by-code",
 ]);
 
 /** `forwardAlcTenantData` の引数。RPC 越しに渡るので serializable な素の値だけ。 */
