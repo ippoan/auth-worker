@@ -180,6 +180,46 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
     expect(((init as RequestInit).headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
   });
 
+  it("乗務員マスタ同期の PUT (/api/employees/bulk-by-code) が body 付きで通る (alc-app-s3#125)", async () => {
+    const fetchMock = mockFetch(
+      new Response(JSON.stringify({ created: 3, updated: 500, skipped: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const body = JSON.stringify({ items: [{ code: "1078", name: "-", nfc_id: "2024010120290131" }] });
+
+    const out = await rpc().forwardAlcTenantData({
+      tenantId: TENANT,
+      path: "/api/employees/bulk-by-code",
+      method: "PUT",
+      body,
+      contentType: "application/json",
+    });
+
+    expect(out.status).toBe(200);
+    expect(JSON.parse(out.body).updated).toBe(500);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/employees/bulk-by-code");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("PUT");
+    // ★ 書き込み経路なので body が落ちていないことまで見る (落ちると
+    // rust-alc-api 側が 400 「items が不正です」になり、原因が allowlist から遠くなる)。
+    expect((init as RequestInit).body).toBe(body);
+  });
+
+  it("bulk-by-code を足しても親の /api/employees は通らない (完全一致のまま)", async () => {
+    const fetchMock = mockFetch();
+    for (const path of ["/api/employees", "/api/employees/bulk-by-code/", "/api/employees/1"]) {
+      const out = await rpc().forwardAlcTenantData({ tenantId: TENANT, path, method: "PUT" });
+      expect(out.status).toBe(403);
+      expect(JSON.parse(out.body).error).toBe("path_not_forwardable");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("search の先頭 `?` は有っても無くても良い / method は大文字化する", async () => {
     const fetchMock = mockFetch();
     await rpc().forwardAlcTenantData({
