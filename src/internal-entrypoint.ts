@@ -25,7 +25,7 @@ import { resolveSecret } from "./lib/secret";
 import { mintGoogleIdToken } from "./lib/oidc";
 
 /**
- * rust-alc-api へ転送を許可する path。**この 3 本だけ** (呼び手は
+ * rust-alc-api へ転送を許可する path。**この 4 本だけ** (呼び手は
  * dtako-scraper-relay の 1 worker のみ)。
  *
  * - `/api/scraper/history` / `/api/dtako/events/etags` — スクレイプ履歴と etag
@@ -33,6 +33,17 @@ import { mintGoogleIdToken } from "./lib/oidc";
  *   `ROLE_PATH_ALLOWLIST[device-dtako-relay]` と同じ 2 本
  * - `/api/employees/bulk-by-code` — theearth の乗務員マスタを 1 日 5 回
  *   取り込む口 (Refs ippoan/alc-app-s3#125)。**書き込み (PUT) を通す唯一の path**
+ * - `/api/dtako-logs/bulk` — theearth の車輌現在地 (199 台) を 10 分おきに
+ *   取り込む口 (Refs ohishi-exp/nuxt-dtako-admin#1098)。取得元だった VPS を
+ *   廃止した移行先。**根拠は `bulk-by-code` と同じで呼び手側にある** — relay の
+ *   `runVehicleStateCron` は `VEHICLE_STATE_TARGETS` が名指しした `comp_id` を
+ *   `DTAKO_ACCOUNTS` で引いた `tenant_id` しか渡さず、theearth の応答も request
+ *   body も tenant を決める材料にしない。
+ *
+ *   ★ 旧経路は `/device-data-proxy` (device credential を KV に持ち
+ *   `POST /device/token` で mint) だった。**ここへ移すと credential そのものが
+ *   要らなくなる** — `alc-tenant-rpc.ts` が #950 で同じ理由で寄せたのと同型で、
+ *   「直接呼べる相手に bearer を提示する」形を 1 つ減らす。
  *
  * **method は見ない** — `/api/scraper/history` の 1 行で GET (履歴を読む =
  * #933) と POST (無人実行を載せる = #931) の両方が通る。読めない履歴に書いても
@@ -49,6 +60,7 @@ const FORWARDABLE_PATHS: ReadonlySet<string> = new Set([
   "/api/scraper/history",
   "/api/dtako/events/etags",
   "/api/employees/bulk-by-code",
+  "/api/dtako-logs/bulk",
 ]);
 
 /** `forwardAlcTenantData` の引数。RPC 越しに渡るので serializable な素の値だけ。 */

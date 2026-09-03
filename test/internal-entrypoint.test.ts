@@ -210,6 +210,59 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
     expect((init as RequestInit).body).toBe(body);
   });
 
+  it("車輌動態の POST (/api/dtako-logs/bulk) が body 付きで通る (nuxt-dtako-admin#1098)", async () => {
+    const fetchMock = mockFetch(
+      new Response(
+        JSON.stringify({ success: true, records_added: 199, total_records: 199, message: "" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    // relay が送るのは theearth の生レコード配列 (DataDateTime だけ RFC3339 に直したもの)。
+    const body = JSON.stringify([
+      { VehicleCD: 2131, DataDateTime: "2026-09-03T07:20:00+09:00", GPSLatitude: 34733210 },
+    ]);
+
+    const out = await rpc().forwardAlcTenantData({
+      tenantId: TENANT,
+      path: "/api/dtako-logs/bulk",
+      method: "POST",
+      body,
+      contentType: "application/json",
+    });
+
+    expect(out.status).toBe(200);
+    expect(JSON.parse(out.body).records_added).toBe(199);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/dtako-logs/bulk");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    // 上流は `require_tenant_header` (data 経路) なので、注入した X-Tenant-ID が
+    // 唯一の identity になる。
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("POST");
+    // ★ 書き込み経路なので body が落ちていないことまで見る (落ちると上流が
+    // 「No records provided」で 200 + records_added:0 を返し、**成功に見えたまま
+    // 1 件も入らない**。原因が allowlist から遠くなる = bulk-by-code と同じ理由)。
+    expect((init as RequestInit).body).toBe(body);
+  });
+
+  it("★ dtako-logs/bulk を足しても兄弟の path は通らない (完全一致のまま)", async () => {
+    // ★ 陰性対照 — 1 行足したことで前方一致や近い名前まで開いていないこと。
+    const fetchMock = mockFetch();
+    for (const path of [
+      "/api/dtako-logs",
+      "/api/dtako-logs/bulk/",
+      "/api/dtako-logs/current",
+      "/api/dtako-logs/by-date",
+      "/api/dtako-logs/bulk/../current",
+    ]) {
+      const out = await rpc().forwardAlcTenantData({ tenantId: TENANT, path, method: "POST" });
+      expect(out.status).toBe(403);
+      expect(JSON.parse(out.body).error).toBe("path_not_forwardable");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("bulk-by-code を足しても親の /api/employees は通らない (完全一致のまま)", async () => {
     const fetchMock = mockFetch();
     for (const path of ["/api/employees", "/api/employees/bulk-by-code/", "/api/employees/1"]) {
