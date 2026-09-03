@@ -320,6 +320,92 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(h["X-Tenant-ID"]).toBeUndefined();
   });
 
+  it("正常 (POST /api/dvr/notifications): shared-secret クラスとして X-Tenant-ID 付きで forward (Refs ohishi-exp/nuxt-dtako-admin#1094)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/dvr/notifications", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ seq: 1 }]),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/dvr/notifications");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("POST");
+  });
+
+  it("正常 (POST /api/dvr/files/{uuid}): shared-secret クラスとして X-Tenant-ID 付きで forward (Refs ohishi-exp/nuxt-dtako-admin#1094)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/dvr/files/9f4c1e0a-2b3d-4e5f-8a9b-0c1d2e3f4a5b", {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe(
+      "https://alc-api.test.example/api/dvr/files/9f4c1e0a-2b3d-4e5f-8a9b-0c1d2e3f4a5b",
+    );
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("POST /api/dvr/notifications は X-Tenant-ID 欠落で 400 (shared-secret クラスの必須ヘッダー)", async () => {
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/dvr/notifications", { method: "POST", tenant: null }),
+      env(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("DVR: id 無し / UUID 形式不正 / 余分な segment / 前方一致は 403 (Refs ohishi-exp/nuxt-dtako-admin#1094)", async () => {
+    for (const p of [
+      "/alc-internal-proxy/api/dvr/files", // id 無し
+      "/alc-internal-proxy/api/dvr/files/", // 末尾スラッシュのみ
+      "/alc-internal-proxy/api/dvr/files/not-a-uuid",
+      "/alc-internal-proxy/api/dvr/files/9f4c1e0a-2b3d-4e5f-8a9b-0c1d2e3f4a5b/extra", // 余分な segment
+      "/alc-internal-proxy/api/dvr/notifications/1", // 前方一致では通さない
+    ]) {
+      const res = await handleAlcInternalProxy(req(p, { method: "POST" }), env());
+      expect(res.status, p).toBe(403);
+    }
+  });
+
+  // path の相対要素 (`..`) は **classifyInternalPath より上流** で畳まれる: Request/URL の
+  // WHATWG パースが dot-segment を解決するため、handler の `new URL(request.url).pathname` は
+  // 既に正規化済み。したがって `/api/dvr/files/../upload` は `/api/dvr/upload` として分類され、
+  // allowlist 外なので 403 になる (`files` の UUID 検証をすり抜けて他 route へ届くことはない)。
+  it("DVR: 相対要素 (..) は上流の URL 正規化で畳まれてから分類される", async () => {
+    const raw = "/alc-internal-proxy/api/dvr/files/../upload";
+    expect(new URL(`https://auth.test.example${raw}`).pathname).toBe(
+      "/alc-internal-proxy/api/dvr/upload",
+    );
+    const res = await handleAlcInternalProxy(req(raw, { method: "POST" }), env());
+    expect(res.status).toBe(403);
+  });
+
+
   it("internal-secret (trigger-update-dev): caller の X-Internal-Secret を pass-through、tenant/base-secret は載せない", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>

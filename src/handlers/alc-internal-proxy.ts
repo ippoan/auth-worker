@@ -76,6 +76,17 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   if (path === "/api/upload") return "shared-secret"; // POST dtako csvdata.zip 取り込み (ohishi-exp/dtako-scraper#22)
   if (path === "/api/internal/operations") return "shared-secret"; // GET dtako 実運行一覧 (nuxt-ichibanboshi の一番星突合、ohishi-exp/nuxt-dtako-admin#198 Phase 8)
   if (path === "/api/hub/measurements") return "shared-secret"; // POST CoreS3 測定データ ingest (cf-alc-recorder 経由、#363 / ippoan/alc-app#106 / ippoan/rust-alc-api#564)
+  // DVR 動画通知の ingest (Refs ohishi-exp/nuxt-dtako-admin#1094)。rust-alc-api 側の新 route は
+  // internal_shared_secret_router (= require_internal_shared_secret + X-Tenant-ID) に載るため
+  // shared-secret クラス。UUID は正規表現で厳密検証 (path injection 防止、fire path と同作法)。
+  if (path === "/api/dvr/notifications") return "shared-secret"; // POST DVR 通知行の batch ingest
+  if (
+    /^\/api\/dvr\/files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      path,
+    )
+  ) {
+    return "shared-secret"; // POST .vdf 本体のストリーム保存
+  }
 
   // ── public-ingest: rust の public_router (caller #5 Android、tenant は body/lookup 解決) ──
   if (path === "/api/tenko-call/register") return "public-ingest"; // TenkoCall 端末登録
