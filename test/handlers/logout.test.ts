@@ -56,26 +56,31 @@ describe("handleLogout", () => {
     const TEAM = "mtamaramu.cloudflareaccess.com";
     const accessEnv = createMockEnv({ ACCESS_TEAM_DOMAIN: TEAM });
 
+    // returnTo は消費者ホストではなく **auth-worker 自身の中継** を指す (Refs #499)。
+    // 消費者ホストに Access アプリが無いと CF が 400 で弾くため。
+    const expectedTarget = (finalUrl: string) => {
+      const relay = new URL("https://auth.test.example/logout/return");
+      relay.searchParams.set("to", finalUrl);
+      return `https://${TEAM}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(relay.toString())}`;
+    };
+
     it("sends the default /login destination through the Access logout", async () => {
       const req = new Request("https://auth.test.example/logout");
       const res = await handleLogout(req, accessEnv);
       const html = await res.text();
-      const returnTo = encodeURIComponent("https://auth.test.example/login");
       expect(html).toContain(
-        `window.location.replace('https://${TEAM}/cdn-cgi/access/logout?returnTo=${returnTo}')`,
+        `window.location.replace('${expectedTarget("https://auth.test.example/login")}')`,
       );
     });
 
-    it("keeps the caller's redirect_uri as returnTo", async () => {
+    it("carries the caller's redirect_uri in the relay's ?to=", async () => {
       const app = "https://dtako.test.example/?lw_callback=1";
       const req = new Request(
         `https://auth.test.example/logout?redirect_uri=${encodeURIComponent(app)}`,
       );
       const res = await handleLogout(req, accessEnv);
       const html = await res.text();
-      expect(html).toContain(
-        `window.location.replace('https://${TEAM}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(app)}')`,
-      );
+      expect(html).toContain(`window.location.replace('${expectedTarget(app)}')`);
     });
 
     it("still clears the auth cookie before handing off to Access", async () => {

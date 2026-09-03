@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   ACCESS_LOGOUT_CHAIN_COOKIE,
+  ACCESS_LOGOUT_RETURN_PATH,
+  resolveLogoutReturnTarget,
   accessLogoutChainMarkerCookie,
   hasAccessLogoutChainMarker,
   normalizeAccessTeamDomain,
@@ -77,19 +79,32 @@ describe("logoutNavigationTarget", () => {
   const target = (redirectTo: string) =>
     logoutNavigationTarget(AUTH_ORIGIN, AUTH_HOST, redirectTo, TEAM);
 
+  // returnTo は最終先ではなく **auth-worker 自身の中継** (Refs #499)。
+  const expected = (finalUrl: string) => {
+    const relay = new URL(`${AUTH_ORIGIN}/logout/return`);
+    relay.searchParams.set("to", finalUrl);
+    return `https://${TEAM}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(relay.toString())}`;
+  };
+
   it("chains a relative redirect through the Access logout", () => {
     expect(target("/login")).toEqual({
-      target: `https://${TEAM}/cdn-cgi/access/logout?returnTo=${encodeURIComponent("https://auth.ippoan.org/login")}`,
+      target: expected("https://auth.ippoan.org/login"),
       chained: true,
     });
   });
 
-  it("chains an Access-protected app URL and keeps its query string", () => {
+  it("chains an app URL and keeps its query string in the relay's ?to=", () => {
     const app = "https://dtako.ippoan.org/?lw_callback=1";
-    expect(target(app)).toEqual({
-      target: `https://${TEAM}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(app)}`,
-      chained: true,
-    });
+    expect(target(app)).toEqual({ target: expected(app), chained: true });
+  });
+
+  // 2026-09-03 の行き止まり — alc.ippoan.org には Access アプリが無く、
+  // returnTo にそのまま載せると CF が `Invalid redirect URL` (400) を返した。
+  // 中継を挟む今は「Access に登録の無い自ホスト」でも chain できる。
+  it("chains a host that has no Access app of its own", () => {
+    const app = "https://alc.ippoan.org/login";
+    expect(target(app)).toEqual({ target: expected(app), chained: true });
+    expect(target(app).target).not.toContain("returnTo=https%3A%2F%2Falc.ippoan.org");
   });
 
   // Refs #477 の redirect loop — auth-client の reauth が /logout を叩き続けるため、
@@ -134,5 +149,33 @@ describe("logoutNavigationTarget", () => {
     expect(
       logoutNavigationTarget("http://localhost:8787", "localhost", "/login", TEAM).chained,
     ).toBe(false);
+  });
+});
+
+describe("resolveLogoutReturnTarget", () => {
+  const resolve = (redirectTo: string) =>
+    resolveLogoutReturnTarget(AUTH_ORIGIN, AUTH_HOST, redirectTo);
+
+  it("resolves a relative target against the auth origin", () => {
+    expect(resolve("/login")?.toString()).toBe("https://auth.ippoan.org/login");
+  });
+
+  it("accepts any https host under the shared parent domain", () => {
+    expect(resolve("https://alc.ippoan.org/login")?.toString()).toBe(
+      "https://alc.ippoan.org/login",
+    );
+    expect(resolve("https://ippoan.org/")?.toString()).toBe("https://ippoan.org/");
+  });
+
+  it("rejects foreign hosts, non-https and garbage", () => {
+    expect(resolve("https://example.com/evil")).toBeNull();
+    expect(resolve("https://app.nuxt-logi.pages.dev/")).toBeNull();
+    expect(resolve("http://auth.ippoan.org/login")).toBeNull();
+    expect(resolve("javascript:alert(1)")).toBeNull();
+    expect(resolveLogoutReturnTarget("::not a url::", AUTH_HOST, "/login")).toBeNull();
+  });
+
+  it("exposes the relay path used as the Access returnTo", () => {
+    expect(ACCESS_LOGOUT_RETURN_PATH).toBe("/logout/return");
   });
 });
