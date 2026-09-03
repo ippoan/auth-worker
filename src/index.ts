@@ -44,6 +44,7 @@ import {
   handleDeleteInvitation, handleDeleteUser,
 } from "./handlers/api-users";
 import { handleLogout } from "./handlers/logout";
+import { handleLogoutReturn } from "./handlers/logout-return";
 import { handleJoinPage } from "./handlers/join-page";
 import { handleJoinDone } from "./handlers/join-callback";
 import { handleRedirect } from "./handlers/redirect";
@@ -709,6 +710,9 @@ export default {
             return await handleRedirect(request, env);
           case "/logout":
             return await handleLogout(request, env);
+          // Access ログアウトからの戻りを最終先へ送り出す中継 (Refs #499)。
+          case "/logout/return":
+            return handleLogoutReturn(request);
           // Cloudflare Access 向け OIDC surface (issuer `<origin>/oidc`) の JWKS。
           // Access は IdP 登録の "Certs URL" にここを指し、id_token を検証する。
           // 既存 `/mcp/*` surface とは issuer も鍵も別 (HS256 経路には触らない)。

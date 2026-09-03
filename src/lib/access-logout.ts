@@ -31,6 +31,20 @@
  * **戻り先が共有 cookie の届く親ドメイン配下 (= 自分たちのホスト) の https URL の
  * ときだけ chain する**。それ以外 (`*.pages.dev` 消費者・相対でない外部 URL など) は
  * 従来どおり素直にその URL へ飛ばす (非破壊)。
+ *
+ * ## returnTo は必ず auth-worker 自身へ向ける (Refs #499)
+ *
+ * 「自分たちのホストなら Access も知っている」は **成り立たなかった**。
+ * `alc.ippoan.org` には Access アプリが 1 つも無く (bypass アプリがあったのは
+ * staging の `alc-staging.ippoan.org` だけ)、放置で token が切れた後の `/logout` が
+ * `returnTo=https://alc.ippoan.org/login` で chain した結果、利用者は
+ * `Invalid redirect URL` (400) で行き止まりになった (2026-09-03 実測)。
+ *
+ * Access アプリを足して回るのは消費者ホストが増えるたびの後追いになるので、
+ * **returnTo は常に auth-worker 自身の `/logout/return?to=<最終先>` へ向ける**。
+ * auth-worker の origin は Access 側の設定に必ず載っている既知ホストで、
+ * 最終先の `to` は中継側で同じ検証をかけてから 302 する。これで
+ * 「消費者ホストが Access に登録されているか」と chain の可否が切り離される。
  */
 
 import { authCookieReachesHost } from "./cookies";
@@ -77,10 +91,45 @@ export function accessLogoutChainMarkerCookie(): string {
 }
 
 /**
+ * Access ログアウトからの戻りを受ける中継 endpoint の path (Refs #499)。
+ *
+ * `returnTo` をこの path に向けることで、最終的な戻り先が Access に登録された
+ * ホストかどうかを問わなくなる。詳細はこのファイル冒頭の doc を参照。
+ */
+export const ACCESS_LOGOUT_RETURN_PATH = "/logout/return";
+
+/**
+ * `/logout` および `/logout/return` が飛ばしてよい戻り先か検証して URL を返す。
+ *
+ * 通すのは **共有 cookie の届く親ドメイン配下 (= 自分たちのホスト) の https URL**
+ * だけ。相対 URL は `authOrigin` を基準に解決する。それ以外 (外部ホスト・
+ * `javascript:` 等・パースできない値) は null。
+ */
+export function resolveLogoutReturnTarget(
+  authOrigin: string,
+  authHostname: string,
+  redirectTo: string,
+): URL | null {
+  let returnTo: URL;
+  try {
+    returnTo = new URL(redirectTo, authOrigin);
+  } catch {
+    return null;
+  }
+  if (returnTo.protocol !== "https:") return null;
+  if (!authCookieReachesHost(authHostname, returnTo.hostname)) return null;
+  return returnTo;
+}
+
+/**
  * `/logout` が最後に飛ばす先を決める。
  *
  * - chain するとき: `{ target: Access のログアウト URL, chained: true }`
  * - しないとき: `{ target: redirectTo, chained: false }` (= 従来の挙動)
+ *
+ * chain するときの `returnTo` は **常に auth-worker 自身の
+ * `/logout/return?to=<最終先>`** で、最終先へはそこから 302 で送り出す
+ * (理由は冒頭の doc、Refs #499)。
  *
  * ## `recentlyChained` が要る理由 — redirect loop を 1 周で止める
  *
@@ -120,19 +169,20 @@ export function logoutNavigationTarget(
   const team = normalizeAccessTeamDomain(accessTeamDomain);
   if (!team) return plain;
 
-  let returnTo: URL;
+  const returnTo = resolveLogoutReturnTarget(authOrigin, authHostname, redirectTo);
+  if (!returnTo) return plain;
+
+  // Access に見せる returnTo は自分自身。最終先は `to` に畳んで中継へ渡す。
+  let relay: URL;
   try {
-    returnTo = new URL(redirectTo, authOrigin);
+    relay = new URL(ACCESS_LOGOUT_RETURN_PATH, authOrigin);
   } catch {
     return plain;
   }
-  // Access の returnTo は https のみ。http/javascript: 等は chain せず素通し。
-  if (returnTo.protocol !== "https:") return plain;
-  // 自分たちのホストでない戻り先は Access が 400 で弾く → chain しない。
-  if (!authCookieReachesHost(authHostname, returnTo.hostname)) return plain;
+  relay.searchParams.set("to", returnTo.toString());
 
   return {
-    target: `https://${team}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(returnTo.toString())}`,
+    target: `https://${team}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(relay.toString())}`,
     chained: true,
   };
 }
