@@ -356,6 +356,23 @@ describe("handleDeviceSetupPair", () => {
     expect(record?.role).toBe("device-print");
   });
 
+  it("kind=timecard は device-timecard role で mint する (機種分離 alc-app-s3#134)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupPair(
+      postJson("/device/setup/pair", { kind: "timecard" }, headers),
+      env,
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as PairResponse & { kind?: string };
+    // role が device-print に落ちると打刻機へ印刷ブリッジを push できてしまう
+    expect(body.role).toBe("device-timecard");
+    expect(body.kind).toBe("timecard");
+    expect(body.label).toBe("timecard"); // 機種別の label 既定
+    const record = await getDeviceRecord(env, body.device_id);
+    expect(record?.role).toBe("device-timecard");
+  });
+
   it("未知の kind は 400 (誤配布防止 — 管理対象機種以外を mint しない)", async () => {
     const env = makeEnv();
     const headers = { ...(await opCookie()), Origin: ISSUER };
