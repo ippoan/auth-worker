@@ -118,6 +118,11 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("setSignals");
     // operator の email を表示 (どのテナントで登録されるかの確認用)
     expect(html).toContain("op@example.com");
+    // Web インストーラー (GitHub Pages) への導線 — 機種ごとに 1 本ずつ
+    expect(html).toContain("Web インストーラー");
+    expect(html).toContain('href="https://ippoan.github.io/alc-app-s3/"');
+    expect(html).toContain('href="https://ippoan.github.io/alc-app-s3/atoms3-print.html"');
+    expect(html).toContain('href="https://github.com/ippoan/alc-gw-p4/releases/latest"');
     // 登録済みデバイス一覧 (ページ表示時に /device/setup/list を読む)
     expect(html).toContain("登録済みデバイス");
     expect(html).toContain("/device/setup/list");

@@ -70,6 +70,12 @@ export interface DeviceKind {
   devAppUrl?: string;
   /** 公開中バージョンを載せた manifest (CI が `<version>+<sha>` を書く) */
   manifestUrl: string;
+  /**
+   * USB で新規書き込みする Web インストーラーのページ。OTA が使えない
+   * (credential も Wi-Fi も入っていない出荷直後 / WS が上がらない) 個体は
+   * ここから焼く。Chrome / Edge のみ
+   */
+  installerUrl: string;
   /** 表示名 */
   display: string;
 }
@@ -94,6 +100,7 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     appUrl: `${PAGES_BASE}/firmware/alc-hub-cores3-app.bin`,
     devAppUrl: `${PAGES_BASE}/firmware/alc-hub-cores3-dev-app.bin`,
     manifestUrl: `${PAGES_BASE}/manifest.json`,
+    installerUrl: `${PAGES_BASE}/`,
     display: "CoreS3 統合ハブ",
   },
   "atoms3-print": {
@@ -101,6 +108,7 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     labelDefault: "atoms3-print",
     appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-print-app.bin`,
     manifestUrl: `${PAGES_BASE}/manifest-atoms3-print.json`,
+    installerUrl: `${PAGES_BASE}/atoms3-print.html`,
     display: "AtomS3 印刷ブリッジ",
   },
   /**
@@ -117,6 +125,7 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     appUrl: "https://github.com/ippoan/alc-gw-p4/releases/latest/download/alc_gw_p4_relay.bin",
     devAppUrl: "https://github.com/ippoan/alc-gw-p4/releases/download/dev/alc_gw_p4_relay.bin",
     manifestUrl: "https://github.com/ippoan/alc-gw-p4/releases/latest/download/manifest.json",
+    installerUrl: "https://github.com/ippoan/alc-gw-p4/releases/latest",
     display: "Unit PoE-P4 GW",
   },
 };
@@ -623,6 +632,15 @@ function setupPage(issuer: string, email: string): string {
   const devToggleHtmlP4Gw = isDeveloper
     ? `<label for="dev-build-p4-gw" style="display:flex;align-items:center;gap:.45rem;margin:.3rem 0 .8rem;font-size:.85rem;color:#92400e;cursor:pointer"><input type="checkbox" id="dev-build-p4-gw" style="width:auto;margin:0" checked>Unit PoE-P4 GW は dev ビルド (main の最新コミット) を配信する</label>`
     : "";
+  // Web インストーラー (GitHub Pages) への導線。credential も Wi-Fi も入っていない
+  // 出荷直後の個体や、WS が上がらず OTA が届かない個体はここから USB で焼く。
+  // DEVICE_KINDS から生成するので機種を足したら自動で並ぶ
+  const installerLinksHtml = Object.values(DEVICE_KINDS)
+    .map(
+      (k) =>
+        `<a href="${escapeHtml(k.installerUrl)}" target="_blank" rel="noopener">${escapeHtml(k.display)}</a>`,
+    )
+    .join(" ・ ");
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>デバイス登録</title>
@@ -661,6 +679,11 @@ button.small:disabled{background:#9ca3af}
 <p class="muted">デバイスを USB で接続し「セットアップ実行」を押してください。まず現在の登録状態を
 表示し (登録済みなら上書き確認)、credential の発行 (テナント: このアカウント
 ${escapeHtml(email)})、シリアル注入、疎通確認まで自動で行います。Chrome / Edge のみ (WebSerial)。</p>
+<p class="muted">ファーム自体の新規書き込みは <strong>Web インストーラー</strong> から:
+${installerLinksHtml}。
+credential も Wi-Fi も入っていない出荷直後の個体や、WS が上がらず「更新」(OTA) が
+届かない個体はこちらで焼きます (NVS は温存されるので、登録済みなら credential は消えません)。
+書き込み後にこのページへ戻って「セットアップ実行」または一覧の「再登録」を押してください。</p>
 <label for="kind">機種</label>
 <select id="kind" style="font-size:1rem;padding:.4rem .6rem;border:1px solid #ccc;border-radius:.4rem">
   <option value="cores3">CoreS3 統合ハブ</option>
