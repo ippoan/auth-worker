@@ -133,6 +133,16 @@ export const DEVICE_ROLE_PRINT = "device-print";
  */
 export const DEVICE_ROLE_GATEWAY = "device-gateway";
 
+/**
+ * NFC タイムカード端末専用 role (ippoan/alc-app-s3#134)。
+ * cf-alc-recorder が accept する (上り `kind: "timecard"` の打刻イベント +
+ * 下り ota command の待受)。**印刷ブリッジと混ぜない** — /device/setup は
+ * role で firmware を分けるので、混ぜると打刻機へ印刷ブリッジを push できてしまう。
+ * `/device/hub-token` は mint できない (拠点デバイスではないため
+ * HUB_TOKEN_ELIGIBLE_ROLES には入れない)。
+ */
+export const DEVICE_ROLE_TIMECARD = "device-timecard";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
 export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,
@@ -143,6 +153,7 @@ export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
   DEVICE_ROLE_GATEWAY,
+  DEVICE_ROLE_TIMECARD,
 ]);
 
 /** `/device/hub-token` を mint できる role (拠点デバイスの相互認証、Refs #406)。 */

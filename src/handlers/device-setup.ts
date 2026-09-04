@@ -38,6 +38,7 @@ import {
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
   DEVICE_ROLE_GATEWAY,
+  DEVICE_ROLE_TIMECARD,
 } from "../lib/device";
 
 function jsonNoStore(body: unknown, status = 200): Response {
@@ -110,6 +111,20 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     manifestUrl: `${PAGES_BASE}/manifest-atoms3-print.json`,
     installerUrl: `${PAGES_BASE}/atoms3-print.html`,
     display: "AtomS3 印刷ブリッジ",
+  },
+  /**
+   * NFC タイムカード端末 (ippoan/alc-app-s3#134) — 営業所常設の打刻機。
+   * カードをかざすと `kind: "timecard"` の打刻イベントを cf-alc-recorder へ送る。
+   * dev バリアントは持たない (dev の実体は mem-hud = 画面の HUD で、画面を
+   * 持たない Atom 系には意味がない) ため devAppUrl は付けない。
+   */
+  timecard: {
+    role: DEVICE_ROLE_TIMECARD,
+    labelDefault: "timecard",
+    appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-timecard-app.bin`,
+    manifestUrl: `${PAGES_BASE}/manifest-timecard.json`,
+    installerUrl: `${PAGES_BASE}/timecard.html`,
+    display: "NFC タイムカード端末",
   },
   /**
    * Unit PoE-P4 (ippoan/alc-gw-p4) — hub_link の GW 側。cf-alc-recorder への

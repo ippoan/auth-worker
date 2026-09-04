@@ -17,6 +17,7 @@ import {
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
   DEVICE_ROLE_GATEWAY,
+  DEVICE_ROLE_TIMECARD,
   DEVICE_JWT_TTL_SECONDS,
   DEVICE_JWT_AUDIENCE,
   HUB_TOKEN_TTL_SECONDS,
@@ -56,6 +57,10 @@ describe("normalizeDeviceRole", () => {
     expect(normalizeDeviceRole(DEVICE_ROLE_HUB)).toBe(DEVICE_ROLE_HUB);
     expect(normalizeDeviceRole(DEVICE_ROLE_PRINT)).toBe(DEVICE_ROLE_PRINT);
     expect(normalizeDeviceRole(DEVICE_ROLE_GATEWAY)).toBe(DEVICE_ROLE_GATEWAY);
+    // NFC タイムカード端末 (ippoan/alc-app-s3#134)。登録漏れると pairing は 201 の
+    // まま role だけ既定に落ち、cf-alc-recorder の WS が 403 で黙って繋がらない
+    expect(normalizeDeviceRole(DEVICE_ROLE_TIMECARD)).toBe(DEVICE_ROLE_TIMECARD);
+    expect(normalizeDeviceRole(DEVICE_ROLE_TIMECARD)).not.toBe(DEVICE_ROLE);
   });
 
   it("falls back to the default role for unknown strings", () => {
