@@ -10,6 +10,7 @@ import {
   handleDeviceSetupVersion,
   handleDeviceSetupGw,
   handleDeviceSetupSite,
+  DEVICE_KINDS,
 } from "../../src/handlers/device-setup";
 import { createDeviceCredential, getDeviceRecord } from "../../src/lib/device";
 import { createMockKV } from "../helpers/mock-env";
@@ -147,6 +148,25 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain('id="print-test"');
     expect(html).toContain("runPrintTest");
     expect(html).toContain("/print/test.pdf");
+  });
+
+  it("機種 select の option を DEVICE_KINDS から生成する (#509)", async () => {
+    const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
+    const html = await res.text();
+    const select = html.match(/<select id="kind"[^>]*>([\s\S]*?)<\/select>/)?.[1] ?? "";
+    const options = [...select.matchAll(/<option value="([^"]+)">([^<]*)<\/option>/g)].map((m) => [
+      m[1],
+      m[2],
+    ]);
+    // registry の全機種が、キー順 (= 先頭が既定選択の cores3) でそのまま並ぶこと。
+    // #508 で timecard を足したとき、ハードコードだったここだけ追随しなかった
+    expect(options).toEqual(
+      Object.entries(DEVICE_KINDS).map(([name, k]) => [name, k.display]),
+    );
+    expect(options).toContainEqual(["timecard", "NFC タイムカード端末"]);
+    expect(options[0]?.[0]).toBe("cores3");
+    // ラベル既定値の追随も registry 由来 (機種を足したらラベルも追随する)
+    expect(html).toContain('"timecard":"timecard"');
   });
 
   it("developer アカウントには dev ビルド (mem-hud) 配信の選択を表示する (alc-app-s3#44)", async () => {

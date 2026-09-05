@@ -656,6 +656,13 @@ function setupPage(issuer: string, email: string): string {
         `<a href="${escapeHtml(k.installerUrl)}" target="_blank" rel="noopener">${escapeHtml(k.display)}</a>`,
     )
     .join(" ・ ");
+  // セットアップ実行の機種 select も同じく DEVICE_KINDS から生成する。
+  // ハードコードしていた頃は #508 で timecard を足しても select だけ追随せず、
+  // 「インストーラでは焼けるのに機種として選べない」状態になった (#509)。
+  // 既定選択 = 先頭 option = DEVICE_KINDS の第 1 キー (cores3)。
+  const kindOptionsHtml = Object.entries(DEVICE_KINDS)
+    .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
+    .join("\n");
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>デバイス登録</title>
@@ -701,9 +708,7 @@ credential も Wi-Fi も入っていない出荷直後の個体や、WS が上�
 書き込み後にこのページへ戻って「セットアップ実行」または一覧の「再登録」を押してください。</p>
 <label for="kind">機種</label>
 <select id="kind" style="font-size:1rem;padding:.4rem .6rem;border:1px solid #ccc;border-radius:.4rem">
-  <option value="cores3">CoreS3 統合ハブ</option>
-  <option value="atoms3-print">AtomS3 印刷ブリッジ</option>
-  <option value="p4-gw">Unit PoE-P4 GW</option>
+${kindOptionsHtml}
 </select>
 <label for="label">デバイスラベル (同名は旧 credential を自動失効)</label>
 <input id="label" value="cores3" pattern="[A-Za-z0-9._-]+">
@@ -776,7 +781,11 @@ function syncSiteHubRow() {
   siteHubRow.style.display = kindSel.value === "p4-gw" ? "" : "none";
 }
 kindSel.addEventListener("change", () => {
-  const defaults = { cores3: "cores3", "atoms3-print": "atoms3-print", "p4-gw": "p4-gw" };
+  // 機種 → ラベル既定値 (サーバ側 DEVICE_KINDS.labelDefault と対)。select と同じく
+  // registry から生成しないと、足した機種のラベルだけ追随しなくなる (#509)
+  const defaults = ${JSON.stringify(
+    Object.fromEntries(Object.entries(DEVICE_KINDS).map(([k, v]) => [k, v.labelDefault])),
+  )};
   if (Object.values(defaults).includes(labelInput.value)) {
     labelInput.value = defaults[kindSel.value] || kindSel.value;
   }
