@@ -329,7 +329,7 @@ export async function handleDeviceSetupSite(request: Request, env: Env): Promise
  * (auth-worker と同じ Secrets Store entry を共有)。binding / secret 未設定は
  * null (caller が 503)。
  */
-async function recorderFetch(
+export async function recorderFetch(
   env: Env,
   path: string,
   init: RequestInit,
@@ -351,7 +351,7 @@ async function recorderFetch(
  * その機種 (DeviceKind) を返す (詐称防止 + 誤配布防止に必須)。
  * 他 tenant / revoked / DEVICE_KINDS 外の role は null (fail-closed)。
  */
-async function managedDeviceKind(
+export async function managedDeviceKind(
   env: Env,
   tenantId: string,
   deviceId: string,
@@ -360,6 +360,100 @@ async function managedDeviceKind(
   if (!rec || rec.tenant_id !== tenantId || rec.revoked) return null;
   const kindName = kindNameForRole(rec.role);
   return (kindName && DEVICE_KINDS[kindName]) || null;
+}
+
+/** `sendDeviceCommand` の結果。成功は recorder が採番した command id。 */
+export type SendDeviceCommandResult =
+  | { id: string }
+  | { error: "device_not_found" }
+  | { error: "device_not_connected" }
+  | { error: "recorder_unavailable" }
+  | { error: "recorder_error"; status: number };
+
+/**
+ * 管理対象デバイスへ下り command を 1 件 push し、recorder が採番した
+ * command id を返す (結果は `getCommandResult` で別途ポーリングする)。
+ *
+ * `managedDeviceKind` の fail-closed 検査込みなので、他 tenant / revoked の
+ * device_id は recorder へ届く前に `device_not_found` で止まる。HTTP status への
+ * 写像は caller (各 handler / MCP tool) が行う。
+ *
+ *  - 管理対象外 → `device_not_found`
+ *  - recorder binding / shared secret 未設定 → `recorder_unavailable`
+ *  - recorder 404 (デバイスが WS 未接続) → `device_not_connected`
+ *  - その他の非 2xx → `recorder_error` (recorder 側の status 付き)
+ */
+export async function sendDeviceCommand(
+  env: Env,
+  tenantId: string,
+  deviceId: string,
+  payload: Record<string, unknown>,
+): Promise<SendDeviceCommandResult> {
+  if (!(await managedDeviceKind(env, tenantId, deviceId))) {
+    return { error: "device_not_found" };
+  }
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload }),
+    },
+  );
+  if (!res) return { error: "recorder_unavailable" };
+  if (res.status === 404) return { error: "device_not_connected" };
+  if (!res.ok) return { error: "recorder_error", status: res.status };
+  const data = (await res.json()) as { id?: string };
+  return { id: data.id ?? "" };
+}
+
+/**
+ * `sendDeviceCommand` の結果を web 向け HTTP レスポンスへ写像する
+ * (command 系 handler 4 本 — ota / battery / gw / version — で同一)。
+ * 成功時の body は `{id}` で、web はこの id を `/device/setup/ota/:id` に渡す。
+ */
+function commandIdResponse(sent: SendDeviceCommandResult): Response {
+  if ("id" in sent) return jsonNoStore({ id: sent.id });
+  if (sent.error === "device_not_found") {
+    return jsonNoStore({ error: "not_your_device" }, 403);
+  }
+  if (sent.error === "recorder_unavailable") {
+    return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+  }
+  // デバイスが WS 未接続 (recorder に居ない)
+  if (sent.error === "device_not_connected") {
+    return jsonNoStore({ error: "device_not_connected" }, 409);
+  }
+  return jsonNoStore({ error: `recorder_${sent.status}` }, 502);
+}
+
+/** `getCommandResult` の結果。`pending` は「まだデバイスが結果を push していない」。 */
+export type CommandResult =
+  | { kind: "ok"; payload: unknown }
+  | { kind: "pending" }
+  | { kind: "error"; error: "recorder_unavailable" }
+  | { kind: "error"; error: "recorder_error"; status: number };
+
+/**
+ * デバイスが `command_result` として push した payload を 1 回取得する。
+ * recorder 404 は「まだ結果なし」= `pending` (エラーではない)。
+ */
+export async function getCommandResult(
+  env: Env,
+  tenantId: string,
+  commandId: string,
+): Promise<CommandResult> {
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(tenantId)}/commands/${encodeURIComponent(commandId)}/result`,
+    { method: "GET" },
+  );
+  if (!res) return { kind: "error", error: "recorder_unavailable" };
+  if (res.status === 404) return { kind: "pending" };
+  if (!res.ok) return { kind: "error", error: "recorder_error", status: res.status };
+  const stored = (await res.json()) as { payload?: unknown };
+  return { kind: "ok", payload: stored.payload };
 }
 
 /**
@@ -387,29 +481,14 @@ export async function handleDeviceSetupOta(request: Request, env: Env): Promise<
   if (!deviceId || !/^https?:\/\//.test(url)) {
     return jsonNoStore({ error: "device_id と http(s) url が必要です" }, 400);
   }
-  // device がこの operator の tenant の管理対象か確認 (他テナントのデバイスを
-  // 更新させない — recorder は tenant 単位 DO だが、二重に fail-closed)
-  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
-    return jsonNoStore({ error: "not_your_device" }, 403);
-  }
-
-  const res = await recorderFetch(
-    env,
-    `/tenants/${encodeURIComponent(session.tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ payload: { action: "ota", url } }),
-    },
-  );
-  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
-  if (res.status === 404) {
-    // デバイスが WS 未接続 (recorder に居ない)
-    return jsonNoStore({ error: "device_not_connected" }, 409);
-  }
-  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
-  const data = (await res.json()) as { id?: string };
-  return jsonNoStore({ id: data.id ?? "" });
+  // device がこの operator の tenant の管理対象かの確認 (他テナントのデバイスを
+  // 更新させない — recorder は tenant 単位 DO だが、二重に fail-closed) は
+  // sendDeviceCommand の中で行う。
+  const sent = await sendDeviceCommand(env, session.tenantId, deviceId, {
+    action: "ota",
+    url,
+  });
+  return commandIdResponse(sent);
 }
 
 /**
@@ -425,17 +504,16 @@ export async function handleDeviceSetupOtaStatus(
   const session = await cookieSession(request, env);
   if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
 
-  const res = await recorderFetch(
-    env,
-    `/tenants/${encodeURIComponent(session.tenantId)}/commands/${encodeURIComponent(commandId)}/result`,
-    { method: "GET" },
-  );
-  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
-  if (res.status === 404) return jsonNoStore({ phase: "pending" });
-  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
-  const stored = (await res.json()) as { payload?: unknown };
+  const result = await getCommandResult(env, session.tenantId, commandId);
+  if (result.kind === "error") {
+    if (result.error === "recorder_unavailable") {
+      return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+    }
+    return jsonNoStore({ error: `recorder_${result.status}` }, 502);
+  }
+  if (result.kind === "pending") return jsonNoStore({ phase: "pending" });
   const payload =
-    stored.payload && typeof stored.payload === "object" ? stored.payload : { phase: "pending" };
+    result.payload && typeof result.payload === "object" ? result.payload : { phase: "pending" };
   return jsonNoStore(payload);
 }
 
@@ -502,23 +580,9 @@ export async function handleDeviceSetupBattery(request: Request, env: Env): Prom
   }
   const deviceId = typeof body.device_id === "string" ? body.device_id : "";
   if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
-  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
-    return jsonNoStore({ error: "not_your_device" }, 403);
-  }
-  const res = await recorderFetch(
-    env,
-    `/tenants/${encodeURIComponent(session.tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ payload: { action: "battery" } }),
-    },
+  return commandIdResponse(
+    await sendDeviceCommand(env, session.tenantId, deviceId, { action: "battery" }),
   );
-  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
-  if (res.status === 404) return jsonNoStore({ error: "device_not_connected" }, 409);
-  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
-  const data = (await res.json()) as { id?: string };
-  return jsonNoStore({ id: data.id ?? "" });
 }
 
 /**
@@ -547,24 +611,8 @@ export async function handleDeviceSetupGw(request: Request, env: Env): Promise<R
   if (url && !/^wss?:\/\//.test(url)) {
     return jsonNoStore({ error: "url は ws(s):// で始めてください" }, 400);
   }
-  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
-    return jsonNoStore({ error: "not_your_device" }, 403);
-  }
   const payload = url ? { action: "gw_url", url } : { action: "gw_status" };
-  const res = await recorderFetch(
-    env,
-    `/tenants/${encodeURIComponent(session.tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ payload }),
-    },
-  );
-  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
-  if (res.status === 404) return jsonNoStore({ error: "device_not_connected" }, 409);
-  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
-  const data = (await res.json()) as { id?: string };
-  return jsonNoStore({ id: data.id ?? "" });
+  return commandIdResponse(await sendDeviceCommand(env, session.tenantId, deviceId, payload));
 }
 
 /**
@@ -587,23 +635,9 @@ export async function handleDeviceSetupVersion(request: Request, env: Env): Prom
   }
   const deviceId = typeof body.device_id === "string" ? body.device_id : "";
   if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
-  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
-    return jsonNoStore({ error: "not_your_device" }, 403);
-  }
-  const res = await recorderFetch(
-    env,
-    `/tenants/${encodeURIComponent(session.tenantId)}/devices/${encodeURIComponent(deviceId)}/command`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ payload: { action: "version" } }),
-    },
+  return commandIdResponse(
+    await sendDeviceCommand(env, session.tenantId, deviceId, { action: "version" }),
   );
-  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
-  if (res.status === 404) return jsonNoStore({ error: "device_not_connected" }, 409);
-  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
-  const data = (await res.json()) as { id?: string };
-  return jsonNoStore({ id: data.id ?? "" });
 }
 
 /**

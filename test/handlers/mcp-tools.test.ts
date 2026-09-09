@@ -9,6 +9,7 @@ import type { Env } from "../../src/index";
 import { signMcpJwt } from "../../src/lib/mcp-jwt";
 import { encryptWithKey } from "../../src/lib/mcp-crypto";
 import { DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY } from "../../src/lib/dev-login";
+import { DEVICE_ROLE_HUB } from "../../src/lib/device";
 
 const ISSUER = "https://auth.test.example";
 const TEST_MCP_JWT_SECRET = "test-mcp-jwt-secret-32chars!";
@@ -1091,5 +1092,285 @@ describe("POST /mcp/google — google-surface WWW-Authenticate", () => {
     const body = await res.json() as { result: { tools: Array<{ name: string }> } };
     const names = body.result.tools.map((t) => t.name);
     expect(names).toContain("issue_dev_login_url");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// get_device_log (issue #513) — 端末に get_log command を送り、command_result を
+// サーバ側でポーリングして 1 回の tool 呼び出しで返す。
+// ────────────────────────────────────────────────────────────────────────
+describe("POST /mcp/tools — get_device_log", () => {
+  const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
+  const TENANT_ID = "tenant-uuid-1";
+  const DEVICE_ID = "device-example-0001";
+  const GET_LOG_POLL_INTERVAL_MS = 500;
+  const OTHER_TENANT_DEVICE_ID = "device-example-0002";
+
+  /** rust-alc-api の upsert-google 応答 (tenant 解決に使う)。 */
+  function internalUserResponse(): Response {
+    return new Response(
+      JSON.stringify({
+        id: "user-uuid-1",
+        tenant_id: TENANT_ID,
+        email: "dev@example.com",
+        name: "Dev User",
+        role: "admin",
+        google_sub: "google-sub-xyz",
+        lineworks_id: null,
+        line_user_id: null,
+        slug: "acme",
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  /** ALC_RECORDER service binding を模した Fetcher。呼び出しを記録する。 */
+  function mockRecorder(handler: (req: Request, body: string) => Response): {
+    fetcher: { fetch: (input: RequestInfo, init?: RequestInit) => Promise<Response> };
+    calls: Array<{ url: string; method: string; body: string }>;
+  } {
+    const calls: Array<{ url: string; method: string; body: string }> = [];
+    const fetcher = {
+      async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+        const req = new Request(input as string, init);
+        const body = init?.body ? String(init.body) : "";
+        calls.push({ url: req.url, method: req.method, body });
+        return handler(req, body);
+      },
+    };
+    return { fetcher, calls };
+  }
+
+  /** allowlist + google_sub + tenant の device を仕込んだ env。 */
+  function logEnv(recorder: unknown): Env {
+    const authConfig = createMockKV({
+      "origins:prod": "https://app.example.com",
+      [`device:${DEVICE_ID}`]: JSON.stringify({
+        device_id: DEVICE_ID,
+        tenant_id: TENANT_ID,
+        secret_hash: "0".repeat(64),
+        label: "example-hub",
+        role: DEVICE_ROLE_HUB,
+      }),
+      [`device:${OTHER_TENANT_DEVICE_ID}`]: JSON.stringify({
+        device_id: OTHER_TENANT_DEVICE_ID,
+        tenant_id: "tenant-uuid-other",
+        secret_hash: "0".repeat(64),
+        label: "example-hub-other",
+        role: DEVICE_ROLE_HUB,
+      }),
+    });
+    const { env, kv } = envWithKv({
+      AUTH_CONFIG: authConfig,
+      ALC_RECORDER: recorder as Env["ALC_RECORDER"],
+    });
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
+    kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
+    globalThis.fetch = vi.fn().mockResolvedValue(internalUserResponse());
+    return env;
+  }
+
+  /** tool を呼び、fake timer を 8 秒ぶん進めて結果を取り出す。 */
+  async function callGetDeviceLog(
+    env: Env,
+    args: Record<string, unknown>,
+  ): Promise<{ isError: boolean; content: Array<{ text: string }> }> {
+    const jwt = await googleUserJwt();
+    const req = await authedReq(jwt, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "get_device_log", arguments: args },
+    });
+    // fake timer を入れる前に本物の setTimeout を控える (下の yield 用)。
+    const realSetTimeout = globalThis.setTimeout;
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      const pending = handleMcpTools(req, env).then((r) => {
+        settled = true;
+        return r;
+      });
+      // ポーリングの setTimeout は tool の await 数段あとに積まれる。crypto.subtle
+      // (JWT 検証) の解決には実 event loop の 1 周が要るので、「実 tick を 1 回
+      // 譲る → fake 時計を 500ms 進める」を結果が出るまで繰り返す (実時間は待たない)。
+      for (let i = 0; i < 24 && !settled; i++) {
+        await new Promise((resolve) => realSetTimeout(resolve, 0));
+        await vi.advanceTimersByTimeAsync(GET_LOG_POLL_INTERVAL_MS);
+      }
+      const res = await pending;
+      const body = (await res.json()) as {
+        result: { isError: boolean; content: Array<{ text: string }> };
+      };
+      return body.result;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  function parsed(result: { content: Array<{ text: string }> }): Record<string, unknown> {
+    return JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+  }
+
+  it("tools/list に get_device_log が出る (Google IdP セッション + mcp.write)", async () => {
+    const { env } = envWithKv();
+    const jwt = await googleUserJwt();
+    const res = await handleMcpTools(
+      await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      env,
+    );
+    const body = (await res.json()) as { result: { tools: Array<{ name: string }> } };
+    expect(body.result.tools.map((t) => t.name)).toContain("get_device_log");
+  });
+
+  it("tools/list から get_device_log を落とす (mcp.read だけのセッション)", async () => {
+    const { env } = envWithKv();
+    const jwt = await googleUserJwt({ scope: "mcp.read" });
+    const res = await handleMcpTools(
+      await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      env,
+    );
+    const body = (await res.json()) as { result: { tools: Array<{ name: string }> } };
+    expect(body.result.tools.map((t) => t.name)).not.toContain("get_device_log");
+  });
+
+  it("成功: get_log を送り、届いた command_result を device_id 付きで返す", async () => {
+    let resultPolls = 0;
+    const { fetcher, calls } = mockRecorder((req) => {
+      if (req.method === "POST") {
+        return new Response(JSON.stringify({ id: "cmd-1", delivered: 1 }), { status: 202 });
+      }
+      resultPolls += 1;
+      // 1 回目はまだ結果なし (recorder 404) → 2 回目で届く
+      if (resultPolls === 1) return new Response("{}", { status: 404 });
+      return new Response(
+        JSON.stringify({
+          payload: {
+            text: "boot ok\nwifi connected\n",
+            bytes: 24,
+            total_bytes: 4096,
+            truncated: true,
+            uptime_ms: 123456,
+          },
+        }),
+        { status: 200 },
+      );
+    });
+    const env = logEnv(fetcher);
+    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID, max_bytes: 1200 });
+
+    expect(result.isError).toBe(false);
+    expect(parsed(result)).toEqual({
+      text: "boot ok\nwifi connected\n",
+      bytes: 24,
+      total_bytes: 4096,
+      truncated: true,
+      uptime_ms: 123456,
+      device_id: DEVICE_ID,
+    });
+    // command は tenant scope の path に action:get_log + max_bytes で送られる
+    expect(calls[0]!.url).toBe(
+      `https://alc-recorder.internal/tenants/${TENANT_ID}/devices/${DEVICE_ID}/command`,
+    );
+    expect(JSON.parse(calls[0]!.body)).toEqual({
+      payload: { action: "get_log", max_bytes: 1200 },
+    });
+    expect(calls[1]!.url).toBe(
+      `https://alc-recorder.internal/tenants/${TENANT_ID}/commands/cmd-1/result`,
+    );
+    expect(resultPolls).toBe(2);
+  });
+
+  it("max_bytes 省略時は 3000 で送る", async () => {
+    const { fetcher, calls } = mockRecorder((req) =>
+      req.method === "POST"
+        ? new Response(JSON.stringify({ id: "cmd-1" }), { status: 202 })
+        : new Response(JSON.stringify({ payload: { text: "x", bytes: 1 } }), { status: 200 }),
+    );
+    const env = logEnv(fetcher);
+    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID });
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(calls[0]!.body)).toEqual({
+      payload: { action: "get_log", max_bytes: 3000 },
+    });
+  });
+
+  it("max_bytes が範囲外なら呼ぶ前に弾く", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 200 }));
+    const env = logEnv(fetcher);
+    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID, max_bytes: 3801 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("max_bytes must be an integer in [1, 3800]");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("device_not_connected: recorder が 404 を返したら待たずに返す", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 404 }));
+    const env = logEnv(fetcher);
+    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID });
+    expect(result.isError).toBe(false);
+    expect(parsed(result)).toEqual({ device_id: DEVICE_ID, error: "device_not_connected" });
+    expect(calls).toHaveLength(1); // POST のみ、結果ポーリングはしない
+  });
+
+  it("timeout: 8 秒のあいだ結果が届かなければ timeout", async () => {
+    let resultPolls = 0;
+    const { fetcher } = mockRecorder((req) => {
+      if (req.method === "POST") {
+        return new Response(JSON.stringify({ id: "cmd-1" }), { status: 202 });
+      }
+      resultPolls += 1;
+      return new Response("{}", { status: 404 });
+    });
+    const env = logEnv(fetcher);
+    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID });
+    expect(result.isError).toBe(false);
+    expect(parsed(result)).toEqual({ device_id: DEVICE_ID, error: "timeout" });
+    expect(resultPolls).toBe(16); // 500ms 間隔 × 8s
+  });
+
+  it("unsupported_firmware: 旧 firmware の空 ack ({}) は text が無いので区別する", async () => {
+    const { fetcher } = mockRecorder((req) =>
+      req.method === "POST"
+        ? new Response(JSON.stringify({ id: "cmd-1" }), { status: 202 })
+        : new Response(JSON.stringify({ payload: {} }), { status: 200 }),
+    );
+    const env = logEnv(fetcher);
+    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID });
+    expect(result.isError).toBe(false);
+    expect(parsed(result)).toEqual({ device_id: DEVICE_ID, error: "unsupported_firmware" });
+  });
+
+  it("他テナントの device_id は device_not_found (recorder へ届かない)", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const env = logEnv(fetcher);
+    const result = await callGetDeviceLog(env, { device_id: OTHER_TENANT_DEVICE_ID });
+    expect(result.isError).toBe(false);
+    expect(parsed(result)).toEqual({
+      device_id: OTHER_TENANT_DEVICE_ID,
+      error: "device_not_found",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("allowlist 外の subject は issue_dev_token と同じエラー型で拒否する", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const env = logEnv(fetcher);
+    const jwt = await googleUserJwt({ email: "someone-else@example.com" });
+    const res = await handleMcpTools(
+      await authedReq(jwt, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "get_device_log", arguments: { device_id: DEVICE_ID } },
+      }),
+      env,
+    );
+    const body = (await res.json()) as {
+      result: { isError: boolean; content: Array<{ text: string }> };
+    };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0]!.text).toContain("not_in_allowlist");
+    expect(calls).toHaveLength(0);
   });
 });
