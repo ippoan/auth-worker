@@ -30,7 +30,8 @@
  */
 
 import type { Env } from "../index";
-import { issueDevLoginCode, mintDevToken } from "../lib/dev-login";
+import { issueDevLoginCode, mintDevToken, resolveTenantId } from "../lib/dev-login";
+import { getCommandResult, sendDeviceCommand } from "./device-setup";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import {
@@ -54,6 +55,14 @@ const MCP_PROTOCOL_VERSION = "2025-06-18";
 const MCP_SERVER_NAME = "auth-worker-github-bridge";
 const GITHUB_API = "https://api.github.com";
 const GITHUB_UA = "auth-worker-mcp-tools";
+
+/** `get_device_log` — 端末が返せるログ本文の上限 (firmware 側 ippoan/alc-app-s3#195 に合わせる)。 */
+const GET_LOG_MAX_BYTES_LIMIT = 3800;
+/** `get_device_log` の `max_bytes` 省略時の値。 */
+const GET_LOG_MAX_BYTES_DEFAULT = 3000;
+/** `command_result` のポーリング間隔と全体の待ち時間 (端末は WS 越しに数百 ms で返す)。 */
+const GET_LOG_POLL_INTERVAL_MS = 500;
+const GET_LOG_TIMEOUT_MS = 8000;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -529,6 +538,93 @@ const TOOLS: ToolDef[] = [
         cookieValue: minted.token,
         screenshot: screenshotRaw === true,
       });
+    },
+  },
+  {
+    name: "get_device_log",
+    description:
+      "Fetch the recent serial log of one managed hub device (CoreS3 / VoiceS3R) " +
+      "by sending it a `get_log` command over the recorder WebSocket and waiting " +
+      "up to 8s for the device to answer. Returns `{text, bytes, total_bytes, " +
+      "truncated, uptime_ms, device_id}`. Errors are returned as `{error}`: " +
+      "`device_not_found` (not a device of your tenant, or revoked), " +
+      "`device_not_connected` (device is offline), `timeout` (no answer in time), " +
+      "`unsupported_firmware` (device firmware predates the get_log command). " +
+      "Same allowlist gate as issue_dev_token; only devices of the caller's own " +
+      "tenant are reachable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: {
+          type: "string",
+          description: "Device ID as shown in the device management page",
+        },
+        max_bytes: {
+          type: "integer",
+          minimum: 1,
+          maximum: GET_LOG_MAX_BYTES_LIMIT,
+          default: GET_LOG_MAX_BYTES_DEFAULT,
+          description: "Max bytes of log text to return (tail of the ring buffer)",
+        },
+      },
+      required: ["device_id"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const deviceId = asString(args["device_id"]);
+      if (!deviceId) throw new DevLoginError(400, "device_id is required");
+      const maxBytesRaw = args["max_bytes"];
+      if (
+        maxBytesRaw !== undefined &&
+        (typeof maxBytesRaw !== "number" ||
+          !Number.isInteger(maxBytesRaw) ||
+          maxBytesRaw < 1 ||
+          maxBytesRaw > GET_LOG_MAX_BYTES_LIMIT)
+      ) {
+        throw new DevLoginError(
+          400,
+          `max_bytes must be an integer in [1, ${GET_LOG_MAX_BYTES_LIMIT}]`,
+        );
+      }
+      const maxBytes = maxBytesRaw === undefined ? GET_LOG_MAX_BYTES_DEFAULT : maxBytesRaw;
+
+      // MCP JWT には tenant が無いので dev-login と同じ経路で解決する
+      // (allowlist gate 込み — 拒否は issue_dev_token と同じエラー型)。
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      const tenantId = resolved.user.tenant_id;
+
+      const sent = await sendDeviceCommand(ctx.env, tenantId, deviceId, {
+        action: "get_log",
+        max_bytes: maxBytes,
+      });
+      if ("error" in sent) {
+        return sent.error === "recorder_error"
+          ? { device_id: deviceId, error: sent.error, status: sent.status }
+          : { device_id: deviceId, error: sent.error };
+      }
+
+      const attempts = Math.floor(GET_LOG_TIMEOUT_MS / GET_LOG_POLL_INTERVAL_MS);
+      for (let i = 0; i < attempts; i++) {
+        await new Promise((resolve) => setTimeout(resolve, GET_LOG_POLL_INTERVAL_MS));
+        const result = await getCommandResult(ctx.env, tenantId, sent.id);
+        if (result.kind === "error") {
+          return result.error === "recorder_error"
+            ? { device_id: deviceId, error: result.error, status: result.status }
+            : { device_id: deviceId, error: result.error };
+        }
+        if (result.kind === "pending") continue;
+        const payload = result.payload;
+        // 旧 firmware は未知の action を `{}` で ack するだけ (text が無い)。
+        if (!isObject(payload) || typeof payload["text"] !== "string") {
+          return { device_id: deviceId, error: "unsupported_firmware" };
+        }
+        // device_id は最後に置く (端末が返した値で上書きさせない)。
+        return { ...payload, device_id: deviceId };
+      }
+      return { device_id: deviceId, error: "timeout" };
     },
   },
 ];

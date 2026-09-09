@@ -20,7 +20,7 @@
  * を足す必要も無いため (`config.ts` の DEVELOPER_EMAILS と同じ判断)。
  */
 import type { Env } from "../index";
-import { upsertGoogleUser } from "./alc-internal";
+import { upsertGoogleUser, type InternalUserWithSlug } from "./alc-internal";
 import { signJwt } from "./jwt";
 import type { McpJwtPayload } from "./mcp-jwt";
 import { resolveSecret } from "./secret";
@@ -37,6 +37,12 @@ export type MintDevTokenResult =
   | { kind: "ok"; token: string; expires_in: number }
   | { kind: "error"; error: string; status: number };
 
+/** `resolveTenantId` の結果。error 側は `MintDevTokenResult` と同形
+ *  (allowlist 拒否のエラー型を dev-login tool と共有するため)。 */
+export type ResolveTenantResult =
+  | { kind: "ok"; user: InternalUserWithSlug }
+  | { kind: "error"; error: string; status: number };
+
 /** fail-closed allowlist parse (`GITHUB_MCP_USER_ALLOWLIST` と同方針、mcp-elevate.ts 参照)。 */
 function parseAllowedSubjects(raw: string | null): string[] | null {
   if (!raw) return null;
@@ -51,24 +57,25 @@ function parseAllowedSubjects(raw: string | null): string[] | null {
 }
 
 /**
- * MCP 認可済み `payload` (`/mcp/tools` の Bearer JWT payload) から dev JWT を
- * 発行する。
+ * MCP 認可済み `payload` (`/mcp/tools` の Bearer JWT payload) から、その開発者の
+ * user レコード (tenant_id を含む) を解決する。
  *
+ * allowlist gate 込みなので、`mintDevToken` 以外の tool
+ * (`get_device_log` など、MCP から tenant scope の操作をするもの) からも呼べる。
+ * 拒否の理由は下記のとおりで、`mintDevToken` と同じエラー型で返る:
+ *
+ *  - `MCP_OAUTH_KV` 未 bind → server_error (503)
  *  - `MCP_OAUTH_KV["dev_login_allowed_subjects"]` 未設定/不正 → fail-closed (403)
  *  - `payload.sub` が allowlist に無い → 403
- *  - Google IdP flow 以外 (`payload.email` 無し) → 403 (dev-login は Google IdP 限定)
+ *  - Google IdP flow 以外 (`payload.email` 無し) → 403
  *  - `google_sub:<email>` キャッシュ無し (MCP Google 再認可が必要) → 403
  *  - rust-alc-api にテナントが無い (`upsertGoogleUser` が null) → 403
  */
-export async function mintDevToken(
+export async function resolveTenantId(
   env: Env,
   payload: McpJwtPayload,
-): Promise<MintDevTokenResult> {
+): Promise<ResolveTenantResult> {
   if (!env.MCP_OAUTH_KV) {
-    return { kind: "error", error: "server_error", status: 503 };
-  }
-  const jwtSecret = await resolveSecret(env.JWT_SECRET);
-  if (!jwtSecret) {
     return { kind: "error", error: "server_error", status: 503 };
   }
   const allowlist = parseAllowedSubjects(
@@ -102,6 +109,30 @@ export async function mintDevToken(
   if (!user) {
     return { kind: "error", error: "no_tenant_for_email", status: 403 };
   }
+  return { kind: "ok", user };
+}
+
+/**
+ * MCP 認可済み `payload` (`/mcp/tools` の Bearer JWT payload) から dev JWT を
+ * 発行する。
+ *
+ *  - `MCP_OAUTH_KV["dev_login_allowed_subjects"]` 未設定/不正 → fail-closed (403)
+ *  - `payload.sub` が allowlist に無い → 403
+ *  - Google IdP flow 以外 (`payload.email` 無し) → 403 (dev-login は Google IdP 限定)
+ *  - `google_sub:<email>` キャッシュ無し (MCP Google 再認可が必要) → 403
+ *  - rust-alc-api にテナントが無い (`upsertGoogleUser` が null) → 403
+ */
+export async function mintDevToken(
+  env: Env,
+  payload: McpJwtPayload,
+): Promise<MintDevTokenResult> {
+  const jwtSecret = await resolveSecret(env.JWT_SECRET);
+  if (!jwtSecret) {
+    return { kind: "error", error: "server_error", status: 503 };
+  }
+  const resolved = await resolveTenantId(env, payload);
+  if (resolved.kind === "error") return resolved;
+  const user = resolved.user;
 
   const now = Math.floor(Date.now() / 1000);
   const claims: Record<string, unknown> = {
