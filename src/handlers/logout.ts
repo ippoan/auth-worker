@@ -8,6 +8,12 @@
  * `ACCESS_TEAM_DOMAIN` が設定されていて、戻り先が自分たちのホストの https URL で、
  * かつ **直前に `/logout` を通っていない**ときだけ chain する。理由・`returnTo` の
  * 実測制約・ループガードは `src/lib/access-logout.ts` に書いてある。
+ *
+ * **`redirect_uri` は入口で検証する** (Refs #511)。この値は非 chain 経路では
+ * そのまま HTML の `window.location.replace()` に埋まるので、検証が無いと
+ * `/logout?redirect_uri=<外部 URL>` が誰でも踏ませられる open redirect になる。
+ * `/logout/return` と同じ関門 (`resolveLogoutReturnTarget` = 共有 cookie の届く
+ * 親ドメイン配下の https) を通し、抜けられない値は `/login` に落とす。
  */
 
 import type { Env } from "../index";
@@ -15,6 +21,7 @@ import {
   accessLogoutChainMarkerCookie,
   hasAccessLogoutChainMarker,
   logoutNavigationTarget,
+  resolveLogoutReturnTarget,
 } from "../lib/access-logout";
 import { clearAuthCookieVariants } from "../lib/cookies";
 
@@ -23,7 +30,14 @@ export async function handleLogout(
   env: Env,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const redirectTo = url.searchParams.get("redirect_uri") || "/login";
+  const requestedRedirect = url.searchParams.get("redirect_uri") || "/login";
+
+  // 関門を抜けた値は **生のまま**使う (絶対 URL に正規化しない)。相対のまま
+  // `window.location.replace()` に渡してもブラウザは同じ origin を基準に解決するので、
+  // 検証の強さは変わらず、既存の呼び出し元から見た遷移先は 1 文字も動かない。
+  const redirectTo = resolveLogoutReturnTarget(url.origin, url.hostname, requestedRedirect)
+    ? requestedRedirect
+    : "/login";
 
   // cookie 破棄 (この応答の Set-Cookie) → Access ログアウト → 本来の戻り先、の順。
   // 逆順にすると Access から戻ってきた時点で cookie がまだ生きており、
