@@ -43,11 +43,42 @@ describe("handleLogout", () => {
     expect(html).toContain("window.location.replace('/login')");
   });
 
-  it("redirects to custom redirect_uri", async () => {
-    const req = new Request("https://auth.test.example/logout?redirect_uri=https://app.example.com");
+  it("redirects to a custom redirect_uri under the shared parent domain", async () => {
+    const req = new Request(
+      "https://auth.test.example/logout?redirect_uri=https://dtako.test.example/",
+    );
     const res = await handleLogout(req, env);
     const html = await res.text();
-    expect(html).toContain("window.location.replace('https://app.example.com')");
+    expect(html).toContain("window.location.replace('https://dtako.test.example/')");
+  });
+
+  // Refs #511 — 以前はここを無検証で `window.location.replace()` に埋めていたため、
+  // `/logout?redirect_uri=<外部 URL>` が誰でも踏ませられる open redirect だった。
+  // `/logout/return` と同じ関門を入口にも置き、抜けられない値は `/login` に落とす。
+  describe("redirect_uri validation", () => {
+    const replaceTargetOf = async (raw: string): Promise<string> => {
+      const req = new Request(
+        `https://auth.test.example/logout?redirect_uri=${encodeURIComponent(raw)}`,
+      );
+      const html = await (await handleLogout(req, env)).text();
+      return /window\.location\.replace\('([^']*)'\)/.exec(html)?.[1] ?? "";
+    };
+
+    it("drops a foreign host", async () => {
+      expect(await replaceTargetOf("https://app.example.com/")).toBe("/login");
+      expect(await replaceTargetOf("https://evil.example.com/steal")).toBe("/login");
+    });
+
+    it("drops a non-https and a javascript: target", async () => {
+      expect(await replaceTargetOf("http://auth.test.example/login")).toBe("/login");
+      expect(await replaceTargetOf("javascript:alert(1)")).toBe("/login");
+    });
+
+    // 保護対象は「別ホストへ送り出すこと」だけ。自ホスト内の相対遷移は素通し、
+    // しかも **生値のまま** (絶対 URL に正規化しない) 埋める。
+    it("keeps a relative target verbatim", async () => {
+      expect(await replaceTargetOf("/admin/devices?tab=1")).toBe("/admin/devices?tab=1");
+    });
   });
 
   // Refs #477 — cookie を捨てただけでは Access のセッション (24h) が生き残り、
@@ -90,15 +121,19 @@ describe("handleLogout", () => {
       expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
     });
 
-    // Access は知らないホストへの returnTo を 400 で弾く (2026-08-26 実測)。
-    it("does not chain a destination Access would reject", async () => {
+    // Access は知らないホストへの returnTo を 400 で弾く (2026-08-26 実測) が、
+    // Refs #511 以降そこへは届かない — 外部ホストは入口の検証で `/login` に
+    // 差し替わり、ログアウト自体は通常どおり Access 経由で完了する。
+    it("discards a destination Access would reject and logs out to /login", async () => {
       const req = new Request(
         "https://auth.test.example/logout?redirect_uri=https%3A%2F%2Fapp.example.com%2F",
       );
       const res = await handleLogout(req, accessEnv);
       const html = await res.text();
-      expect(html).toContain("window.location.replace('https://app.example.com/')");
-      expect(html).not.toContain("cdn-cgi/access/logout");
+      expect(html).toContain(
+        `window.location.replace('${expectedTarget("https://auth.test.example/login")}')`,
+      );
+      expect(html).not.toContain("app.example.com");
     });
 
     it("is a no-op when ACCESS_TEAM_DOMAIN is not configured", async () => {

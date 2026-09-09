@@ -179,3 +179,17 @@ describe("resolveLogoutReturnTarget", () => {
     expect(ACCESS_LOGOUT_RETURN_PATH).toBe("/logout/return");
   });
 });
+
+// `authOrigin` が相対解決の base になれない opaque URL (`mailto:` 等) のとき、
+// 絶対 `redirect_uri` は関門を抜けるのに `/logout/return` が組み立てられない。
+// 実運用の `url.origin` では起きないが、chain を諦める側に倒れることを固定しておく
+// (Refs #499 でこの catch が入って以来カバーされていなかった)。
+describe("logoutNavigationTarget with an origin that cannot be a base", () => {
+  it("falls back to the plain target", () => {
+    const app = "https://alc.ippoan.org/login";
+    expect(logoutNavigationTarget("mailto:ops@auth.ippoan.org", AUTH_HOST, app, TEAM)).toEqual({
+      target: app,
+      chained: false,
+    });
+  });
+});
