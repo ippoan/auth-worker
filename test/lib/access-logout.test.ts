@@ -186,10 +186,14 @@ describe("resolveLogoutReturnTarget", () => {
 // (Refs #499 でこの catch が入って以来カバーされていなかった)。
 describe("logoutNavigationTarget with an origin that cannot be a base", () => {
   it("falls back to the plain target", () => {
-    const app = "https://alc.ippoan.org/login";
-    expect(logoutNavigationTarget("mailto:ops@auth.ippoan.org", AUTH_HOST, app, TEAM)).toEqual({
-      target: app,
-      chained: false,
-    });
+    const app = "https://alc.test.example/login";
+    expect(
+      logoutNavigationTarget(
+        "mailto:ops@auth.test.example",
+        "auth.test.example",
+        app,
+        "example.cloudflareaccess.com",
+      ),
+    ).toEqual({ target: app, chained: false });
   });
 });
