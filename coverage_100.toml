@@ -36,6 +36,18 @@ branches = true
 path = "src/lib/access-logout.ts"
 branches = true
 
+# issue #522: ed25519 署名検証 (警告デバイス device-login)。長さ検査を緩めると
+# 32/64 バイト以外の入力を WebCrypto に渡すことになり、fail-closed の前提が崩れる。
+[[files]]
+path = "src/lib/ed25519.ts"
+branches = true
+
+# issue #522: Google / device-login 共通のログイン後段 (ACL 2 段 → join → cookie/
+# fragment 配布)。ここが緩むと org/app ACL のどちらかが素通りする。
+[[files]]
+path = "src/lib/finish-login.ts"
+branches = true
+
 # --- handlers ---
 
 [[files]]
@@ -61,6 +73,13 @@ branches = true
 # 他テナントの鍵の一覧閲覧・失効が可能になるので 100% を維持する。
 [[files]]
 path = "src/handlers/alarm-key.ts"
+branches = true
+
+# issue #522: 警告デバイス device-login (nonce 発行 + ed25519 署名検証)。
+# nonce 再利用防止・redirect_uri 完全一致・revoked 判定のどれかが緩むと
+# 「他人の登録済み鍵で任意 redirect_uri に管理者 session を発行できる」経路になる。
+[[files]]
+path = "src/handlers/device-login.ts"
 branches = true
 
 [[files]]

@@ -36,7 +36,10 @@
  *
  * Response (RFC 7662 風):
  *   - 有効          : 200 `{ active: true, tenant_id, role, email, sub, exp,
- *                            org_wide }`
+ *                            org_wide, token_kind? }`
+ *     `token_kind` は payload にある場合のみ含める (issue #522: alc-app が
+ *     device-key ログインを区別するため。通常ログインは省略され、既存
+ *     consumer はキー自体を見ないので additive で壊れない)
  *   - 署名不正 / exp 切れ / env 不一致 / アプリ不許可テナント / origin 欠落:
  *                     200 `{ active: false }` (情報リーク回避)
  *   - 認証失敗      : 401 `{ error: "unauthorized" }`
@@ -175,5 +178,9 @@ export async function handleAuthIntrospect(
     sub,
     exp: payload.exp,
     org_wide: orgWide,
+    // issue #522: alc-app が device-key (VoiceS3R ログイン) を区別できるように。
+    // 未設定 (通常の Google/LINE WORKS 等ログイン) は含めない — 既存 consumer は
+    // このキーを見ないので additive で壊れない。
+    ...(payload.token_kind !== undefined ? { token_kind: payload.token_kind } : {}),
   });
 }

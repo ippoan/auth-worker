@@ -208,10 +208,14 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   // `devLoginCore.mjs` (`isDevLoginWriteAllowed`) と同じ prefix-match
   // セマンティクスにする (safe method は常に許可、それ以外は allowlist の
   // いずれかの entry と完全一致 or `${entry}/` で始まる時のみ許可)。
+  // `device-key` (issue #522、警告デバイス VoiceS3R の ed25519 署名ログイン) も
+  // `token_kind: "dev"` と同じ read-only enforcement に並べる — 発行経路が違う
+  // だけで「本人以外が持ち出した token が prod host に置かれた時のリスク」の
+  // 形は同じため。
   const tokenKind = (payload.token_kind as string | undefined) || "";
   const backendPath = new URL(request.url).pathname.slice(ROUTE_PREFIX.length) || "/";
   if (
-    tokenKind === "dev" &&
+    (tokenKind === "dev" || tokenKind === "device-key") &&
     !isSafeMethod(request.method) &&
     !isDevWriteAllowed(backendPath, parseDevWriteAllowlist(env.ALC_PROXY_DEV_WRITE_ALLOWLIST))
   ) {
