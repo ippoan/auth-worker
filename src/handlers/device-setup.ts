@@ -153,7 +153,7 @@ function kindNameForRole(role: string | undefined): string | null {
   return null;
 }
 
-interface OperatorSession {
+export interface OperatorSession {
   tenantId: string;
   email: string;
 }
@@ -398,6 +398,30 @@ export async function sendDeviceCommand(
   return { id: data.id ?? "" };
 }
 
+/** `adminRequest` を通過した結果。 */
+interface AdminRequest {
+  session: OperatorSession;
+}
+
+/**
+ * この worker 配下の management endpoint (device/setup 系に限らず、今後
+ * cookie session + Origin 検査を要る handler 全般) が共通して踏む前処理の
+ * **2 段目まで**: cookie session (無ければ 401) → Origin が自分の issuer で
+ * なければ 403 (bad origin、browser CSRF 対策)。`deviceCommandRequest` は
+ * これを呼んだ上で body 化 + `device_id` 必須の 2 段を足す (alarm-key.ts の
+ * handler 3 本も同じくこれを直接呼ぶ — device_id を扱わないため)。
+ *
+ * 検証を通れば `{session}`、弾いたときはそのまま返す `Response`。
+ */
+export async function adminRequest(request: Request, env: Env): Promise<AdminRequest | Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  if (request.headers.get("Origin") !== issuerOf(env)) {
+    return jsonNoStore({ error: "bad_origin" }, 403);
+  }
+  return { session };
+}
+
 /** command 系 handler の共通前処理を通過した結果 (`deviceCommandRequest`)。 */
 interface DeviceCommandRequest {
   session: OperatorSession;
@@ -407,9 +431,9 @@ interface DeviceCommandRequest {
 
 /**
  * command 系 handler (ota / battery / gw / version / bus5v / reboot) と
- * site handler が例外なく踏む前処理をまとめる: cookie session (無ければ 401) → Origin が
- * 自分の issuer でなければ 403 (bad origin) → body の JSON 化 (壊れた body は
- * 空オブジェクト扱い) → `device_id` 必須 (無ければ 400)。
+ * site handler が例外なく踏む前処理をまとめる: `adminRequest` (cookie session
+ * → Origin) → body の JSON 化 (壊れた body は空オブジェクト扱い) →
+ * `device_id` 必須 (無ければ 400)。
  *
  * 認可の 3 段目 (`managedDeviceKind` の fail-closed 検査) は `sendDeviceCommand`
  * の中にあるので、この helper を通った command handler は 3 段とも自動的に満たす
@@ -423,11 +447,8 @@ async function deviceCommandRequest(
   env: Env,
   missingDeviceIdError = "device_id が必要です",
 ): Promise<DeviceCommandRequest | Response> {
-  const session = await cookieSession(request, env);
-  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  if (request.headers.get("Origin") !== issuerOf(env)) {
-    return jsonNoStore({ error: "bad_origin" }, 403);
-  }
+  const pre = await adminRequest(request, env);
+  if (pre instanceof Response) return pre;
   let body: Record<string, unknown> = {};
   try {
     const v = await request.json();
@@ -437,7 +458,7 @@ async function deviceCommandRequest(
   }
   const deviceId = typeof body.device_id === "string" ? body.device_id : "";
   if (!deviceId) return jsonNoStore({ error: missingDeviceIdError }, 400);
-  return { session, body, deviceId };
+  return { session: pre.session, body, deviceId };
 }
 
 /**
@@ -804,6 +825,17 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <table id="devices" style="display:none">
 <thead><tr><th>ラベル</th><th>種別</th><th>拠点ID</th><th>接続</th><th>バージョン</th><th>更新</th><th>再登録</th></tr></thead>
 <tbody id="devices-body"></tbody>
+</table>
+<h2>警告デバイス (VoiceS3R) の鍵</h2>
+<p class="muted">管理者ログインに加えて「VoiceS3R が USB で繋がっていること」を要求する
+2 要素目の公開鍵をここで登録・失効します (秘密鍵は機体から出ません)。デバイスを USB で
+接続してから押してください。</p>
+<p><button id="alarm-key-register" type="button">警告デバイスの鍵を登録</button></p>
+<p id="alarm-key-result"></p>
+<p id="alarm-keys-status" class="muted">読み込み中...</p>
+<table id="alarm-keys" style="display:none">
+<thead><tr><th>ラベル</th><th>fingerprint</th><th>登録日</th><th></th></tr></thead>
+<tbody id="alarm-keys-body"></tbody>
 </table>
 <script>
 "use strict";
@@ -1906,6 +1938,185 @@ async function runP4Gateway(port, siteIdOverride) {
 runBtn.addEventListener("click", () => run());
 loadDevices();
 startDeviceEventStream();
+
+// --- 警告デバイス (VoiceS3R) の鍵登録・一覧・失効 (Refs #521) ---
+const alarmKeyRegisterBtn = document.getElementById("alarm-key-register");
+const alarmKeyResultEl = document.getElementById("alarm-key-result");
+
+// operator の tenant に登録済みの警告デバイス鍵一覧を読み込んで描画する。
+async function loadAlarmKeys() {
+  const statusEl = document.getElementById("alarm-keys-status");
+  const table = document.getElementById("alarm-keys");
+  const body = document.getElementById("alarm-keys-body");
+  try {
+    const res = await fetch(ISSUER + "/device/setup/alarm-keys", { credentials: "include" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    body.textContent = "";
+    if (!data.keys || data.keys.length === 0) {
+      table.style.display = "none";
+      statusEl.textContent = "登録済みの警告デバイス鍵はありません";
+      return;
+    }
+    statusEl.textContent = "";
+    table.style.display = "";
+    for (const k of data.keys) {
+      const tr = document.createElement("tr");
+      if (k.revoked_at) tr.style.opacity = "0.5";
+
+      const labelTd = document.createElement("td");
+      labelTd.textContent = k.label;
+      tr.appendChild(labelTd);
+
+      const fpTd = document.createElement("td");
+      fpTd.className = "did";
+      fpTd.textContent = k.fingerprint;
+      tr.appendChild(fpTd);
+
+      const createdTd = document.createElement("td");
+      createdTd.textContent = new Date(k.created_at * 1000).toLocaleString();
+      tr.appendChild(createdTd);
+
+      const actionTd = document.createElement("td");
+      if (k.revoked_at) {
+        actionTd.textContent = "失効済み";
+      } else {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "失効";
+        btn.addEventListener("click", () => revokeAlarmKey(k.fingerprint, k.label));
+        actionTd.appendChild(btn);
+      }
+      tr.appendChild(actionTd);
+
+      body.appendChild(tr);
+    }
+  } catch (e) {
+    statusEl.textContent = "読み込みエラー: " + (e && e.message ? e.message : e);
+  }
+}
+
+async function revokeAlarmKey(fingerprint, label) {
+  if (!confirm("鍵「" + label + "」を失効しますか? (元に戻せません)")) return;
+  try {
+    const res = await fetch(ISSUER + "/device/setup/alarm-key/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ fingerprint }),
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    loadAlarmKeys();
+  } catch (e) {
+    alarmKeyResultEl.innerHTML = '<span class="ng">失効に失敗: ' +
+      String(e && e.message ? e.message : e).replace(/[<>&]/g, "") + "</span>";
+  }
+}
+
+// USB (WebSerial) で繋いだ VoiceS3R に鍵を作らせ (無ければ新規、既にあれば
+// 既存の公開鍵をそのまま使う)、その公開鍵をテナントに登録する。既存の
+// CoreS3/AtomS3 登録 (runCoreS3OrPrint) と同じ構造化行プロトコルの上に立つが、
+// AUTH SET のような credential 注入は行わない (公開鍵の登録のみ)。
+async function registerAlarmKey() {
+  alarmKeyRegisterBtn.disabled = true;
+  alarmKeyResultEl.textContent = "";
+  let port;
+  try {
+    if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
+
+    const writer = port.writable.getWriter();
+    const reader = port.readable.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    const lines = [];
+    (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let i;
+          while ((i = buf.search(/[\\r\\n]/)) >= 0) {
+            const line = buf.slice(0, i).trim();
+            buf = buf.slice(i + 1);
+            if (line && KNOWN.test(line)) lines.push(line);
+          }
+        }
+      } catch { /* port closed */ }
+    })();
+    const send = async (cmd) => { await writer.write(new TextEncoder().encode(cmd + "\\n")); };
+    const waitLine = async (re, timeoutMs) => {
+      const deadline = Date.now() + timeoutMs;
+      let idx = 0;
+      for (;;) {
+        while (idx < lines.length) {
+          const line = lines[idx++];
+          if (re.test(line)) return line;
+          if (/^ERR\\b/.test(line) && !/^ERR AUTH: key exists/.test(line)) throw new Error(line);
+        }
+        if (Date.now() > deadline) throw new Error("応答タイムアウト: " + re);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    };
+
+    // 起動待ち (PING/PONG)。既存 run() と同じ根本対策。
+    const readyDeadline = Date.now() + 20000;
+    let ready = false;
+    while (Date.now() < readyDeadline) {
+      const before = lines.length;
+      await writer.write(new TextEncoder().encode("PING\\n"));
+      const until = Date.now() + 700;
+      while (Date.now() < until) {
+        if (lines.slice(before).some((l) => /^PONG/.test(l))) { ready = true; break; }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (ready) break;
+    }
+    if (!ready) throw new Error("デバイスが応答しません (USB 接続とファームウェアを確認してください)");
+    lines.length = 0;
+
+    await send("AUTH KEYGEN");
+    let pubkeyLine = await waitLine(/^(AUTH PUBKEY |ERR AUTH: key exists)/, 5000);
+    if (/^ERR AUTH: key exists/.test(pubkeyLine)) {
+      // 既に鍵がある機体 — 新規生成せず既存の公開鍵を取り直す
+      await send("AUTH PUBKEY");
+      pubkeyLine = await waitLine(/^AUTH PUBKEY /, 5000);
+    }
+    const pubkey = pubkeyLine.split(" ")[2];
+    if (!pubkey) throw new Error("公開鍵を取得できませんでした: " + pubkeyLine);
+
+    writer.releaseLock();
+    await reader.cancel().catch(() => {});
+    await port.close().catch(() => {});
+    port = null;
+
+    const label = (prompt("この警告デバイスのラベル (1〜64文字)", "voice-s3r") || "").trim();
+    if (!label) throw new Error("ラベルが未入力のため中止しました");
+
+    const res = await fetch(ISSUER + "/device/setup/alarm-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ pubkey, label }),
+    });
+    if (res.status === 409) throw new Error("この鍵は既に登録済みです");
+    if (!res.ok) throw new Error("登録に失敗: HTTP " + res.status);
+
+    alarmKeyResultEl.innerHTML = '<span class="ok">登録完了</span>';
+    loadAlarmKeys();
+  } catch (e) {
+    alarmKeyResultEl.innerHTML = '<span class="ng">失敗: ' +
+      String(e && e.message ? e.message : e).replace(/[<>&]/g, "") + "</span>";
+    if (port) { await port.close().catch(() => {}); }
+  } finally {
+    alarmKeyRegisterBtn.disabled = false;
+  }
+}
+alarmKeyRegisterBtn.addEventListener("click", () => registerAlarmKey());
+loadAlarmKeys();
 </script>
 <p class="muted">${escapeHtml(issuer)}</p>
 </body></html>`;

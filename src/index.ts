@@ -111,6 +111,11 @@ import {
   handleDeviceSetupSite,
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
+import {
+  handleAlarmKeyRegister,
+  handleAlarmKeyList,
+  handleAlarmKeyRevoke,
+} from "./handlers/alarm-key";
 import { handlePrintTestPdf } from "./handlers/print-test";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpAuthCallbackGoogle } from "./handlers/mcp-auth-callback-google";
@@ -760,6 +765,9 @@ export default {
           // 登録済みデバイス一覧 (cookie session、ページの表示用)。
           case "/device/setup/list":
             return await handleDeviceSetupList(request, env);
+          // 登録済み警告デバイス (VoiceS3R) 公開鍵一覧 (Refs #521)。
+          case "/device/setup/alarm-keys":
+            return await handleAlarmKeyList(request, env);
           // WS 接続中デバイス一覧 (recorder /tenants/:t/devices 透過)。
           case "/device/setup/connected":
             return await handleDeviceSetupConnected(request, env);
@@ -931,6 +939,12 @@ export default {
           // CoreS3 の USB provisioning: browser (cookie session) からの credential mint。
           case "/device/setup/pair":
             return await handleDeviceSetupPair(request, env);
+          // 警告デバイス (VoiceS3R) の公開鍵登録・失効 (Refs #521)。ログイン
+          // (nonce署名) は別 issue — ここは登録・一覧・失効の管理者操作のみ。
+          case "/device/setup/alarm-key":
+            return await handleAlarmKeyRegister(request, env);
+          case "/device/setup/alarm-key/revoke":
+            return await handleAlarmKeyRevoke(request, env);
           // OTA トリガ (cookie session → recorder の下り command)。POST。
           case "/device/setup/ota":
             return await handleDeviceSetupOta(request, env);
