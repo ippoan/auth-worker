@@ -297,28 +297,18 @@ export async function handleDeviceSetupList(request: Request, env: Env): Promise
  * session + `managedDeviceKind` でこの operator の tenant のデバイスに限定する。
  */
 export async function handleDeviceSetupSite(request: Request, env: Env): Promise<Response> {
-  const session = await cookieSession(request, env);
-  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  if (request.headers.get("Origin") !== issuerOf(env)) {
-    return jsonNoStore({ error: "bad_origin" }, 403);
-  }
-  let body: Record<string, unknown> = {};
-  try {
-    const v = await request.json();
-    if (v && typeof v === "object") body = v as Record<string, unknown>;
-  } catch {
-    // 空 body は検証で弾く
-  }
-  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
-  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
-  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
+  // この handler は下り command を送らない (KV を直接更新する) ので、
+  // fail-closed 検査は sendDeviceCommand ではなくここで明示的に行う。
+  if (!(await managedDeviceKind(env, pre.session.tenantId, pre.deviceId))) {
     return jsonNoStore({ error: "not_your_device" }, 403);
   }
   // site_id 省略時は device_id 自身を既定にする (hub の site_id は自分の
   // device_id が標準、Refs #406 改訂)。明示指定した値があればそれを優先する。
-  const explicitSiteId = typeof body.site_id === "string" ? body.site_id.trim() : "";
-  const siteId = explicitSiteId || deviceId;
-  const record = await setDeviceSiteId(env, deviceId, siteId);
+  const explicitSiteId = typeof pre.body.site_id === "string" ? pre.body.site_id.trim() : "";
+  const siteId = explicitSiteId || pre.deviceId;
+  const record = await setDeviceSiteId(env, pre.deviceId, siteId);
   if (!record) return jsonNoStore({ error: "not_found" }, 404);
   return jsonNoStore({ device_id: record.device_id, site_id: record.site_id });
 }
@@ -416,14 +406,15 @@ interface DeviceCommandRequest {
 }
 
 /**
- * command 系 handler (ota / battery / gw / version / bus5v / reboot) が
- * 例外なく踏む前処理をまとめる: cookie session (無ければ 401) → Origin が
+ * command 系 handler (ota / battery / gw / version / bus5v / reboot) と
+ * site handler が例外なく踏む前処理をまとめる: cookie session (無ければ 401) → Origin が
  * 自分の issuer でなければ 403 (bad origin) → body の JSON 化 (壊れた body は
  * 空オブジェクト扱い) → `device_id` 必須 (無ければ 400)。
  *
  * 認可の 3 段目 (`managedDeviceKind` の fail-closed 検査) は `sendDeviceCommand`
- * の中にあるので、この helper を通った handler は 3 段とも自動的に満たす
+ * の中にあるので、この helper を通った command handler は 3 段とも自動的に満たす
  * (新しい command handler を足すときに 1 段落とす事故を防ぐのがこの関数の目的)。
+ * command を送らない site handler だけは 3 段目を自分で呼ぶ。
  *
  * 検証を通れば `{session, body, deviceId}`、弾いたときはそのまま返す `Response`。
  */
