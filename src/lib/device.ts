@@ -16,6 +16,7 @@
 
 import { base64Encode } from "./lineworks-crypto";
 import { resolveSecret, type SecretBinding } from "./secret";
+import { verifyJwt } from "./jwt";
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -467,6 +468,37 @@ export async function mintDeviceJwt(
     exp: now + ttlSeconds,
   };
   return signHs256(claims, secret);
+}
+
+/** 空でない文字列であることを型ガード付きで判定する。 */
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/**
+ * device JWT を検証して claims を返す (`mintDeviceJwt` の逆、同じ `JWT_SECRET`)。
+ *
+ * `verifyJwt` (署名 + `exp` + `env` claim) に加えて **`aud === "device"` を要求する**のが
+ * 肝で、これが無いと同じ secret で署名された browser JWT を device として受理してしまう
+ * (`alc-proxy.ts` が逆向きに使っているのと同じマーカー、Refs #482)。
+ *
+ * `sub` (= device_id) / `tenant_id` / `role` が非空文字列であることまで確かめるので、
+ * 呼び出し側は claims をそのまま権限判定に使える。いずれか欠ければ null (= 呼び出し側は 401)。
+ * revoke 判定は KV を引く必要があるため**ここではしない** — `getDeviceRecord` を併用する。
+ */
+export async function verifyDeviceJwt(
+  env: DeviceJwtEnv,
+  token: string,
+): Promise<DeviceJwtClaims | null> {
+  const secret = await resolveSecret(env.JWT_SECRET);
+  if (!secret) return null;
+  const payload = await verifyJwt(token, secret, env.WORKER_ENV);
+  if (!payload) return null;
+  if (payload.aud !== DEVICE_JWT_AUDIENCE) return null;
+  if (!nonEmptyString(payload.sub)) return null;
+  if (!nonEmptyString(payload.tenant_id)) return null;
+  if (!nonEmptyString(payload.role)) return null;
+  return payload as unknown as DeviceJwtClaims;
 }
 
 /** `/device/hub-token` の既定 TTL (60s)。GW/hub は必要な都度 nonce 付きで mint する。 */

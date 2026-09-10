@@ -94,6 +94,7 @@ import {
   handleDevicePairApprove,
   handleDevicePairToken,
 } from "./handlers/device-pair";
+import { handleDeviceClaimTicket } from "./handlers/device-claim-ticket";
 import {
   handleDeviceSetupPage,
   handleDeviceSetupPair,
@@ -959,6 +960,10 @@ export default {
             return await handleDevicePairApprove(request, env);
           case "/device/pair/token":
             return await handleDevicePairToken(request, env);
+          // Refs #519: CoreS3 (device-hub JWT) が端末登録の一回券を取る。券は上の
+          // /device/pair/token でそのまま引き換えられる (= 管理者ログイン不要の端末登録)。
+          case "/device/claim-ticket":
+            return await handleDeviceClaimTicket(request, env);
           // Rich Menu API
           case "/api/richmenu/list":
             return await handleRichMenuList(request, env);

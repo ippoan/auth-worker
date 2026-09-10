@@ -6,6 +6,7 @@ import {
   revokeDeviceCredential,
   verifyDeviceCredential,
   mintDeviceJwt,
+  verifyDeviceJwt,
   mintHubToken,
   setDeviceSiteId,
   normalizeDeviceRole,
@@ -26,6 +27,7 @@ import {
 } from "../../src/lib/device";
 import { verifyJwt } from "../../src/lib/jwt";
 import { createMockKV } from "../helpers/mock-env";
+import { signTestJwt } from "../helpers/test-jwt";
 
 const SECRET = "test-jwt-secret-shared-with-alc-api";
 // verifyJwt は exp > 現在時刻を要求するので、mint の exp が未来になるよう実時刻基準にする。
@@ -322,6 +324,89 @@ describe("mintDeviceJwt", () => {
     await expect(
       mintDeviceJwt({ JWT_SECRET: undefined, WORKER_ENV: "staging" }, record, NOW),
     ).rejects.toThrow("JWT_SECRET not configured");
+  });
+});
+
+describe("verifyDeviceJwt (Refs #519)", () => {
+  const hubRecord: DeviceRecord = {
+    device_id: "dev-hub-1",
+    tenant_id: "tenant-9",
+    secret_hash: "x",
+    label: "l",
+    role: DEVICE_ROLE_HUB,
+    created_at: NOW,
+    revoked: false,
+  };
+  const ENV = { JWT_SECRET: SECRET, WORKER_ENV: "staging" };
+
+  it("accepts a token minted by mintDeviceJwt and returns its claims (round-trip)", async () => {
+    const token = await mintDeviceJwt(ENV, hubRecord, NOW);
+    const claims = await verifyDeviceJwt(ENV, token);
+    expect(claims).not.toBeNull();
+    expect(claims!.sub).toBe("dev-hub-1");
+    expect(claims!.tenant_id).toBe("tenant-9");
+    expect(claims!.role).toBe(DEVICE_ROLE_HUB);
+    expect(claims!.aud).toBe(DEVICE_JWT_AUDIENCE);
+  });
+
+  it("returns null when JWT_SECRET is not configured", async () => {
+    const token = await mintDeviceJwt(ENV, hubRecord, NOW);
+    expect(await verifyDeviceJwt({ JWT_SECRET: undefined, WORKER_ENV: "staging" }, token)).toBeNull();
+  });
+
+  it("returns null for a token signed with another secret", async () => {
+    const token = await mintDeviceJwt({ JWT_SECRET: "other-secret", WORKER_ENV: "staging" }, hubRecord, NOW);
+    expect(await verifyDeviceJwt(ENV, token)).toBeNull();
+  });
+
+  it("returns null for a token from another env (cross-env replay guard)", async () => {
+    const token = await mintDeviceJwt({ JWT_SECRET: SECRET, WORKER_ENV: "prod" }, hubRecord, NOW);
+    expect(await verifyDeviceJwt(ENV, token)).toBeNull();
+  });
+
+  it("rejects a browser JWT (aud なし) signed with the same secret (Refs #482)", async () => {
+    // browser JWT は `aud` を付けない。同じ JWT_SECRET なので署名だけでは区別できず、
+    // aud 検査が無いと browser session がそのまま device として通ってしまう。
+    const token = await signTestJwt(
+      { sub: "user-1", tenant_id: "tenant-9", role: DEVICE_ROLE_HUB, env: "staging" },
+      SECRET,
+    );
+    expect(await verifyDeviceJwt(ENV, token)).toBeNull();
+  });
+
+  it("rejects a token whose aud is another audience (hub token)", async () => {
+    const token = await signTestJwt(
+      { sub: "dev-hub-1", tenant_id: "tenant-9", role: DEVICE_ROLE_HUB, aud: "hub", env: "staging" },
+      SECRET,
+    );
+    expect(await verifyDeviceJwt(ENV, token)).toBeNull();
+  });
+
+  it("rejects a token with a missing / empty sub", async () => {
+    const base = { tenant_id: "tenant-9", role: DEVICE_ROLE_HUB, aud: DEVICE_JWT_AUDIENCE, env: "staging" };
+    expect(await verifyDeviceJwt(ENV, await signTestJwt({ ...base, sub: 5 }, SECRET))).toBeNull();
+    expect(await verifyDeviceJwt(ENV, await signTestJwt({ ...base, sub: "" }, SECRET))).toBeNull();
+  });
+
+  it("rejects a token with a missing tenant_id", async () => {
+    const token = await signTestJwt(
+      { sub: "dev-hub-1", role: DEVICE_ROLE_HUB, aud: DEVICE_JWT_AUDIENCE, env: "staging" },
+      SECRET,
+    );
+    expect(await verifyDeviceJwt(ENV, token)).toBeNull();
+  });
+
+  it("rejects a token with a missing role", async () => {
+    const token = await signTestJwt(
+      { sub: "dev-hub-1", tenant_id: "tenant-9", aud: DEVICE_JWT_AUDIENCE, env: "staging" },
+      SECRET,
+    );
+    expect(await verifyDeviceJwt(ENV, token)).toBeNull();
+  });
+
+  it("rejects an expired token", async () => {
+    const token = await mintDeviceJwt(ENV, hubRecord, NOW - 7200, 60);
+    expect(await verifyDeviceJwt(ENV, token)).toBeNull();
   });
 });
 
