@@ -9,7 +9,13 @@ import type { Env } from "../../src/index";
 import { signMcpJwt } from "../../src/lib/mcp-jwt";
 import { encryptWithKey } from "../../src/lib/mcp-crypto";
 import { DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY } from "../../src/lib/dev-login";
-import { DEVICE_ROLE_HUB } from "../../src/lib/device";
+import {
+  DEVICE_ROLE_GATEWAY,
+  DEVICE_ROLE_HUB,
+  DEVICE_ROLE_PRINT,
+  DEVICE_ROLE_TIMECARD,
+} from "../../src/lib/device";
+import { DEVICE_KINDS } from "../../src/handlers/device-setup";
 
 const ISSUER = "https://auth.test.example";
 const TEST_MCP_JWT_SECRET = "test-mcp-jwt-secret-32chars!";
@@ -1097,7 +1103,8 @@ describe("POST /mcp/google — google-surface WWW-Authenticate", () => {
 
 // ────────────────────────────────────────────────────────────────────────
 // get_device_log (issue #513) — 端末に get_log command を送り、command_result を
-// サーバ側でポーリングして 1 回の tool 呼び出しで返す。
+// サーバ側でポーリングして 1 回の tool 呼び出しで返す。同じ仕組みの ota_device
+// (issue #535) も末尾の入れ子の describe で helper を共用する。
 // ────────────────────────────────────────────────────────────────────────
 describe("POST /mcp/tools — get_device_log", () => {
   const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
@@ -1105,6 +1112,9 @@ describe("POST /mcp/tools — get_device_log", () => {
   const DEVICE_ID = "device-example-0001";
   const GET_LOG_POLL_INTERVAL_MS = 500;
   const OTHER_TENANT_DEVICE_ID = "device-example-0002";
+  const PRINT_DEVICE_ID = "device-example-0003";
+  const TIMECARD_DEVICE_ID = "device-example-0004";
+  const GW_DEVICE_ID = "device-example-0005";
 
   /** rust-alc-api の upsert-google 応答 (tenant 解決に使う)。 */
   function internalUserResponse(): Response {
@@ -1159,6 +1169,23 @@ describe("POST /mcp/tools — get_device_log", () => {
         label: "example-hub-other",
         role: DEVICE_ROLE_HUB,
       }),
+      // ota_device の機種別テスト用 (自テナント)。
+      ...Object.fromEntries(
+        [
+          [PRINT_DEVICE_ID, DEVICE_ROLE_PRINT],
+          [TIMECARD_DEVICE_ID, DEVICE_ROLE_TIMECARD],
+          [GW_DEVICE_ID, DEVICE_ROLE_GATEWAY],
+        ].map(([id, role]) => [
+          `device:${id}`,
+          JSON.stringify({
+            device_id: id,
+            tenant_id: TENANT_ID,
+            secret_hash: "0".repeat(64),
+            label: `example-${role}`,
+            role,
+          }),
+        ]),
+      ),
     });
     const { env, kv } = envWithKv({
       AUTH_CONFIG: authConfig,
@@ -1170,17 +1197,21 @@ describe("POST /mcp/tools — get_device_log", () => {
     return env;
   }
 
-  /** tool を呼び、fake timer を 8 秒ぶん進めて結果を取り出す。 */
-  async function callGetDeviceLog(
+  /**
+   * tool を呼び、fake timer を `stepMs` × 最大 `steps` 回進めて結果を取り出す。
+   * 既定は get_device_log (500ms × 24 = 12 秒。8 秒の待ちを越える)。
+   */
+  async function callDeviceTool(
     env: Env,
     args: Record<string, unknown>,
+    { tool = "get_device_log", stepMs = GET_LOG_POLL_INTERVAL_MS, steps = 24 } = {},
   ): Promise<{ isError: boolean; content: Array<{ text: string }> }> {
     const jwt = await googleUserJwt();
     const req = await authedReq(jwt, {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "get_device_log", arguments: args },
+      params: { name: tool, arguments: args },
     });
     // fake timer を入れる前に本物の setTimeout を控える (下の yield 用)。
     const realSetTimeout = globalThis.setTimeout;
@@ -1193,10 +1224,10 @@ describe("POST /mcp/tools — get_device_log", () => {
       });
       // ポーリングの setTimeout は tool の await 数段あとに積まれる。crypto.subtle
       // (JWT 検証) の解決には実 event loop の 1 周が要るので、「実 tick を 1 回
-      // 譲る → fake 時計を 500ms 進める」を結果が出るまで繰り返す (実時間は待たない)。
-      for (let i = 0; i < 24 && !settled; i++) {
+      // 譲る → fake 時計を stepMs 進める」を結果が出るまで繰り返す (実時間は待たない)。
+      for (let i = 0; i < steps && !settled; i++) {
         await new Promise((resolve) => realSetTimeout(resolve, 0));
-        await vi.advanceTimersByTimeAsync(GET_LOG_POLL_INTERVAL_MS);
+        await vi.advanceTimersByTimeAsync(stepMs);
       }
       const res = await pending;
       const body = (await res.json()) as {
@@ -1257,7 +1288,7 @@ describe("POST /mcp/tools — get_device_log", () => {
       );
     });
     const env = logEnv(fetcher);
-    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID, max_bytes: 1200 });
+    const result = await callDeviceTool(env, { device_id: DEVICE_ID, max_bytes: 1200 });
 
     expect(result.isError).toBe(false);
     expect(parsed(result)).toEqual({
@@ -1288,7 +1319,7 @@ describe("POST /mcp/tools — get_device_log", () => {
         : new Response(JSON.stringify({ payload: { text: "x", bytes: 1 } }), { status: 200 }),
     );
     const env = logEnv(fetcher);
-    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID });
+    const result = await callDeviceTool(env, { device_id: DEVICE_ID });
     expect(result.isError).toBe(false);
     expect(JSON.parse(calls[0]!.body)).toEqual({
       payload: { action: "get_log", max_bytes: 3000 },
@@ -1298,7 +1329,7 @@ describe("POST /mcp/tools — get_device_log", () => {
   it("max_bytes が範囲外なら呼ぶ前に弾く", async () => {
     const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 200 }));
     const env = logEnv(fetcher);
-    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID, max_bytes: 3801 });
+    const result = await callDeviceTool(env, { device_id: DEVICE_ID, max_bytes: 3801 });
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("max_bytes must be an integer in [1, 3800]");
     expect(calls).toHaveLength(0);
@@ -1307,7 +1338,7 @@ describe("POST /mcp/tools — get_device_log", () => {
   it("device_not_connected: recorder が 404 を返したら待たずに返す", async () => {
     const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 404 }));
     const env = logEnv(fetcher);
-    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID });
+    const result = await callDeviceTool(env, { device_id: DEVICE_ID });
     expect(result.isError).toBe(false);
     expect(parsed(result)).toEqual({ device_id: DEVICE_ID, error: "device_not_connected" });
     expect(calls).toHaveLength(1); // POST のみ、結果ポーリングはしない
@@ -1323,7 +1354,7 @@ describe("POST /mcp/tools — get_device_log", () => {
       return new Response("{}", { status: 404 });
     });
     const env = logEnv(fetcher);
-    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID });
+    const result = await callDeviceTool(env, { device_id: DEVICE_ID });
     expect(result.isError).toBe(false);
     expect(parsed(result)).toEqual({ device_id: DEVICE_ID, error: "timeout" });
     expect(resultPolls).toBe(16); // 500ms 間隔 × 8s
@@ -1336,7 +1367,7 @@ describe("POST /mcp/tools — get_device_log", () => {
         : new Response(JSON.stringify({ payload: {} }), { status: 200 }),
     );
     const env = logEnv(fetcher);
-    const result = await callGetDeviceLog(env, { device_id: DEVICE_ID });
+    const result = await callDeviceTool(env, { device_id: DEVICE_ID });
     expect(result.isError).toBe(false);
     expect(parsed(result)).toEqual({ device_id: DEVICE_ID, error: "unsupported_firmware" });
   });
@@ -1344,7 +1375,7 @@ describe("POST /mcp/tools — get_device_log", () => {
   it("他テナントの device_id は device_not_found (recorder へ届かない)", async () => {
     const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
     const env = logEnv(fetcher);
-    const result = await callGetDeviceLog(env, { device_id: OTHER_TENANT_DEVICE_ID });
+    const result = await callDeviceTool(env, { device_id: OTHER_TENANT_DEVICE_ID });
     expect(result.isError).toBe(false);
     expect(parsed(result)).toEqual({
       device_id: OTHER_TENANT_DEVICE_ID,
@@ -1372,5 +1403,255 @@ describe("POST /mcp/tools — get_device_log", () => {
     expect(body.result.isError).toBe(true);
     expect(body.result.content[0]!.text).toContain("not_in_allowlist");
     expect(calls).toHaveLength(0);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // ota_device (issue #535) — 機種の公式 firmware URL で ota command を送り、
+  // 進捗 (command_result) を 2 秒間隔・最大 90 秒待つ。URL は入力に無い。
+  // ──────────────────────────────────────────────────────────────────────
+  describe("ota_device", () => {
+    /** 2 秒 × 最大 60 回 = 120 秒ぶん進める (90 秒の待ちを越える)。 */
+    const OTA = { tool: "ota_device", stepMs: 2000, steps: 60 };
+    const HUB_APP_URL = DEVICE_KINDS["cores3"]!.appUrl;
+
+    /** POST には cmd-1 を返し、結果の GET には `results` を順に返す (尽きたら最後を繰り返す)。 */
+    function otaRecorder(results: Array<() => Response>) {
+      let polls = 0;
+      const rec = mockRecorder((req) => {
+        if (req.method === "POST") {
+          return new Response(JSON.stringify({ id: "cmd-1" }), { status: 202 });
+        }
+        polls += 1;
+        return results[Math.min(polls, results.length) - 1]!();
+      });
+      return { ...rec, polls: () => polls };
+    }
+    /** recorder 404 = 端末がまだ結果を push していない。 */
+    const notYet = () => new Response("{}", { status: 404 });
+    const progress = (payload: unknown) => () =>
+      new Response(JSON.stringify({ payload }), { status: 200 });
+
+    function toolsCallReq(jwt: string, args: Record<string, unknown>): Promise<Request> {
+      return authedReq(jwt, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "ota_device", arguments: args },
+      });
+    }
+
+    it("tools/list: mcp.write には出て URL の入力を持たない / mcp.read だけのセッションには出ない", async () => {
+      const { env } = envWithKv();
+      const list = async (scope?: string) => {
+        const jwt = await googleUserJwt(scope ? { scope } : {});
+        const res = await handleMcpTools(
+          await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+          env,
+        );
+        const body = (await res.json()) as {
+          result: {
+            tools: Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }>;
+          };
+        };
+        return body.result.tools;
+      };
+      const ota = (await list()).find((t) => t.name === "ota_device");
+      expect(Object.keys(ota!.inputSchema.properties).sort()).toEqual(["channel", "device_id"]);
+      expect((await list("mcp.read")).map((t) => t.name)).not.toContain("ota_device");
+    });
+
+    it("mcp.read だけのセッションは tools/call も拒否する (recorder へ届かない)", async () => {
+      const rec = otaRecorder([notYet]);
+      const env = logEnv(rec.fetcher);
+      const jwt = await googleUserJwt({ scope: "mcp.read" });
+      const res = await handleMcpTools(await toolsCallReq(jwt, { device_id: DEVICE_ID }), env);
+      const body = (await res.json()) as { error: { code: number; message: string } };
+      expect(body.error.code).toBe(-32000);
+      expect(body.error.message).toContain("mcp.write required");
+      expect(rec.calls).toHaveLength(0);
+    });
+
+    it("allowlist 外の subject は issue_dev_token と同じエラー型で拒否する", async () => {
+      const rec = otaRecorder([notYet]);
+      const env = logEnv(rec.fetcher);
+      const jwt = await googleUserJwt({ email: "someone-else@example.com" });
+      const res = await handleMcpTools(await toolsCallReq(jwt, { device_id: DEVICE_ID }), env);
+      const body = (await res.json()) as {
+        result: { isError: boolean; content: Array<{ text: string }> };
+      };
+      expect(body.result.isError).toBe(true);
+      expect(body.result.content[0]!.text).toContain("not_in_allowlist");
+      expect(rec.calls).toHaveLength(0);
+    });
+
+    it("prod: 機種の appUrl で {action:\"ota\", url} を送り、phase ok まで待つ", async () => {
+      const rec = otaRecorder([
+        notYet,
+        progress({ phase: "write", received: 1, total: 2 }),
+        progress({ phase: "ok" }),
+      ]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID }, OTA);
+
+      expect(result.isError).toBe(false);
+      expect(parsed(result)).toEqual({
+        device_id: DEVICE_ID,
+        command_id: "cmd-1",
+        channel: "prod",
+        url: HUB_APP_URL,
+        phase: "ok",
+        last: { phase: "ok" },
+        timed_out: false,
+      });
+      expect(rec.calls[0]!.url).toBe(
+        `https://alc-recorder.internal/tenants/${TENANT_ID}/devices/${DEVICE_ID}/command`,
+      );
+      expect(JSON.parse(rec.calls[0]!.body)).toEqual({
+        payload: { action: "ota", url: HUB_APP_URL },
+      });
+      expect(rec.polls()).toBe(3);
+    });
+
+    it("dev: 機種の devAppUrl を送る", async () => {
+      const devUrl = DEVICE_KINDS["cores3"]!.devAppUrl;
+      expect(devUrl).toBeDefined();
+      const rec = otaRecorder([progress({ phase: "ok" })]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID, channel: "dev" }, OTA);
+      expect(parsed(result)).toMatchObject({
+        channel: "dev",
+        url: devUrl,
+        phase: "ok",
+        timed_out: false,
+      });
+      expect(JSON.parse(rec.calls[0]!.body)).toEqual({ payload: { action: "ota", url: devUrl } });
+    });
+
+    it("印刷ブリッジ・タイムカードは各機種の appUrl を送る", async () => {
+      for (const [deviceId, kindName] of [
+        [PRINT_DEVICE_ID, "atoms3-print"],
+        [TIMECARD_DEVICE_ID, "timecard"],
+      ] as const) {
+        const url = DEVICE_KINDS[kindName]!.appUrl;
+        const rec = otaRecorder([progress({ phase: "ok" })]);
+        const env = logEnv(rec.fetcher);
+        const result = await callDeviceTool(env, { device_id: deviceId }, OTA);
+        expect(parsed(result)).toMatchObject({ device_id: deviceId, url, phase: "ok" });
+        expect(JSON.parse(rec.calls[0]!.body)).toEqual({ payload: { action: "ota", url } });
+      }
+    });
+
+    it("dev ビルドの無い機種で channel dev は dev_build_not_available (送らない)", async () => {
+      const rec = otaRecorder([notYet]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(
+        env,
+        { device_id: PRINT_DEVICE_ID, channel: "dev" },
+        OTA,
+      );
+      expect(result.isError).toBe(false);
+      expect(parsed(result)).toEqual({
+        device_id: PRINT_DEVICE_ID,
+        channel: "dev",
+        error: "dev_build_not_available",
+      });
+      expect(rec.calls).toHaveLength(0);
+    });
+
+    it("channel が prod / dev 以外なら呼ぶ前に弾く", async () => {
+      const rec = otaRecorder([notYet]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID, channel: "beta" }, OTA);
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("channel must be 'prod' or 'dev'");
+      expect(rec.calls).toHaveLength(0);
+    });
+
+    it("他テナント・未登録の device_id は device_not_found (recorder へ届かない)", async () => {
+      for (const deviceId of [OTHER_TENANT_DEVICE_ID, "device-example-unknown"]) {
+        const rec = otaRecorder([notYet]);
+        const env = logEnv(rec.fetcher);
+        const result = await callDeviceTool(env, { device_id: deviceId }, OTA);
+        expect(parsed(result)).toEqual({ device_id: deviceId, error: "device_not_found" });
+        expect(rec.calls).toHaveLength(0);
+      }
+    });
+
+    it("p4-gw は unsupported_device_kind (管理対象でも送らない)", async () => {
+      const rec = otaRecorder([notYet]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(env, { device_id: GW_DEVICE_ID }, OTA);
+      expect(parsed(result)).toEqual({ device_id: GW_DEVICE_ID, error: "unsupported_device_kind" });
+      expect(rec.calls).toHaveLength(0);
+    });
+
+    it("device_not_connected: recorder が 404 を返したら待たずに返す", async () => {
+      const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 404 }));
+      const env = logEnv(fetcher);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID }, OTA);
+      expect(parsed(result)).toEqual({ device_id: DEVICE_ID, error: "device_not_connected" });
+      expect(calls).toHaveLength(1);
+    });
+
+    it("phase error で抜け、端末の payload を last に載せる", async () => {
+      const last = { phase: "error", error: "http 404" };
+      const rec = otaRecorder([progress(last)]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID }, OTA);
+      expect(parsed(result)).toEqual({
+        device_id: DEVICE_ID,
+        command_id: "cmd-1",
+        channel: "prod",
+        url: HUB_APP_URL,
+        phase: "error",
+        last,
+        timed_out: false,
+      });
+      expect(rec.polls()).toBe(1);
+    });
+
+    it("90 秒で ok / error に届かなければ timed_out と最後の進捗を返す", async () => {
+      const last = { phase: "write", received: 10, total: 100 };
+      // phase の無い応答 (payload 無し・空 object) は phase を変えない
+      const rec = otaRecorder([
+        notYet,
+        () => new Response("{}", { status: 200 }),
+        progress({}),
+        progress(last),
+      ]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID }, OTA);
+      expect(parsed(result)).toEqual({
+        device_id: DEVICE_ID,
+        command_id: "cmd-1",
+        channel: "prod",
+        url: HUB_APP_URL,
+        phase: "write",
+        last,
+        timed_out: true,
+      });
+      expect(rec.polls()).toBe(45); // 2 秒間隔 × 90 秒
+    });
+
+    it("90 秒のあいだ結果が 1 度も届かなければ phase pending・last null", async () => {
+      const rec = otaRecorder([notYet]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID }, OTA);
+      expect(parsed(result)).toMatchObject({ phase: "pending", last: null, timed_out: true });
+    });
+
+    it("進捗の取得で recorder が落ちたら command_id 付きで返す (後から追える)", async () => {
+      const rec = otaRecorder([() => new Response("{}", { status: 500 })]);
+      const env = logEnv(rec.fetcher);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID }, OTA);
+      expect(parsed(result)).toEqual({
+        device_id: DEVICE_ID,
+        command_id: "cmd-1",
+        channel: "prod",
+        url: HUB_APP_URL,
+        error: "recorder_error",
+        status: 500,
+      });
+    });
   });
 });
