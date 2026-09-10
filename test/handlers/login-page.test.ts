@@ -128,6 +128,120 @@ describe("handleLoginPage", () => {
     );
   });
 
+  describe("logi_bounce / login_loop_detected (Refs #526)", () => {
+    const logSpy = () => vi.spyOn(console, "log").mockImplementation(() => {});
+
+    it("bounce cookie を login_page ログへ転記する", async () => {
+      const spy = logSpy();
+      const env = createMockEnv();
+      const request = new Request(
+        "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
+        { headers: { Cookie: "logi_bounce=2:no_cookie" } },
+      );
+
+      await handleLoginPage(request, env);
+
+      const call = spy.mock.calls.find((c) => JSON.parse(c[0] as string).event === "login_page");
+      expect(JSON.parse(call![0] as string).bounce).toEqual({ count: 2, reason: "no_cookie" });
+      spy.mockRestore();
+    });
+
+    it("bounce cookie が無ければ bounce は null", async () => {
+      const spy = logSpy();
+      const env = createMockEnv();
+      const request = new Request(
+        "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
+      );
+
+      await handleLoginPage(request, env);
+
+      const call = spy.mock.calls.find((c) => JSON.parse(c[0] as string).event === "login_page");
+      expect(JSON.parse(call![0] as string).bounce).toBeNull();
+      spy.mockRestore();
+    });
+
+    it("count=2 では login_loop_detected は出ない", async () => {
+      const spy = logSpy();
+      const env = createMockEnv();
+      const request = new Request(
+        "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
+        { headers: { Cookie: "logi_bounce=2:no_cookie" } },
+      );
+
+      await handleLoginPage(request, env);
+
+      expect(spy.mock.calls.some((c) => JSON.parse(c[0] as string).event === "login_loop_detected")).toBe(false);
+      spy.mockRestore();
+    });
+
+    it("count=3 では login_loop_detected が出る", async () => {
+      const spy = logSpy();
+      const env = createMockEnv();
+      const request = new Request(
+        "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
+        { headers: { Cookie: "logi_bounce=3:expired", Referer: "https://auth.test.example/top" } },
+      );
+
+      await handleLoginPage(request, env);
+
+      const call = spy.mock.calls.find((c) => JSON.parse(c[0] as string).event === "login_loop_detected");
+      expect(call).toBeDefined();
+      const body = JSON.parse(call![0] as string);
+      expect(body).toMatchObject({
+        event: "login_loop_detected",
+        count: 3,
+        reason: "expired",
+        redirectUri: "https://app1.test.example/page",
+        referer: "https://auth.test.example/top",
+      });
+      spy.mockRestore();
+    });
+
+    it("Referer の query/fragment は落として origin+pathname だけ転記する", async () => {
+      const spy = logSpy();
+      const env = createMockEnv();
+      const request = new Request(
+        "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
+        { headers: { Referer: "https://auth.test.example/top?woff=1#frag" } },
+      );
+
+      await handleLoginPage(request, env);
+
+      const call = spy.mock.calls.find((c) => JSON.parse(c[0] as string).event === "login_page");
+      expect(JSON.parse(call![0] as string).referer).toBe("https://auth.test.example/top");
+      spy.mockRestore();
+    });
+
+    it("Referer が無ければ referer は null", async () => {
+      const spy = logSpy();
+      const env = createMockEnv();
+      const request = new Request(
+        "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
+      );
+
+      await handleLoginPage(request, env);
+
+      const call = spy.mock.calls.find((c) => JSON.parse(c[0] as string).event === "login_page");
+      expect(JSON.parse(call![0] as string).referer).toBeNull();
+      spy.mockRestore();
+    });
+
+    it("Referer が parse 不能なら referer は null", async () => {
+      const spy = logSpy();
+      const env = createMockEnv();
+      const request = new Request(
+        "https://auth.test.example/login?redirect_uri=https://app1.test.example/page",
+        { headers: { Referer: "not-a-url" } },
+      );
+
+      await handleLoginPage(request, env);
+
+      const call = spy.mock.calls.find((c) => JSON.parse(c[0] as string).event === "login_page");
+      expect(JSON.parse(call![0] as string).referer).toBeNull();
+      spy.mockRestore();
+    });
+  });
+
   describe("LOGIN_DELEGATE_TO delegation (wt-quick tunnel mode)", () => {
     it("delegates to LOGIN_DELEGATE_TO preserving explicit redirect_uri", async () => {
       const env = createMockEnv({ LOGIN_DELEGATE_TO: "https://auth.ippoan.org" });

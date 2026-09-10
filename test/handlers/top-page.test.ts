@@ -103,24 +103,28 @@ describe("handleTopPage", () => {
 
       expect(res.status).toBe(302);
       const setCookies = res.headers.getSetCookie();
-      expect(setCookies.length).toBe(2);
-      for (const c of setCookies) {
+      // logi_bounce (Refs #526) は毒 cookie 破棄と無関係な別 Set-Cookie として付く
+      const authCookies = setCookies.filter((c) => c.startsWith("logi_auth_token="));
+      expect(authCookies.length).toBe(2);
+      for (const c of authCookies) {
         expect(c).toContain("logi_auth_token=;");
         expect(c).toContain("Max-Age=0");
       }
       // Domain 付き (親ドメイン) と host-only の両方を破棄する
-      expect(setCookies.some((c) => c.includes("Domain=.test.example"))).toBe(true);
-      expect(setCookies.some((c) => !c.includes("Domain="))).toBe(true);
+      expect(authCookies.some((c) => c.includes("Domain=.test.example"))).toBe(true);
+      expect(authCookies.some((c) => !c.includes("Domain="))).toBe(true);
     });
 
-    it("cookie 無しの redirect には Set-Cookie を付けない", async () => {
+    it("cookie 無しの redirect には毒 cookie 破棄 Set-Cookie を付けない (logi_bounce のみ付く)", async () => {
       const env = createMockEnv();
       const req = new Request("https://auth.test.example/top");
 
       const res = await handleTopPage(req, env);
 
       expect(res.status).toBe(302);
-      expect(res.headers.get("Set-Cookie")).toBeNull();
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.some((c) => c.startsWith("logi_auth_token="))).toBe(false);
+      expect(setCookies.some((c) => c.startsWith("logi_bounce="))).toBe(true);
     });
 
     it("同名 cookie 2 個 (先頭 invalid / 後方 valid) でも表示できる", async () => {
@@ -563,6 +567,128 @@ describe("handleTopPage", () => {
       "https://auth.test.example",
       expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
     );
+  });
+
+  describe("logi_bounce (Refs #526)", () => {
+    it("no_cookie: cookie 無しの redirect は reason=no_cookie で count=1 を張る", async () => {
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top");
+
+      const res = await handleTopPage(req, env);
+
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.some((c) => c === "logi_bounce=1:no_cookie; Path=/; Max-Age=120; Secure; SameSite=Lax")).toBe(true);
+    });
+
+    it("expired: 期限切れ JWT は reason=expired", async () => {
+      const token = await signTestJwt(
+        { sub: "u1", exp: Math.floor(Date.now() / 1000) - 60 },
+        TEST_JWT_SECRET,
+      );
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: `logi_auth_token=${token}` },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.some((c) => c.startsWith("logi_bounce=1:expired;"))).toBe(true);
+    });
+
+    it("env_mismatch: claim env が WORKER_ENV と不一致なら reason=env_mismatch", async () => {
+      const token = await signTestJwt(
+        { sub: "u1", exp: Math.floor(Date.now() / 1000) + 3600, env: "staging" },
+        TEST_JWT_SECRET,
+      );
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: `logi_auth_token=${token}` },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.some((c) => c.startsWith("logi_bounce=1:env_mismatch;"))).toBe(true);
+    });
+
+    it("invalid: 署名不正な JWT (env claim 無し) は reason=invalid", async () => {
+      const token = await signTestJwt({ sub: "u1" }, "wrong-secret");
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: `logi_auth_token=${token}` },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.some((c) => c.startsWith("logi_bounce=1:invalid;"))).toBe(true);
+    });
+
+    it("既存の logi_bounce があれば count を積み増す", async () => {
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: "logi_bounce=2:no_cookie" },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.some((c) => c.startsWith("logi_bounce=3:no_cookie;"))).toBe(true);
+    });
+
+    it("no_org: dangling tenant で /logout へ飛ぶときも reason=no_org で Set-Cookie を付ける", async () => {
+      const fullClaims = {
+        sub: "11111111-1111-1111-1111-111111111111",
+        tenant_id: "22222222-2222-2222-2222-222222222222",
+        email: "op@example.com",
+        role: "admin",
+      };
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(new Response(JSON.stringify({ organizations: [] }), { status: 200 })) as unknown as typeof fetch;
+      try {
+        const env = createMockEnv();
+        const req = new Request("https://auth.test.example/top", {
+          headers: { Cookie: await authedCookie(fullClaims) },
+        });
+
+        const res = await handleTopPage(req, env);
+
+        expect(res.status).toBe(302);
+        expect(res.headers.get("Location")).toContain("/logout");
+        const setCookies = res.headers.getSetCookie();
+        expect(setCookies.some((c) => c.startsWith("logi_bounce=1:no_org;"))).toBe(true);
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    });
+
+    it("正常描画時、既存の logi_bounce があれば clear する", async () => {
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: `${await authedCookie()}; logi_bounce=2:no_cookie` },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(200);
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies).toContain("logi_bounce=; Path=/; Max-Age=0; Secure; SameSite=Lax");
+    });
+
+    it("正常描画時、logi_bounce が無ければ Set-Cookie を付けない", async () => {
+      const env = createMockEnv();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: await authedCookie() },
+      });
+
+      const res = await handleTopPage(req, env);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+    });
   });
 
   it("leaves ippoan tiles visible regardless of tenant_id", async () => {

@@ -6,6 +6,9 @@ import {
   getAuthCookie,
   getAuthCookies,
   authCookieReachesHost,
+  getBounce,
+  setBounceCookie,
+  clearBounceCookie,
 } from "../../src/lib/cookies";
 
 describe("cookies", () => {
@@ -114,6 +117,41 @@ describe("cookies", () => {
 
     it("単一ラベル host (localhost 等) は false", () => {
       expect(authCookieReachesHost("localhost", "localhost")).toBe(false);
+    });
+  });
+
+  describe("logi_bounce (Refs #526)", () => {
+    it("setBounceCookie: count:reason 形式で host-only (Domain 無し) の Set-Cookie を返す", () => {
+      const cookie = setBounceCookie(2, "expired");
+      expect(cookie).toBe("logi_bounce=2:expired; Path=/; Max-Age=120; Secure; SameSite=Lax");
+      expect(cookie).not.toContain("Domain=");
+    });
+
+    it("clearBounceCookie: Max-Age=0", () => {
+      expect(clearBounceCookie()).toBe("logi_bounce=; Path=/; Max-Age=0; Secure; SameSite=Lax");
+    });
+
+    it("getBounce: cookie を count/reason に parse する", () => {
+      const req = new Request("https://example.com", {
+        headers: { Cookie: "logi_bounce=3:no_cookie" },
+      });
+      expect(getBounce(req)).toEqual({ count: 3, reason: "no_cookie" });
+    });
+
+    it("getBounce: cookie が無ければ null", () => {
+      expect(getBounce(new Request("https://example.com"))).toBeNull();
+    });
+
+    it("getBounce: 壊れた値 (count が非数 / reason が未知) は count のみ / null 混在で扱う", () => {
+      const badCount = new Request("https://example.com", {
+        headers: { Cookie: "logi_bounce=abc:no_cookie" },
+      });
+      expect(getBounce(badCount)).toBeNull();
+
+      const badReason = new Request("https://example.com", {
+        headers: { Cookie: "logi_bounce=1:something_else" },
+      });
+      expect(getBounce(badReason)).toEqual({ count: 1, reason: null });
     });
   });
 });

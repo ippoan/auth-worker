@@ -90,3 +90,49 @@ export function clearAuthCookieVariants(hostname: string): string[] {
     `${AUTH_COOKIE}=; Path=/; Max-Age=0; Secure; SameSite=Lax`,
   ];
 }
+
+/**
+ * /top ↔ /login の往復回数と、直前に /top が弾いた理由を /login のログへ運ぶ
+ * 短命 cookie (Refs #526)。値は `<count>:<reason>`。
+ *
+ * host-only (Domain 無し) にする: /top と /login は同一 host で、配下アプリへ
+ * 送出する必要が無い。書き方は access-logout.ts の chain marker と同型。
+ * 挙動 (redirect / cookie 破棄 / 画面) には一切関与せず、ログ専用。
+ */
+export const BOUNCE_COOKIE = "logi_bounce";
+
+/** 寿命 (秒)。往復は数秒で 1 周するので 2 分あれば連続バウンスを繋げられる。 */
+export const BOUNCE_TTL_SEC = 120;
+
+export type BounceReason = "no_cookie" | "expired" | "env_mismatch" | "invalid" | "no_org";
+
+const BOUNCE_REASONS: readonly BounceReason[] = [
+  "no_cookie",
+  "expired",
+  "env_mismatch",
+  "invalid",
+  "no_org",
+];
+
+/** 往復 cookie を読む。無い・壊れている (count が非数 / reason が未知) なら null。 */
+export function getBounce(
+  request: Request,
+): { count: number; reason: BounceReason | null } | null {
+  const cookie = request.headers.get("Cookie") || "";
+  const m = new RegExp(`(?:^|;\\s*)${BOUNCE_COOKIE}=([^;]*)`).exec(cookie);
+  if (!m) return null;
+  const [countRaw, reasonRaw] = m[1]!.split(":");
+  if (!/^\d{1,6}$/.test(countRaw ?? "")) return null;
+  const reason = BOUNCE_REASONS.find((r) => r === reasonRaw) ?? null;
+  return { count: Number(countRaw), reason };
+}
+
+/** 往復 cookie を張る Set-Cookie 値 (count は「今回で何回目か」)。 */
+export function setBounceCookie(count: number, reason: BounceReason): string {
+  return `${BOUNCE_COOKIE}=${count}:${reason}; Path=/; Max-Age=${BOUNCE_TTL_SEC}; Secure; SameSite=Lax`;
+}
+
+/** 往復 cookie を消す Set-Cookie 値 (/top が正常描画したら計数をリセット)。 */
+export function clearBounceCookie(): string {
+  return `${BOUNCE_COOKIE}=; Path=/; Max-Age=0; Secure; SameSite=Lax`;
+}
