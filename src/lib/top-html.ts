@@ -411,6 +411,32 @@ export function renderTopPage(
       return c ? c.split('=').slice(1).join('=') : null;
     }
 
+    /**
+     * 同名 cookie を **全て** 返す (server 側 getAuthCookies (cookies.ts) と同型、
+     * Refs #387/#529)。host-only cookie と Domain 付き cookie は別物としてブラウザが
+     * 両方送るため、古い/無効な方が document.cookie の先頭に来ると getCookie()
+     * (先頭のみ) では有効な cookie が陰に隠れる (shadowing)。server は
+     * getAuthCookies で全候補を verify するのに、client がここで先頭だけ見ていると
+     * 「server は 200 を返すのに client は毎回未ログイン扱いして /login に戻す」
+     * ループになる (2026-09-10 本番実測)。
+     */
+    function getAllCookies(name) {
+      return document.cookie.split('; ')
+        .filter(c => c.startsWith(name + '='))
+        .map(c => c.split('=').slice(1).join('='));
+    }
+
+    /** AUTH_COOKIE の候補を全部試し、有効期限内に decode できた最初の値を返す。無ければ null。 */
+    function findValidAuthCookie() {
+      var candidates = getAllCookies(AUTH_COOKIE);
+      var now = Math.floor(Date.now() / 1000);
+      for (var i = 0; i < candidates.length; i++) {
+        var p = decodeJwtPayload(candidates[i]);
+        if (p && p.exp > now) return candidates[i];
+      }
+      return null;
+    }
+
     function setCookie(name, value, maxAge) {
       document.cookie = name + '=' + value + '; Domain=' + getParentDomain() + '; Path=/; Max-Age=' + maxAge + '; Secure; SameSite=Lax';
     }
@@ -453,7 +479,7 @@ export function renderTopPage(
     /** Check if JWT exists (sessionStorage → cookie fallback) and is not expired */
     function getValidToken() {
       var token = sessionStorage.getItem('auth_token');
-      if (!token) token = getCookie(AUTH_COOKIE);
+      if (!token) token = findValidAuthCookie();
       if (!token) return null;
       var payload = decodeJwtPayload(token);
       if (payload && payload.exp > Math.floor(Date.now() / 1000)) {
@@ -547,8 +573,15 @@ export function renderTopPage(
       // tab on a sibling subdomain was already logged in) starts empty even
       // though the SSO cookie is present. /redirect reads only sessionStorage,
       // so without this hydration clicking an app card would bounce to /login.
+      // findValidAuthCookie() (not getCookie()) を使う: 同名 cookie が複数残っている
+      // (host-only の古い/無効な cookie が Domain 付きの新しい cookie より先に
+      // document.cookie に並ぶ) と、先頭だけ見る getCookie() は無効な方を拾って
+      // sessionStorage に書き込んでしまい、以降ずっと未ログイン扱いになる
+      // (server 側は getAuthCookies で全候補 verify するので 200 を返すのに、
+      // client だけ /login に戻り続けるループになっていた。Refs #529 のフォロー、
+      // 2026-09-10 本番実測)。
       if (!sessionStorage.getItem('auth_token')) {
-        var cookieToken = getCookie(AUTH_COOKIE);
+        var cookieToken = findValidAuthCookie();
         if (cookieToken) sessionStorage.setItem('auth_token', cookieToken);
       }
 

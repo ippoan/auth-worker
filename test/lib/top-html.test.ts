@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
 import { renderTopPage, renderStagingFooter } from "../../src/lib/top-html";
 
 /**
@@ -11,6 +11,40 @@ function extractDecodeJwtPayload(html: string): (token: string) => unknown {
   if (!m) throw new Error("decodeJwtPayload not found in rendered HTML");
   // eslint-disable-next-line no-new-func
   return new Function(`return (${m[0]});`)() as (token: string) => unknown;
+}
+
+/**
+ * 複数の named function を辿って抽出し、まとめて実行可能にする (互いに呼び合う
+ * decodeJwtPayload / getAllCookies / findValidAuthCookie を一括で eval する用途)。
+ * `document` はテスト側でグローバルに差し込む。
+ */
+function extractClientFunctions<T extends Record<string, (...args: never[]) => unknown>>(
+  html: string,
+  names: (keyof T & string)[],
+): T {
+  const sources = names.map((name) => {
+    const re = new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n {4}\\}`);
+    const m = re.exec(html);
+    if (!m) throw new Error(`${name} not found in rendered HTML`);
+    return m[0];
+  });
+  // findValidAuthCookie 等が参照する module-level const (AUTH_COOKIE 等) も
+  // 一緒に extract して eval scope に持ち込む。
+  const constMatch = /const AUTH_COOKIE = [^;]+;/.exec(html);
+  const consts = constMatch ? constMatch[0] : "";
+  const body = `${consts}\n${sources.join("\n")}\nreturn { ${names.join(", ")} };`;
+  // eslint-disable-next-line no-new-func
+  return new Function(body)() as T;
+}
+
+/** JSON payload を base64url encode して <header>.<payload>.<sig> 形の JWT にする。 */
+function fakeJwt(payload: Record<string, unknown>): string {
+  const b64url = Buffer.from(JSON.stringify(payload), "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  return `h.${b64url}.sig`;
 }
 
 describe("renderTopPage", () => {
@@ -107,6 +141,54 @@ describe("renderTopPage", () => {
       const html = renderTopPage([], "https://auth.example.com");
       const decodeJwtPayload = extractDecodeJwtPayload(html);
       expect(decodeJwtPayload("not-a-jwt")).toBeNull();
+    });
+  });
+
+  describe("client-side findValidAuthCookie cookie shadowing (Refs #529 follow-up)", () => {
+    // server 側 getAuthCookies (cookies.ts) は同名 cookie を全部 verify するが、
+    // client の旧実装 getCookie() は document.cookie の先頭一致しか見ていなかった。
+    // host-only の古い/無効な cookie が Domain 付きの新しい cookie より先に並ぶと、
+    // server は 200 を返す (payloadValid:true) のに client だけ「未ログイン」と
+    // 誤判定して /login に戻り続けるループになっていた (2026-09-10 本番実測)。
+    afterAll(() => {
+      // @ts-expect-error test-only global stub
+      delete globalThis.document;
+    });
+
+    it("skips a stale/expired cookie candidate and picks a later valid one", () => {
+      const html = renderTopPage([], "https://auth.example.com");
+      const fns = extractClientFunctions<{
+        decodeJwtPayload: (token: string) => unknown;
+        getAllCookies: (name: string) => string[];
+        findValidAuthCookie: () => string | null;
+      }>(html, ["decodeJwtPayload", "getAllCookies", "findValidAuthCookie"]);
+
+      const now = Math.floor(Date.now() / 1000);
+      const staleToken = fakeJwt({ exp: now - 3600, org: "stale" }); // 期限切れ (古い host-only cookie 相当)
+      const validToken = fakeJwt({ exp: now + 3600, org: "fresh" }); // 有効 (Domain 付きの新しい cookie 相当)
+
+      // @ts-expect-error test-only global stub
+      globalThis.document = { cookie: `logi_auth_token=${staleToken}; logi_auth_token=${validToken}` };
+
+      expect(fns.getAllCookies("logi_auth_token")).toEqual([staleToken, validToken]);
+      expect(fns.findValidAuthCookie()).toBe(validToken);
+    });
+
+    it("returns null when every candidate is invalid/expired", () => {
+      const html = renderTopPage([], "https://auth.example.com");
+      const fns = extractClientFunctions<{
+        decodeJwtPayload: (token: string) => unknown;
+        getAllCookies: (name: string) => string[];
+        findValidAuthCookie: () => string | null;
+      }>(html, ["decodeJwtPayload", "getAllCookies", "findValidAuthCookie"]);
+
+      const now = Math.floor(Date.now() / 1000);
+      const staleToken = fakeJwt({ exp: now - 3600, org: "stale" });
+
+      // @ts-expect-error test-only global stub
+      globalThis.document = { cookie: `logi_auth_token=${staleToken}` };
+
+      expect(fns.findValidAuthCookie()).toBeNull();
     });
   });
 });
