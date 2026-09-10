@@ -27,11 +27,13 @@
  * Scope minimisation (issue #145 task #9):
  *   - `mcp.read`  → `github_get_*`, `github_list_*` のみ
  *   - `mcp.write` → 加えて `github_create_*` も
+ *   - `ota_device` (登録済みデバイスへ公式 firmware の OTA、issue #535) も `mcp.write`
  */
 
 import type { Env } from "../index";
 import { issueDevLoginCode, mintDevToken, resolveTenantId } from "../lib/dev-login";
-import { getCommandResult, sendDeviceCommand } from "./device-setup";
+import { getCommandResult, managedDeviceKind, sendDeviceCommand } from "./device-setup";
+import { DEVICE_ROLE_HUB, DEVICE_ROLE_PRINT, DEVICE_ROLE_TIMECARD } from "../lib/device";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import {
@@ -63,6 +65,16 @@ const GET_LOG_MAX_BYTES_DEFAULT = 3000;
 /** `command_result` のポーリング間隔と全体の待ち時間 (端末は WS 越しに数百 ms で返す)。 */
 const GET_LOG_POLL_INTERVAL_MS = 500;
 const GET_LOG_TIMEOUT_MS = 8000;
+/** `ota_device` の進捗ポーリング間隔と全体の待ち時間 (書き込みは数十秒かかる)。 */
+const OTA_POLL_INTERVAL_MS = 2000;
+const OTA_TIMEOUT_MS = 90_000;
+/** `ota_device` が焼ける機種の role。p4-gw (GitHub Releases 配布) は進捗 phase の形が
+ *  未確認なので入れない — `managedDeviceKind` は p4-gw でも kind を返すため別に絞る。 */
+const OTA_DEVICE_ROLES: ReadonlySet<string> = new Set([
+  DEVICE_ROLE_HUB,
+  DEVICE_ROLE_PRINT,
+  DEVICE_ROLE_TIMECARD,
+]);
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -546,7 +558,11 @@ const TOOLS: ToolDef[] = [
       "Fetch the recent serial log of one managed hub device (CoreS3 / VoiceS3R) " +
       "by sending it a `get_log` command over the recorder WebSocket and waiting " +
       "up to 8s for the device to answer. Returns `{text, bytes, total_bytes, " +
-      "truncated, uptime_ms, device_id}`. Errors are returned as `{error}`: " +
+      "truncated, uptime_ms, device_id}` plus, from newer firmware, `boot_history` " +
+      "(up to 8 `{reset_reason, reset_code}`, newest first — the first entry is the " +
+      "current boot; absent on models without a history), `pwa_log` (diagnostic log " +
+      "relayed from the kiosk PWA, or null) and `pwa_log_error` (why pwa_log is " +
+      "null, e.g. `no_host`). Errors are returned as `{error}`: " +
       "`device_not_found` (not a device of your tenant, or revoked), " +
       "`device_not_connected` (device is offline), `timeout` (no answer in time), " +
       "`unsupported_firmware` (device firmware predates the get_log command). " +
@@ -625,6 +641,108 @@ const TOOLS: ToolDef[] = [
         return { ...payload, device_id: deviceId };
       }
       return { device_id: deviceId, error: "timeout" };
+    },
+  },
+  {
+    name: "ota_device",
+    description:
+      "Re-flash one managed device of your tenant with its official firmware over " +
+      "the air (the same OTA as the update button of /device/setup) and wait up to " +
+      "90s for the result. There is no URL input: the firmware URL is picked " +
+      "server-side from the device's kind (the official distribution URL of hub / " +
+      "print / timecard devices), so only official images can be flashed. " +
+      "`channel`: `prod` (default, the release build) or `dev` (the dev build with " +
+      "the memory HUD — only kinds that have one). The device reboots about 1.5s " +
+      "after reporting `ok`. CAUTION: the firmware does NOT refuse a second OTA or " +
+      "an OTA during an alcohol check — make sure the device is not in use before " +
+      "calling. Returns `{device_id, command_id, channel, url, phase, last, " +
+      "timed_out}`: `phase` is `ok` / `error` (or the last progress phase seen, " +
+      "`pending` if none), `last` is the last progress payload the device sent. If " +
+      "the OTA does not finish in 90s, `timed_out` is true and the device may still " +
+      "be flashing — check with get_device_log: `boot_history[0].reset_reason` is " +
+      "`sw` once the device rebooted into the new firmware. Errors are returned as " +
+      "`{error}`: " +
+      "`device_not_found` (not a device of your tenant, or revoked), " +
+      "`unsupported_device_kind` (not a hub / print / timecard device), " +
+      "`dev_build_not_available` (channel dev on a kind without a dev build), " +
+      "`device_not_connected` (device is offline). Same allowlist gate as " +
+      "issue_dev_token; only devices of the caller's own tenant are reachable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: {
+          type: "string",
+          description: "Device ID as shown in the device management page",
+        },
+        channel: {
+          type: "string",
+          enum: ["prod", "dev"],
+          default: "prod",
+          description: "Which official build to flash",
+        },
+      },
+      required: ["device_id"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const deviceId = asString(args["device_id"]);
+      if (!deviceId) throw new DevLoginError(400, "device_id is required");
+      const channelRaw = args["channel"];
+      if (channelRaw !== undefined && channelRaw !== "prod" && channelRaw !== "dev") {
+        throw new DevLoginError(400, "channel must be 'prod' or 'dev'");
+      }
+      const channel = channelRaw === "dev" ? "dev" : "prod";
+
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      const tenantId = resolved.user.tenant_id;
+
+      // 他テナント・revoked・未登録は null (fail-closed)。
+      const kind = await managedDeviceKind(ctx.env, tenantId, deviceId);
+      if (!kind) return { device_id: deviceId, error: "device_not_found" };
+      if (!OTA_DEVICE_ROLES.has(kind.role)) {
+        return { device_id: deviceId, error: "unsupported_device_kind" };
+      }
+      // URL は入力から受け取らず、機種の公式配信先 (DEVICE_KINDS の定数) に固定する。
+      const url = channel === "dev" ? kind.devAppUrl : kind.appUrl;
+      if (!url) return { device_id: deviceId, channel, error: "dev_build_not_available" };
+
+      const sent = await sendDeviceCommand(ctx.env, tenantId, deviceId, { action: "ota", url });
+      if ("error" in sent) {
+        return sent.error === "recorder_error"
+          ? { device_id: deviceId, error: sent.error, status: sent.status }
+          : { device_id: deviceId, error: sent.error };
+      }
+
+      // 端末は進捗 (`{phase, received, total}`) を同じ command_result に上書きしていく。
+      let last: unknown = null;
+      let phase = "pending";
+      const attempts = Math.floor(OTA_TIMEOUT_MS / OTA_POLL_INTERVAL_MS);
+      for (let i = 0; i < attempts && phase !== "ok" && phase !== "error"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, OTA_POLL_INTERVAL_MS));
+        const result = await getCommandResult(ctx.env, tenantId, sent.id);
+        if (result.kind === "error") {
+          // command_id を返し、途中で切れても get_device_log で追えるようにする。
+          const base = { device_id: deviceId, command_id: sent.id, channel, url };
+          return result.error === "recorder_error"
+            ? { ...base, error: result.error, status: result.status }
+            : { ...base, error: result.error };
+        }
+        if (result.kind === "pending") continue;
+        last = result.payload;
+        if (isObject(last) && typeof last["phase"] === "string") phase = last["phase"];
+      }
+      return {
+        device_id: deviceId,
+        command_id: sent.id,
+        channel,
+        url,
+        phase,
+        last,
+        timed_out: phase !== "ok" && phase !== "error",
+      };
     },
   },
 ];
