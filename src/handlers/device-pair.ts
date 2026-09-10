@@ -26,6 +26,7 @@ import {
   redeemPairing,
 } from "../lib/device-pair";
 import { normalizeDeviceRole } from "../lib/device";
+import { isReadOnlyToken } from "./device-setup";
 
 function jsonNoStore(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -48,9 +49,12 @@ function issuerOf(env: Env): string {
 interface OperatorSession {
   tenantId: string;
   email: string;
+  /** JWT の `token_kind` claim (issue #433 と同じ claim)。通常の Google ログインは
+   *  付けないため `""`。dev-login (`"dev"`) / device-key (`"device-key"`) はここに入る。 */
+  tokenKind: string;
 }
 
-/** cookie (logi_auth_token) の session JWT から operator の tenant/email を返す。不正なら null。 */
+/** cookie (logi_auth_token) の session JWT から operator の tenant/email/token_kind を返す。不正なら null。 */
 async function cookieSession(request: Request, env: Env): Promise<OperatorSession | null> {
   const token = getAuthCookie(request);
   if (!token) return null;
@@ -61,7 +65,11 @@ async function cookieSession(request: Request, env: Env): Promise<OperatorSessio
   const tenantId =
     (payload.tenant_id as string | undefined) || (payload.org as string | undefined) || "";
   if (!tenantId) return null;
-  return { tenantId, email: (payload.email as string | undefined) || "" };
+  return {
+    tenantId,
+    email: (payload.email as string | undefined) || "",
+    tokenKind: (payload.token_kind as string | undefined) || "",
+  };
 }
 
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
@@ -218,6 +226,13 @@ export async function handleDevicePairApprove(request: Request, env: Env): Promi
   }
   if (action !== "approve") {
     return htmlNoStore(resultPage(issuer, "不正な操作", "approve または deny を指定してください。"), 400);
+  }
+  // 端末 credential の発行 (= 承認) は書き込みなので dev/device-key token は弾く。
+  if (isReadOnlyToken(session)) {
+    return htmlNoStore(
+      resultPage(issuer, "承認できません", "開発用のトークンでは端末を承認できません。通常のログインでやり直してください。"),
+      403,
+    );
   }
 
   const now = Math.floor(Date.now() / 1000);

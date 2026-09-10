@@ -17,6 +17,7 @@ import { extractToken } from "../lib/errors";
 import { resolveSecret } from "../lib/secret";
 import { verifyJwt } from "../lib/jwt";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
+import { isReadOnlyToken } from "./device-setup";
 import {
   createDeviceCredential,
   createDeviceCredentialReplacingLabel,
@@ -57,9 +58,12 @@ function jsonNoStore(body: unknown, status = 200): Response {
 interface OperatorSession {
   tenantId: string;
   email: string;
+  /** JWT の `token_kind` claim (issue #433 と同じ claim)。通常の Google ログインは
+   *  付けないため `""`。dev-login (`"dev"`) / device-key (`"device-key"`) はここに入る。 */
+  tokenKind: string;
 }
 
-/** Bearer session JWT を検証し operator の tenant/email を返す。不正なら null。 */
+/** Bearer session JWT を検証し operator の tenant/email/token_kind を返す。不正なら null。 */
 async function operatorSession(request: Request, env: Env): Promise<OperatorSession | null> {
   const token = extractToken(request);
   if (!token) return null;
@@ -70,7 +74,11 @@ async function operatorSession(request: Request, env: Env): Promise<OperatorSess
   const tenantId =
     (payload.tenant_id as string | undefined) || (payload.org as string | undefined) || "";
   if (!tenantId) return null;
-  return { tenantId, email: (payload.email as string | undefined) || "" };
+  return {
+    tenantId,
+    email: (payload.email as string | undefined) || "",
+    tokenKind: (payload.token_kind as string | undefined) || "",
+  };
 }
 
 /** request body を JSON object として読む。空 / 不正は {}。 */
@@ -87,6 +95,8 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
 export async function handleDevicePair(request: Request, env: Env): Promise<Response> {
   const session = await operatorSession(request, env);
   if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  // credential の新規発行 (= 登録系) なので dev/device-key token は弾く。
+  if (isReadOnlyToken(session)) return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
 
   const body = await readJsonBody(request);
   const label = typeof body.label === "string" && body.label ? body.label : "device";
@@ -196,6 +206,8 @@ export async function handleDeviceToken(request: Request, env: Env): Promise<Res
 export async function handleDeviceRevoke(request: Request, env: Env): Promise<Response> {
   const session = await operatorSession(request, env);
   if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  // 失効も書き込みなので dev/device-key token は弾く。
+  if (isReadOnlyToken(session)) return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
 
   const body = await readJsonBody(request);
   const deviceId = typeof body.device_id === "string" ? body.device_id : "";

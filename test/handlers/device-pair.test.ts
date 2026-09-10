@@ -289,6 +289,32 @@ describe("handleDevicePairApprove", () => {
   });
 });
 
+/**
+ * dev-login (`token_kind: "dev"`) / device-key (`token_kind: "device-key"`) の
+ * cookie では端末の承認 (登録系) を 403 で弾く。deny と token_kind なしの承認は
+ * 従来どおり (上の describe で確認済み)。
+ */
+describe("dev / device-key token: 承認を弾く", () => {
+  it.each(["dev", "device-key"])(
+    "POST /device/pair/approve (承認) は token_kind=%s で 403",
+    async (tokenKind) => {
+      const env = makeEnv();
+      const p = await startPairing(env, "l", NOW);
+      const res = await handleDevicePairApprove(
+        postForm(
+          "/device/pair/approve",
+          { user_code: p.user_code, action: "approve" },
+          { ...(await opCookie({ token_kind: tokenKind })), ...ORIGIN },
+        ),
+        env,
+      );
+      expect(res.status).toBe(403);
+      const st = await getPairingByUserCode(env, p.user_code, NOW);
+      expect(st?.status).toBe("pending");
+    },
+  );
+});
+
 describe("handleDevicePairToken", () => {
   it("400 when device_code is missing", async () => {
     const res = await handleDevicePairToken(postJson("/device/pair/token", {}), makeEnv());

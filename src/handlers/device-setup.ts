@@ -189,8 +189,12 @@ async function cookieSession(request: Request, env: Env): Promise<OperatorSessio
  * enforcement はここには効かない — 前提を揃えて個別に判定する。
  * 端末設定を書き換える口 (`ota` 等) はここで 403 にし、読み取りの照会
  * (status 系) は対象外にする — 開発者が本番の状態を読めなくなるため。
+ *
+ * 引数は `OperatorSession` を包含する構造型にしてある — device-pair.ts /
+ * device.ts の別の session 型からもこの 1 関数を共用するため (判定関数を
+ * 新設しない)。
  */
-export function isReadOnlyToken(session: OperatorSession): boolean {
+export function isReadOnlyToken(session: { tokenKind?: string }): boolean {
   return session.tokenKind === "dev" || session.tokenKind === "device-key";
 }
 
