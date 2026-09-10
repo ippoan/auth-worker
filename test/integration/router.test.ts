@@ -231,6 +231,9 @@ vi.mock("../../src/handlers/device-pair", () => ({
   handleDevicePairApprove: vi.fn(() => new Response("device-pair-approve")),
   handleDevicePairToken: vi.fn(() => new Response("device-pair-token")),
 }));
+vi.mock("../../src/handlers/device-claim-ticket", () => ({
+  handleDeviceClaimTicket: vi.fn(() => new Response("device-claim-ticket")),
+}));
 vi.mock("../../src/handlers/auth-introspect", () => ({
   handleAuthIntrospect: vi.fn(() => new Response("auth-introspect")),
 }));
@@ -697,6 +700,13 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://auth.ippoan.org/device/pair/token", { method: "POST" });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("device-pair-token");
+  });
+
+  // --- Refs #519: CoreS3 (device-hub JWT) が端末登録の一回券を取る ---
+  it("POST /device/claim-ticket → device-claim-ticket", async () => {
+    const req = new Request("https://auth.ippoan.org/device/claim-ticket", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-claim-ticket");
   });
 
   // --- issue #157 Phase B: 30-day refresh_token grant ---
