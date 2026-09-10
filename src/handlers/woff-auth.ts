@@ -11,6 +11,7 @@ import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { corsJsonResponse } from "../lib/errors";
 import { isAllowedRedirectUri } from "../lib/security";
 import { setAuthCookie } from "../lib/cookies";
+import { decodeJwtPayload } from "../lib/jwt";
 
 interface WoffAuthRequest {
   accessToken: string;
@@ -64,18 +65,17 @@ export async function handleWoffAuth(
 
   const data = await resp.json() as { token: string; expires_at: string };
 
-  // Extract org_id + email from JWT payload
+  // Extract org_id + email from JWT payload.
+  // decodeJwtPayload は base64url (jwt.ts の base64UrlEncodeStr が吐く形式) を
+  // 正しく読む。旧実装は atob() 直呼びで、payload に `-`/`_` が乗ると常時
+  // InvalidCharacterError → 空文字 → ACL fail-closed で正規ユーザーが弾かれていた
+  // (Refs #529)。
   let orgId = "";
   let email = "";
-  const payloadB64 = data.token.split(".")[1];
-  if (payloadB64) {
-    try {
-      const payload = JSON.parse(atob(payloadB64));
-      orgId = payload.tenant_id || payload.org || "";
-      email = payload.email || "";
-    } catch {
-      // ignore decode error
-    }
+  const payload = decodeJwtPayload(data.token);
+  if (payload) {
+    orgId = String(payload.tenant_id || payload.org || "");
+    email = String(payload.email || "");
   }
 
   // Enforce per-org ACL. WOFF returns JSON, so reject with CORS JSON.

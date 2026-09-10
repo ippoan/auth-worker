@@ -276,6 +276,47 @@ describe("handleAuthLogin", () => {
     expect(res.status).toBe(302);
   });
 
+  it("extracts tenant_id/email from a base64url JWT payload containing `-`/`_` (Refs #529)", async () => {
+    // 実運用の JWT (jwt.ts の base64UrlEncodeStr) は base64url で、payload に
+    // `-`/`_` が乗ることがある。旧実装 (atob() 直呼び) はこの payload で
+    // InvalidCharacterError → tenantId/email が空文字になり、ohishi-exp origin
+    // 宛てログインが常時 ACL 拒否されていた。
+    // payload: {"tenant_id":"allowed-tenant","email":"u0@example.com","name":"大石 太郎"}
+    const payloadB64Url =
+      "eyJ0ZW5hbnRfaWQiOiJhbGxvd2VkLXRlbmFudCIsImVtYWlsIjoidTBAZXhhbXBsZS5jb20iLCJuYW1lIjoi5aSn55-zIOWkqumDjiJ9";
+    expect(payloadB64Url).toContain("-");
+    expect(() => atob(payloadB64Url)).toThrow();
+
+    const { createMockKV } = await import("../helpers/mock-env");
+    const aclEnv = createMockEnv({
+      AUTH_CONFIG: createMockKV({
+        "origins:prod": "https://dtako-admin.example",
+        "app-orgs": JSON.stringify({ "dtako-admin": "ohishi-exp" }),
+      }),
+      TENANT_ACL: JSON.stringify({ "ohishi-exp": ["allowed-tenant"] }),
+    });
+    mockIsAllowed.mockReturnValue(true);
+    const jwt = `h.${payloadB64Url}.sig`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const req = buildFormRequest({
+      redirect_uri: "https://dtako-admin.example/page",
+      username: "testuser",
+      password: "testpass",
+    });
+    const res = await handleAuthLogin(req, aclEnv);
+    // ACL 上は allowed-tenant なので 403 にならず 302 で redirect_uri へ返る。
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toContain("org_id=allowed-tenant");
+  });
+
   it("returns 403 when tenant is not in TENANT_ACL for an ohishi-exp redirect target", async () => {
     const { createMockKV } = await import("../helpers/mock-env");
     const aclEnv = createMockEnv({
