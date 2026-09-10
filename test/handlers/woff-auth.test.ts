@@ -229,6 +229,51 @@ describe("handleWoffAuth", () => {
     expect(data.orgId).toBe("");
   });
 
+  it("extracts orgId/email from a base64url JWT payload containing `-`/`_` (Refs #529)", async () => {
+    // 実運用の JWT (jwt.ts の base64UrlEncodeStr) は base64url で、payload に
+    // `-`/`_` が乗ることがある。旧実装 (atob() 直呼び) はこの payload で
+    // InvalidCharacterError → orgId/email が空文字になり、ohishi-exp origin
+    // 宛て WOFF ログインが常時 ACL 拒否されていた。
+    // payload: {"tenant_id":"allowed-tenant","email":"u0@example.com","name":"大石 太郎"}
+    const payloadB64Url =
+      "eyJ0ZW5hbnRfaWQiOiJhbGxvd2VkLXRlbmFudCIsImVtYWlsIjoidTBAZXhhbXBsZS5jb20iLCJuYW1lIjoi5aSn55-zIOWkqumDjiJ9";
+    expect(payloadB64Url).toContain("-");
+    expect(() => atob(payloadB64Url)).toThrow();
+
+    const { createMockKV } = await import("../helpers/mock-env");
+    const aclEnv = createMockEnv({
+      AUTH_CONFIG: createMockKV({
+        "origins:prod": "https://dtako-admin.example",
+        "app-orgs": JSON.stringify({ "dtako-admin": "ohishi-exp" }),
+      }),
+      TENANT_ACL: JSON.stringify({ "ohishi-exp": ["allowed-tenant"] }),
+    });
+    const jwt = `h.${payloadB64Url}.sig`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ token: jwt, expires_at: "2025-12-31T00:00:00Z" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    const req = new Request("https://auth.test.example/auth/woff", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accessToken: "tok",
+        domainId: "ohishi",
+        redirectUri: "https://dtako-admin.example/page",
+      }),
+    });
+    const res = await handleWoffAuth(req, aclEnv);
+    // ACL 上は allowed-tenant なので 403 にならず 200 で orgId が返る。
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { orgId: string };
+    expect(data.orgId).toBe("allowed-tenant");
+  });
+
   it("returns 403 when tenant is not in TENANT_ACL for an ohishi-exp redirect target", async () => {
     const { createMockKV } = await import("../helpers/mock-env");
     const aclEnv = createMockEnv({

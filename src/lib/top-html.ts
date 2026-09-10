@@ -428,17 +428,37 @@ export function renderTopPage(
       return localStorage.getItem(LW_DOMAIN_KEY) || null;
     }
 
+    /**
+     * JWT payload (2番目のセグメント) を decode する。JWT は base64url
+     * (jwt.ts の base64UrlEncodeStr が出す形式、-/_ を含みうる) だが、
+     * ブラウザ標準の atob() は標準base64しか読めず、payload に -/_ が乗ると
+     * InvalidCharacterError を投げる (Refs #529: /top↔/login 無限ループの原因。
+     * サーバー側の base64UrlDecodeUtf8 (jwt.ts) と同じ変換をクライアントにも
+     * 持たせる)。壊れていれば null。
+     */
+    function decodeJwtPayload(token) {
+      try {
+        var b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        // atob() は latin1 解釈なので name 等の多バイト claim がそのままだと
+        // mojibake になる。TextDecoder を挟んで UTF-8 として読み直す
+        // (jwt.ts の base64UrlDecodeUtf8 と同型)。
+        var binary = atob(b64);
+        var bytes = Uint8Array.from(binary, function (c) { return c.charCodeAt(0); });
+        return JSON.parse(new TextDecoder().decode(bytes));
+      } catch (e) {
+        return null;
+      }
+    }
+
     /** Check if JWT exists (sessionStorage → cookie fallback) and is not expired */
     function getValidToken() {
       var token = sessionStorage.getItem('auth_token');
       if (!token) token = getCookie(AUTH_COOKIE);
       if (!token) return null;
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        if (payload.exp > Math.floor(Date.now() / 1000)) {
-          return { token, orgId: payload.org, expiresAt: payload.exp };
-        }
-      } catch {}
+      var payload = decodeJwtPayload(token);
+      if (payload && payload.exp > Math.floor(Date.now() / 1000)) {
+        return { token, orgId: payload.org, expiresAt: payload.exp };
+      }
       return null;
     }
 
@@ -506,8 +526,8 @@ export function renderTopPage(
         if (fragmentToken) {
           sessionStorage.setItem('auth_token', fragmentToken);
           // Also save to localStorage for cross-tab persistence
-          try {
-            var payload = JSON.parse(atob(fragmentToken.split('.')[1]));
+          var payload = decodeJwtPayload(fragmentToken);
+          if (payload) {
             localStorage.setItem(AUTH_STORAGE, JSON.stringify({
               token: fragmentToken,
               orgId: payload.tenant_id || payload.org || '',
@@ -515,7 +535,7 @@ export function renderTopPage(
             }));
             // Write the shared parent-domain cookie so sibling subdomains can SSO.
             setCookie(AUTH_COOKIE, fragmentToken, 86400);
-          } catch (e) {}
+          }
           // Clean fragment from URL
           history.replaceState(null, '', window.location.pathname + window.location.search);
         }

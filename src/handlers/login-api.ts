@@ -9,6 +9,7 @@ import { getAllowedOrigins } from "../lib/config";
 import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { isAllowedRedirectUri } from "../lib/security";
 import { setAuthCookie } from "../lib/cookies";
+import { decodeJwtPayload } from "../lib/jwt";
 
 export async function handleAuthLogin(
   request: Request,
@@ -66,19 +67,18 @@ export async function handleAuthLogin(
     expires_at: String(Math.floor(Date.now() / 1000) + data.expires_in),
   });
 
-  // Extract org_id + email from JWT payload for convenience
+  // Extract org_id + email from JWT payload for convenience.
+  // decodeJwtPayload は base64url (jwt.ts の base64UrlEncodeStr が吐く形式) を
+  // 正しく読む。旧実装は atob() 直呼びで、payload に `-`/`_` が乗ると常時
+  // InvalidCharacterError → 空文字 → ACL fail-closed で正規ユーザーが弾かれていた
+  // (Refs #529)。
   let tenantId = "";
   let email = "";
-  const payloadB64 = data.access_token.split(".")[1];
-  if (payloadB64) {
-    try {
-      const payload = JSON.parse(atob(payloadB64));
-      tenantId = payload.tenant_id || payload.org || "";
-      email = payload.email || "";
-      fragment.set("org_id", tenantId);
-    } catch {
-      // ignore decode error
-    }
+  const payload = decodeJwtPayload(data.access_token);
+  if (payload) {
+    tenantId = String(payload.tenant_id || payload.org || "");
+    email = String(payload.email || "");
+    fragment.set("org_id", tenantId);
   }
 
   // Enforce per-org ACL on the final redirect target.
