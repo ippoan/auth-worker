@@ -942,7 +942,7 @@ describe("handleDeviceSetupSite (Refs #406)", () => {
 });
 
 /**
- * BUS5V (M-Bus 5V 出力) の設定/照会と再起動 (Refs ippoan/alc-app-s3#198 / #200)。
+ * BUS5V (M-Bus 5V 出力) の照会と再起動 (Refs ippoan/alc-app-s3#202)。
  * 認可の 3 段 (session / Origin / managedDeviceKind) は共通前処理
  * `deviceCommandRequest` + `sendDeviceCommand` 由来なので、両 handler で確かめる。
  */
@@ -980,52 +980,25 @@ describe("handleDeviceSetupBus5v / handleDeviceSetupReboot", () => {
     return { ...(await opCookie()), Origin: ISSUER };
   }
 
-  it("mode あり: auto / on / off をそのまま action:bus5v で転送する", async () => {
-    for (const mode of ["auto", "on", "off"]) {
-      const { fetcher, calls } = mockRecorder(
-        () => new Response(JSON.stringify({ id: "b5-" + mode }), { status: 202 }),
-      );
-      const { env, deviceId } = await bus5vEnv(fetcher);
-      const res = await handleDeviceSetupBus5v(
-        postJson("/device/setup/bus5v", { device_id: deviceId, mode }, await okHeaders()),
-        env,
-      );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ id: "b5-" + mode });
-      expect(calls.length).toBe(1);
-      expect(calls[0]!.auth).toBe("shared-abc");
-      expect(calls[0]!.url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
-      expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "bus5v", mode } });
-    }
-  });
-
-  it("mode なし: action:bus5v_status を転送する (現在値の照会)", async () => {
+  it("常に action:bus5v_status を転送する (mode が来ても無視、設定は持たない)", async () => {
     const { fetcher, calls } = mockRecorder(
       () => new Response(JSON.stringify({ id: "b5-q" }), { status: 202 }),
     );
     const { env, deviceId } = await bus5vEnv(fetcher);
-    const res = await handleDeviceSetupBus5v(
-      postJson("/device/setup/bus5v", { device_id: deviceId }, await okHeaders()),
-      env,
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: "b5-q" });
-    expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "bus5v_status" } });
-  });
-
-  it("mode がホワイトリスト外なら 400 (client の <select> を信用しない)", async () => {
-    const { fetcher, calls } = mockRecorder(
-      () => new Response(JSON.stringify({ id: "never" }), { status: 202 }),
-    );
-    const { env, deviceId } = await bus5vEnv(fetcher);
-    for (const mode of ["ON", "always", "1", "auto; reboot"]) {
+    for (const body of [{ device_id: deviceId }, { device_id: deviceId, mode: "on" }]) {
       const res = await handleDeviceSetupBus5v(
-        postJson("/device/setup/bus5v", { device_id: deviceId, mode }, await okHeaders()),
+        postJson("/device/setup/bus5v", body, await okHeaders()),
         env,
       );
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "b5-q" });
     }
-    expect(calls.length).toBe(0);
+    expect(calls.length).toBe(2);
+    expect(calls[0]!.auth).toBe("shared-abc");
+    expect(calls[0]!.url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
+    for (const call of calls) {
+      expect(JSON.parse(call.body)).toEqual({ payload: { action: "bus5v_status" } });
+    }
   });
 
   it("不正入力・認証: session なし 401 / bad origin 403 / device_id なし 400", async () => {
@@ -1077,7 +1050,7 @@ describe("handleDeviceSetupBus5v / handleDeviceSetupReboot", () => {
       await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "z" }, otherHeaders), env)
     ).json()) as PairResponse;
     const res = await handleDeviceSetupBus5v(
-      postJson("/device/setup/bus5v", { device_id: other.device_id, mode: "on" }, await okHeaders()),
+      postJson("/device/setup/bus5v", { device_id: other.device_id }, await okHeaders()),
       env,
     );
     expect(res.status).toBe(403);
@@ -1090,7 +1063,7 @@ describe("handleDeviceSetupBus5v / handleDeviceSetupReboot", () => {
     expect(
       (
         await handleDeviceSetupBus5v(
-          postJson("/device/setup/bus5v", { device_id: deviceId, mode: "on" }, await okHeaders()),
+          postJson("/device/setup/bus5v", { device_id: deviceId }, await okHeaders()),
           env,
         )
       ).status,
