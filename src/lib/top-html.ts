@@ -476,14 +476,32 @@ export function renderTopPage(
       }
     }
 
-    /** Check if JWT exists (sessionStorage → cookie fallback) and is not expired */
+    /**
+     * Check if JWT exists (sessionStorage → cookie fallback) and is not expired.
+     *
+     * sessionStorage の値が壊れている/期限切れの場合も cookie にフォールバックする
+     * (単に「無い」場合だけでなく)。sessionStorage はタブを閉じるまで残るため、
+     * 一度古い/無効な token が書き込まれると、その後どれだけ有効な cookie が
+     * 発行されても sessionStorage の古い値を優先し続けてしまい、
+     * 「サーバーは 200 を返すのに client だけ毎回 /login に戻る」ループになる
+     * (Refs #531 follow-up、2026-09-10 本番実測 — cookie 自体は1個しかなく
+     * shadowing ではなかったケース)。有効な cookie が見つかったら
+     * sessionStorage も更新して以降の呼び出しを一致させる。
+     */
     function getValidToken() {
-      var token = sessionStorage.getItem('auth_token');
-      if (!token) token = findValidAuthCookie();
-      if (!token) return null;
-      var payload = decodeJwtPayload(token);
+      var sessionToken = sessionStorage.getItem('auth_token');
+      if (sessionToken) {
+        var sessionPayload = decodeJwtPayload(sessionToken);
+        if (sessionPayload && sessionPayload.exp > Math.floor(Date.now() / 1000)) {
+          return { token: sessionToken, orgId: sessionPayload.org, expiresAt: sessionPayload.exp };
+        }
+      }
+      var cookieToken = findValidAuthCookie();
+      if (!cookieToken) return null;
+      var payload = decodeJwtPayload(cookieToken);
       if (payload && payload.exp > Math.floor(Date.now() / 1000)) {
-        return { token, orgId: payload.org, expiresAt: payload.exp };
+        sessionStorage.setItem('auth_token', cookieToken);
+        return { token: cookieToken, orgId: payload.org, expiresAt: payload.exp };
       }
       return null;
     }

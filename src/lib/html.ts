@@ -238,6 +238,11 @@ export function renderLoginPage(params: LoginPageParams): string {
         document.cookie = n + '=; Domain=' + parent + '; path=/; max-age=0; secure; samesite=lax';
       });
       try { localStorage.removeItem('logi_auth'); localStorage.removeItem('logi_lw_domain'); } catch(e) {}
+      // sessionStorage はタブを閉じるまで残る (top-html.ts の getValidToken() が
+      // cookie より優先して読む) ため、ここで消さないと cookie だけ消しても
+      // 「まだログイン状態のまま (実は古い token で /login ループ)」になる
+      // (Refs #531 follow-up、2026-09-10 実測)。
+      try { sessionStorage.removeItem('auth_token'); } catch(e) {}
       document.getElementById('clear-msg').style.display = 'block';
       setTimeout(function() { location.reload(); }, 500);
     }

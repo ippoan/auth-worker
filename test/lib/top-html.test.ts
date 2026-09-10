@@ -191,6 +191,76 @@ describe("renderTopPage", () => {
       expect(fns.findValidAuthCookie()).toBeNull();
     });
   });
+
+  describe("client-side getValidToken sessionStorage fallback (Refs #531 follow-up)", () => {
+    // sessionStorage はタブを閉じるまで残る。getValidToken() が「sessionStorage に
+    // 何か値があれば cookie を見ずにそれだけを使う」実装だと、一度古い/期限切れの
+    // token が sessionStorage に残った瞬間、以降どれだけ有効な cookie が発行
+    // されても client は「未ログイン」と誤判定し続けてループになる
+    // (cookie 自体は1個で shadowing (#531本体) ではないケース、2026-09-10 本番実測:
+    // server は毎回 payloadValid:true で 200 を返すのに client だけ /login に
+    // 戻り続けた)。sessionStorage が無効なら cookie にフォールバックし、
+    // 見つかった有効な token で sessionStorage も更新するのが正しい挙動。
+    afterAll(() => {
+      // @ts-expect-error test-only global stub
+      delete globalThis.document;
+      // @ts-expect-error test-only global stub
+      delete globalThis.sessionStorage;
+    });
+
+    function extractGetValidToken(html: string) {
+      return extractClientFunctions<{
+        decodeJwtPayload: (token: string) => unknown;
+        getAllCookies: (name: string) => string[];
+        findValidAuthCookie: () => string | null;
+        getValidToken: () => { token: string; orgId?: string; expiresAt: number } | null;
+      }>(html, ["decodeJwtPayload", "getAllCookies", "findValidAuthCookie", "getValidToken"]);
+    }
+
+    it("falls back to a valid cookie when sessionStorage holds an expired token", () => {
+      const html = renderTopPage([], "https://auth.example.com");
+      const fns = extractGetValidToken(html);
+
+      const now = Math.floor(Date.now() / 1000);
+      const staleSessionToken = fakeJwt({ exp: now - 3600, org: "stale-session" });
+      const validCookieToken = fakeJwt({ exp: now + 3600, org: "fresh-cookie" });
+
+      const store: Record<string, string> = { auth_token: staleSessionToken };
+      // @ts-expect-error test-only global stub
+      globalThis.sessionStorage = {
+        getItem: (k: string) => store[k] ?? null,
+        setItem: (k: string, v: string) => { store[k] = v; },
+      };
+      // @ts-expect-error test-only global stub
+      globalThis.document = { cookie: `logi_auth_token=${validCookieToken}` };
+
+      const result = fns.getValidToken();
+      expect(result).not.toBeNull();
+      expect(result!.token).toBe(validCookieToken);
+      // sessionStorage の古い値も更新される (以降の呼び出しも一致させる)
+      expect(store.auth_token).toBe(validCookieToken);
+    });
+
+    it("returns null when both sessionStorage and every cookie candidate are invalid", () => {
+      const html = renderTopPage([], "https://auth.example.com");
+      const fns = extractGetValidToken(html);
+
+      const now = Math.floor(Date.now() / 1000);
+      const staleSessionToken = fakeJwt({ exp: now - 3600 });
+      const staleCookieToken = fakeJwt({ exp: now - 7200 });
+
+      const store: Record<string, string> = { auth_token: staleSessionToken };
+      // @ts-expect-error test-only global stub
+      globalThis.sessionStorage = {
+        getItem: (k: string) => store[k] ?? null,
+        setItem: (k: string, v: string) => { store[k] = v; },
+      };
+      // @ts-expect-error test-only global stub
+      globalThis.document = { cookie: `logi_auth_token=${staleCookieToken}` };
+
+      expect(fns.getValidToken()).toBeNull();
+    });
+  });
 });
 
 describe("renderStagingFooter", () => {
