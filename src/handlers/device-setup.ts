@@ -156,9 +156,12 @@ function kindNameForRole(role: string | undefined): string | null {
 export interface OperatorSession {
   tenantId: string;
   email: string;
+  /** JWT の `token_kind` claim (issue #433 と同じ claim)。通常の Google ログインは
+   *  付けないため `""`。dev-login (`"dev"`) / device-key (`"device-key"`) はここに入る。 */
+  tokenKind: string;
 }
 
-/** cookie (logi_auth_token) の session JWT から operator の tenant/email を返す。不正なら null。 */
+/** cookie (logi_auth_token) の session JWT から operator の tenant/email/token_kind を返す。不正なら null。 */
 async function cookieSession(request: Request, env: Env): Promise<OperatorSession | null> {
   const token = getAuthCookie(request);
   if (!token) return null;
@@ -169,7 +172,32 @@ async function cookieSession(request: Request, env: Env): Promise<OperatorSessio
   const tenantId =
     (payload.tenant_id as string | undefined) || (payload.org as string | undefined) || "";
   if (!tenantId) return null;
-  return { tenantId, email: (payload.email as string | undefined) || "" };
+  return {
+    tenantId,
+    email: (payload.email as string | undefined) || "",
+    tokenKind: (payload.token_kind as string | undefined) || "",
+  };
+}
+
+/**
+ * dev-login (issue #423) / device-key (issue #522) の token かどうか。
+ *
+ * `/alc-proxy` は同じ `token_kind` claim で read-only enforcement を持つ
+ * (issue #433、`alc-proxy.ts`)。`/device/setup/*` は alc-proxy を経由せず
+ * この handler が直接 `logi_auth_token` cookie を検証するため、alc-proxy の
+ * enforcement はここには効かない — 別経路として個別に判定する (issue #c135-2)。
+ * dev-login の token は MCP の verify_eval 相当 (ページを開いて中の fetch を
+ * 実行できる) から届きうるため、任意 URL の firmware を焼かせる `ota` 等の
+ * 書き込み口はここで塞ぐ。読み取りの照会 (status 系) は対象外 — 開発者が
+ * 本番の状態を読めなくなるため。
+ */
+export function isReadOnlyToken(session: OperatorSession): boolean {
+  return session.tokenKind === "dev" || session.tokenKind === "device-key";
+}
+
+/** 書き込み口を dev/device-key token で叩いた時の共通応答。 */
+function readOnlyTokenForbidden(): Response {
+  return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
 }
 
 /** GET /device/setup — WebSerial provisioning ページ (要ログイン)。 */
@@ -229,6 +257,8 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   if (request.headers.get("Origin") !== issuerOf(env)) {
     return jsonNoStore({ error: "bad_origin" }, 403);
   }
+  // credential の新規発行 (= 登録系) なので dev/device-key token は弾く。
+  if (isReadOnlyToken(session)) return readOnlyTokenForbidden();
 
   let body: Record<string, unknown> = {};
   try {
@@ -440,15 +470,22 @@ interface DeviceCommandRequest {
  * (新しい command handler を足すときに 1 段落とす事故を防ぐのがこの関数の目的)。
  * command を送らない site handler だけは 3 段目を自分で呼ぶ。
  *
+ * `allowReadOnlyToken` (既定 false) — dev/device-key token を許すかどうか。
+ * command handler は「書き込み」が既定で fail-closed になるようここで一括して
+ * 塞ぐ。読み取りの照会 (battery / version / bus5v) だけが呼び出し側で
+ * `true` を渡して bypass する (issue #c135-2)。
+ *
  * 検証を通れば `{session, body, deviceId}`、弾いたときはそのまま返す `Response`。
  */
 async function deviceCommandRequest(
   request: Request,
   env: Env,
   missingDeviceIdError = "device_id が必要です",
+  allowReadOnlyToken = false,
 ): Promise<DeviceCommandRequest | Response> {
   const pre = await adminRequest(request, env);
   if (pre instanceof Response) return pre;
+  if (!allowReadOnlyToken && isReadOnlyToken(pre.session)) return readOnlyTokenForbidden();
   let body: Record<string, unknown> = {};
   try {
     const v = await request.json();
@@ -605,7 +642,8 @@ export async function handleDeviceSetupEvents(request: Request, env: Env): Promi
  * (web は `/device/setup/ota/:id` で結果 `{read,percent,mv,vbus,charge}` をポーリング)。
  */
 export async function handleDeviceSetupBattery(request: Request, env: Env): Promise<Response> {
-  const pre = await deviceCommandRequest(request, env);
+  // 読み取りの照会 (状態を変更しない) — dev/device-key token でも許可する。
+  const pre = await deviceCommandRequest(request, env, "device_id が必要です", true);
   if (pre instanceof Response) return pre;
   return commandIdResponse(
     await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "battery" }),
@@ -620,11 +658,17 @@ export async function handleDeviceSetupBattery(request: Request, env: Env): Prom
  * 結果 (`{ok}` / `{connected, url}`) は `/device/setup/ota/:id` でポーリング。
  */
 export async function handleDeviceSetupGw(request: Request, env: Env): Promise<Response> {
-  const pre = await deviceCommandRequest(request, env);
+  // url の有無で書き込み (gw_url 保存) / 読み取り (gw_status 照会) に分かれるため、
+  // token_kind の判定は deviceCommandRequest 側では行わず、ここで url の有無に
+  // 応じて出し分ける (issue #c135-2)。
+  const pre = await deviceCommandRequest(request, env, "device_id が必要です", true);
   if (pre instanceof Response) return pre;
   const url = typeof pre.body.url === "string" ? pre.body.url : "";
-  if (url && !/^wss?:\/\//.test(url)) {
-    return jsonNoStore({ error: "url は ws(s):// で始めてください" }, 400);
+  if (url) {
+    if (isReadOnlyToken(pre.session)) return readOnlyTokenForbidden();
+    if (!/^wss?:\/\//.test(url)) {
+      return jsonNoStore({ error: "url は ws(s):// で始めてください" }, 400);
+    }
   }
   const payload = url ? { action: "gw_url", url } : { action: "gw_status" };
   return commandIdResponse(
@@ -638,7 +682,8 @@ export async function handleDeviceSetupGw(request: Request, env: Env): Promise<R
  * (web は `/device/setup/ota/:id` で結果 `{version, slot}` をポーリングする)。
  */
 export async function handleDeviceSetupVersion(request: Request, env: Env): Promise<Response> {
-  const pre = await deviceCommandRequest(request, env);
+  // 読み取りの照会 (状態を変更しない) — dev/device-key token でも許可する。
+  const pre = await deviceCommandRequest(request, env, "device_id が必要です", true);
   if (pre instanceof Response) return pre;
   return commandIdResponse(
     await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "version" }),
@@ -656,7 +701,8 @@ export async function handleDeviceSetupVersion(request: Request, env: Env): Prom
  * `/device/setup/ota/:id` でポーリング。
  */
 export async function handleDeviceSetupBus5v(request: Request, env: Env): Promise<Response> {
-  const pre = await deviceCommandRequest(request, env);
+  // 読み取りの照会 (状態を変更しない) — dev/device-key token でも許可する。
+  const pre = await deviceCommandRequest(request, env, "device_id が必要です", true);
   if (pre instanceof Response) return pre;
   return commandIdResponse(
     await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "bus5v_status" }),

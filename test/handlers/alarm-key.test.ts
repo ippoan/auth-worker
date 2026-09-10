@@ -346,6 +346,91 @@ describe("handleAlarmKeyRevoke", () => {
   });
 });
 
+/**
+ * dev-login (`token_kind: "dev"`) / device-key (`token_kind: "device-key"`) の
+ * cookie では登録・失効 (登録系) を 403 で弾く (issue #c135-2)。一覧 (読み取りの
+ * 照会) は今までどおり通ることも合わせて確認する。
+ */
+describe("dev / device-key token: 登録・失効を弾く (issue #c135-2)", () => {
+  async function tokenHeaders(tokenKind: string): Promise<Record<string, string>> {
+    return { ...(await opCookie({ token_kind: tokenKind })), ...originHeaders };
+  }
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/alarm-key (登録) は token_kind=%s で 403",
+    async (tokenKind) => {
+      const env = makeEnv();
+      const res = await handleAlarmKeyRegister(
+        postJson(
+          "/device/setup/alarm-key",
+          { pubkey: fakePubkey(20), label: "x" },
+          await tokenHeaders(tokenKind),
+        ),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    },
+  );
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/alarm-key/revoke (失効) は token_kind=%s で 403",
+    async (tokenKind) => {
+      const env = makeEnv();
+      const reg = await handleAlarmKeyRegister(
+        postJson(
+          "/device/setup/alarm-key",
+          { pubkey: fakePubkey(21), label: "cab-1" },
+          await withOpCookieAndOrigin(),
+        ),
+        env,
+      );
+      const { fingerprint } = (await reg.json()) as { fingerprint: string };
+
+      const res = await handleAlarmKeyRevoke(
+        postJson(
+          "/device/setup/alarm-key/revoke",
+          { fingerprint },
+          await tokenHeaders(tokenKind),
+        ),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+
+      // 実際には失効していない (revoked_at が付かない)
+      const list = await handleAlarmKeyList(
+        getReq("/device/setup/alarm-keys", await withOpCookieAndOrigin()),
+        env,
+      );
+      const data = (await list.json()) as { keys: Array<{ fingerprint: string; revoked_at?: number }> };
+      expect(data.keys.find((k) => k.fingerprint === fingerprint)?.revoked_at).toBeUndefined();
+    },
+  );
+
+  it.each(["dev", "device-key"])(
+    "GET /device/setup/alarm-keys (読み取りの照会) は token_kind=%s でも通る",
+    async (tokenKind) => {
+      const env = makeEnv();
+      await handleAlarmKeyRegister(
+        postJson(
+          "/device/setup/alarm-key",
+          { pubkey: fakePubkey(22), label: "cab-1" },
+          await withOpCookieAndOrigin(),
+        ),
+        env,
+      );
+      const res = await handleAlarmKeyList(
+        getReq("/device/setup/alarm-keys", await tokenHeaders(tokenKind)),
+        env,
+      );
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { keys: Array<{ label: string }> };
+      expect(data.keys.map((k) => k.label)).toEqual(["cab-1"]);
+    },
+  );
+});
+
 describe("body / KV の壊れたデータに対するフォールバック", () => {
   it("400 when pubkey contains characters that aren't valid base64url at all", async () => {
     const env = makeEnv();
