@@ -9,6 +9,8 @@ import {
   handleDeviceSetupEvents,
   handleDeviceSetupVersion,
   handleDeviceSetupGw,
+  handleDeviceSetupBus5v,
+  handleDeviceSetupReboot,
   handleDeviceSetupSite,
   DEVICE_KINDS,
 } from "../../src/handlers/device-setup";
@@ -936,5 +938,231 @@ describe("handleDeviceSetupSite (Refs #406)", () => {
       env,
     );
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * BUS5V (M-Bus 5V 出力) の設定/照会と再起動 (Refs ippoan/alc-app-s3#198 / #200)。
+ * 認可の 3 段 (session / Origin / managedDeviceKind) は共通前処理
+ * `deviceCommandRequest` + `sendDeviceCommand` 由来なので、両 handler で確かめる。
+ */
+describe("handleDeviceSetupBus5v / handleDeviceSetupReboot", () => {
+  function mockRecorder(handler: (req: Request) => Response) {
+    const calls: Array<{ url: string; method: string; auth: string | null; body: string }> = [];
+    const fetcher = {
+      async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+        const req = new Request(input as string, init);
+        calls.push({
+          url: req.url,
+          method: req.method,
+          auth: req.headers.get("Authorization"),
+          body: init?.body ? String(init.body) : "",
+        });
+        return handler(req);
+      },
+    };
+    return { fetcher, calls };
+  }
+
+  async function bus5vEnv(recorder: unknown) {
+    const env = makeEnv({
+      ALC_RECORDER: recorder,
+      INTERNAL_SHARED_SECRET: "shared-abc",
+    });
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    return { env, deviceId: cred.device_id };
+  }
+
+  async function okHeaders(): Promise<Record<string, string>> {
+    return { ...(await opCookie()), Origin: ISSUER };
+  }
+
+  it("mode あり: auto / on / off をそのまま action:bus5v で転送する", async () => {
+    for (const mode of ["auto", "on", "off"]) {
+      const { fetcher, calls } = mockRecorder(
+        () => new Response(JSON.stringify({ id: "b5-" + mode }), { status: 202 }),
+      );
+      const { env, deviceId } = await bus5vEnv(fetcher);
+      const res = await handleDeviceSetupBus5v(
+        postJson("/device/setup/bus5v", { device_id: deviceId, mode }, await okHeaders()),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "b5-" + mode });
+      expect(calls.length).toBe(1);
+      expect(calls[0]!.auth).toBe("shared-abc");
+      expect(calls[0]!.url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
+      expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "bus5v", mode } });
+    }
+  });
+
+  it("mode なし: action:bus5v_status を転送する (現在値の照会)", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "b5-q" }), { status: 202 }),
+    );
+    const { env, deviceId } = await bus5vEnv(fetcher);
+    const res = await handleDeviceSetupBus5v(
+      postJson("/device/setup/bus5v", { device_id: deviceId }, await okHeaders()),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "b5-q" });
+    expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "bus5v_status" } });
+  });
+
+  it("mode がホワイトリスト外なら 400 (client の <select> を信用しない)", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "never" }), { status: 202 }),
+    );
+    const { env, deviceId } = await bus5vEnv(fetcher);
+    for (const mode of ["ON", "always", "1", "auto; reboot"]) {
+      const res = await handleDeviceSetupBus5v(
+        postJson("/device/setup/bus5v", { device_id: deviceId, mode }, await okHeaders()),
+        env,
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(calls.length).toBe(0);
+  });
+
+  it("不正入力・認証: session なし 401 / bad origin 403 / device_id なし 400", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env, deviceId } = await bus5vEnv(fetcher);
+    expect(
+      (await handleDeviceSetupBus5v(postJson("/device/setup/bus5v", { device_id: deviceId }), env))
+        .status,
+    ).toBe(401);
+    expect(
+      (
+        await handleDeviceSetupBus5v(
+          postJson(
+            "/device/setup/bus5v",
+            { device_id: deviceId },
+            { ...(await opCookie()), Origin: "https://evil.example" },
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (await handleDeviceSetupBus5v(postJson("/device/setup/bus5v", {}, await okHeaders()), env))
+        .status,
+    ).toBe(400);
+    expect(calls.length).toBe(0);
+  });
+
+  it("壊れた body / object でない body も 400 (前処理の JSON 化)", async () => {
+    const { env } = await bus5vEnv(mockRecorder(() => new Response("{}", { status: 202 })).fetcher);
+    const headers = await okHeaders();
+    const broken = new Request(`${ISSUER}/device/setup/bus5v`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: "{ not json",
+    });
+    expect((await handleDeviceSetupBus5v(broken, env)).status).toBe(400);
+    // JSON としては妥当だが object ではない body
+    expect(
+      (await handleDeviceSetupBus5v(postJson("/device/setup/bus5v", 42, headers), env)).status,
+    ).toBe(400);
+  });
+
+  it("他テナントの device_id は 403 (recorder を叩かない)", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env } = await bus5vEnv(fetcher);
+    const otherHeaders = { ...(await opCookie({ tenant_id: "tenant-2" })), Origin: ISSUER };
+    const other = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "z" }, otherHeaders), env)
+    ).json()) as PairResponse;
+    const res = await handleDeviceSetupBus5v(
+      postJson("/device/setup/bus5v", { device_id: other.device_id, mode: "on" }, await okHeaders()),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(calls.length).toBe(0);
+  });
+
+  it("device 未接続 (recorder 404) は 409、recorder binding 未設定は 503", async () => {
+    const { fetcher } = mockRecorder(() => new Response("{}", { status: 404 }));
+    const { env, deviceId } = await bus5vEnv(fetcher);
+    expect(
+      (
+        await handleDeviceSetupBus5v(
+          postJson("/device/setup/bus5v", { device_id: deviceId, mode: "on" }, await okHeaders()),
+          env,
+        )
+      ).status,
+    ).toBe(409);
+
+    const bare = makeEnv();
+    const headers = await okHeaders();
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), bare)
+    ).json()) as PairResponse;
+    expect(
+      (
+        await handleDeviceSetupBus5v(
+          postJson("/device/setup/bus5v", { device_id: cred.device_id }, headers),
+          bare,
+        )
+      ).status,
+    ).toBe(503);
+  });
+
+  it("再起動: action:reboot を転送し id を返す", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "rb-1" }), { status: 202 }),
+    );
+    const { env, deviceId } = await bus5vEnv(fetcher);
+    const res = await handleDeviceSetupReboot(
+      postJson("/device/setup/reboot", { device_id: deviceId }, await okHeaders()),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "rb-1" });
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
+    expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "reboot" } });
+  });
+
+  it("再起動: session なし 401 / bad origin 403 / device_id なし 400 / 他テナント 403", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env, deviceId } = await bus5vEnv(fetcher);
+    expect(
+      (await handleDeviceSetupReboot(postJson("/device/setup/reboot", { device_id: deviceId }), env))
+        .status,
+    ).toBe(401);
+    expect(
+      (
+        await handleDeviceSetupReboot(
+          postJson(
+            "/device/setup/reboot",
+            { device_id: deviceId },
+            { ...(await opCookie()), Origin: "https://evil.example" },
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (await handleDeviceSetupReboot(postJson("/device/setup/reboot", {}, await okHeaders()), env))
+        .status,
+    ).toBe(400);
+
+    const otherHeaders = { ...(await opCookie({ tenant_id: "tenant-2" })), Origin: ISSUER };
+    const other = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "z" }, otherHeaders), env)
+    ).json()) as PairResponse;
+    expect(
+      (
+        await handleDeviceSetupReboot(
+          postJson("/device/setup/reboot", { device_id: other.device_id }, await okHeaders()),
+          env,
+        )
+      ).status,
+    ).toBe(403);
+    expect(calls.length).toBe(0);
   });
 });

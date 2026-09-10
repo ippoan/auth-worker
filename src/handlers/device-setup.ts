@@ -297,28 +297,18 @@ export async function handleDeviceSetupList(request: Request, env: Env): Promise
  * session + `managedDeviceKind` でこの operator の tenant のデバイスに限定する。
  */
 export async function handleDeviceSetupSite(request: Request, env: Env): Promise<Response> {
-  const session = await cookieSession(request, env);
-  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  if (request.headers.get("Origin") !== issuerOf(env)) {
-    return jsonNoStore({ error: "bad_origin" }, 403);
-  }
-  let body: Record<string, unknown> = {};
-  try {
-    const v = await request.json();
-    if (v && typeof v === "object") body = v as Record<string, unknown>;
-  } catch {
-    // 空 body は検証で弾く
-  }
-  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
-  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
-  if (!(await managedDeviceKind(env, session.tenantId, deviceId))) {
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
+  // この handler は下り command を送らない (KV を直接更新する) ので、
+  // fail-closed 検査は sendDeviceCommand ではなくここで明示的に行う。
+  if (!(await managedDeviceKind(env, pre.session.tenantId, pre.deviceId))) {
     return jsonNoStore({ error: "not_your_device" }, 403);
   }
   // site_id 省略時は device_id 自身を既定にする (hub の site_id は自分の
   // device_id が標準、Refs #406 改訂)。明示指定した値があればそれを優先する。
-  const explicitSiteId = typeof body.site_id === "string" ? body.site_id.trim() : "";
-  const siteId = explicitSiteId || deviceId;
-  const record = await setDeviceSiteId(env, deviceId, siteId);
+  const explicitSiteId = typeof pre.body.site_id === "string" ? pre.body.site_id.trim() : "";
+  const siteId = explicitSiteId || pre.deviceId;
+  const record = await setDeviceSiteId(env, pre.deviceId, siteId);
   if (!record) return jsonNoStore({ error: "not_found" }, 404);
   return jsonNoStore({ device_id: record.device_id, site_id: record.site_id });
 }
@@ -408,9 +398,51 @@ export async function sendDeviceCommand(
   return { id: data.id ?? "" };
 }
 
+/** command 系 handler の共通前処理を通過した結果 (`deviceCommandRequest`)。 */
+interface DeviceCommandRequest {
+  session: OperatorSession;
+  body: Record<string, unknown>;
+  deviceId: string;
+}
+
+/**
+ * command 系 handler (ota / battery / gw / version / bus5v / reboot) と
+ * site handler が例外なく踏む前処理をまとめる: cookie session (無ければ 401) → Origin が
+ * 自分の issuer でなければ 403 (bad origin) → body の JSON 化 (壊れた body は
+ * 空オブジェクト扱い) → `device_id` 必須 (無ければ 400)。
+ *
+ * 認可の 3 段目 (`managedDeviceKind` の fail-closed 検査) は `sendDeviceCommand`
+ * の中にあるので、この helper を通った command handler は 3 段とも自動的に満たす
+ * (新しい command handler を足すときに 1 段落とす事故を防ぐのがこの関数の目的)。
+ * command を送らない site handler だけは 3 段目を自分で呼ぶ。
+ *
+ * 検証を通れば `{session, body, deviceId}`、弾いたときはそのまま返す `Response`。
+ */
+async function deviceCommandRequest(
+  request: Request,
+  env: Env,
+  missingDeviceIdError = "device_id が必要です",
+): Promise<DeviceCommandRequest | Response> {
+  const session = await cookieSession(request, env);
+  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
+  if (request.headers.get("Origin") !== issuerOf(env)) {
+    return jsonNoStore({ error: "bad_origin" }, 403);
+  }
+  let body: Record<string, unknown> = {};
+  try {
+    const v = await request.json();
+    if (v && typeof v === "object") body = v as Record<string, unknown>;
+  } catch {
+    // 空 body は検証で弾く
+  }
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  if (!deviceId) return jsonNoStore({ error: missingDeviceIdError }, 400);
+  return { session, body, deviceId };
+}
+
 /**
  * `sendDeviceCommand` の結果を web 向け HTTP レスポンスへ写像する
- * (command 系 handler 4 本 — ota / battery / gw / version — で同一)。
+ * (command 系 handler 6 本 — ota / battery / gw / version / bus5v / reboot — で同一)。
  * 成功時の body は `{id}` で、web はこの id を `/device/setup/ota/:id` に渡す。
  */
 function commandIdResponse(sent: SendDeviceCommandResult): Response {
@@ -463,32 +495,18 @@ export async function getCommandResult(
  * command id を返す (web はこの id で進捗をポーリングする)。
  */
 export async function handleDeviceSetupOta(request: Request, env: Env): Promise<Response> {
-  const session = await cookieSession(request, env);
-  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  if (request.headers.get("Origin") !== issuerOf(env)) {
-    return jsonNoStore({ error: "bad_origin" }, 403);
-  }
-
-  let body: Record<string, unknown> = {};
-  try {
-    const v = await request.json();
-    if (v && typeof v === "object") body = v as Record<string, unknown>;
-  } catch {
-    // 空 body → 検証で弾く
-  }
-  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
-  const url = typeof body.url === "string" ? body.url : "";
-  if (!deviceId || !/^https?:\/\//.test(url)) {
-    return jsonNoStore({ error: "device_id と http(s) url が必要です" }, 400);
-  }
   // device がこの operator の tenant の管理対象かの確認 (他テナントのデバイスを
   // 更新させない — recorder は tenant 単位 DO だが、二重に fail-closed) は
   // sendDeviceCommand の中で行う。
-  const sent = await sendDeviceCommand(env, session.tenantId, deviceId, {
-    action: "ota",
-    url,
-  });
-  return commandIdResponse(sent);
+  const pre = await deviceCommandRequest(request, env, "device_id と http(s) url が必要です");
+  if (pre instanceof Response) return pre;
+  const url = typeof pre.body.url === "string" ? pre.body.url : "";
+  if (!/^https?:\/\//.test(url)) {
+    return jsonNoStore({ error: "device_id と http(s) url が必要です" }, 400);
+  }
+  return commandIdResponse(
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "ota", url }),
+  );
 }
 
 /**
@@ -566,22 +584,10 @@ export async function handleDeviceSetupEvents(request: Request, env: Env): Promi
  * (web は `/device/setup/ota/:id` で結果 `{read,percent,mv,vbus,charge}` をポーリング)。
  */
 export async function handleDeviceSetupBattery(request: Request, env: Env): Promise<Response> {
-  const session = await cookieSession(request, env);
-  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  if (request.headers.get("Origin") !== issuerOf(env)) {
-    return jsonNoStore({ error: "bad_origin" }, 403);
-  }
-  let body: Record<string, unknown> = {};
-  try {
-    const v = await request.json();
-    if (v && typeof v === "object") body = v as Record<string, unknown>;
-  } catch {
-    // 空 body は検証で弾く
-  }
-  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
-  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
   return commandIdResponse(
-    await sendDeviceCommand(env, session.tenantId, deviceId, { action: "battery" }),
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "battery" }),
   );
 }
 
@@ -593,26 +599,16 @@ export async function handleDeviceSetupBattery(request: Request, env: Env): Prom
  * 結果 (`{ok}` / `{connected, url}`) は `/device/setup/ota/:id` でポーリング。
  */
 export async function handleDeviceSetupGw(request: Request, env: Env): Promise<Response> {
-  const session = await cookieSession(request, env);
-  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  if (request.headers.get("Origin") !== issuerOf(env)) {
-    return jsonNoStore({ error: "bad_origin" }, 403);
-  }
-  let body: Record<string, unknown> = {};
-  try {
-    const v = await request.json();
-    if (v && typeof v === "object") body = v as Record<string, unknown>;
-  } catch {
-    // 空 body は検証で弾く
-  }
-  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
-  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
-  const url = typeof body.url === "string" ? body.url : "";
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
+  const url = typeof pre.body.url === "string" ? pre.body.url : "";
   if (url && !/^wss?:\/\//.test(url)) {
     return jsonNoStore({ error: "url は ws(s):// で始めてください" }, 400);
   }
   const payload = url ? { action: "gw_url", url } : { action: "gw_status" };
-  return commandIdResponse(await sendDeviceCommand(env, session.tenantId, deviceId, payload));
+  return commandIdResponse(
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, payload),
+  );
 }
 
 /**
@@ -621,22 +617,53 @@ export async function handleDeviceSetupGw(request: Request, env: Env): Promise<R
  * (web は `/device/setup/ota/:id` で結果 `{version, slot}` をポーリングする)。
  */
 export async function handleDeviceSetupVersion(request: Request, env: Env): Promise<Response> {
-  const session = await cookieSession(request, env);
-  if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  if (request.headers.get("Origin") !== issuerOf(env)) {
-    return jsonNoStore({ error: "bad_origin" }, 403);
-  }
-  let body: Record<string, unknown> = {};
-  try {
-    const v = await request.json();
-    if (v && typeof v === "object") body = v as Record<string, unknown>;
-  } catch {
-    // 空 body は検証で弾く
-  }
-  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
-  if (!deviceId) return jsonNoStore({ error: "device_id が必要です" }, 400);
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
   return commandIdResponse(
-    await sendDeviceCommand(env, session.tenantId, deviceId, { action: "version" }),
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "version" }),
+  );
+}
+
+/** BUS5V (M-Bus 5V 出力) の許可値。client の <select> は信用せずここで再検証する。 */
+const BUS5V_MODES = ["auto", "on", "off"];
+
+/**
+ * POST /device/setup/bus5v — CoreS3 の M-Bus 5V 出力モードの設定 / 照会
+ * (ippoan/alc-app-s3#198 / #200)。body: `{ device_id, mode? }`。
+ *
+ * mode あり → `{action:"bus5v", mode}` (`auto|on|off` 以外は 400)。
+ * mode なし → `{action:"bus5v_status"}` (Gw の url 有無と同じ分岐)。
+ *
+ * command id を返し、結果 (`{ok, mode, applies_after_reboot}` /
+ * `{mode, battery_present, ext_5v_out}`) は `/device/setup/ota/:id` でポーリング。
+ * 設定は NVS に保存され、反映は再起動後 (`/device/setup/reboot`)。
+ */
+export async function handleDeviceSetupBus5v(request: Request, env: Env): Promise<Response> {
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
+  const mode = typeof pre.body.mode === "string" ? pre.body.mode : "";
+  if (mode && !BUS5V_MODES.includes(mode)) {
+    return jsonNoStore({ error: "mode は auto / on / off のいずれかです" }, 400);
+  }
+  const payload = mode ? { action: "bus5v", mode } : { action: "bus5v_status" };
+  return commandIdResponse(
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, payload),
+  );
+}
+
+/**
+ * POST /device/setup/reboot — 接続中デバイスへ再起動指示を送る
+ * (BUS5V の設定を反映させるため、Refs ippoan/alc-app-s3#200)。body: `{ device_id }`。
+ *
+ * 結果は `/device/setup/ota/:id` で `{ok:true}` / `{ok:false, message:"busy"}`
+ * (firmware が OTA 中・点呼中は再起動しない)。認可は他の command と同じ 3 段
+ * (session / Origin / `managedDeviceKind` の fail-closed)。
+ */
+export async function handleDeviceSetupReboot(request: Request, env: Env): Promise<Response> {
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
+  return commandIdResponse(
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "reboot" }),
   );
 }
 
@@ -775,6 +802,10 @@ ${devToggleHtml}
 ${devToggleHtmlP4Gw}
 <label for="gw-url">Windows GW URL — CoreS3 の測定中継先 (alc-gw ハブ、ws://&lt;GW の IP&gt;:9000)。行の「GW設定」で接続中の CoreS3 に保存、「GW確認」で疎通を照会</label>
 <input id="gw-url" placeholder="ws://192.168.11.5:9000" style="width:100%;max-width:32rem">
+<p class="muted">「BUS5V」は CoreS3 の M-Bus 5V 出力モード (auto = 電池状態に追従 / on = 常時出力 /
+off = 出力しない) です。<b>反映は再起動後</b>なので、設定したら同じ行の「再起動」を押してください。
+<b>on にした個体を PoE 単独 (USB 無し) で給電すると起動できないことがあります</b> (両側から 5V を
+駆動する構成になるため)。USB 給電で使う個体だけ on にしてください。</p>
 <p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。接続中のデバイスは
 バージョンを自動照会し、その機種の公開中の最新版と違えば「更新あり」を表示します。
 「再登録」は firmware の再インストール等で credential が消えたデバイスの復旧用です —
@@ -1113,6 +1144,41 @@ async function loadDevices() {
       gwChkBtn.style.display = "none";
       gwChkBtn.title = "このデバイスの GW 接続状態を照会します";
       gwChkBtn.addEventListener("click", () => queryGwStatus(d.device_id, msg));
+      // M-Bus 5V 出力 (BUS5V) の設定/照会と再起動 (ippoan/alc-app-s3#198 / #200)。
+      // 電池の無い個体を USB 単独で起動すると NFC も LAN も無電源になるため、
+      // 出力モードをここから切り替える。CoreS3 のみ・WS 接続中のみ表示。
+      const bus5vSel = document.createElement("select");
+      bus5vSel.className = "small";
+      bus5vSel.style.marginLeft = ".35rem";
+      bus5vSel.style.display = "none";
+      bus5vSel.title = "M-Bus 5V 出力モード (auto: 電池状態に追従 / on: 常時出力 / off: 出力しない)";
+      for (const m of ["auto", "on", "off"]) {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        bus5vSel.appendChild(opt);
+      }
+      const bus5vBtn = document.createElement("button");
+      bus5vBtn.className = "small";
+      bus5vBtn.textContent = "BUS5V設定";
+      bus5vBtn.style.marginLeft = ".35rem";
+      bus5vBtn.style.display = "none";
+      bus5vBtn.title = "左の出力モードをこのデバイスに保存します (反映は再起動後)";
+      bus5vBtn.addEventListener("click", () => setBus5v(d.device_id, bus5vSel.value, msg));
+      const bus5vChkBtn = document.createElement("button");
+      bus5vChkBtn.className = "small";
+      bus5vChkBtn.textContent = "BUS5V確認";
+      bus5vChkBtn.style.marginLeft = ".35rem";
+      bus5vChkBtn.style.display = "none";
+      bus5vChkBtn.title = "現在の出力モード・電池の有無・5V 出力の状態を照会します";
+      bus5vChkBtn.addEventListener("click", () => queryBus5v(d.device_id, msg));
+      const rebootBtn = document.createElement("button");
+      rebootBtn.className = "small";
+      rebootBtn.textContent = "再起動";
+      rebootBtn.style.marginLeft = ".35rem";
+      rebootBtn.style.display = "none";
+      rebootBtn.title = "このデバイスを再起動します (BUS5V の設定はこれで反映されます)";
+      rebootBtn.addEventListener("click", () => rebootDevice(d.device_id, msg));
       const isGwKind = d.kind === "cores3";
       if (isConn) {
         // 接続中: バージョン照会が終わるまでボタンは出さず「確認中」を表示。
@@ -1121,7 +1187,14 @@ async function loadDevices() {
         otaNote.textContent = "確認中...";
         forceBtn.style.display = "";
         battBtn.style.display = "";
-        if (isGwKind) { gwBtn.style.display = ""; gwChkBtn.style.display = ""; }
+        if (isGwKind) {
+          gwBtn.style.display = "";
+          gwChkBtn.style.display = "";
+          bus5vSel.style.display = "";
+          bus5vBtn.style.display = "";
+          bus5vChkBtn.style.display = "";
+          rebootBtn.style.display = "";
+        }
       } else {
         // 未接続: バージョン照会できず更新不可 (無効ボタン表示、赤にはしない)
         btn.disabled = true;
@@ -1133,6 +1206,10 @@ async function loadDevices() {
       otaTd.appendChild(battBtn);
       otaTd.appendChild(gwBtn);
       otaTd.appendChild(gwChkBtn);
+      otaTd.appendChild(bus5vSel);
+      otaTd.appendChild(bus5vBtn);
+      otaTd.appendChild(bus5vChkBtn);
+      otaTd.appendChild(rebootBtn);
       otaTd.appendChild(otaNote);
       otaTd.appendChild(bar);
       otaTd.appendChild(msg);
@@ -1163,7 +1240,7 @@ async function loadDevices() {
       tr.appendChild(reregTd);
 
       body.appendChild(tr);
-      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bar, barFill, msg, otaNote });
+      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bus5vSel, bus5vBtn, bus5vChkBtn, rebootBtn, bar, barFill, msg, otaNote });
       if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
     }
     statusEl.textContent = "";
@@ -1213,6 +1290,10 @@ function applyConnected(deviceId, isConn) {
     if (row.kind === "cores3") {
       if (row.gwBtn) row.gwBtn.style.display = "";
       if (row.gwChkBtn) row.gwChkBtn.style.display = "";
+      if (row.bus5vSel) row.bus5vSel.style.display = "";
+      if (row.bus5vBtn) row.bus5vBtn.style.display = "";
+      if (row.bus5vChkBtn) row.bus5vChkBtn.style.display = "";
+      if (row.rebootBtn) row.rebootBtn.style.display = "";
     }
     queryVersion(deviceId, row.kind, row.verSpan, row.btn, row.otaNote);
   } else {
@@ -1229,6 +1310,10 @@ function applyConnected(deviceId, isConn) {
     if (row.battBtn) row.battBtn.style.display = "none";
     if (row.gwBtn) row.gwBtn.style.display = "none";
     if (row.gwChkBtn) row.gwChkBtn.style.display = "none";
+    if (row.bus5vSel) row.bus5vSel.style.display = "none";
+    if (row.bus5vBtn) row.bus5vBtn.style.display = "none";
+    if (row.bus5vChkBtn) row.bus5vChkBtn.style.display = "none";
+    if (row.rebootBtn) row.rebootBtn.style.display = "none";
   }
 }
 
@@ -1346,55 +1431,99 @@ async function setSiteId(deviceId, siteTd, btn, msg) {
   }
 }
 
+// 下り command の「送信 → command id → 結果ポーリング」の共通形。GW 設定/照会・
+// BUS5V 設定/照会・再起動が同じ形なので 1 本に畳んである (新しい command を
+// 足すときにこの 20 行をコピーしない)。label は進捗/失敗メッセージの見出し。
+// ready(payload) を満たした payload を返し、失敗・タイムアウトは msg に出して null。
+async function sendAndPoll(path, body, msg, label, ready) {
+  msg.textContent = label + "中...";
+  try {
+    const res = await fetch(ISSUER + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    });
+    if (res.status === 409) { msg.textContent = "未接続です"; return null; }
+    if (!res.ok) { msg.textContent = label + "に失敗: HTTP " + res.status; return null; }
+    const { id } = await res.json();
+    if (!id) { msg.textContent = label + "に失敗"; return null; }
+    const p = await pollCommandResult(id, 20000, ready);
+    if (!p) { msg.textContent = label + "タイムアウト"; return null; }
+    return p;
+  } catch (e) {
+    msg.textContent = label + "エラー";
+    return null;
+  }
+}
+
+// 未知 action を受けた古い firmware は空の command_result ({}) を push する
+// (結果待ちの {phase:"pending"} とは別物)。BUS5V/再起動は firmware #200 以降。
+function isOldFirmwareResult(p) {
+  return p && typeof p === "object" && Object.keys(p).length === 0;
+}
+
 // Windows GW (alc-gw) URL の保存 (WS gw_url コマンド)。保存後は gw_link が
 // バックオフ込みで接続しに行くため、少し待ってから接続状態を自動照会する
 async function setGwUrl(deviceId, msg) {
   const url = (document.getElementById("gw-url").value || "").trim();
   if (!/^wss?:\\/\\//.test(url)) { msg.textContent = "GW URL を ws://<GWのIP>:9000 の形式で入力してください"; return; }
-  msg.textContent = "GW URL を保存中...";
-  try {
-    const res = await fetch(ISSUER + "/device/setup/gw", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ device_id: deviceId, url }),
-    });
-    if (res.status === 409) { msg.textContent = "未接続です"; return; }
-    if (!res.ok) { msg.textContent = "GW URL 保存に失敗: HTTP " + res.status; return; }
-    const { id } = await res.json();
-    if (!id) { msg.textContent = "GW URL 保存に失敗"; return; }
-    const p = await pollCommandResult(id, 20000, (x) => x && typeof x.ok === "boolean");
-    if (!p) { msg.textContent = "GW URL 保存タイムアウト"; return; }
-    if (!p.ok) { msg.textContent = "GW URL 保存失敗: " + (p.message || "不明なエラー"); return; }
-    msg.textContent = "GW URL 保存 OK — 15 秒後に接続状態を確認します...";
-    setTimeout(() => queryGwStatus(deviceId, msg), 15000);
-  } catch (e) {
-    msg.textContent = "GW URL 保存エラー";
-  }
+  const p = await sendAndPoll("/device/setup/gw", { device_id: deviceId, url }, msg, "GW URL 保存",
+    (x) => x && typeof x.ok === "boolean");
+  if (!p) return;
+  if (!p.ok) { msg.textContent = "GW URL 保存失敗: " + (p.message || "不明なエラー"); return; }
+  msg.textContent = "GW URL 保存 OK — 15 秒後に接続状態を確認します...";
+  setTimeout(() => queryGwStatus(deviceId, msg), 15000);
 }
 
 // GW 接続状態の照会 (WS gw_status コマンド)
 async function queryGwStatus(deviceId, msg) {
-  msg.textContent = "GW 接続状態を照会中...";
-  try {
-    const res = await fetch(ISSUER + "/device/setup/gw", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ device_id: deviceId }),
-    });
-    if (res.status === 409) { msg.textContent = "未接続です"; return; }
-    if (!res.ok) { msg.textContent = "GW 照会に失敗: HTTP " + res.status; return; }
-    const { id } = await res.json();
-    if (!id) { msg.textContent = "GW 照会に失敗"; return; }
-    const p = await pollCommandResult(id, 20000, (x) => x && typeof x.connected === "boolean");
-    if (!p) { msg.textContent = "GW 照会タイムアウト"; return; }
-    msg.textContent = p.connected
-      ? "GW: 接続中 (" + (p.url || "") + ")"
-      : "GW: 未接続" + (p.url ? " (" + p.url + ")" : " (URL 未設定)");
-  } catch (e) {
-    msg.textContent = "GW 照会エラー";
+  const p = await sendAndPoll("/device/setup/gw", { device_id: deviceId }, msg, "GW 照会",
+    (x) => x && typeof x.connected === "boolean");
+  if (!p) return;
+  msg.textContent = p.connected
+    ? "GW: 接続中 (" + (p.url || "") + ")"
+    : "GW: 未接続" + (p.url ? " (" + p.url + ")" : " (URL 未設定)");
+}
+
+// M-Bus 5V 出力モードの設定 (WS bus5v コマンド、ippoan/alc-app-s3#198)。
+// NVS に保存されるだけで、反映は再起動後 (行の「再起動」ボタン)。
+async function setBus5v(deviceId, mode, msg) {
+  const p = await sendAndPoll("/device/setup/bus5v", { device_id: deviceId, mode }, msg, "BUS5V 設定",
+    (x) => x && (typeof x.ok === "boolean" || typeof x.mode === "string" || isOldFirmwareResult(x)));
+  if (!p) return;
+  if (isOldFirmwareResult(p)) { msg.textContent = "firmware が古い (OTA が必要)"; return; }
+  if (p.ok === false) { msg.textContent = "BUS5V 設定失敗: " + (p.message || "不明なエラー"); return; }
+  msg.textContent = "mode=" + (p.mode || mode) + "、再起動後に反映";
+}
+
+// M-Bus 5V 出力モードの照会 (WS bus5v_status コマンド)。
+// 結果 {mode, battery_present, ext_5v_out} をそのまま行に出す。
+async function queryBus5v(deviceId, msg) {
+  const p = await sendAndPoll("/device/setup/bus5v", { device_id: deviceId }, msg, "BUS5V 確認",
+    (x) => x && (typeof x.mode === "string" || isOldFirmwareResult(x)));
+  if (!p) return;
+  if (isOldFirmwareResult(p)) { msg.textContent = "firmware が古い (OTA が必要)"; return; }
+  msg.textContent = "mode=" + p.mode
+    + " 電池=" + (p.battery_present ? "有" : "無")
+    + " 5V出力=" + (p.ext_5v_out ? "有" : "無");
+}
+
+// 再起動 (WS reboot コマンド) — BUS5V の設定を反映させるため。
+// firmware 側が OTA 中・点呼中は busy で断る (担保は firmware、こちらは確認だけ)。
+async function rebootDevice(deviceId, msg) {
+  if (!confirm("このデバイスを再起動します (点呼・測定中でないことを確認してください)。実行しますか?")) return;
+  const p = await sendAndPoll("/device/setup/reboot", { device_id: deviceId }, msg, "再起動",
+    (x) => x && (typeof x.ok === "boolean" || isOldFirmwareResult(x)));
+  if (!p) return;
+  if (isOldFirmwareResult(p)) { msg.textContent = "firmware が古い (OTA が必要)"; return; }
+  if (!p.ok) {
+    msg.textContent = p.message === "busy"
+      ? "OTA 中か点呼中のため再起動しませんでした"
+      : "再起動できませんでした: " + (p.message || "不明なエラー");
+    return;
   }
+  msg.textContent = "再起動しました (再接続まで数十秒かかります)";
 }
 
 async function queryVersion(deviceId, kind, verSpan, otaBtn, otaNote) {

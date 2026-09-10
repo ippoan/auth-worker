@@ -105,6 +105,8 @@ import {
   handleDeviceSetupVersion,
   handleDeviceSetupBattery,
   handleDeviceSetupGw,
+  handleDeviceSetupBus5v,
+  handleDeviceSetupReboot,
   handleDeviceSetupSite,
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
@@ -941,6 +943,13 @@ export default {
           // (recorder command {action:gw_url|gw_status})。POST。
           case "/device/setup/gw":
             return await handleDeviceSetupGw(request, env);
+          // M-Bus 5V 出力モードの設定/照会トリガ
+          // (recorder command {action:bus5v|bus5v_status})。POST。
+          case "/device/setup/bus5v":
+            return await handleDeviceSetupBus5v(request, env);
+          // 再起動トリガ (BUS5V の反映用、recorder command {action:reboot})。POST。
+          case "/device/setup/reboot":
+            return await handleDeviceSetupReboot(request, env);
           // 登録済み device-hub の site_id をブラウザから設定 (Refs #406)。
           case "/device/setup/site":
             return await handleDeviceSetupSite(request, env);
