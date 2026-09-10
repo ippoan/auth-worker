@@ -624,36 +624,27 @@ export async function handleDeviceSetupVersion(request: Request, env: Env): Prom
   );
 }
 
-/** BUS5V (M-Bus 5V 出力) の許可値。client の <select> は信用せずここで再検証する。 */
-const BUS5V_MODES = ["auto", "on", "off"];
-
 /**
- * POST /device/setup/bus5v — CoreS3 の M-Bus 5V 出力モードの設定 / 照会
- * (ippoan/alc-app-s3#198 / #200)。body: `{ device_id, mode? }`。
+ * POST /device/setup/bus5v — CoreS3 の M-Bus 5V 出力状態の照会
+ * (ippoan/alc-app-s3#202)。body: `{ device_id }` (`mode` が来ても無視する)。
  *
- * mode あり → `{action:"bus5v", mode}` (`auto|on|off` 以外は 400)。
- * mode なし → `{action:"bus5v_status"}` (Gw の url 有無と同じ分岐)。
+ * 出力モードの設定は持たない — firmware が「USB ホストを列挙している間だけ 5V を出す」
+ * 固定動作で、電池なしの個体でも USB 単独と PoE 単独が両立するため (Refs #517)。
  *
- * command id を返し、結果 (`{ok, mode, applies_after_reboot}` /
- * `{mode, battery_present, ext_5v_out}`) は `/device/setup/ota/:id` でポーリング。
- * 設定は NVS に保存され、反映は再起動後 (`/device/setup/reboot`)。
+ * command id を返し、結果 (`{usb_host, ext_5v_out, battery_present, power_read}`) は
+ * `/device/setup/ota/:id` でポーリング。
  */
 export async function handleDeviceSetupBus5v(request: Request, env: Env): Promise<Response> {
   const pre = await deviceCommandRequest(request, env);
   if (pre instanceof Response) return pre;
-  const mode = typeof pre.body.mode === "string" ? pre.body.mode : "";
-  if (mode && !BUS5V_MODES.includes(mode)) {
-    return jsonNoStore({ error: "mode は auto / on / off のいずれかです" }, 400);
-  }
-  const payload = mode ? { action: "bus5v", mode } : { action: "bus5v_status" };
   return commandIdResponse(
-    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, payload),
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "bus5v_status" }),
   );
 }
 
 /**
  * POST /device/setup/reboot — 接続中デバイスへ再起動指示を送る
- * (BUS5V の設定を反映させるため、Refs ippoan/alc-app-s3#200)。body: `{ device_id }`。
+ * (Refs ippoan/alc-app-s3#200)。body: `{ device_id }`。
  *
  * 結果は `/device/setup/ota/:id` で `{ok:true}` / `{ok:false, message:"busy"}`
  * (firmware が OTA 中・点呼中は再起動しない)。認可は他の command と同じ 3 段
@@ -802,10 +793,8 @@ ${devToggleHtml}
 ${devToggleHtmlP4Gw}
 <label for="gw-url">Windows GW URL — CoreS3 の測定中継先 (alc-gw ハブ、ws://&lt;GW の IP&gt;:9000)。行の「GW設定」で接続中の CoreS3 に保存、「GW確認」で疎通を照会</label>
 <input id="gw-url" placeholder="ws://192.168.11.5:9000" style="width:100%;max-width:32rem">
-<p class="muted">「BUS5V」は CoreS3 の M-Bus 5V 出力モード (auto = 電池状態に追従 / on = 常時出力 /
-off = 出力しない) です。<b>反映は再起動後</b>なので、設定したら同じ行の「再起動」を押してください。
-<b>on にした個体を PoE 単独 (USB 無し) で給電すると起動できないことがあります</b> (両側から 5V を
-駆動する構成になるため)。USB 給電で使う個体だけ on にしてください。</p>
+<p class="muted">M-Bus の 5V は、USB で PC に繋がっている間だけ CoreS3 から出します (設定不要)。
+PC が落ちている間は PoE から給電します。行の「BUS5V確認」で現在の状態を照会できます。</p>
 <p class="muted">「更新」は WS 接続中のデバイスにのみ届きます (LAN/Wi-Fi)。接続中のデバイスは
 バージョンを自動照会し、その機種の公開中の最新版と違えば「更新あり」を表示します。
 「再登録」は firmware の再インストール等で credential が消えたデバイスの復旧用です —
@@ -1144,40 +1133,22 @@ async function loadDevices() {
       gwChkBtn.style.display = "none";
       gwChkBtn.title = "このデバイスの GW 接続状態を照会します";
       gwChkBtn.addEventListener("click", () => queryGwStatus(d.device_id, msg));
-      // M-Bus 5V 出力 (BUS5V) の設定/照会と再起動 (ippoan/alc-app-s3#198 / #200)。
-      // 電池の無い個体を USB 単独で起動すると NFC も LAN も無電源になるため、
-      // 出力モードをここから切り替える。CoreS3 のみ・WS 接続中のみ表示。
-      const bus5vSel = document.createElement("select");
-      bus5vSel.className = "small";
-      bus5vSel.style.marginLeft = ".35rem";
-      bus5vSel.style.display = "none";
-      bus5vSel.title = "M-Bus 5V 出力モード (auto: 電池状態に追従 / on: 常時出力 / off: 出力しない)";
-      for (const m of ["auto", "on", "off"]) {
-        const opt = document.createElement("option");
-        opt.value = m;
-        opt.textContent = m;
-        bus5vSel.appendChild(opt);
-      }
-      const bus5vBtn = document.createElement("button");
-      bus5vBtn.className = "small";
-      bus5vBtn.textContent = "BUS5V設定";
-      bus5vBtn.style.marginLeft = ".35rem";
-      bus5vBtn.style.display = "none";
-      bus5vBtn.title = "左の出力モードをこのデバイスに保存します (反映は再起動後)";
-      bus5vBtn.addEventListener("click", () => setBus5v(d.device_id, bus5vSel.value, msg));
+      // M-Bus 5V 出力 (BUS5V) の照会と再起動 (ippoan/alc-app-s3#202)。出力は firmware が
+      // USB ホストの有無に追随して切り替える固定動作なので設定は無く、状態照会だけ。
+      // CoreS3 のみ・WS 接続中のみ表示。
       const bus5vChkBtn = document.createElement("button");
       bus5vChkBtn.className = "small";
       bus5vChkBtn.textContent = "BUS5V確認";
       bus5vChkBtn.style.marginLeft = ".35rem";
       bus5vChkBtn.style.display = "none";
-      bus5vChkBtn.title = "現在の出力モード・電池の有無・5V 出力の状態を照会します";
+      bus5vChkBtn.title = "USB ホストの有無・5V 出力・電池の有無を照会します";
       bus5vChkBtn.addEventListener("click", () => queryBus5v(d.device_id, msg));
       const rebootBtn = document.createElement("button");
       rebootBtn.className = "small";
       rebootBtn.textContent = "再起動";
       rebootBtn.style.marginLeft = ".35rem";
       rebootBtn.style.display = "none";
-      rebootBtn.title = "このデバイスを再起動します (BUS5V の設定はこれで反映されます)";
+      rebootBtn.title = "このデバイスを再起動します";
       rebootBtn.addEventListener("click", () => rebootDevice(d.device_id, msg));
       const isGwKind = d.kind === "cores3";
       if (isConn) {
@@ -1190,8 +1161,6 @@ async function loadDevices() {
         if (isGwKind) {
           gwBtn.style.display = "";
           gwChkBtn.style.display = "";
-          bus5vSel.style.display = "";
-          bus5vBtn.style.display = "";
           bus5vChkBtn.style.display = "";
           rebootBtn.style.display = "";
         }
@@ -1206,8 +1175,6 @@ async function loadDevices() {
       otaTd.appendChild(battBtn);
       otaTd.appendChild(gwBtn);
       otaTd.appendChild(gwChkBtn);
-      otaTd.appendChild(bus5vSel);
-      otaTd.appendChild(bus5vBtn);
       otaTd.appendChild(bus5vChkBtn);
       otaTd.appendChild(rebootBtn);
       otaTd.appendChild(otaNote);
@@ -1240,7 +1207,7 @@ async function loadDevices() {
       tr.appendChild(reregTd);
 
       body.appendChild(tr);
-      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bus5vSel, bus5vBtn, bus5vChkBtn, rebootBtn, bar, barFill, msg, otaNote });
+      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bus5vChkBtn, rebootBtn, bar, barFill, msg, otaNote });
       if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
     }
     statusEl.textContent = "";
@@ -1290,8 +1257,6 @@ function applyConnected(deviceId, isConn) {
     if (row.kind === "cores3") {
       if (row.gwBtn) row.gwBtn.style.display = "";
       if (row.gwChkBtn) row.gwChkBtn.style.display = "";
-      if (row.bus5vSel) row.bus5vSel.style.display = "";
-      if (row.bus5vBtn) row.bus5vBtn.style.display = "";
       if (row.bus5vChkBtn) row.bus5vChkBtn.style.display = "";
       if (row.rebootBtn) row.rebootBtn.style.display = "";
     }
@@ -1310,8 +1275,6 @@ function applyConnected(deviceId, isConn) {
     if (row.battBtn) row.battBtn.style.display = "none";
     if (row.gwBtn) row.gwBtn.style.display = "none";
     if (row.gwChkBtn) row.gwChkBtn.style.display = "none";
-    if (row.bus5vSel) row.bus5vSel.style.display = "none";
-    if (row.bus5vBtn) row.bus5vBtn.style.display = "none";
     if (row.bus5vChkBtn) row.bus5vChkBtn.style.display = "none";
     if (row.rebootBtn) row.rebootBtn.style.display = "none";
   }
@@ -1432,7 +1395,7 @@ async function setSiteId(deviceId, siteTd, btn, msg) {
 }
 
 // 下り command の「送信 → command id → 結果ポーリング」の共通形。GW 設定/照会・
-// BUS5V 設定/照会・再起動が同じ形なので 1 本に畳んである (新しい command を
+// BUS5V 照会・再起動が同じ形なので 1 本に畳んである (新しい command を
 // 足すときにこの 20 行をコピーしない)。label は進捗/失敗メッセージの見出し。
 // ready(payload) を満たした payload を返し、失敗・タイムアウトは msg に出して null。
 async function sendAndPoll(path, body, msg, label, ready) {
@@ -1486,30 +1449,21 @@ async function queryGwStatus(deviceId, msg) {
     : "GW: 未接続" + (p.url ? " (" + p.url + ")" : " (URL 未設定)");
 }
 
-// M-Bus 5V 出力モードの設定 (WS bus5v コマンド、ippoan/alc-app-s3#198)。
-// NVS に保存されるだけで、反映は再起動後 (行の「再起動」ボタン)。
-async function setBus5v(deviceId, mode, msg) {
-  const p = await sendAndPoll("/device/setup/bus5v", { device_id: deviceId, mode }, msg, "BUS5V 設定",
-    (x) => x && (typeof x.ok === "boolean" || typeof x.mode === "string" || isOldFirmwareResult(x)));
-  if (!p) return;
-  if (isOldFirmwareResult(p)) { msg.textContent = "firmware が古い (OTA が必要)"; return; }
-  if (p.ok === false) { msg.textContent = "BUS5V 設定失敗: " + (p.message || "不明なエラー"); return; }
-  msg.textContent = "mode=" + (p.mode || mode) + "、再起動後に反映";
-}
-
-// M-Bus 5V 出力モードの照会 (WS bus5v_status コマンド)。
-// 結果 {mode, battery_present, ext_5v_out} をそのまま行に出す。
+// M-Bus 5V 出力状態の照会 (WS bus5v_status コマンド、ippoan/alc-app-s3#202)。
+// 結果 {usb_host, ext_5v_out, battery_present, power_read} を行に出す。設定を持っていた
+// 頃の firmware は usb_host を返さないので、その場合は OTA が必要と伝える。
+// power_read=false は AXP2101 を未読 (起動直後) の意味なので電池は「不明」。
 async function queryBus5v(deviceId, msg) {
   const p = await sendAndPoll("/device/setup/bus5v", { device_id: deviceId }, msg, "BUS5V 確認",
-    (x) => x && (typeof x.mode === "string" || isOldFirmwareResult(x)));
+    (x) => x && (typeof x.usb_host === "boolean" || typeof x.mode === "string" || isOldFirmwareResult(x)));
   if (!p) return;
-  if (isOldFirmwareResult(p)) { msg.textContent = "firmware が古い (OTA が必要)"; return; }
-  msg.textContent = "mode=" + p.mode
-    + " 電池=" + (p.battery_present ? "有" : "無")
-    + " 5V出力=" + (p.ext_5v_out ? "有" : "無");
+  if (typeof p.usb_host !== "boolean") { msg.textContent = "firmware が古い (OTA が必要)"; return; }
+  msg.textContent = "USB=" + (p.usb_host ? "有" : "無")
+    + " 5V出力=" + (p.ext_5v_out ? "有" : "無")
+    + " 電池=" + (p.power_read ? (p.battery_present ? "有" : "無") : "不明");
 }
 
-// 再起動 (WS reboot コマンド) — BUS5V の設定を反映させるため。
+// 再起動 (WS reboot コマンド)。
 // firmware 側が OTA 中・点呼中は busy で断る (担保は firmware、こちらは確認だけ)。
 async function rebootDevice(deviceId, msg) {
   if (!confirm("このデバイスを再起動します (点呼・測定中でないことを確認してください)。実行しますか?")) return;
