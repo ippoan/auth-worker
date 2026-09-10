@@ -24,7 +24,7 @@
  */
 
 import type { Env } from "../index";
-import { adminRequest } from "./device-setup";
+import { adminRequest, isReadOnlyToken } from "./device-setup";
 
 function jsonNoStore(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -141,6 +141,8 @@ async function readTenantIndex(env: Env, tenantId: string): Promise<string[]> {
 export async function handleAlarmKeyRegister(request: Request, env: Env): Promise<Response> {
   const pre = await adminRequest(request, env);
   if (pre instanceof Response) return pre;
+  // 鍵の新規登録 (= 登録系) なので dev/device-key token は弾く。
+  if (isReadOnlyToken(pre.session)) return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
 
   const body = await readJsonBody(request);
   const fingerprint = await validatePubkeyAndFingerprint(body.pubkey);
@@ -207,6 +209,8 @@ export async function handleAlarmKeyList(request: Request, env: Env): Promise<Re
 export async function handleAlarmKeyRevoke(request: Request, env: Env): Promise<Response> {
   const pre = await adminRequest(request, env);
   if (pre instanceof Response) return pre;
+  // 失効 (= 解除系) なので dev/device-key token は弾く。
+  if (isReadOnlyToken(pre.session)) return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
 
   const body = await readJsonBody(request);
   const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint : "";
