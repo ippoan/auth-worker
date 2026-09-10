@@ -558,7 +558,11 @@ const TOOLS: ToolDef[] = [
       "Fetch the recent serial log of one managed hub device (CoreS3 / VoiceS3R) " +
       "by sending it a `get_log` command over the recorder WebSocket and waiting " +
       "up to 8s for the device to answer. Returns `{text, bytes, total_bytes, " +
-      "truncated, uptime_ms, device_id}` plus, from newer firmware, `boot_history` " +
+      "truncated, uptime_ms, device_id}` plus, from newer firmware, `offset` " +
+      "(bytes skipped from the end of the ring — `text` is the window that ends " +
+      "there, snapped to line boundaries; to read older lines call again with " +
+      "`offset + bytes` while that is below `total_bytes`; firmware without it " +
+      "ignores the `offset` argument and returns the tail), `boot_history` " +
       "(up to 8 `{reset_reason, reset_code}`, newest first — the first entry is the " +
       "current boot; absent on models without a history), `pwa_log` (diagnostic log " +
       "relayed from the kiosk PWA, or null) and `pwa_log_error` (why pwa_log is " +
@@ -580,7 +584,17 @@ const TOOLS: ToolDef[] = [
           minimum: 1,
           maximum: GET_LOG_MAX_BYTES_LIMIT,
           default: GET_LOG_MAX_BYTES_DEFAULT,
-          description: "Max bytes of log text to return (tail of the ring buffer)",
+          description:
+            "Max bytes of log text to return (the window ending `offset` bytes before " +
+            "the end of the ring buffer — the tail by default)",
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          default: 0,
+          description:
+            "Bytes to skip from the end of the ring buffer before taking the window " +
+            "(0 = newest). Use the previous answer's `offset + bytes` to page back",
         },
       },
       required: ["device_id"],
@@ -605,6 +619,15 @@ const TOOLS: ToolDef[] = [
         );
       }
       const maxBytes = maxBytesRaw === undefined ? GET_LOG_MAX_BYTES_DEFAULT : maxBytesRaw;
+      // 末尾から遡るバイト数 (ippoan/alc-app-s3#217)。省略時は command に載せない
+      // (旧 firmware は未知のキーを無視して末尾を返す)。
+      const offset = args["offset"];
+      if (
+        offset !== undefined &&
+        (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0)
+      ) {
+        throw new DevLoginError(400, "offset must be a non-negative integer");
+      }
 
       // MCP JWT には tenant が無いので dev-login と同じ経路で解決する
       // (allowlist gate 込み — 拒否は issue_dev_token と同じエラー型)。
@@ -615,6 +638,7 @@ const TOOLS: ToolDef[] = [
       const sent = await sendDeviceCommand(ctx.env, tenantId, deviceId, {
         action: "get_log",
         max_bytes: maxBytes,
+        ...(offset === undefined ? {} : { offset }),
       });
       if ("error" in sent) {
         return sent.error === "recorder_error"
