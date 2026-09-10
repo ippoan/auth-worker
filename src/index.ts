@@ -116,6 +116,7 @@ import {
   handleAlarmKeyList,
   handleAlarmKeyRevoke,
 } from "./handlers/alarm-key";
+import { handleDeviceNonce, handleDeviceLogin } from "./handlers/device-login";
 import { handlePrintTestPdf } from "./handlers/print-test";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpAuthCallbackGoogle } from "./handlers/mcp-auth-callback-google";
@@ -666,6 +667,12 @@ export default {
             return await handleGoogleRedirect(request, env);
           case "/oauth/google/callback":
             return await handleGoogleCallback(request, env);
+          // 警告デバイス (VoiceS3R) の ed25519 署名で管理者 session を発行する
+          // 2 系統目のログイン (Refs #522)。
+          case "/auth/device-nonce":
+            return await handleDeviceNonce(request, env);
+          case "/auth/device-login":
+            return await handleDeviceLogin(request, env);
           case "/oauth/egov/redirect":
             return await handleEgovRedirect(request, env);
           case "/oauth/egov/callback":

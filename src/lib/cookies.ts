@@ -11,10 +11,16 @@ export const AUTH_COOKIE = "logi_auth_token";
  */
 export const LEGACY_ADMIN_COOKIE = "sso_admin_token";
 
-/** Set-Cookie header value for auth token (24h, shared across subdomains) */
-export function setAuthCookie(token: string, hostname: string): string {
+/**
+ * Set-Cookie header value for auth token (shared across subdomains).
+ *
+ * `maxAgeSec` は既定 86400 (24h、Google login 等の既存挙動)。issue #522
+ * (device-login) は JWT の TTL (3600s) を超えて cookie を生かさないよう
+ * ここへ実際の残り秒数を渡す。
+ */
+export function setAuthCookie(token: string, hostname: string, maxAgeSec = 86400): string {
   const domain = getParentDomain(hostname);
-  return `${AUTH_COOKIE}=${token}; Domain=${domain}; Path=/; Max-Age=86400; Secure; SameSite=Lax`;
+  return `${AUTH_COOKIE}=${token}; Domain=${domain}; Path=/; Max-Age=${maxAgeSec}; Secure; SameSite=Lax`;
 }
 
 /** Set-Cookie header value to clear auth token */

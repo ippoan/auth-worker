@@ -137,6 +137,28 @@ describe("POST /auth/introspect — token validation", () => {
     expect(body.sub).toBe("hub-dev-1"); // recorder は sub を device_id として注入する
   });
 
+  it("includes token_kind when present on the payload (issue #522: alc-app が device-key を区別する)", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, token_kind: "device-key" });
+    const res = await handleAuthIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token, origin: APP_ORIGIN }) }),
+      makeEnv(),
+    );
+    const body = (await res.json()) as { active: boolean; token_kind?: string };
+    expect(body.active).toBe(true);
+    expect(body.token_kind).toBe("device-key");
+  });
+
+  it("omits token_kind when absent on the payload (通常ログイン、既存 consumer への非破壊)", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT });
+    const res = await handleAuthIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token, origin: APP_ORIGIN }) }),
+      makeEnv(),
+    );
+    const body = (await res.json()) as { active: boolean; token_kind?: string };
+    expect(body.active).toBe(true);
+    expect("token_kind" in body).toBe(false);
+  });
+
   it("reads tenant_id from the `org` claim as fallback", async () => {
     const token = await jwt({ org: PROD_TENANT });
     const res = await handleAuthIntrospect(

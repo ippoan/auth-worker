@@ -55,8 +55,13 @@ function tenantIndexKey(tenantId: string): string {
   return TENANT_INDEX_PREFIX + tenantId;
 }
 
-/** base64url (パディング無し可) → raw bytes。不正な文字列は例外を投げる。 */
-function decodeBase64Url(b64url: string): Uint8Array {
+/**
+ * base64url (パディング無し可) → raw bytes。不正な文字列は例外を投げる。
+ *
+ * #522 (device-login) も同じ decode (pubkey/sig の受け渡し形式が同じ base64url)
+ * を要るため export する — fingerprint 計算ロジックの複製を避ける。
+ */
+export function decodeBase64Url(b64url: string): Uint8Array {
   const padded = b64url.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64url.length / 4) * 4, "=");
   const bin = atob(padded);
   const out = new Uint8Array(bin.length);
@@ -71,6 +76,15 @@ async function sha256HexBytes(bytes: Uint8Array): Promise<string> {
     .join("");
 }
 
+/**
+ * raw 公開鍵 (32 B) から fingerprint (SHA-256 先頭 16 hex) を計算する。
+ * `alarmkey:<fp>` の key 部分と一致させる正本。#522 (device-login) と共有。
+ */
+export async function fingerprintFromRawPubkey(raw: Uint8Array): Promise<string> {
+  const hex = await sha256HexBytes(raw);
+  return hex.slice(0, 16);
+}
+
 /** 公開鍵の base64url 文字列を検証し、fingerprint (先頭 16 hex) を返す。不正なら null。 */
 async function validatePubkeyAndFingerprint(pubkey: unknown): Promise<string | null> {
   if (typeof pubkey !== "string" || !pubkey) return null;
@@ -81,8 +95,7 @@ async function validatePubkeyAndFingerprint(pubkey: unknown): Promise<string | n
     return null;
   }
   if (raw.length !== 32) return null;
-  const hex = await sha256HexBytes(raw);
-  return hex.slice(0, 16);
+  return fingerprintFromRawPubkey(raw);
 }
 
 function isValidLabel(label: unknown): label is string {
@@ -99,7 +112,8 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   return {};
 }
 
-async function getAlarmKeyRecord(env: Env, fingerprint: string): Promise<AlarmKeyRecord | null> {
+/** `alarmkey:<fingerprint>` の record を読む。#522 (device-login) と共有する正本。 */
+export async function getAlarmKeyRecord(env: Env, fingerprint: string): Promise<AlarmKeyRecord | null> {
   const raw = await env.AUTH_CONFIG.get(recordKey(fingerprint));
   if (!raw) return null;
   try {

@@ -228,6 +228,35 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
     }
   });
 
+  it("token_kind=device-key (issue #522) + POST は 403 (dev と同じ read-only enforcement)", async () => {
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees", {
+        method: "POST",
+        token: makeJwt(TEST_JWT_SECRET, { token_kind: "device-key" }),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("dev_token_write_forbidden");
+  });
+
+  it("token_kind=device-key + GET は通す (read-only は許可)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees", {
+        token: makeJwt(TEST_JWT_SECRET, { token_kind: "device-key" }),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+  });
+
   it("token_kind=dev + POST: ALC_PROXY_DEV_WRITE_ALLOWLIST に一致する path は通す", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>

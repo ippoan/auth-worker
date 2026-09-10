@@ -9,11 +9,10 @@
 
 import type { Env } from "../index";
 import { getAllowedOrigins } from "../lib/config";
-import { checkOrgAccess, checkAppTenant } from "../lib/acl";
 import { resolveSecret } from "../lib/secret";
 import { verifyOAuthState, isAllowedRedirectUri } from "../lib/security";
-import { setAuthCookie, authCookieReachesHost } from "../lib/cookies";
 import { decodeJwtPayload } from "../lib/jwt";
+import { finishLogin } from "../lib/finish-login";
 import { upsertGoogleUser, type InternalUserWithSlug } from "../lib/alc-internal";
 import { createAccessToken, ACCESS_TOKEN_EXPIRY_SECS } from "../lib/access-token";
 
@@ -130,71 +129,15 @@ export async function handleGoogleCallback(
     user.slug,
   );
   const expiresAt = String(Math.floor(Date.now() / 1000) + ACCESS_TOKEN_EXPIRY_SECS);
-  const tenantId = user.tenant_id;
-  const email = user.email;
 
-  // Build JWT fragment (cookie が届かない host へ fragment 配布)
-  const fragment = new URLSearchParams({
+  return finishLogin(request, env, {
     token,
-    expires_at: expiresAt,
-  });
-  if (tenantId) fragment.set("org_id", tenantId);
-
-  // Enforce per-org ACL for the final redirect target.
-  const redirectOrigin = new URL(redirectUri).origin;
-  if (!(await checkOrgAccess(env, redirectOrigin, tenantId, email))) {
-    console.log(JSON.stringify({ event: "google_login_acl_denied", redirectUri, tenantId, email }));
-    return new Response("このアプリへのアクセスが許可されていません", { status: 403 });
-  }
-  // Per-app tenant partitioning (after org ACL).
-  if (!checkAppTenant(env, redirectOrigin, tenantId, email)) {
-    console.log(JSON.stringify({ event: "google_login_app_tenant_denied", redirectUri, tenantId, email }));
-    return new Response("このアカウントはこのアプリにアクセスできません", { status: 403 });
-  }
-
-  // Join flow: redirect to /join/:slug/done with JWT fragment
-  if (joinOrg) {
-    const joinDoneUrl = new URL(`${origin}/join/${joinOrg}/done`);
-    console.log(JSON.stringify({ event: "google_login_join", joinOrg }));
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: `${joinDoneUrl.toString()}#${fragment.toString()}`,
-        "Set-Cookie": setAuthCookie(token, new URL(request.url).hostname),
-      },
-    });
-  }
-
-  // Normal flow: redirect back to original redirect_uri
-  const finalUrl = new URL(redirectUri);
-  const authHostname = new URL(request.url).hostname;
-
-  // 共有 cookie (logi_auth_token, Domain=.ippoan.org) が redirect 先に届くなら、
-  // token を URL fragment に載せず cookie だけで渡す (アドレスバー/履歴に token を出さない)。
-  // 届かない host (例: *.workers.dev は public suffix で Domain cookie 不可) は従来どおり
-  // fragment で配布する (consumeFragment で受ける)。
-  if (authCookieReachesHost(authHostname, finalUrl.hostname)) {
-    console.log(JSON.stringify({ event: "google_login_success", redirectUri, delivery: "cookie" }));
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: finalUrl.toString(),
-        "Set-Cookie": setAuthCookie(token, authHostname),
-      },
-    });
-  }
-
-  // Fallback: cookie が届かない host へは fragment で渡す。
-  if (!finalUrl.searchParams.has("lw_callback")) {
-    finalUrl.searchParams.set("lw_callback", "1");
-  }
-  console.log(JSON.stringify({ event: "google_login_success", redirectUri, delivery: "fragment" }));
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: `${finalUrl.toString()}#${fragment.toString()}`,
-      "Set-Cookie": setAuthCookie(token, authHostname),
-    },
+    expiresAt,
+    tenantId: user.tenant_id,
+    email: user.email,
+    redirectUri,
+    joinOrg,
+    eventPrefix: "google_login",
   });
 }
 
