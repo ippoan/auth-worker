@@ -56,6 +56,13 @@ branches = true
 path = "src/handlers/device-claim-ticket.ts"
 branches = true
 
+# Refs #521: 警告デバイス (VoiceS3R) の公開鍵登録・一覧・失効。3 本すべてで
+# 「record の tenant_id = session の tenant」を検査しており、ここが緩むと
+# 他テナントの鍵の一覧閲覧・失効が可能になるので 100% を維持する。
+[[files]]
+path = "src/handlers/alarm-key.ts"
+branches = true
+
 [[files]]
 path = "src/handlers/health.ts"
 branches = true
