@@ -1335,6 +1335,33 @@ describe("POST /mcp/tools — get_device_log", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("offset を渡すとそのまま command に載せる (省略時は載せない)", async () => {
+    const { fetcher, calls } = mockRecorder((req) =>
+      req.method === "POST"
+        ? new Response(JSON.stringify({ id: "cmd-1" }), { status: 202 })
+        : new Response(
+            JSON.stringify({ payload: { text: "x\n", bytes: 2, total_bytes: 9000, offset: 3800 } }),
+            { status: 200 },
+          ),
+    );
+    const env = logEnv(fetcher);
+    const result = await callDeviceTool(env, { device_id: DEVICE_ID, offset: 3800 });
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(calls[0]!.body)).toEqual({
+      payload: { action: "get_log", max_bytes: 3000, offset: 3800 },
+    });
+    expect(parsed(result)).toMatchObject({ offset: 3800, total_bytes: 9000 });
+  });
+
+  it.each([-1, 1.5, "10"])("offset が非負の整数でなければ呼ぶ前に弾く (%s)", async (offset) => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 200 }));
+    const env = logEnv(fetcher);
+    const result = await callDeviceTool(env, { device_id: DEVICE_ID, offset });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("offset must be a non-negative integer");
+    expect(calls).toHaveLength(0);
+  });
+
   it("device_not_connected: recorder が 404 を返したら待たずに返す", async () => {
     const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 404 }));
     const env = logEnv(fetcher);
