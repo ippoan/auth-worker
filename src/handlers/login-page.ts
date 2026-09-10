@@ -3,6 +3,19 @@ import { getAllowedOrigins } from "../lib/config";
 import { resolveSecret } from "../lib/secret";
 import { isAllowedRedirectUri } from "../lib/security";
 import { renderLoginPage } from "../lib/html";
+import { getBounce } from "../lib/cookies";
+
+/** Referer ヘッダから origin + pathname だけを取り出す (query/fragment は落とす)。 */
+function refererOriginPath(request: Request): string | null {
+  const raw = request.headers.get("Referer");
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.origin + u.pathname;
+  } catch {
+    return null;
+  }
+}
 
 export async function handleLoginPage(
   request: Request,
@@ -47,7 +60,23 @@ export async function handleLoginPage(
   // #434 Phase 4: LINE Login は auth-worker 自身の /oauth/line/redirect を向く (旧: rust)。
   const lineLoginRedirectUrl = `${authOrigin}/oauth/line/redirect?redirect_uri=${encodeURIComponent(redirectUri)}`;
 
-  console.log(JSON.stringify({ event: "login_page", redirectUri, orgId, error }));
+  // Refs #526: /top ↔ /login の往復回数 (bounce) と直前の Referer をログへ運ぶ。
+  // count >= 3 は login_loop_detected として別イベントで 1 行追加で出す
+  // (`wrangler tail --search login_loop_detected` で即引ける)。
+  const bounce = getBounce(request);
+  const referer = refererOriginPath(request);
+  console.log(JSON.stringify({ event: "login_page", redirectUri, orgId, error, bounce, referer }));
+  if (bounce && bounce.count >= 3) {
+    console.log(
+      JSON.stringify({
+        event: "login_loop_detected",
+        count: bounce.count,
+        reason: bounce.reason,
+        redirectUri,
+        referer,
+      }),
+    );
+  }
 
   const html = renderLoginPage({
     redirectUri,

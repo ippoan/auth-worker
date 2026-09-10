@@ -4,7 +4,14 @@
  */
 import type { Env } from "../index";
 import { renderTopPage, type AppEntry } from "../lib/top-html";
-import { clearAuthCookieVariants, getAuthCookies } from "../lib/cookies";
+import {
+  clearAuthCookieVariants,
+  clearBounceCookie,
+  getAuthCookies,
+  getBounce,
+  setBounceCookie,
+  type BounceReason,
+} from "../lib/cookies";
 import { classifyOrigin, getDisplayOrigins } from "../lib/config";
 import { isTenantInOrgAllowlist } from "../lib/acl";
 import { verifyJwt, decodeJwtPayload, type JwtPayload } from "../lib/jwt";
@@ -150,6 +157,18 @@ export async function handleTopPage(
   // 手動 logout に頼らず自動回復させる (放置すると /login 往復が続く)。
   const willRedirect = !hasWoff && !hasLwCallback && !payload;
   const clearPoison = willRedirect && cookieTokens.length > 0;
+  // Refs #526: /top ↔ /login の往復回数と弾いた理由を短命 cookie (logi_bounce) で
+  // /login のログへ運ぶ。挙動には関与しない (ログ専用)。
+  const prevBounce = getBounce(request);
+  const bounceCount = (prevBounce?.count ?? 0) + 1;
+  let bounce: { count: number; reason: BounceReason } | null = null;
+  if (willRedirect) {
+    let reason: BounceReason = "invalid";
+    if (cookieTokens.length === 0) reason = "no_cookie";
+    else if (jwtDiag.expired === true) reason = "expired";
+    else if (jwtDiag.claimEnv && jwtDiag.claimEnv !== env.WORKER_ENV) reason = "env_mismatch";
+    bounce = { count: bounceCount, reason };
+  }
   console.log(
     JSON.stringify({
       event: "top_gate",
@@ -162,9 +181,10 @@ export async function handleTopPage(
       willRedirectToLogin: willRedirect,
       clearedPoisonCookie: clearPoison,
       ...jwtDiag,
+      bounce,
     }),
   );
-  if (willRedirect) {
+  if (bounce) {
     const loginUrl = `${url.origin}/login?redirect_uri=${encodeURIComponent(url.origin + "/top")}`;
     const headers = new Headers({ Location: loginUrl });
     if (clearPoison) {
@@ -172,6 +192,7 @@ export async function handleTopPage(
         headers.append("Set-Cookie", c);
       }
     }
+    headers.append("Set-Cookie", setBounceCookie(bounce.count, bounce.reason));
     return new Response(null, { status: 302, headers });
   }
 
@@ -187,8 +208,12 @@ export async function handleTopPage(
     const orgCount = await myOrgsCount(env, cookieToken);
     if (orgCount === 0) {
       const { tenantId } = claimsFromPayload(payload);
-      console.log(JSON.stringify({ event: "top_no_org", tenantId }));
-      return Response.redirect(`${url.origin}/logout`, 302);
+      const noOrgBounce = { count: bounceCount, reason: "no_org" as const };
+      console.log(JSON.stringify({ event: "top_no_org", tenantId, bounce: noOrgBounce }));
+      // Response.redirect() の headers は immutable で Set-Cookie を足せない
+      const headers = new Headers({ Location: `${url.origin}/logout` });
+      headers.append("Set-Cookie", setBounceCookie(noOrgBounce.count, noOrgBounce.reason));
+      return new Response(null, { status: 302, headers });
     }
   }
 
@@ -238,7 +263,8 @@ export async function handleTopPage(
     alcApiOrigin: env.ALC_API_ORIGIN,
     tenantId,
   });
-  return new Response(html, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+  // 正常描画 = 往復が終わったので計数をリセット (Refs #526)
+  if (prevBounce) headers.append("Set-Cookie", clearBounceCookie());
+  return new Response(html, { headers });
 }
