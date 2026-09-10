@@ -10,6 +10,7 @@ import {
 } from "../../src/handlers/device";
 import {
   createDeviceCredential,
+  getDeviceRecord,
   DEVICE_ROLE,
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_HUB,
@@ -395,6 +396,48 @@ describe("handleDeviceRevoke", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.revoked).toBe(true);
   });
+});
+
+/**
+ * dev-login (`token_kind: "dev"`) / device-key (`token_kind: "device-key"`) の
+ * Bearer では端末の登録・失効 (登録系) を 403 で弾く。token_kind なしは従来どおり
+ * (上の describe 群で確認済み)。
+ */
+describe("dev / device-key token: 登録・失効を弾く", () => {
+  it.each(["dev", "device-key"])(
+    "POST /device/pair (登録) は token_kind=%s で 403",
+    async (tokenKind) => {
+      const env = makeEnv();
+      const res = await handleDevicePair(
+        post("/device/pair", { label: "x" }, bearer(await opToken({ token_kind: tokenKind }))),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    },
+  );
+
+  it.each(["dev", "device-key"])(
+    "POST /device/revoke (失効) は token_kind=%s で 403",
+    async (tokenKind) => {
+      const env = makeEnv();
+      const cred = await createDeviceCredential(env, "tenant-1", "l", 1700);
+      const res = await handleDeviceRevoke(
+        post(
+          "/device/revoke",
+          { device_id: cred.device_id },
+          bearer(await opToken({ token_kind: tokenKind })),
+        ),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+
+      // 実際には失効していない
+      const rec = await getDeviceRecord(env, cred.device_id);
+      expect(rec?.revoked).toBeFalsy();
+    },
+  );
 });
 
 describe("handleDeviceHubToken (Refs #406)", () => {
