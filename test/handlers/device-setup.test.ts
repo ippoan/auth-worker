@@ -12,6 +12,7 @@ import {
   handleDeviceSetupBus5v,
   handleDeviceSetupReboot,
   handleDeviceSetupSite,
+  handleDeviceSetupBattery,
   DEVICE_KINDS,
 } from "../../src/handlers/device-setup";
 import { createDeviceCredential, getDeviceRecord } from "../../src/lib/device";
@@ -1137,5 +1138,213 @@ describe("handleDeviceSetupBus5v / handleDeviceSetupReboot", () => {
       ).status,
     ).toBe(403);
     expect(calls.length).toBe(0);
+  });
+});
+
+/**
+ * dev-login (`token_kind: "dev"`) / device-key (`token_kind: "device-key"`) の
+ * cookie では `/device/setup/*` の書き込む口を 403 で弾く。
+ * `/alc-proxy` の read-only enforcement (issue #433) は `/device/setup/*` を
+ * 経由しないため別途ここで持つ — 読み取りの照会 (battery/version/bus5v/gw の
+ * 状態照会) は今までどおり通ることも合わせて確認する。
+ */
+describe("dev / device-key token: /device/setup の書き込み口を弾く", () => {
+  function mockRecorder(handler: (req: Request) => Response) {
+    const calls: Array<{ url: string }> = [];
+    const fetcher = {
+      async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+        const req = new Request(input as string, init);
+        calls.push({ url: req.url });
+        return handler(req);
+      },
+    };
+    return { fetcher, calls };
+  }
+
+  /** 通常の admin session で 1 台発行しておく (dev/device-key token 自身には pair を許さないため)。 */
+  async function envWithDevice(recorder: unknown) {
+    const env = makeEnv({ ALC_RECORDER: recorder, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    return { env, deviceId: cred.device_id };
+  }
+
+  async function tokenHeaders(tokenKind: string): Promise<Record<string, string>> {
+    return { ...(await opCookie({ token_kind: tokenKind })), Origin: ISSUER };
+  }
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/pair (登録系) は token_kind=%s で 403",
+    async (tokenKind) => {
+      const env = makeEnv();
+      const res = await handleDeviceSetupPair(
+        postJson("/device/setup/pair", { label: "x" }, await tokenHeaders(tokenKind)),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    },
+  );
+
+  it.each(["dev", "device-key"])("POST /device/setup/ota は token_kind=%s で 403", async (tokenKind) => {
+    const { fetcher, calls } = mockRecorder(() => new Response(JSON.stringify({ id: "x" }), { status: 202 }));
+    const { env, deviceId } = await envWithDevice(fetcher);
+    const res = await handleDeviceSetupOta(
+      postJson(
+        "/device/setup/ota",
+        { device_id: deviceId, url: "https://fw.example.com/app.bin" },
+        await tokenHeaders(tokenKind),
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    expect(calls.length).toBe(0);
+  });
+
+  it.each(["dev", "device-key"])("POST /device/setup/reboot は token_kind=%s で 403", async (tokenKind) => {
+    const { fetcher, calls } = mockRecorder(() => new Response(JSON.stringify({ id: "x" }), { status: 202 }));
+    const { env, deviceId } = await envWithDevice(fetcher);
+    const res = await handleDeviceSetupReboot(
+      postJson("/device/setup/reboot", { device_id: deviceId }, await tokenHeaders(tokenKind)),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    expect(calls.length).toBe(0);
+  });
+
+  it.each(["dev", "device-key"])("POST /device/setup/site は token_kind=%s で 403", async (tokenKind) => {
+    const { env, deviceId } = await envWithDevice(mockRecorder(() => new Response("{}")).fetcher);
+    const before = await getDeviceRecord(env, deviceId);
+    const res = await handleDeviceSetupSite(
+      postJson(
+        "/device/setup/site",
+        { device_id: deviceId, site_id: "new-site" },
+        await tokenHeaders(tokenKind),
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    const after = await getDeviceRecord(env, deviceId);
+    expect(after?.site_id).toBe(before?.site_id);
+    expect(after?.site_id).not.toBe("new-site");
+  });
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/gw は url あり (gw_url 保存) だと token_kind=%s で 403",
+    async (tokenKind) => {
+      const { fetcher, calls } = mockRecorder(() => new Response(JSON.stringify({ id: "x" }), { status: 202 }));
+      const { env, deviceId } = await envWithDevice(fetcher);
+      const res = await handleDeviceSetupGw(
+        postJson(
+          "/device/setup/gw",
+          { device_id: deviceId, url: "ws://192.168.11.5:9000" },
+          await tokenHeaders(tokenKind),
+        ),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+      expect(calls.length).toBe(0);
+    },
+  );
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/gw は url なし (gw_status 照会) なら token_kind=%s でも通る",
+    async (tokenKind) => {
+      const { fetcher, calls } = mockRecorder(() => new Response(JSON.stringify({ id: "gw-ok" }), { status: 202 }));
+      const { env, deviceId } = await envWithDevice(fetcher);
+      const res = await handleDeviceSetupGw(
+        postJson("/device/setup/gw", { device_id: deviceId }, await tokenHeaders(tokenKind)),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "gw-ok" });
+      expect(calls.length).toBe(1);
+    },
+  );
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/battery (読み取りの照会) は token_kind=%s でも通る",
+    async (tokenKind) => {
+      const { fetcher } = mockRecorder(() => new Response(JSON.stringify({ id: "bat-ok" }), { status: 202 }));
+      const { env, deviceId } = await envWithDevice(fetcher);
+      const res = await handleDeviceSetupBattery(
+        postJson("/device/setup/battery", { device_id: deviceId }, await tokenHeaders(tokenKind)),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "bat-ok" });
+    },
+  );
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/version (読み取りの照会) は token_kind=%s でも通る",
+    async (tokenKind) => {
+      const { fetcher } = mockRecorder(() => new Response(JSON.stringify({ id: "ver-ok" }), { status: 202 }));
+      const { env, deviceId } = await envWithDevice(fetcher);
+      const res = await handleDeviceSetupVersion(
+        postJson("/device/setup/version", { device_id: deviceId }, await tokenHeaders(tokenKind)),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "ver-ok" });
+    },
+  );
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/bus5v (読み取りの照会) は token_kind=%s でも通る",
+    async (tokenKind) => {
+      const { fetcher } = mockRecorder(() => new Response(JSON.stringify({ id: "b5v-ok" }), { status: 202 }));
+      const { env, deviceId } = await envWithDevice(fetcher);
+      const res = await handleDeviceSetupBus5v(
+        postJson("/device/setup/bus5v", { device_id: deviceId }, await tokenHeaders(tokenKind)),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "b5v-ok" });
+    },
+  );
+
+  it("GET /device/setup/ota/:id (進捗ポーリング) は token_kind=dev でも通る", async () => {
+    const { fetcher } = mockRecorder(() => new Response(JSON.stringify({ id: "ota-1" }), { status: 202 }));
+    const { env, deviceId } = await envWithDevice(fetcher);
+    // command_result 未 push (recorder 404) = pending としてポーリングが通ることを確認
+    const pollRecorder = {
+      async fetch(): Promise<Response> {
+        return new Response("{}", { status: 404 });
+      },
+    };
+    const pollEnv = { ...env, ALC_RECORDER: pollRecorder } as unknown as Env;
+    void deviceId;
+    const res = await handleDeviceSetupOtaStatus(
+      getReq("/device/setup/ota/cmd-1", await tokenHeaders("dev")),
+      pollEnv,
+      "cmd-1",
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ phase: "pending" });
+  });
+
+  it("通常の admin session (token_kind 無し) は書き込む口 (ota) も今までどおり通る (回帰確認)", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "ota-admin" }), { status: 202 }),
+    );
+    const { env, deviceId } = await envWithDevice(fetcher);
+    const res = await handleDeviceSetupOta(
+      postJson(
+        "/device/setup/ota",
+        { device_id: deviceId, url: "https://example.com/fw.bin" },
+        { ...(await opCookie()), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "ota-admin" });
+    expect(calls.length).toBe(1);
   });
 });
