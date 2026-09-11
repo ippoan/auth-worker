@@ -389,7 +389,7 @@ ${renderAdminAuthScript()}
     if (days === '' || Number(days) < 0) days = '3';
     var res = await api('/notify/lineworks/login-activity?days=' + encodeURIComponent(days));
     if (res.status === 403) {
-      body.innerHTML = '<tr><td colspan="4"><div class="alert alert-warn">LINE WORKS Developer Console で <b>audit.read</b> scope を Service Account に追加してください (監査の管理者権限も必要)。追加後、トークンは scope 別にキャッシュされるので次回呼び出しから反映されます。</div></td></tr>';
+      body.innerHTML = '<tr><td colspan="4"><div class="alert alert-warn">LINE WORKS Developer Console で <b>audit.read</b> scope を Service Account に追加してください。追加後、トークンは scope 別にキャッシュされるので次回呼び出しから反映されます。</div></td></tr>';
       return;
     }
     if (!res.ok) {
