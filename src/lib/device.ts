@@ -44,9 +44,10 @@ export const DEVICE_JWT_TTL_SECONDS = 3600;
 export const DEVICE_ROLE = "device-uploader";
 
 /**
- * alc-app キオスク端末用 role。kiosk が叩く最小 route (measurements / tenko /
- * timecard 等) のみを許可する想定で、consumer (rust-alc-api) 側が route 許可を判定する。
- * carins upload (`device-uploader`) とは blast radius を用途別に分離する (Refs rust-alc-api#434)。
+ * alc-app キオスク端末用 role。許可は `device-data-proxy.ts` の `KIOSK_ROUTES`
+ * (method + path の許可表) だけが決める — rust 側では判定しない (Refs
+ * ippoan/alc-app#227)。carins upload (`device-uploader`) とは blast radius を
+ * 用途別に分離する (Refs rust-alc-api#434)。
  */
 export const DEVICE_ROLE_KIOSK = "device-kiosk";
 
