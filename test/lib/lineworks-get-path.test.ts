@@ -12,20 +12,20 @@ describe("resolveLineworksGetTarget", () => {
       scope: "board.read",
     });
     expect(
-      resolveLineworksGetTarget("/v1.0/boards/4080000000172174357/posts/1/readers", undefined),
+      resolveLineworksGetTarget("/v1.0/boards/4000000000000000001/posts/1/readers", undefined),
     ).toEqual({
       ok: true,
-      url: `${WORKS_API_ORIGIN}/v1.0/boards/4080000000172174357/posts/1/readers`,
+      url: `${WORKS_API_ORIGIN}/v1.0/boards/4000000000000000001/posts/1/readers`,
       scope: "board.read",
     });
   });
 
   it("maps /v1.0/users and UUID sub-paths (with hyphens) to directory.read", () => {
     expect(
-      resolveLineworksGetTarget("/v1.0/users/user7149-0ccd-433d-1eba-04f6901660dc", undefined),
+      resolveLineworksGetTarget("/v1.0/users/00000000-0000-4000-8000-000000000001", undefined),
     ).toEqual({
       ok: true,
-      url: `${WORKS_API_ORIGIN}/v1.0/users/user7149-0ccd-433d-1eba-04f6901660dc`,
+      url: `${WORKS_API_ORIGIN}/v1.0/users/00000000-0000-4000-8000-000000000001`,
       scope: "directory.read",
     });
   });

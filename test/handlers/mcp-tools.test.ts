@@ -1809,7 +1809,7 @@ describe("POST /mcp/tools — lineworks_get", () => {
     expect(JSON.parse(text)).toEqual({
       status: 200,
       scope: "board.read",
-      body: { readers: [{ userId: "u1", isRead: true }] },
+      body: '{"readers":[{"userId":"u1","isRead":true}]}',
     });
     const [creds, scope, url] = worksApiGetMock.mock.calls[0]!;
     expect(creds).toMatchObject({ clientId: "cid", privateKey: "PRIVATE-KEY-XYZ", botId: "bid" });
@@ -1843,6 +1843,16 @@ describe("POST /mcp/tools — lineworks_get", () => {
     };
     expect(parsed.body_truncated).toBe(true);
     expect(parsed.body).toHaveLength(64 * 1024);
+  });
+
+  it("returns the upstream body as raw text so 64bit board/post ids stay exact", async () => {
+    const env = allowedEnv();
+    routeFetch([{ id: "c-on", provider: "lineworks", enabled: true, name: "c" }]);
+    const upstream = '{"posts":[{"boardId":4000000000000000001,"postId":4000000000000000003}]}';
+    worksApiGetMock.mockResolvedValueOnce(new Response(upstream, { status: 200 }));
+    const body = await callLineworksGet(env, { path: "/v1.0/boards/4000000000000000001/posts" });
+    // 素の JSON.parse を通すと 4000000000000000001 は 4000000000000000000 に丸まる。
+    expect(JSON.parse(body.result!.content[0]!.text).body).toBe(upstream);
   });
 
   it("rejects a path outside the allowlist before touching rust or LINE WORKS", async () => {

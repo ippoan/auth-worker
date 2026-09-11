@@ -565,8 +565,9 @@ const TOOLS: ToolDef[] = [
       "integration (e.g. board read status). Only paths under /v1.0/boards (token scope " +
       "board.read) and /v1.0/users (scope directory.read) are allowed; pass query " +
       "parameters via `query` with string values (e.g. {\"count\":\"40\",\"cursor\":\"...\"}). " +
-      "Returns the upstream HTTP status and body (JSON-parsed when possible, truncated " +
-      "to 64KB). Same allowlist gate as issue_dev_token; the caller must be an admin " +
+      "Returns the upstream HTTP status and body as the raw upstream text (not parsed, so " +
+      "64-bit IDs such as boardId/postId stay exact; truncated to 64KB). Same allowlist " +
+      "gate as issue_dev_token; the caller must be an admin " +
       "of their tenant.",
     inputSchema: {
       type: "object",
@@ -606,13 +607,10 @@ const TOOLS: ToolDef[] = [
           body_truncated: true,
         };
       }
-      let body: unknown = text;
-      try {
-        body = JSON.parse(text);
-      } catch {
-        // JSON でなければ文字列のまま返す。
-      }
-      return { status: res.status, scope: target.scope, body };
+      // body は parse せず上流の生テキストのまま返す。デバッグ用の素通し口なので parse →
+      // 再直列化の往復は要らず、往復すると 64bit の boardId/postId が float64 に丸まる
+      // (2026-09-11 実測: 丸めた ID で /posts を叩くと 403)。
+      return { status: res.status, scope: target.scope, body: text };
     },
   },
   {
