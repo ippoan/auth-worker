@@ -1,4 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+vi.mock("../../src/lib/alc-internal", () => ({
+  resolveActiveDeviceTenant: vi.fn(),
+}));
+
 import {
   handleDevicePair,
   handleDevicePairInternal,
@@ -17,9 +21,12 @@ import {
   DEVICE_ROLE_GATEWAY,
 } from "../../src/lib/device";
 import { verifyJwt } from "../../src/lib/jwt";
+import { resolveActiveDeviceTenant } from "../../src/lib/alc-internal";
 import { createMockKV } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 import type { Env } from "../../src/index";
+
+const mockResolveTenant = vi.mocked(resolveActiveDeviceTenant);
 
 const SECRET = "device-test-secret";
 const ENV = "staging";
@@ -106,16 +113,22 @@ describe("handleDevicePair", () => {
   });
 });
 
-describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
+describe("handleDevicePairInternal (rust-alc-api#434 caller #5, Refs #544)", () => {
   const INTERNAL = "internal-shared-secret-32chars!!";
 
   function internalEnv(overrides: Record<string, unknown> = {}): Env {
     return makeEnv({ INTERNAL_SHARED_SECRET: INTERNAL, ...overrides })
   }
 
+  beforeEach(() => {
+    mockResolveTenant.mockReset();
+    // 既定: device_id が有効な端末を指しており tenant-9 に解決される。
+    mockResolveTenant.mockResolvedValue({ ok: true, tenantId: "tenant-9" });
+  });
+
   it("503 when no INTERNAL_SHARED_SECRET is bound", async () => {
     const res = await handleDevicePairInternal(
-      post("/device/pair-internal", { tenant_id: "t1" }, { "X-Internal-Shared-Secret": INTERNAL }),
+      post("/device/pair-internal", { device_id: "dev-1" }, { "X-Internal-Shared-Secret": INTERNAL }),
       makeEnv(),
     );
     expect(res.status).toBe(503);
@@ -123,7 +136,7 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
 
   it("401 without the shared secret header", async () => {
     const res = await handleDevicePairInternal(
-      post("/device/pair-internal", { tenant_id: "t1" }),
+      post("/device/pair-internal", { device_id: "dev-1" }),
       internalEnv(),
     );
     expect(res.status).toBe(401);
@@ -131,31 +144,33 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
 
   it("401 on a wrong shared secret", async () => {
     const res = await handleDevicePairInternal(
-      post("/device/pair-internal", { tenant_id: "t1" }, { "X-Internal-Shared-Secret": "wrong" }),
+      post("/device/pair-internal", { device_id: "dev-1" }, { "X-Internal-Shared-Secret": "wrong" }),
       internalEnv(),
     );
     expect(res.status).toBe(401);
   });
 
-  it("400 when tenant_id is missing", async () => {
+  it("400 when device_id is missing", async () => {
     const res = await handleDevicePairInternal(
       post("/device/pair-internal", {}, { "X-Internal-Shared-Secret": INTERNAL }),
       internalEnv(),
     );
     expect(res.status).toBe(400);
+    expect(mockResolveTenant).not.toHaveBeenCalled();
   });
 
-  it("issues a credential for the explicit tenant (201), no operator session needed", async () => {
+  it("issues a credential for the tenant resolved from device_id (201), no operator session / body tenant_id needed", async () => {
     const env = internalEnv();
     const res = await handleDevicePairInternal(
       post(
         "/device/pair-internal",
-        { tenant_id: "tenant-9", label: "alc-tablet" },
+        { device_id: "dev-1", label: "alc-tablet" },
         { "X-Internal-Shared-Secret": INTERNAL },
       ),
       env,
     );
     expect(res.status).toBe(201);
+    expect(mockResolveTenant).toHaveBeenCalledWith(env, "dev-1");
     const body = (await res.json()) as Record<string, string>;
     expect(body.device_id).toBeTruthy();
     expect(body.device_secret).toBeTruthy();
@@ -169,11 +184,60 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
     expect(tok.status).toBe(200);
   });
 
+  it("body.tenant_id が解決した tenant と同じなら無視して発行できる", async () => {
+    const res = await handleDevicePairInternal(
+      post(
+        "/device/pair-internal",
+        { device_id: "dev-1", tenant_id: "tenant-9", label: "alc-tablet" },
+        { "X-Internal-Shared-Secret": INTERNAL },
+      ),
+      internalEnv(),
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, string>;
+    expect(body.tenant_id).toBe("tenant-9");
+  });
+
+  it("body.tenant_id が解決した tenant と食い違えば 403", async () => {
+    const res = await handleDevicePairInternal(
+      post(
+        "/device/pair-internal",
+        { device_id: "dev-1", tenant_id: "other-tenant" },
+        { "X-Internal-Shared-Secret": INTERNAL },
+      ),
+      internalEnv(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("not_found (未登録の device_id) は 403、発行しない", async () => {
+    mockResolveTenant.mockResolvedValue({ ok: false, reason: "not_found" });
+    const res = await handleDevicePairInternal(
+      post("/device/pair-internal", { device_id: "dev-unknown" }, { "X-Internal-Shared-Secret": INTERNAL }),
+      internalEnv(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it.each([
+    ["401 (SA key 未設定で HS256 fallback して rust が 401 を返した相当)"],
+    ["500"],
+    ["malformed JSON"],
+    ["fetch 例外"],
+  ])("unavailable (%s) は 502、発行しない", async () => {
+    mockResolveTenant.mockResolvedValue({ ok: false, reason: "unavailable" });
+    const res = await handleDevicePairInternal(
+      post("/device/pair-internal", { device_id: "dev-1" }, { "X-Internal-Shared-Secret": INTERNAL }),
+      internalEnv(),
+    );
+    expect(res.status).toBe(502);
+  });
+
   it("honors an allowlisted role (kiosk)", async () => {
     const res = await handleDevicePairInternal(
       post(
         "/device/pair-internal",
-        { tenant_id: "t", role: DEVICE_ROLE_KIOSK },
+        { device_id: "dev-1", role: DEVICE_ROLE_KIOSK },
         { "X-Internal-Shared-Secret": INTERNAL },
       ),
       internalEnv(),
@@ -188,7 +252,7 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
       const res1 = await handleDevicePairInternal(
         post(
           "/device/pair-internal",
-          { tenant_id: "tenant-9", label: "kiosk-1" },
+          { device_id: "dev-1", label: "kiosk-1" },
           { "X-Internal-Shared-Secret": INTERNAL },
         ),
         env,
@@ -196,7 +260,7 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
       const res2 = await handleDevicePairInternal(
         post(
           "/device/pair-internal",
-          { tenant_id: "tenant-9", label: "kiosk-1" },
+          { device_id: "dev-1", label: "kiosk-1" },
           { "X-Internal-Shared-Secret": INTERNAL },
         ),
         env,
@@ -219,7 +283,7 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
       const res1 = await handleDevicePairInternal(
         post(
           "/device/pair-internal",
-          { tenant_id: "tenant-9", label: "kiosk-1", replace_label: true },
+          { device_id: "dev-1", label: "kiosk-1", replace_label: true },
           { "X-Internal-Shared-Secret": INTERNAL },
         ),
         env,
@@ -229,7 +293,7 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
       const res2 = await handleDevicePairInternal(
         post(
           "/device/pair-internal",
-          { tenant_id: "tenant-9", label: "kiosk-1", replace_label: true },
+          { device_id: "dev-1", label: "kiosk-1", replace_label: true },
           { "X-Internal-Shared-Secret": INTERNAL },
         ),
         env,
@@ -254,10 +318,11 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
     });
 
     it("replace_label=true with no prior credential for the label still mints (idempotent)", async () => {
+      mockResolveTenant.mockResolvedValue({ ok: true, tenantId: "tenant-fresh" });
       const res = await handleDevicePairInternal(
         post(
           "/device/pair-internal",
-          { tenant_id: "tenant-fresh", label: "first-pair", replace_label: true },
+          { device_id: "dev-1", label: "first-pair", replace_label: true },
           { "X-Internal-Shared-Secret": INTERNAL },
         ),
         internalEnv(),
@@ -272,7 +337,7 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
       const res1 = await handleDevicePairInternal(
         post(
           "/device/pair-internal",
-          { tenant_id: "tenant-9", label: "kiosk-A", replace_label: true },
+          { device_id: "dev-1", label: "kiosk-A", replace_label: true },
           { "X-Internal-Shared-Secret": INTERNAL },
         ),
         env,
@@ -283,7 +348,7 @@ describe("handleDevicePairInternal (rust-alc-api#434 caller #5)", () => {
       await handleDevicePairInternal(
         post(
           "/device/pair-internal",
-          { tenant_id: "tenant-9", label: "kiosk-B", replace_label: true },
+          { device_id: "dev-1", label: "kiosk-B", replace_label: true },
           { "X-Internal-Shared-Secret": INTERNAL },
         ),
         env,

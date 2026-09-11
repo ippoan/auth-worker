@@ -18,6 +18,7 @@ import { resolveSecret } from "../lib/secret";
 import { verifyJwt } from "../lib/jwt";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 import { isReadOnlyToken } from "./device-setup";
+import { resolveActiveDeviceTenant } from "../lib/alc-internal";
 import {
   createDeviceCredential,
   createDeviceCredentialReplacingLabel,
@@ -123,7 +124,8 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
 /**
  * POST /device/pair-internal — **server-to-server** で device credential を発行する
  * (rust-alc-api#434 caller #5、AlcoholChecker provisioning。#495 PR2 で
- * `replace_label` を追加し kiosk 端末 re-pair の mint 経路にも対応)。
+ * `replace_label` を追加し kiosk 端末 re-pair の mint 経路にも対応。#544 で
+ * tenant の決め方を「rust に登録済みで有効な端末の記録から決まる」方式に変更)。
  *
  * `/device/pair` は operator session JWT 限定だが、AlcoholChecker の端末登録 (claim) や
  * kiosk 端末の re-pair (rust-alc-api#495) は **operator が同席しない**ため使えない。
@@ -131,14 +133,15 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
  * を叩いて credential を mint する。
  *
  *   ① X-Internal-Shared-Secret を `INTERNAL_SHARED_SECRET*` と constant-time 比較 (fail-closed)。
- *   ② tenant_id は呼び出し元が明示的に渡す (必須)。
+ *   ② tenant は body の `tenant_id` を使わず、body の `device_id` で rust-alc-api の
+ *      `GET /api/internal/devices/{device_id}/pairing-tenant` に問い合わせて決める
+ *      (`resolveActiveDeviceTenant`)。解決できない (未登録 / 無効 / 到達不可) 場合は
+ *      発行しない (fail-closed)。body に `tenant_id` が送られてきていても、解決した
+ *      tenant と食い違えば拒否する。
  *   ③ `replace_label: true` なら `createDeviceCredentialReplacingLabel` で同一
  *      (tenant_id, label) の旧 credential を revoke してから新規 mint する
  *      (= kiosk re-pair の credential rotate。既定は従来通り単純 mint、
  *      AlcoholChecker provisioning 等の既存呼び出しの挙動を変えない)。
- *
- * secret が漏れると任意 tenant の device credential を mint できてしまうため、本 endpoint を
- * 叩けるのは secret を持つ caller のみ。端末には secret を焼かない。
  */
 export async function handleDevicePairInternal(request: Request, env: Env): Promise<Response> {
   const sharedSecrets = await resolveAllSharedSecrets(env);
@@ -150,8 +153,21 @@ export async function handleDevicePairInternal(request: Request, env: Env): Prom
   }
 
   const body = await readJsonBody(request);
-  const tenantId = typeof body.tenant_id === "string" ? body.tenant_id : "";
-  if (!tenantId) return jsonNoStore({ error: "tenant_id required" }, 400);
+  const deviceId = typeof body.device_id === "string" ? body.device_id : "";
+  if (!deviceId) return jsonNoStore({ error: "device_id required" }, 400);
+
+  const resolved = await resolveActiveDeviceTenant(env, deviceId);
+  if (!resolved.ok) {
+    return resolved.reason === "not_found"
+      ? jsonNoStore({ error: "forbidden" }, 403)
+      : jsonNoStore({ error: "upstream error" }, 502);
+  }
+  const tenantId = resolved.tenantId;
+  const requestedTenantId = typeof body.tenant_id === "string" ? body.tenant_id : "";
+  if (requestedTenantId && requestedTenantId !== tenantId) {
+    return jsonNoStore({ error: "forbidden" }, 403);
+  }
+
   const label = typeof body.label === "string" && body.label ? body.label : "device";
   const role = normalizeDeviceRole(body.role);
   const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
