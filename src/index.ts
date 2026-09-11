@@ -117,6 +117,7 @@ import {
   handleAlarmKeyRevoke,
 } from "./handlers/alarm-key";
 import { handleDeviceNonce, handleDeviceLogin } from "./handlers/device-login";
+import { handleDeviceAlarmNonce, handleDeviceAlarmToken } from "./handlers/device-alarm-token";
 import { handlePrintTestPdf } from "./handlers/print-test";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
 import { handleMcpAuthCallbackGoogle } from "./handlers/mcp-auth-callback-google";
@@ -673,6 +674,10 @@ export default {
             return await handleDeviceNonce(request, env);
           case "/auth/device-login":
             return await handleDeviceLogin(request, env);
+          // 同じ署名で、管理者 session ではなく短命の端末 JWT (device-kiosk) を
+          // 出す口の nonce (Refs #551)。token は POST 側の /device/alarm-token。
+          case "/device/alarm-nonce":
+            return await handleDeviceAlarmNonce(request, env);
           case "/oauth/egov/redirect":
             return await handleEgovRedirect(request, env);
           case "/oauth/egov/callback":
@@ -927,6 +932,9 @@ export default {
             return await handleDevicePairInternal(request, env);
           case "/device/token":
             return await handleDeviceToken(request, env);
+          // 警告デバイスの署名 → 短命の端末 JWT (Refs #551)。応答は /device/token と同じ形。
+          case "/device/alarm-token":
+            return await handleDeviceAlarmToken(request, env);
           case "/device/revoke":
             return await handleDeviceRevoke(request, env);
           // 拠点デバイス相互認証 (Refs #406, site-device-auth-project): hub/gateway

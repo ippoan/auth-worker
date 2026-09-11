@@ -86,6 +86,17 @@ branches = true
 path = "src/handlers/device-login.ts"
 branches = true
 
+# Refs #551: 警告デバイスの署名で短命の端末 JWT (device-kiosk) を返す口と、
+# device-login と共有する nonce 発行・消費 / 署名検証。purpose の照合・nonce の
+# single-use・revoked 判定は分岐 1 つずつなので、未検証の分岐を残さない。
+[[files]]
+path = "src/handlers/device-alarm-token.ts"
+branches = true
+
+[[files]]
+path = "src/lib/alarm-nonce.ts"
+branches = true
+
 [[files]]
 path = "src/handlers/health.ts"
 branches = true
