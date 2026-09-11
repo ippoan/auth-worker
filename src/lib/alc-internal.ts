@@ -90,6 +90,50 @@ export async function resolveSsoConfig(
   return (await res.json()) as SsoConfig;
 }
 
+/** `resolveActiveDeviceTenant` の解決結果。 */
+export type ResolveDeviceTenantResult =
+  | { ok: true; tenantId: string }
+  | { ok: false; reason: "not_found" | "unavailable" };
+
+/**
+ * device_id から、rust-alc-api に登録済みで有効な端末の tenant を解決する
+ * (Refs #544)。`/device/pair-internal` が body の tenant_id を信用せず、この
+ * 結果だけを発行 tenant として使うための lookup。
+ *
+ * 200 かつ JSON の `tenant_id` が空でない string の時だけ `ok`。404 は
+ * `not_found`。それ以外 (401・5xx・JSON 不正・tenant_id 欠落・fetch の例外) は
+ * すべて `unavailable` — 呼び出し元は fail-closed (発行しない) で扱う。
+ */
+export async function resolveActiveDeviceTenant(
+  env: Env,
+  deviceId: string,
+): Promise<ResolveDeviceTenantResult> {
+  let res: Response;
+  try {
+    res = await internalFetch(
+      env,
+      `/api/internal/devices/${encodeURIComponent(deviceId)}/pairing-tenant`,
+    );
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+  if (res.status === 404) return { ok: false, reason: "not_found" };
+  if (res.status !== 200) return { ok: false, reason: "unavailable" };
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+  const tenantId =
+    body && typeof body === "object" && typeof (body as Record<string, unknown>).tenant_id === "string"
+      ? ((body as Record<string, unknown>).tenant_id as string)
+      : "";
+  if (!tenantId) return { ok: false, reason: "unavailable" };
+  return { ok: true, tenantId };
+}
+
 /** lineworks_id で user を find-or-create する。 */
 export async function upsertLineworksUser(
   env: Env,

@@ -164,17 +164,12 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
 
   // ── device 系 token を弾く (issue #482) ───────────────────────────────────
   // device JWT (`lib/device.ts::mintDeviceJwt`) は **browser JWT と同じ
-  // `JWT_SECRET`** で署名されるので `verifyJwt` だけでは区別できない。そして
-  // `POST /device/pair-internal` は `INTERNAL_SHARED_SECRET*` (= ここの
-  // `X-Alc-Proxy-Secret` と**同じ secret 集合**) だけで **body の `tenant_id` を
-  // そのまま採用して** credential を mint する。放置すると
-  // 「secret 1 本 → 任意 tenant の device JWT → この route → `X-Tenant-ID` 詐称」
-  // が成立し、`alc-internal-proxy` が path allowlist で data 経路を塞いでいる
-  // 意味 (#434) が隣から無効化される。
+  // `JWT_SECRET`** で署名されるので `verifyJwt` だけでは区別できない。
   //
-  // この route は **browser JWT 専用**。device の data 経路は
-  // `/device-data-proxy` (role×path allowlist) 側にあるので、ここで弾いても
-  // 正規の device 用途は失われない。
+  // この route は **browser JWT 専用**。device 系 token はこの route では
+  // 受けない — device の data 経路は `/device-data-proxy`
+  // (role×path allowlist) 側にあるので、ここで弾いても正規の device 用途は
+  // 失われない。
   //
   // 判定は 2 本立てにする:
   //   ① `aud` が有る → 弾く。device JWT の `aud: "device"` (#482) に加え
