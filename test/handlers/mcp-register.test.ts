@@ -6,7 +6,7 @@
  * - successful registration
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { handleMcpRegister } from "../../src/handlers/mcp-register";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
@@ -97,6 +97,19 @@ describe("handleMcpRegister — env / body validation", () => {
 });
 
 describe("handleMcpRegister — rate limit (issue #432)", () => {
+  // rate limit の KV key は分バケット (Math.floor(now/60_000)) なので、実時計のまま
+  // 11 回叩くと途中で分が変わったときだけ flaky になる。Date を分の頭に固定する。
+  // (:134 は it の中で自前に Date.now() を取るので、fake は it の実行前=ここで効かせる)
+  beforeEach(() => {
+    const fixedMinute = Math.floor(Date.now() / 60_000) * 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixedMinute);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("429 after 10 registrations in same minute (per source IP)", async () => {
     const { env } = envWithKv();
     const req = () =>

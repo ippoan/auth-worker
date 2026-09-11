@@ -547,6 +547,18 @@ describe("handleMcpPairGrantViaOat — GITHUB_MCP_USER_ALLOWLIST ACL (2026-07-24
 });
 
 describe("handleMcpPairGrantViaOat — rate limit", () => {
+  // rate limit の KV key は分バケット (Math.floor(now/60_000)) なので、実時計のまま
+  // 11 回叩くと途中で分が変わったときだけ flaky になる。Date を分の頭に固定する。
+  beforeEach(() => {
+    const fixedMinute = Math.floor(Date.now() / 60_000) * 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixedMinute);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("429 after 10 grants in same minute (per OAT hash)", async () => {
     mockAnthropic();
     const { env } = envWith();

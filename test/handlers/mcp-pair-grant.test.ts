@@ -10,7 +10,7 @@
  * - 正常系: binding_jwt mint + last_used_at bump + mcp_url 返却
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { handleMcpPairGrant } from "../../src/handlers/mcp-pair-grant";
 import { verifyMcpJwt } from "../../src/lib/mcp-jwt";
 import {
@@ -182,6 +182,18 @@ describe("handleMcpPairGrant — refresh_token lookup", () => {
 });
 
 describe("handleMcpPairGrant — rate limit", () => {
+  // rate limit の KV key は分バケット (Math.floor(now/60_000)) なので、実時計のまま
+  // 11 回叩くと途中で分が変わったときだけ flaky になる。Date を分の頭に固定する。
+  beforeEach(() => {
+    const fixedMinute = Math.floor(Date.now() / 60_000) * 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixedMinute);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("429 when more than 10 grants per minute per refresh_token", async () => {
     const { env } = envWithKv();
     await putPairRefresh(env, await hashRefreshToken(REFRESH_TOKEN), refreshRec());

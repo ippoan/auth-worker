@@ -256,6 +256,18 @@ describe("handleMcpPairRegisterViaGithubComment — MCP_HEADLESS_GRANT_ENABLED k
 });
 
 describe("handleMcpPairRegisterViaGithubComment — rate limit", () => {
+  // rate limit の KV key は分バケット (Math.floor(now/60_000)) なので、実時計のまま
+  // 11 回叩くと途中で分が変わったときだけ flaky になる。Date を分の頭に固定する。
+  beforeEach(() => {
+    const fixedMinute = Math.floor(Date.now() / 60_000) * 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixedMinute);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("429 after 10 requests from same IP", async () => {
     mockGithubComment();
     const { env } = envWith();
