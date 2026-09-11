@@ -107,10 +107,10 @@ describe("handleDeviceDataProxy (rust-alc-api#434 followup, browser-render-rust 
     expect(res.status).toBe(401);
   });
 
-  it("allowlist に無い role は 403 (device-kiosk は route 許可を rust 側で判定する別経路)", async () => {
+  it("allowlist に無い role は 403", async () => {
     const res = await handleDeviceDataProxy(
       req("/device-data-proxy/api/dtako-logs/bulk", {
-        token: await deviceToken({ role: DEVICE_ROLE_KIOSK }),
+        token: await deviceToken({ role: "unknown-role" }),
       }),
       env(),
     );
@@ -120,6 +120,14 @@ describe("handleDeviceDataProxy (rust-alc-api#434 followup, browser-render-rust 
   it("role は許可されているが path が allowlist に無い場合は 403 (盗難時の blast radius 限定)", async () => {
     const res = await handleDeviceDataProxy(
       req("/device-data-proxy/api/employees", { token: await deviceToken() }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("path 部分が空 (= プレフィックスのみ) は \"/\" として判定される", async () => {
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy", { token: await deviceToken() }),
       env(),
     );
     expect(res.status).toBe(403);
@@ -361,6 +369,168 @@ describe("device-uploader role (carins の車検証 upload、Refs ippoan/nuxt-pw
   it("★ 他 role は /api/files を叩けない (最小権限 — 双方向に広げない)", async () => {
     const res = await handleDeviceDataProxy(
       req("/device-data-proxy/api/files", { token: await deviceToken() }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function kioskToken(): Promise<string> {
+    return signTestJwt(
+      { sub: "device-kiosk-1", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  // ★ KIOSK_ROUTES の全行を method + path で固定する (表駆動)。
+  const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
+    { method: "GET", path: "/api/employees" },
+    { method: "GET", path: "/api/employees/by-nfc/nfc-1" },
+    { method: "GET", path: "/api/employees/by-code/E001" },
+    { method: "GET", path: "/api/employees/face-data" },
+    { method: "PUT", path: "/api/employees/emp-1/face" },
+    { method: "GET", path: "/api/employees/emp-1" },
+    { method: "GET", path: "/api/timecard/punches" },
+    { method: "POST", path: "/api/measurements" },
+    { method: "POST", path: "/api/measurements/start" },
+    { method: "PUT", path: "/api/measurements/m-1" },
+    { method: "POST", path: "/api/upload/face-photo" },
+    { method: "POST", path: "/api/upload/blow-video" },
+    { method: "POST", path: "/api/upload/report-audio" },
+    { method: "GET", path: "/api/tenko/schedules/pending/emp-1" },
+    { method: "POST", path: "/api/tenko/sessions/start" },
+    { method: "PUT", path: "/api/tenko/sessions/s-1/alcohol" },
+    { method: "PUT", path: "/api/tenko/sessions/s-1/medical" },
+    { method: "PUT", path: "/api/tenko/sessions/s-1/self-declaration" },
+    { method: "PUT", path: "/api/tenko/sessions/s-1/daily-inspection" },
+    { method: "PUT", path: "/api/tenko/sessions/s-1/instruction-confirm" },
+    { method: "PUT", path: "/api/tenko/sessions/s-1/report" },
+    { method: "PUT", path: "/api/tenko/sessions/s-1/carrying-items" },
+    { method: "POST", path: "/api/tenko/sessions/s-1/cancel" },
+    { method: "GET", path: "/api/carrying-items" },
+    { method: "GET", path: "/api/devices/settings/d-1" },
+    { method: "PUT", path: "/api/devices/update-last-login" },
+    { method: "GET", path: "/api/tenko/driver-info/emp-1" },
+    { method: "GET", path: "/api/tenko/dashboard" },
+    { method: "GET", path: "/api/tenko/sessions" },
+    { method: "GET", path: "/api/tenko/sessions/s-1" },
+    { method: "POST", path: "/api/tenko/sessions/s-1/interrupt" },
+  ];
+
+  for (const { method, path } of ALLOWED) {
+    it(`${method} ${path} を forward する`, async () => {
+      const fetchMock = okFetch();
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, {
+          method,
+          token: await kioskToken(),
+          ...(method !== "GET"
+            ? { headers: { "content-type": "application/json" }, body: JSON.stringify({}) }
+            : {}),
+        }),
+        env(),
+      );
+      expect(res.status, path).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toBe(`https://alc-api.test.example${path}`);
+      const h = (init as RequestInit).headers as Record<string, string>;
+      expect(h["X-Tenant-ID"]).toBe(TENANT);
+    });
+  }
+
+  it("query は転送される (判定は pathname だけ)", async () => {
+    const fetchMock = okFetch();
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees?active=true", {
+        method: "GET",
+        token: await kioskToken(),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "https://alc-api.test.example/api/employees?active=true",
+    );
+  });
+
+  it("表にある path でも違う method は 403", async () => {
+    const fetchMock = okFetch();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "DELETE", path: "/api/employees/emp-1" },
+      { method: "GET", path: "/api/measurements/start" },
+      { method: "PUT", path: "/api/tenko/dashboard" },
+      { method: "DELETE", path: "/api/tenko/sessions/s-1" },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await kioskToken() }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("表に無い path は 403 (resume は rust 側 AuthUser 必須のため対象外のまま)", async () => {
+    const fetchMock = okFetch();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/tenko/sessions/s-1/resume" },
+      { method: "PUT", path: "/api/carrying-items/c-1" },
+      { method: "GET", path: "/api/employees/emp-1/license" },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await kioskToken() }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("segment が 1 つ多い path は 403", async () => {
+    const fetchMock = okFetch();
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees/by-nfc/nfc-1/extra", {
+        method: "GET",
+        token: await kioskToken(),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 呼び手が X-Tenant-ID を詐称しても device record の tenant で上書きされる", async () => {
+    const fetchMock = okFetch();
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", {
+        method: "GET",
+        token: await kioskToken(),
+        headers: { "X-Tenant-ID": "99999999-9999-9999-9999-999999999999" },
+      }),
+      env(),
+    );
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("★ 他 role は kiosk 用 path を叩けない (最小権限 — 双方向に広げない)", async () => {
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", { token: await deviceToken() }),
       env(),
     );
     expect(res.status).toBe(403);
