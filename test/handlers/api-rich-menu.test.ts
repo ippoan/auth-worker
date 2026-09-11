@@ -10,6 +10,12 @@ import {
   waitIfLive,
   isLive,
 } from "../helpers/stub-or-real";
+import { makeJwt } from "../helpers/live-env";
+import { TEST_JWT_SECRET } from "../helpers/mock-env";
+
+// 認証情報の取得は buildAdminForwardHeaders で JWT を検証してから rust へ転送する
+// (#434 の tenant header 対応)。creds まで届くテストは JWT_SECRET で署名した token を使う。
+const VALID_AUTH = `Bearer ${makeJwt(TEST_JWT_SECRET)}`;
 
 // Mock lineworks-bot-api to avoid real API calls and crypto operations
 vi.mock("../../src/lib/lineworks-bot-api", () => ({
@@ -329,7 +335,7 @@ describe("handleRichMenuImageUpload", () => {
     const req = new Request("https://auth.test.example/x", {
       method: "POST",
       headers: {
-        Authorization: "Bearer test-token",
+        Authorization: VALID_AUTH,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({}),
@@ -346,7 +352,7 @@ describe("handleRichMenuImageUpload", () => {
     // missing richmenuId and image
     const req = new Request("https://auth.test.example/x", {
       method: "POST",
-      headers: { Authorization: "Bearer test-token" },
+      headers: { Authorization: VALID_AUTH },
       body: formData,
     });
     const res = await handleRichMenuImageUpload(req, env);
@@ -363,7 +369,7 @@ describe("handleRichMenuImageUpload", () => {
     formData.append("image", new Blob([largeData], { type: "image/png" }), "big.png");
     const req = new Request("https://auth.test.example/x", {
       method: "POST",
-      headers: { Authorization: "Bearer test-token" },
+      headers: { Authorization: VALID_AUTH },
       body: formData,
     });
     const res = await handleRichMenuImageUpload(req, env);
@@ -379,7 +385,7 @@ describe("handleRichMenuImageUpload", () => {
     formData.append("image", new Blob(["gif"], { type: "image/gif" }), "test.gif");
     const req = new Request("https://auth.test.example/x", {
       method: "POST",
-      headers: { Authorization: "Bearer test-token" },
+      headers: { Authorization: VALID_AUTH },
       body: formData,
     });
     const res = await handleRichMenuImageUpload(req, env);
@@ -398,7 +404,7 @@ describe("handleRichMenuImageUpload", () => {
     formData.append("image", new Blob(["img"], { type: "image/png" }), "menu.png");
     const req = new Request("https://auth.test.example/x", {
       method: "POST",
-      headers: { Authorization: "Bearer test-token" },
+      headers: { Authorization: VALID_AUTH },
       body: formData,
     });
     const res = await handleRichMenuImageUpload(req, env);
@@ -417,7 +423,7 @@ describe("handleRichMenuImageUpload", () => {
     formData.append("image", new Blob(["img"], { type: "image/jpeg" }), "menu.jpg");
     const req = new Request("https://auth.test.example/x", {
       method: "POST",
-      headers: { Authorization: "Bearer test-token" },
+      headers: { Authorization: VALID_AUTH },
       body: formData,
     });
     const res = await handleRichMenuImageUpload(req, env);
@@ -434,7 +440,7 @@ describe("handleRichMenuImageUpload", () => {
     formData.append("image", new Blob(["img"], { type: "image/jpeg" }), "menu.jpeg");
     const req = new Request("https://auth.test.example/x", {
       method: "POST",
-      headers: { Authorization: "Bearer test-token" },
+      headers: { Authorization: VALID_AUTH },
       body: formData,
     });
     const res = await handleRichMenuImageUpload(req, env);
@@ -451,7 +457,7 @@ describe("handleRichMenuImageUpload", () => {
     formData.append("image", new Blob(["img"], { type: "image/png" }), "menu.png");
     const req = new Request("https://auth.test.example/x", {
       method: "POST",
-      headers: { Authorization: "Bearer test-token" },
+      headers: { Authorization: VALID_AUTH },
       body: formData,
     });
     const res = await handleRichMenuImageUpload(req, env);

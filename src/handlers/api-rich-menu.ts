@@ -4,7 +4,7 @@
  */
 
 import type { Env } from "../index";
-import type { BotCredentials, RichMenuArea } from "../lib/lineworks-bot-api";
+import type { RichMenuArea } from "../lib/lineworks-bot-api";
 import {
   listRichMenus,
   createRichMenu,
@@ -15,6 +15,8 @@ import {
   getDefaultRichMenu,
   deleteDefaultRichMenu,
 } from "../lib/lineworks-bot-api";
+// 認証情報の取得は MCP tool `lineworks_get` と共有 (#434 後の tenant header 付き転送)。
+import { getCredsFromConfig } from "../lib/lineworks-bot-creds";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -29,39 +31,6 @@ function extractToken(request: Request): string | null {
     return auth.slice(7);
   }
   return null;
-}
-
-/** Fetch decrypted BotCredentials from rust-alc-api REST API */
-async function getCredsFromConfig(
-  env: Env,
-  token: string,
-  botConfigId: string,
-): Promise<BotCredentials> {
-  const resp = await fetch(
-    `${env.ALC_API_ORIGIN}/api/admin/bot/configs/${botConfigId}/secrets`,
-    { headers: { Authorization: `Bearer ${token}` } },
-  );
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Failed to get bot config: ${resp.status} ${text}`);
-  }
-
-  const c = (await resp.json()) as {
-    client_id: string;
-    client_secret: string;
-    service_account: string;
-    private_key: string;
-    bot_id: string;
-  };
-
-  return {
-    clientId: c.client_id,
-    clientSecret: c.client_secret,
-    serviceAccount: c.service_account,
-    privateKey: c.private_key,
-    botId: c.bot_id,
-  };
 }
 
 export async function handleRichMenuList(

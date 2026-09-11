@@ -84,7 +84,8 @@ async function createJwt(creds: BotCredentials): Promise<string> {
 
 // --- OAuth2 token ---
 
-async function getAccessToken(creds: BotCredentials): Promise<string> {
+/** `scope` は既定 `bot` (Rich Menu 系)。掲示板は `board.read`、ユーザーは `directory.read`。 */
+async function getAccessToken(creds: BotCredentials, scope = "bot"): Promise<string> {
   const jwt = await createJwt(creds);
 
   const params = new URLSearchParams({
@@ -92,7 +93,7 @@ async function getAccessToken(creds: BotCredentials): Promise<string> {
     grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
     client_id: creds.clientId,
     client_secret: creds.clientSecret,
-    scope: "bot",
+    scope,
   });
 
   const res = await fetch(AUTH_TOKEN_ENDPOINT, {
@@ -108,6 +109,19 @@ async function getAccessToken(creds: BotCredentials): Promise<string> {
 
   const data = (await res.json()) as { access_token: string };
   return data.access_token;
+}
+
+/**
+ * `https://www.worksapis.com` 配下への GET を `scope` の token で行う (MCP tool
+ * `lineworks_get` 用)。`url` は `resolveLineworksGetTarget` で検証済みのものだけを渡すこと。
+ */
+export async function worksApiGet(
+  creds: BotCredentials,
+  scope: string,
+  url: string,
+): Promise<Response> {
+  const token = await getAccessToken(creds, scope);
+  return fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 }
 
 // --- Rich Menu API helpers ---

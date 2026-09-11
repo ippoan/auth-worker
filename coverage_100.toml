@@ -343,3 +343,10 @@ branches = true
 [[files]]
 path = "src/internal-entrypoint.ts"
 branches = true
+
+# #540 の掲示板調査用 MCP tool `lineworks_get` の宛先検証。Service Account の token で
+# 組織全体を読める口なので、ここが緩むと任意の LINE WORKS API を叩ける汎用転送口に
+# 化ける (internal-entrypoint と同じ理由)。
+[[files]]
+path = "src/lib/lineworks-get-path.ts"
+branches = true
