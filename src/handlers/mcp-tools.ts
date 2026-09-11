@@ -28,10 +28,15 @@
  *   - `mcp.read`  → `github_get_*`, `github_list_*` のみ
  *   - `mcp.write` → 加えて `github_create_*` も
  *   - `ota_device` (登録済みデバイスへ公式 firmware の OTA、issue #535) も `mcp.write`
+ *   - `lineworks_get` (LINE WORKS API への read-only GET、掲示板/ユーザー配下のみ。
+ *     #540 の掲示板既読の調査用) も `mcp.write` + dev-login allowlist
  */
 
 import type { Env } from "../index";
 import { issueDevLoginCode, mintDevToken, resolveTenantId } from "../lib/dev-login";
+import { worksApiGet } from "../lib/lineworks-bot-api";
+import { getCredsFromConfig, pickLineworksBotConfigId } from "../lib/lineworks-bot-creds";
+import { LINEWORKS_GET_BODY_MAX, resolveLineworksGetTarget } from "../lib/lineworks-get-path";
 import { getCommandResult, managedDeviceKind, sendDeviceCommand } from "./device-setup";
 import { DEVICE_ROLE_HUB, DEVICE_ROLE_PRINT, DEVICE_ROLE_TIMECARD } from "../lib/device";
 import { decryptWithKey } from "../lib/mcp-crypto";
@@ -550,6 +555,64 @@ const TOOLS: ToolDef[] = [
         cookieValue: minted.token,
         screenshot: screenshotRaw === true,
       });
+    },
+  },
+  {
+    name: "lineworks_get",
+    description:
+      "Read-only GET against the LINE WORKS API (https://www.worksapis.com) using the " +
+      "caller tenant's LINE WORKS Bot service account — for debugging the LINE WORKS " +
+      "integration (e.g. board read status). Only paths under /v1.0/boards (token scope " +
+      "board.read) and /v1.0/users (scope directory.read) are allowed; pass query " +
+      "parameters via `query` with string values (e.g. {\"count\":\"40\",\"cursor\":\"...\"}). " +
+      "Returns the upstream HTTP status and body (JSON-parsed when possible, truncated " +
+      "to 64KB). Same allowlist gate as issue_dev_token; the caller must be an admin " +
+      "of their tenant.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description:
+            "API path, e.g. /v1.0/boards or /v1.0/boards/{boardId}/posts/{postId}/readers",
+        },
+        query: {
+          type: "object",
+          additionalProperties: { type: "string" },
+          description: "query parameters (string values)",
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const target = resolveLineworksGetTarget(args["path"], args["query"]);
+      if (!target.ok) throw new Error(target.error);
+      const minted = await mintDevToken(ctx.env, ctx.payload);
+      if (minted.kind === "error") throw new DevLoginError(minted.status, minted.error);
+      const botConfigId = await pickLineworksBotConfigId(ctx.env, minted.token);
+      if (!botConfigId) throw new Error("no enabled LINE WORKS bot config for this tenant");
+      // creds (秘密鍵を含む) は worksApiGet に渡すだけ。応答にもログにも出さない。
+      const creds = await getCredsFromConfig(ctx.env, minted.token, botConfigId);
+      const res = await worksApiGet(creds, target.scope, target.url);
+      const text = await res.text();
+      if (text.length > LINEWORKS_GET_BODY_MAX) {
+        return {
+          status: res.status,
+          scope: target.scope,
+          body: text.slice(0, LINEWORKS_GET_BODY_MAX),
+          body_truncated: true,
+        };
+      }
+      let body: unknown = text;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        // JSON でなければ文字列のまま返す。
+      }
+      return { status: res.status, scope: target.scope, body };
     },
   },
   {

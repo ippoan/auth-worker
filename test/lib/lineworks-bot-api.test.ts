@@ -8,6 +8,7 @@ import {
   setDefaultRichMenu,
   getDefaultRichMenu,
   deleteDefaultRichMenu,
+  worksApiGet,
   type BotCredentials,
 } from "../../src/lib/lineworks-bot-api";
 
@@ -79,6 +80,35 @@ function mockTokenAndApiError(status: number, body: string) {
 }
 
 describe("lineworks-bot-api", () => {
+  describe("worksApiGet", () => {
+    it("issues a token with the requested scope and GETs the URL with it", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ access_token: "board-token" }), { status: 200 }),
+        )
+        .mockResolvedValueOnce(new Response('{"boards":[]}', { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const res = await worksApiGet(makeCreds(), "board.read", "https://www.worksapis.com/v1.0/boards");
+
+      expect(res.status).toBe(200);
+      const tokenInit = fetchMock.mock.calls[0]![1] as RequestInit;
+      expect(new URLSearchParams(String(tokenInit.body)).get("scope")).toBe("board.read");
+      expect(fetchMock.mock.calls[1]![0]).toBe("https://www.worksapis.com/v1.0/boards");
+      expect((fetchMock.mock.calls[1]![1] as RequestInit).headers).toEqual({
+        Authorization: "Bearer board-token",
+      });
+    });
+
+    it("keeps scope=bot for the Rich Menu calls", async () => {
+      mockTokenAndApi(new Response(JSON.stringify({ richmenus: [] }), { status: 200 }));
+      await listRichMenus(makeCreds()).catch(() => undefined);
+      const tokenInit = vi.mocked(globalThis.fetch).mock.calls[0]![1] as RequestInit;
+      expect(new URLSearchParams(String(tokenInit.body)).get("scope")).toBe("bot");
+    });
+  });
+
   describe("listRichMenus", () => {
     it("returns array of richmenus on success", async () => {
       const menus = [{ richmenuId: "rm1", richmenuName: "Menu 1", size: { width: 2500, height: 1686 }, areas: [] }];
