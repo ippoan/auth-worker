@@ -403,6 +403,10 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "PUT", path: "/api/employees/emp-1/face" },
     { method: "GET", path: "/api/employees/emp-1" },
     { method: "GET", path: "/api/timecard/punches" },
+    { method: "GET", path: "/api/timecard/punches/csv" },
+    { method: "GET", path: "/api/timecard/cards" },
+    { method: "POST", path: "/api/timecard/cards" },
+    { method: "DELETE", path: "/api/timecard/cards/card-1" },
     { method: "POST", path: "/api/measurements" },
     { method: "POST", path: "/api/measurements/start" },
     { method: "PUT", path: "/api/measurements/m-1" },
@@ -473,6 +477,8 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "GET", path: "/api/measurements/start" },
       { method: "PUT", path: "/api/tenko/dashboard" },
       { method: "DELETE", path: "/api/tenko/sessions/s-1" },
+      { method: "PUT", path: "/api/timecard/cards/card-1" },
+      { method: "DELETE", path: "/api/timecard/cards" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
