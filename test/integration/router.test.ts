@@ -234,6 +234,10 @@ vi.mock("../../src/handlers/device-pair", () => ({
 vi.mock("../../src/handlers/device-claim-ticket", () => ({
   handleDeviceClaimTicket: vi.fn(() => new Response("device-claim-ticket")),
 }));
+vi.mock("../../src/handlers/device-alarm-token", () => ({
+  handleDeviceAlarmNonce: vi.fn(() => new Response("device-alarm-nonce")),
+  handleDeviceAlarmToken: vi.fn(() => new Response("device-alarm-token")),
+}));
 vi.mock("../../src/handlers/auth-introspect", () => ({
   handleAuthIntrospect: vi.fn(() => new Response("auth-introspect")),
 }));
@@ -707,6 +711,26 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://auth.ippoan.org/device/claim-ticket", { method: "POST" });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("device-claim-ticket");
+  });
+
+  // --- Refs #551: 警告デバイスの署名で短命の端末 JWT を返す口 ---
+  it("GET /device/alarm-nonce → device-alarm-nonce", async () => {
+    const req = new Request("https://auth.ippoan.org/device/alarm-nonce", { method: "GET" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-alarm-nonce");
+  });
+  it("POST /device/alarm-token → device-alarm-token", async () => {
+    const req = new Request("https://auth.ippoan.org/device/alarm-token", { method: "POST" });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("device-alarm-token");
+  });
+  it("OPTIONS /device/alarm-token → CORS preflight allowing POST", async () => {
+    const req = new Request("https://auth.ippoan.org/device/alarm-token", { method: "OPTIONS" });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
+    expect(res.headers.get("Access-Control-Allow-Headers")).toContain("Content-Type");
   });
 
   // --- issue #157 Phase B: 30-day refresh_token grant ---

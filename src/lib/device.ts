@@ -448,10 +448,15 @@ export interface DeviceJwtClaims {
  * claims には `aud: "device"` が入る (Refs #482)。browser JWT 専用の route が
  * device 由来 token を弾くための正のマーカーで、`aud` を読まない既存の受け口
  * (`/auth/introspect` / `/device-data-proxy` / `/ohishi-logi-proxy`) には影響しない。
+ *
+ * record は claims に載る 3 項目だけを要求する。`/device/alarm-token` (#551) は
+ * device record を持たない端末 (警告デバイスの署名で認証した PC) 向けに、この 3 項目を
+ * 組み立てて渡す。型引数にしてあるのは、DeviceRecord 全体を object literal で渡す
+ * 既存の呼び出しが excess property check に掛からないようにするため。
  */
-export async function mintDeviceJwt(
+export async function mintDeviceJwt<R extends Pick<DeviceRecord, "device_id" | "tenant_id" | "role">>(
   env: DeviceJwtEnv,
-  record: DeviceRecord,
+  record: R,
   now: number,
   ttlSeconds: number = DEVICE_JWT_TTL_SECONDS,
 ): Promise<string> {
