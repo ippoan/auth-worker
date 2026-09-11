@@ -29,7 +29,12 @@ import { extractToken } from "../lib/errors";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
-import { DEVICE_ROLE, DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_DTAKO_RELAY } from "../lib/device";
+import {
+  DEVICE_ROLE,
+  DEVICE_ROLE_DTAKO_INGEST,
+  DEVICE_ROLE_DTAKO_RELAY,
+  DEVICE_ROLE_KIOSK,
+} from "../lib/device";
 
 const ROUTE_PREFIX = "/device-data-proxy";
 
@@ -69,6 +74,51 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
   [DEVICE_ROLE]: new Set(["/api/files"]),
 };
 
+/**
+ * `device-kiosk` role (alc-app キオスク端末) 専用の method + path 許可表
+ * (ippoan/alc-app#227)。`ROLE_PATH_ALLOWLIST` は method を見ない設計だが、
+ * kiosk は打刻以外の読み書き (employees 照会 / measurements / tenko / upload 等)
+ * を広く開ける必要があり、method を見ずに path だけで許可すると
+ * 例えば `/api/employees/{id}` の GET (照会) しか要らない口から DELETE
+ * (削除) まで通ってしまう。そのため kiosk だけ method も照合する。
+ *
+ * pattern は両端を `^…$` で固定し、可変 segment は `[^/]+` のみ許可する
+ * (segment 過多・末尾スラッシュ等の紛れ込みを防ぐ)。照合対象は pathname
+ * (`backendPath`、query を含まない) と `request.method`。
+ *
+ * 管理画面系 (employees の作成・削除・免許・NFC 更新、schedules の CRUD、
+ * records、dashboard、webhooks 等) や、rust 側が AuthUser 必須の経路
+ * (`/api/tenko/sessions/{id}/resume`)、マスタ更新用の
+ * `/api/carrying-items/{id}` はここに入れない — kiosk が実際に呼ぶ経路だけ。
+ */
+const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: "GET", pattern: /^\/api\/employees$/ },
+  { method: "GET", pattern: /^\/api\/employees\/by-nfc\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/employees\/by-code\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/employees\/face-data$/ },
+  { method: "PUT", pattern: /^\/api\/employees\/[^/]+\/face$/ },
+  { method: "GET", pattern: /^\/api\/employees\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/timecard\/punches$/ },
+  { method: "POST", pattern: /^\/api\/measurements$/ },
+  { method: "POST", pattern: /^\/api\/measurements\/start$/ },
+  { method: "PUT", pattern: /^\/api\/measurements\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/upload\/face-photo$/ },
+  { method: "POST", pattern: /^\/api\/upload\/blow-video$/ },
+  { method: "POST", pattern: /^\/api\/upload\/report-audio$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/schedules\/pending\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/tenko\/sessions\/start$/ },
+  {
+    method: "PUT",
+    pattern:
+      /^\/api\/tenko\/sessions\/[^/]+\/(alcohol|medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items)$/,
+  },
+  { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/cancel$/ },
+  { method: "GET", pattern: /^\/api\/carrying-items$/ },
+  { method: "GET", pattern: /^\/api\/devices\/settings\/[^/]+$/ },
+  { method: "PUT", pattern: /^\/api\/devices\/update-last-login$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/driver-info\/[^/]+$/ },
+];
+
 function jsonError(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
@@ -98,8 +148,18 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   // ── ② role → path allowlist (盗難時の blast radius を role 単位で限定) ──────
   const url = new URL(request.url);
   const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
-  const allowed = ROLE_PATH_ALLOWLIST[role];
-  if (!allowed || !allowed.has(backendPath)) return jsonError(403, "forbidden");
+  if (role === DEVICE_ROLE_KIOSK) {
+    // kiosk だけ method + path で判定 (上の KIOSK_ROUTES doc を参照)。
+    const matched = KIOSK_ROUTES.some(
+      (r) => r.method === request.method && r.pattern.test(backendPath),
+    );
+    if (!matched) return jsonError(403, "forbidden");
+  } else {
+    // 他 role は既存どおり method を見ない Set 完全一致 (ROLE_PATH_ALLOWLIST の
+    // doc コメントが説明する意図を変えない)。
+    const allowed = ROLE_PATH_ALLOWLIST[role];
+    if (!allowed || !allowed.has(backendPath)) return jsonError(403, "forbidden");
+  }
 
   // ── ③ OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) ────────────────
   let idToken: string;

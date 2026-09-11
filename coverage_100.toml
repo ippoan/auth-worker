@@ -62,6 +62,10 @@ branches = true
 path = "src/handlers/device-pair.ts"
 branches = true
 
+[[files]]
+path = "src/handlers/device-data-proxy.ts"
+branches = true
+
 # Refs #519: device-hub JWT で端末登録の一回券を出す入口。認可 (role/revoke) と発行上限が
 # 緩むと Google ログイン無しで kiosk credential を撒けるので 100% を維持する。
 [[files]]
