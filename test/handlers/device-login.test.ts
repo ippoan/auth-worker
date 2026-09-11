@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import crypto from "node:crypto";
 import { handleDeviceNonce, handleDeviceLogin } from "../../src/handlers/device-login";
 import { createMockEnv, createMockKV } from "../helpers/mock-env";
@@ -120,13 +120,23 @@ describe("GET /auth/device-nonce", () => {
   });
 
   it("429 after 30 requests/min from the same IP", async () => {
-    const env = makeEnv({}, { MCP_OAUTH_KV: createMockKV() });
-    for (let i = 0; i < 30; i++) {
+    // rate limit の KV key は分バケット (Math.floor(now/60_000)) なので、実時計のまま
+    // 31 回叩くと途中で分が変わったときだけ flaky になる。Date を分の頭に固定する。
+    // (同じ describe に他のテストがあるので、hook ではなく it の中の try/finally で囲む)
+    const fixedMinute = Math.floor(Date.now() / 60_000) * 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixedMinute);
+    try {
+      const env = makeEnv({}, { MCP_OAUTH_KV: createMockKV() });
+      for (let i = 0; i < 30; i++) {
+        const res = await handleDeviceNonce(nonceRequest(REDIRECT_URI), env);
+        expect(res.status, `attempt ${i + 1}`).toBe(200);
+      }
       const res = await handleDeviceNonce(nonceRequest(REDIRECT_URI), env);
-      expect(res.status, `attempt ${i + 1}`).toBe(200);
+      expect(res.status).toBe(429);
+    } finally {
+      vi.useRealTimers();
     }
-    const res = await handleDeviceNonce(nonceRequest(REDIRECT_URI), env);
-    expect(res.status).toBe(429);
   });
 });
 
@@ -295,26 +305,36 @@ describe("GET /auth/device-login", () => {
   });
 
   it("429 after 10 logins/min for the same fingerprint, distinct 401 body from failure cases", async () => {
-    const keypair = generateKeypair();
-    const { kv } = alarmKeySeed(keypair.pubRaw);
-    const env = makeEnv(kv, { MCP_OAUTH_KV: createMockKV() });
+    // rate limit の KV key は分バケット (Math.floor(now/60_000)) なので、実時計のまま
+    // 11 回叩くと途中で分が変わったときだけ flaky になる。Date を分の頭に固定する。
+    // (同じ describe に他のテストがあるので、hook ではなく it の中の try/finally で囲む)
+    const fixedMinute = Math.floor(Date.now() / 60_000) * 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixedMinute);
+    try {
+      const keypair = generateKeypair();
+      const { kv } = alarmKeySeed(keypair.pubRaw);
+      const env = makeEnv(kv, { MCP_OAUTH_KV: createMockKV() });
 
-    for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 10; i++) {
+        const { nonce, sig } = await issueNonceAndSign(env, keypair, REDIRECT_URI);
+        const res = await handleDeviceLogin(
+          loginRequest({ pubkey: b64url(keypair.pubRaw), nonce, sig, redirect_uri: REDIRECT_URI }),
+          env,
+        );
+        expect(res.status, `attempt ${i + 1}`).toBe(302);
+      }
+
       const { nonce, sig } = await issueNonceAndSign(env, keypair, REDIRECT_URI);
       const res = await handleDeviceLogin(
         loginRequest({ pubkey: b64url(keypair.pubRaw), nonce, sig, redirect_uri: REDIRECT_URI }),
         env,
       );
-      expect(res.status, `attempt ${i + 1}`).toBe(302);
+      expect(res.status).toBe(429);
+      expect(await res.json()).toEqual({ error: "rate_limited" });
+    } finally {
+      vi.useRealTimers();
     }
-
-    const { nonce, sig } = await issueNonceAndSign(env, keypair, REDIRECT_URI);
-    const res = await handleDeviceLogin(
-      loginRequest({ pubkey: b64url(keypair.pubRaw), nonce, sig, redirect_uri: REDIRECT_URI }),
-      env,
-    );
-    expect(res.status).toBe(429);
-    expect(await res.json()).toEqual({ error: "rate_limited" });
   });
 
   it("403 when APP_TENANT_ACL denies the tenant for this app (finishLogin's per-app ACL layer)", async () => {

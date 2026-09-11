@@ -4,7 +4,7 @@
  * env guard / body parse / rate-limit / KV put + response shape を網羅。
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { handleMcpPairNew } from "../../src/handlers/mcp-pair-new";
 import {
   PAIR_CODE_TTL_SEC,
@@ -206,6 +206,19 @@ describe("handleMcpPairNew — requested_scope plumbing", () => {
 });
 
 describe("handleMcpPairNew — rate limit", () => {
+  // rate limit の KV key は分バケット (Math.floor(now/60_000)) なので、実時計のまま
+  // 11 回叩くと途中で分が変わったときだけ flaky になる。Date を分の頭に固定する。
+  // (このテストは it の中で自前に Date.now() を取るので、fake は it の実行前=ここで効かせる)
+  beforeEach(() => {
+    const fixedMinute = Math.floor(Date.now() / 60_000) * 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixedMinute);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("429 after 10 requests in 1 minute from same IP", async () => {
     const { env } = envWithKv();
     // 11 連発 — 10 までは 200、11 回目は 429
