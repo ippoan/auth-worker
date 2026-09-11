@@ -11,6 +11,9 @@
  * nonce の record は `purpose` を持つ。消費時は purpose の一致を要求し、purpose の
  * 無い record は拒否する (fail-closed)。ログイン用に発行した nonce への署名を端末 JWT に
  * (またはその逆に) 使い回させないため。
+ *
+ * 鍵の record も用途 (`usage`) を持つ。署名検証時は呼び出し側 (口) の用途との一致を
+ * 要求し、usage の無い record は拒否する (nonce の purpose と同じ fail-closed)。
  */
 import type { Env } from "../index";
 import {
@@ -18,6 +21,7 @@ import {
   fingerprintFromRawPubkey,
   getAlarmKeyRecord,
   type AlarmKeyRecord,
+  type AlarmKeyUsage,
 } from "../handlers/alarm-key";
 import { verifyEd25519 } from "./ed25519";
 
@@ -101,12 +105,13 @@ export async function consumeAlarmNonce(
 
 /**
  * nonce への署名を、登録済みの公開鍵 (`alarmkey:<fp>`) で検証する。pubkey / sig の
- * decode 失敗・長さ違い・未登録・失効・保管済み公開鍵の破損・署名不一致のどれでも null
- * (呼び出し側は理由を区別せず固定の 401 を返す)。
+ * decode 失敗・長さ違い・未登録・失効・用途違い (usage の無い record を含む)・
+ * 保管済み公開鍵の破損・署名不一致のどれでも null (呼び出し側は理由を区別せず固定の
+ * 401 を返す)。
  */
 export async function verifyAlarmSignature(
   env: Env,
-  input: { pubkeyB64: string; sigB64: string; nonce: string },
+  input: { pubkeyB64: string; sigB64: string; nonce: string; usage: AlarmKeyUsage },
 ): Promise<VerifiedAlarmKey | null> {
   let pubkeyRaw: Uint8Array;
   let sig: Uint8Array;
@@ -121,6 +126,8 @@ export async function verifyAlarmSignature(
   const fingerprint = await fingerprintFromRawPubkey(pubkeyRaw);
   const record = await getAlarmKeyRecord(env, fingerprint);
   if (!record || record.revoked_at !== undefined) return null;
+  // 用途は口ごとに 1 つ。usage の無い record (undefined) もここで落ちる。
+  if (record.usage !== input.usage) return null;
 
   // 入力の pubkey は fingerprint を引く鍵にだけ使い、署名検証は必ず record 側の
   // pubkey (登録時の正本) で行う。

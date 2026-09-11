@@ -18,6 +18,7 @@
  *
  * `/auth/device-login` (#522) と nonce・署名検証を共有するが、こちらは管理者 session を
  * 作らない。nonce は purpose で分けてあり、ログイン用の nonce はここで使えない (逆も同じ)。
+ * 鍵も用途で分けてあり、ここで受け付けるのは用途 kiosk で登録した鍵だけ (Refs #554)。
  *
  * 失敗は device-login と同じく固定の 401 (どの段で落ちたかを外部に見せない)。
  * rate limit だけ 429 で区別する。ブラウザから直接 fetch されるので CORS を付ける。
@@ -112,8 +113,8 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   // a. nonce を消費 (single-use、purpose=kiosk で発行したものだけ)。
   if (!(await consumeAlarmNonce(env, nonce, "kiosk"))) return invalidAlarmToken();
 
-  // b. 登録済み・未失効の鍵で署名を検証する。
-  const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce });
+  // b. 登録済み・未失効・用途が kiosk の鍵で署名を検証する。
+  const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce, usage: "kiosk" });
   if (!verified) return invalidAlarmToken();
   const { fingerprint, record } = verified;
 

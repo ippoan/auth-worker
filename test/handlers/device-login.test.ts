@@ -39,16 +39,20 @@ function signNonceAscii(privateKey: crypto.KeyObject, nonce: string): Uint8Array
   return new Uint8Array(crypto.sign(null, Buffer.from(nonce, "ascii"), privateKey));
 }
 
-/** `alarmkey:<fp>` に登録する record と、そのための KV seed entry を組み立てる。 */
+/**
+ * `alarmkey:<fp>` に登録する record と、そのための KV seed entry を組み立てる。
+ * usage の既定はこの口の用途 (admin-login)。null で usage を持たない record にする。
+ */
 function alarmKeySeed(
   pubRaw: Uint8Array,
-  opts: { tenantId?: string; label?: string; revoked?: boolean } = {},
+  opts: { tenantId?: string; label?: string; revoked?: boolean; usage?: string | null } = {},
 ): { fp: string; kv: Record<string, string> } {
   const fp = fingerprintHex(pubRaw);
   const record = {
     pubkey: b64url(pubRaw),
     tenant_id: opts.tenantId ?? TENANT_ID,
     label: opts.label ?? LABEL,
+    ...(opts.usage === null ? {} : { usage: opts.usage ?? "admin-login" }),
     created_at: 1_700_000_000,
     ...(opts.revoked ? { revoked_at: 1_700_000_500 } : {}),
   };
@@ -299,6 +303,34 @@ describe("GET /auth/device-login", () => {
     expect(await res.json()).toEqual({ error: "invalid_device_login" });
   });
 
+  it("401 for a key registered for the kiosk usage (用途違い)", async () => {
+    const keypair = generateKeypair();
+    const { kv } = alarmKeySeed(keypair.pubRaw, { usage: "kiosk" });
+    const env = makeEnv(kv);
+
+    const { nonce, sig } = await issueNonceAndSign(env, keypair, REDIRECT_URI);
+    const res = await handleDeviceLogin(
+      loginRequest({ pubkey: b64url(keypair.pubRaw), nonce, sig, redirect_uri: REDIRECT_URI }),
+      env,
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "invalid_device_login" });
+  });
+
+  it("401 for a key record without usage (fail-closed)", async () => {
+    const keypair = generateKeypair();
+    const { kv } = alarmKeySeed(keypair.pubRaw, { usage: null });
+    const env = makeEnv(kv);
+
+    const { nonce, sig } = await issueNonceAndSign(env, keypair, REDIRECT_URI);
+    const res = await handleDeviceLogin(
+      loginRequest({ pubkey: b64url(keypair.pubRaw), nonce, sig, redirect_uri: REDIRECT_URI }),
+      env,
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "invalid_device_login" });
+  });
+
   it("401 when required query params are missing", async () => {
     const res = await handleDeviceLogin(loginRequest({ redirect_uri: REDIRECT_URI }), makeEnv());
     expect(res.status).toBe(401);
@@ -443,6 +475,7 @@ describe("GET /auth/device-login", () => {
         pubkey: "!!!corrupt!!!",
         tenant_id: TENANT_ID,
         label: LABEL,
+        usage: "admin-login",
         created_at: 1,
       }),
     });

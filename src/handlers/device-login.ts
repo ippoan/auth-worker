@@ -122,9 +122,15 @@ export async function handleDeviceLogin(request: Request, env: Env): Promise<Res
     return invalidDeviceLogin();
   }
 
-  // b. / c. fp(pubkey) で alarmkey:<fp> を引き (無い / revoked → 401)、登録済みの
-  //    公開鍵で nonce の ASCII 32 バイトへの署名を検証する (`lib/alarm-nonce.ts`)。
-  const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce });
+  // b. / c. fp(pubkey) で alarmkey:<fp> を引き (無い / revoked / 用途が admin-login
+  //    でない → 401)、登録済みの公開鍵で nonce の ASCII 32 バイトへの署名を検証する
+  //    (`lib/alarm-nonce.ts`)。
+  const verified = await verifyAlarmSignature(env, {
+    pubkeyB64,
+    sigB64,
+    nonce,
+    usage: "admin-login",
+  });
   if (!verified) {
     return invalidDeviceLogin();
   }

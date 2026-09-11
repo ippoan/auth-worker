@@ -875,15 +875,22 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <thead><tr><th>ラベル</th><th>種別</th><th>拠点ID</th><th>接続</th><th>バージョン</th><th>更新</th><th>再登録</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
-<h2>警告デバイス (VoiceS3R) の鍵</h2>
-<p class="muted">管理者ログインに加えて「VoiceS3R が USB で繋がっていること」を要求する
-2 要素目の公開鍵をここで登録・失効します (秘密鍵は機体から出ません)。デバイスを USB で
-接続してから押してください。</p>
-<p><button id="alarm-key-register" type="button">警告デバイスの鍵を登録</button></p>
+<h2>デバイスの署名鍵 (VoiceS3R = 管理者ログイン / CoreS3 = 運行者端末)</h2>
+<p class="muted">デバイスが機体内で作った署名鍵の公開鍵を、用途を選んで登録・失効します
+(秘密鍵は機体から出ません)。1 つの鍵は 1 つの用途にだけ使えます。デバイスを USB で
+接続し、用途を選んでから押してください。</p>
+<p><label>用途 <select id="alarm-key-usage">
+<option value="" selected disabled>選択してください</option>
+<option value="kiosk">運行者端末 (kiosk)</option>
+<option value="admin-login">管理者ログイン (admin-login)</option>
+</select></label>
+<button id="alarm-key-register" type="button">デバイスの鍵を登録</button></p>
+<p class="muted">管理者ログイン: この用途の鍵を挿した端末では管理者として入れます。
+管理者が手元で使う機体の鍵にだけ選んでください。</p>
 <p id="alarm-key-result"></p>
 <p id="alarm-keys-status" class="muted">読み込み中...</p>
 <table id="alarm-keys" style="display:none">
-<thead><tr><th>ラベル</th><th>fingerprint</th><th>登録日</th><th></th></tr></thead>
+<thead><tr><th>ラベル</th><th>用途</th><th>fingerprint</th><th>登録日</th><th></th></tr></thead>
 <tbody id="alarm-keys-body"></tbody>
 </table>
 <script>
@@ -1988,9 +1995,12 @@ runBtn.addEventListener("click", () => run());
 loadDevices();
 startDeviceEventStream();
 
-// --- 警告デバイス (VoiceS3R) の鍵登録・一覧・失効 (Refs #521) ---
+// --- デバイスの署名鍵の登録・一覧・失効 (Refs #521, #554) ---
 const alarmKeyRegisterBtn = document.getElementById("alarm-key-register");
 const alarmKeyResultEl = document.getElementById("alarm-key-result");
+const alarmKeyUsageEl = document.getElementById("alarm-key-usage");
+// 鍵の用途 → 表示名 (サーバ側 AlarmKeyUsage と対)
+const ALARM_KEY_USAGE_DISPLAY = { kiosk: "運行者端末", "admin-login": "管理者ログイン" };
 
 // operator の tenant に登録済みの警告デバイス鍵一覧を読み込んで描画する。
 async function loadAlarmKeys() {
@@ -2016,6 +2026,10 @@ async function loadAlarmKeys() {
       const labelTd = document.createElement("td");
       labelTd.textContent = k.label;
       tr.appendChild(labelTd);
+
+      const usageTd = document.createElement("td");
+      usageTd.textContent = ALARM_KEY_USAGE_DISPLAY[k.usage] || "(用途なし・使用不可)";
+      tr.appendChild(usageTd);
 
       const fpTd = document.createElement("td");
       fpTd.className = "did";
@@ -2062,8 +2076,8 @@ async function revokeAlarmKey(fingerprint, label) {
   }
 }
 
-// USB (WebSerial) で繋いだ VoiceS3R に鍵を作らせ (無ければ新規、既にあれば
-// 既存の公開鍵をそのまま使う)、その公開鍵をテナントに登録する。既存の
+// USB (WebSerial) で繋いだデバイスに鍵を作らせ (無ければ新規、既にあれば
+// 既存の公開鍵をそのまま使う)、その公開鍵を選んだ用途でテナントに登録する。既存の
 // CoreS3/AtomS3 登録 (runCoreS3OrPrint) と同じ構造化行プロトコルの上に立つが、
 // AUTH SET のような credential 注入は行わない (公開鍵の登録のみ)。
 async function registerAlarmKey() {
@@ -2071,6 +2085,8 @@ async function registerAlarmKey() {
   alarmKeyResultEl.textContent = "";
   let port;
   try {
+    const usage = alarmKeyUsageEl.value;
+    if (!ALARM_KEY_USAGE_DISPLAY[usage]) throw new Error("用途を選んでから登録してください");
     if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
     port = await navigator.serial.requestPort();
     await port.open({ baudRate: 115200 });
@@ -2142,14 +2158,15 @@ async function registerAlarmKey() {
     await port.close().catch(() => {});
     port = null;
 
-    const label = (prompt("この警告デバイスのラベル (1〜64文字)", "voice-s3r") || "").trim();
+    const defaultLabel = usage === "admin-login" ? "voice-s3r" : "cores3";
+    const label = (prompt("このデバイスのラベル (1〜64文字)", defaultLabel) || "").trim();
     if (!label) throw new Error("ラベルが未入力のため中止しました");
 
     const res = await fetch(ISSUER + "/device/setup/alarm-key", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ pubkey, label }),
+      body: JSON.stringify({ pubkey, label, usage }),
     });
     if (res.status === 409) throw new Error("この鍵は既に登録済みです");
     if (!res.ok) throw new Error("登録に失敗: HTTP " + res.status);
