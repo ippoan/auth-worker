@@ -12,9 +12,9 @@
  *   ② cookie / Bearer の browser JWT を **ローカル検証** (JWT_SECRET 所有) + ACL
  *      (origin × tenant、`X-Alc-Proxy-Origin` ヘッダの consumer origin で判定)。
  *      **device 系 token (`aud` 有り / `role ∈ DEVICE_ROLES`) はここで弾く** —
- *      同じ `JWT_SECRET` で署名されるので署名だけでは区別できず、通すと
- *      `/device/pair-internal` (shared secret のみ・`tenant_id` は呼び手指定)
- *      と繋がって任意 tenant の `X-Tenant-ID` 詐称が成立する (#482)
+ *      同じ `JWT_SECRET` で署名されるので署名だけでは区別できない (#482)。この
+ *      route は browser JWT 専用で、device 系 token はここでは受けない
+ *      (device の data 経路は `/device-data-proxy` 側)
  *   ③ `run.invoker` SA key (`ALC_API_PROXY_SA_KEY`、auth-worker のみ bind) で
  *      Google OIDC ID token を mint
  *   ④ `ALC_API_ORIGIN` (= rust-alc-api、Cloud Run IAM lockdown 後) へ
