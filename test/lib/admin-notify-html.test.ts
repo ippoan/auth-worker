@@ -25,11 +25,12 @@ describe("renderAdminNotifyPage", () => {
     expect(html).not.toContain('"https://evil.test";');
   });
 
-  it("contains 3 tabs (LINE WORKS / Recipients / Groups)", () => {
+  it("contains 4 tabs (LINE WORKS / Recipients / Groups / ログイン状況)", () => {
     const html = renderAdminNotifyPage(ORIGIN);
     expect(html).toContain("LINE WORKS から追加");
     expect(html).toContain("受信者一覧");
     expect(html).toContain("グループ管理");
+    expect(html).toContain("ログイン状況");
   });
 
   it("#474: 共通門番 (cookie → sessionStorage) を使い、無ければ /login へ飛ばす", () => {
@@ -74,5 +75,17 @@ describe("renderAdminNotifyPage", () => {
   it("shows directory.read scope guidance when LINE WORKS returns 403", () => {
     const html = renderAdminNotifyPage(ORIGIN);
     expect(html).toContain("directory.read");
+  });
+
+  it("#540: ログイン状況タブが login-activity endpoint を N 日しきい値付きで叩く", () => {
+    const html = renderAdminNotifyPage(ORIGIN);
+    expect(html).toContain("/notify/lineworks/login-activity?days=");
+    expect(html).toContain('id="la-days"');
+    expect(html).toContain('value="3"');
+  });
+
+  it("#540: audit.read scope 不足時の 403 ガイダンスを表示する", () => {
+    const html = renderAdminNotifyPage(ORIGIN);
+    expect(html).toContain("audit.read");
   });
 });
