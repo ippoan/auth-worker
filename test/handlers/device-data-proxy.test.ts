@@ -423,6 +423,10 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "GET", path: "/api/devices/settings/d-1" },
     { method: "PUT", path: "/api/devices/update-last-login" },
     { method: "GET", path: "/api/tenko/driver-info/emp-1" },
+    { method: "GET", path: "/api/tenko/dashboard" },
+    { method: "GET", path: "/api/tenko/sessions" },
+    { method: "GET", path: "/api/tenko/sessions/s-1" },
+    { method: "POST", path: "/api/tenko/sessions/s-1/interrupt" },
   ];
 
   for (const { method, path } of ALLOWED) {
@@ -467,6 +471,8 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     const cases: ReadonlyArray<{ method: string; path: string }> = [
       { method: "DELETE", path: "/api/employees/emp-1" },
       { method: "GET", path: "/api/measurements/start" },
+      { method: "PUT", path: "/api/tenko/dashboard" },
+      { method: "DELETE", path: "/api/tenko/sessions/s-1" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
@@ -478,7 +484,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("表に無い path は 403", async () => {
+  it("表に無い path は 403 (resume は rust 側 AuthUser 必須のため対象外のまま)", async () => {
     const fetchMock = okFetch();
     const cases: ReadonlyArray<{ method: string; path: string }> = [
       { method: "POST", path: "/api/tenko/sessions/s-1/resume" },

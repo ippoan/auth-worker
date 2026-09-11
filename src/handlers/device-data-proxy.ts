@@ -87,9 +87,14 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * (`backendPath`、query を含まない) と `request.method`。
  *
  * 管理画面系 (employees の作成・削除・免許・NFC 更新、schedules の CRUD、
- * records、dashboard、webhooks 等) や、rust 側が AuthUser 必須の経路
+ * records、webhooks 等) や、rust 側が AuthUser 必須の経路
  * (`/api/tenko/sessions/{id}/resume`)、マスタ更新用の
  * `/api/carrying-items/{id}` はここに入れない — kiosk が実際に呼ぶ経路だけ。
+ *
+ * 点呼の dashboard / sessions 一覧・詳細・中断 (Refs ippoan/alc-app#227
+ * フォローアップ) は、kiosk の「管理者タブ」(RoleAuthGate の manager 要件 =
+ * NFC + 顔認証で通過、Google ログイン不要) が既定表示で呼ぶ経路なので含める。
+ * resume だけは上のとおり rust 側 AuthUser 必須のため対象外。
  */
 const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees$/ },
@@ -117,6 +122,10 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/devices\/settings\/[^/]+$/ },
   { method: "PUT", pattern: /^\/api\/devices\/update-last-login$/ },
   { method: "GET", pattern: /^\/api\/tenko\/driver-info\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/dashboard$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/sessions$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/sessions\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/interrupt$/ },
 ];
 
 function jsonError(status: number, error: string): Response {
