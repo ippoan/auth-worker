@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderAdminNotifyPage } from "../../src/lib/admin-notify-html";
+import { LOGIN_SOURCE_LABELS, renderAdminNotifyPage } from "../../src/lib/admin-notify-html";
 
 describe("renderAdminNotifyPage", () => {
   const ORIGIN = "https://alc-api.test.example";
@@ -87,5 +87,44 @@ describe("renderAdminNotifyPage", () => {
   it("#540: audit.read scope 不足時の 403 ガイダンスを表示する", () => {
     const html = renderAdminNotifyPage(ORIGIN);
     expect(html).toContain("audit.read");
+  });
+
+  it("#540: 根拠の絞り込み select の option value は rust の last_login_source リテラル + none", () => {
+    const html = renderAdminNotifyPage(ORIGIN);
+    const select = html.match(/<select id="la-source">([\s\S]*?)<\/select>/);
+    expect(select).not.toBeNull();
+    const options = [...(select?.[1] ?? "").matchAll(/<option value="([^"]*)">([^<]*)<\/option>/g)].map(
+      (m) => [m[1], m[2]],
+    );
+    // "auth" / "message" / "board" は rust-alc-api lineworks_login_activity.rs の
+    // activity_source が返すリテラル。"" = すべて、"none" = last_login_at が無い行。
+    expect(options).toEqual([
+      ["", "すべて"],
+      ["auth", "ログイン"],
+      ["message", "メッセージ送信"],
+      ["board", "掲示板既読"],
+      ["none", "記録なし"],
+    ]);
+  });
+
+  it("#540: 根拠列のラベル表が script に同じ値で埋まり、表に無い値は「—」でセルは esc() を通す", () => {
+    expect(LOGIN_SOURCE_LABELS).toEqual({
+      auth: "ログイン",
+      message: "メッセージ送信",
+      board: "掲示板既読",
+    });
+    const html = renderAdminNotifyPage(ORIGIN);
+    const embedded = html.match(/var LA_SOURCE_LABELS = (\{.*?\});/);
+    expect(embedded).not.toBeNull();
+    expect(JSON.parse(embedded?.[1] ?? "null") as Record<string, string>).toEqual(LOGIN_SOURCE_LABELS);
+    expect(html).toContain("hasOwnProperty.call(LA_SOURCE_LABELS, source) ? LA_SOURCE_LABELS[source] : '—'");
+    expect(html).toContain("esc(laSourceLabel(r.last_login_source))");
+    expect(html).not.toMatch(/'\s*\+\s*r\.last_login_source\s*\+/);
+  });
+
+  it("#540: ログイン状況は 5 列 (最終活動 / 根拠) で、絞り込みの変更は再取得せず再描画だけ", () => {
+    const html = renderAdminNotifyPage(ORIGIN);
+    expect(html).toContain("<th>名前</th><th>メール</th><th>最終活動</th><th>根拠</th><th>状態</th>");
+    expect(html).toContain("getElementById('la-source').addEventListener('change', renderLoginActivity)");
   });
 });

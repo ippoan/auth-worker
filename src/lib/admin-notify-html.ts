@@ -6,7 +6,8 @@
  *   2. Recipients — list + edit enabled flag + delete (GET/PUT/DELETE /notify/recipients)
  *   3. Groups — list + CRUD + add/remove members (/notify/groups/*)
  *   4. ログイン状況 — proxy of GET /notify/lineworks/login-activity?days=N
- *      (Refs #540。LINE WORKS 監査ログ API 由来の最終ログイン日時を N 日しきい値で確認する用途。
+ *      (Refs #540。LINE WORKS のログイン・メッセージ送信・掲示板既読を合成した最終活動日時と
+ *      その根拠 (last_login_source) を N 日しきい値で確認する用途。根拠で絞り込める。
  *      リマインド送信等の自動アクションは対象外、一覧確認のみ)
  *
  * Auth: 共通門番 `__adminAuth` (cookie `logi_auth_token` → sessionStorage `auth_token`)。
@@ -15,8 +16,22 @@
 
 import { renderAdminAuthScript } from "./admin-auth-script";
 
+/**
+ * login-activity の `last_login_source` → 根拠列の表示ラベル。キーは rust-alc-api
+ * `lineworks_login_activity.rs` の `activity_source` が返すリテラルと一致させること
+ * (絞り込み select の option value もここから作る)。表に無い値・欠落は「—」。
+ */
+export const LOGIN_SOURCE_LABELS = {
+  auth: "ログイン",
+  message: "メッセージ送信",
+  board: "掲示板既読",
+} as const;
+
 export function renderAdminNotifyPage(alcApiOrigin: string): string {
   const apiJson = JSON.stringify(alcApiOrigin);
+  const sourceOptions = Object.entries(LOGIN_SOURCE_LABELS)
+    .map(([value, label]) => `<option value="${value}">${label}</option>`)
+    .join("");
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -115,16 +130,17 @@ export function renderAdminNotifyPage(alcApiOrigin: string): string {
     </div>
 
     <div id="tab-login-activity" class="tab-panel">
-      <p class="muted" style="margin-bottom:0.5rem;">LINE WORKS の監査ログ (ログイン履歴) から最終ログイン日時を確認します。確認のみ・自動送信はしません。モバイルアプリはセッションを保持するため「記録なし」でも未使用とは限りません。</p>
+      <p class="muted" style="margin-bottom:0.5rem;">LINE WORKS のログイン・メッセージ送信・掲示板既読のうち最も新しい日時 (最終活動) と、その根拠を確認します。確認のみ・自動送信はしません。モバイルアプリはセッションを保持するため「記録なし」でも未使用とは限りません。</p>
       <div class="row">
         <button id="la-reload" class="btn btn-gray btn-sm">再読み込み</button>
         <label>N日以上ログインなし: <input type="number" id="la-days" value="3" min="0" style="width:4rem;"></label>
+        <label>根拠: <select id="la-source"><option value="">すべて</option>${sourceOptions}<option value="none">記録なし</option></select></label>
       </div>
       <table>
         <thead>
-          <tr><th>名前</th><th>メール</th><th>最終ログイン</th><th>状態</th></tr>
+          <tr><th>名前</th><th>メール</th><th>最終活動</th><th>根拠</th><th>状態</th></tr>
         </thead>
-        <tbody id="la-body"><tr><td colspan="4" class="muted">読み込み中...</td></tr></tbody>
+        <tbody id="la-body"><tr><td colspan="5" class="muted">読み込み中...</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -382,23 +398,50 @@ ${renderAdminAuthScript()}
   });
 
   // --- Login activity (#540) ---
+  // 取得済みの行。null = 未取得・取得中・失敗 (この間は絞り込みを変えても描き直さない)。
+  var laRows = null;
+  var LA_SOURCE_LABELS = ${JSON.stringify(LOGIN_SOURCE_LABELS)};
+  function laSourceLabel(source) {
+    // 表に無い値・欠落 (rust 未反映) は「—」。prototype のキーを拾わないよう own property だけ見る。
+    return Object.prototype.hasOwnProperty.call(LA_SOURCE_LABELS, source) ? LA_SOURCE_LABELS[source] : '—';
+  }
+
   async function loadLoginActivity() {
     var body = document.getElementById('la-body');
-    body.innerHTML = '<tr><td colspan="4" class="muted">読み込み中...</td></tr>';
+    laRows = null;
+    body.innerHTML = '<tr><td colspan="5" class="muted">読み込み中...</td></tr>';
     var days = document.getElementById('la-days').value;
     if (days === '' || Number(days) < 0) days = '3';
     var res = await api('/notify/lineworks/login-activity?days=' + encodeURIComponent(days));
     if (res.status === 403) {
-      body.innerHTML = '<tr><td colspan="4"><div class="alert alert-warn">LINE WORKS Developer Console で <b>audit.read</b> scope を Service Account に追加してください。追加後、トークンは scope 別にキャッシュされるので次回呼び出しから反映されます。</div></td></tr>';
+      body.innerHTML = '<tr><td colspan="5"><div class="alert alert-warn">LINE WORKS Developer Console で <b>audit.read</b> scope を Service Account に追加してください。追加後、トークンは scope 別にキャッシュされるので次回呼び出しから反映されます。</div></td></tr>';
       return;
     }
     if (!res.ok) {
-      body.innerHTML = '<tr><td colspan="4" class="alert alert-error">読み込み失敗: HTTP ' + res.status + '</td></tr>';
+      body.innerHTML = '<tr><td colspan="5" class="alert alert-error">読み込み失敗: HTTP ' + res.status + '</td></tr>';
       return;
     }
     var rows = await res.json();
-    if (!Array.isArray(rows) || rows.length === 0) {
-      body.innerHTML = '<tr><td colspan="4" class="muted">LINE WORKS ユーザーがいません</td></tr>';
+    laRows = Array.isArray(rows) ? rows : [];
+    renderLoginActivity();
+  }
+
+  // 根拠の絞り込みを適用して描く。select の change からは再取得せずこれだけ呼ぶ。
+  function renderLoginActivity() {
+    if (laRows === null) return;
+    var body = document.getElementById('la-body');
+    if (laRows.length === 0) {
+      body.innerHTML = '<tr><td colspan="5" class="muted">LINE WORKS ユーザーがいません</td></tr>';
+      return;
+    }
+    var filter = document.getElementById('la-source').value;
+    var rows = laRows.filter(function(r){
+      if (filter === '') return true;
+      if (filter === 'none') return !r.last_login_at;
+      return r.last_login_source === filter;
+    });
+    if (rows.length === 0) {
+      body.innerHTML = '<tr><td colspan="5" class="muted">該当するユーザーがいません</td></tr>';
       return;
     }
     body.innerHTML = rows.map(function(r){
@@ -410,6 +453,7 @@ ${renderAdminAuthScript()}
         '<td>' + esc(r.user_name || '') + '</td>' +
         '<td>' + esc(r.email || '') + '</td>' +
         '<td>' + lastLogin + '</td>' +
+        '<td>' + esc(laSourceLabel(r.last_login_source)) + '</td>' +
         '<td>' + badge + '</td>' +
         '</tr>';
     }).join('');
@@ -417,6 +461,7 @@ ${renderAdminAuthScript()}
 
   document.getElementById('la-reload').addEventListener('click', loadLoginActivity);
   document.getElementById('la-days').addEventListener('change', loadLoginActivity);
+  document.getElementById('la-source').addEventListener('change', renderLoginActivity);
 
   // initial load
   loadLineworksUsers();
