@@ -1,13 +1,17 @@
 import { describe, it, expect } from "vitest";
+import crypto from "node:crypto";
 import {
   issueAlarmNonce,
   consumeAlarmNonce,
+  verifyAlarmSignature,
   ALARM_NONCE_TTL_SEC,
 } from "../../src/lib/alarm-nonce";
+import type { AlarmKeyUsage } from "../../src/handlers/alarm-key";
 import { createMockEnv, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 const REDIRECT_URI = "https://app1.test.example/page";
+const NONCE = "0123456789abcdef0123456789abcdef";
 
 function kv(env: Env): MockKV {
   return env.AUTH_CONFIG as unknown as MockKV;
@@ -77,5 +81,66 @@ describe("consumeAlarmNonce", () => {
     expect(await consumeAlarmNonce(env, "e".repeat(32), "kiosk")).toBeNull();
     kv(env)._data[`devnonce:${"f".repeat(32)}`] = "{not json";
     expect(await consumeAlarmNonce(env, "f".repeat(32), "kiosk")).toBeNull();
+  });
+});
+
+describe("verifyAlarmSignature の用途 (usage) 照合", () => {
+  /**
+   * ed25519 の鍵対を作り、`alarmkey:<fp>` に record を積んで、NONCE (ASCII) への署名と
+   * 一緒に返す。usage が null なら usage を持たない record にする。
+   */
+  function seedSignedKey(
+    env: Env,
+    usage: string | null,
+  ): { pubkeyB64: string; sigB64: string; fp: string } {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+    const pubDer = publicKey.export({ format: "der", type: "spki" });
+    const pubRaw = pubDer.subarray(pubDer.length - 32);
+    const fp = crypto.createHash("sha256").update(pubRaw).digest("hex").slice(0, 16);
+    kv(env)._data[`alarmkey:${fp}`] = JSON.stringify({
+      pubkey: pubRaw.toString("base64url"),
+      tenant_id: "tenant-1",
+      label: "test",
+      ...(usage === null ? {} : { usage }),
+      created_at: 1_700_000_000,
+    });
+    const sig = crypto.sign(null, Buffer.from(NONCE, "ascii"), privateKey);
+    return { pubkeyB64: pubRaw.toString("base64url"), sigB64: sig.toString("base64url"), fp };
+  }
+
+  it.each<AlarmKeyUsage>(["admin-login", "kiosk"])("用途 %s が一致すれば鍵を返す", async (usage) => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64, fp } = seedSignedKey(env, usage);
+    const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage });
+    expect(verified?.fingerprint).toBe(fp);
+    expect(verified?.record.usage).toBe(usage);
+  });
+
+  it.each<[AlarmKeyUsage, AlarmKeyUsage]>([
+    ["admin-login", "kiosk"],
+    ["kiosk", "admin-login"],
+  ])("用途 %s の鍵を %s の口で使うと null", async (registered, requested) => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64 } = seedSignedKey(env, registered);
+    expect(
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: requested }),
+    ).toBeNull();
+  });
+
+  it.each<AlarmKeyUsage>(["admin-login", "kiosk"])(
+    "usage を持たない record は %s の口でも null (fail-closed)",
+    async (usage) => {
+      const env = createMockEnv();
+      const { pubkeyB64, sigB64 } = seedSignedKey(env, null);
+      expect(await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage })).toBeNull();
+    },
+  );
+
+  it("未知の usage 値を持つ record も null", async () => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64 } = seedSignedKey(env, "admin");
+    expect(
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk" }),
+    ).toBeNull();
   });
 });

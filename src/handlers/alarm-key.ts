@@ -7,9 +7,13 @@
  * VoiceS3R を USB で繋いでいる」ことを示す 2 要素目の認証に使う — ログイン
  * (nonce 署名 / device-login) は次の issue (この record の形を渡す)。
  *
- *   POST /device/setup/alarm-key         — {pubkey, label} → 登録
+ *   POST /device/setup/alarm-key         — {pubkey, label, usage} → 登録
  *   GET  /device/setup/alarm-keys        — operator の tenant の一覧
  *   POST /device/setup/alarm-key/revoke  — {fingerprint} → 失効 (削除しない)
+ *
+ * 鍵は登録時に用途 (`usage`) を 1 つだけ持つ。`admin-login` は `/auth/device-login`
+ * (VoiceS3R)、`kiosk` は `/device/alarm-token` (CoreS3 の運行者端末) でだけ受け付ける
+ * (照合は `lib/alarm-nonce.ts::verifyAlarmSignature` の 1 か所)。
  *
  * KV (AUTH_CONFIG):
  *   `alarmkey:<fingerprint>`   → AlarmKeyRecord
@@ -33,12 +37,20 @@ function jsonNoStore(body: unknown, status = 200): Response {
   });
 }
 
+/** 鍵の用途。`admin-login` = device-login、`kiosk` = alarm-token。1 鍵 1 用途。 */
+export type AlarmKeyUsage = "admin-login" | "kiosk";
+
+function isAlarmKeyUsage(value: unknown): value is AlarmKeyUsage {
+  return value === "admin-login" || value === "kiosk";
+}
+
 /** KV に保管する警告デバイス公開鍵レコード。 */
 export interface AlarmKeyRecord {
   /** base64url エンコードした ed25519 公開鍵 (raw 32 B)。 */
   pubkey: string;
   tenant_id: string;
   label: string;
+  usage: AlarmKeyUsage;
   created_at: number;
   /** 失効時刻 (unix 秒)。未設定 = 有効。 */
   revoked_at?: number;
@@ -135,7 +147,7 @@ async function readTenantIndex(env: Env, tenantId: string): Promise<string[]> {
 }
 
 /**
- * POST /device/setup/alarm-key — {pubkey, label} を検証し、operator の
+ * POST /device/setup/alarm-key — {pubkey, label, usage} を検証し、operator の
  * session tenant で record を作って登録する。
  */
 export async function handleAlarmKeyRegister(request: Request, env: Env): Promise<Response> {
@@ -153,6 +165,10 @@ export async function handleAlarmKeyRegister(request: Request, env: Env): Promis
     return jsonNoStore({ error: "label は 1〜64 文字で必要です" }, 400);
   }
   const label = body.label as string;
+  if (!isAlarmKeyUsage(body.usage)) {
+    return jsonNoStore({ error: "usage は admin-login か kiosk で必要です" }, 400);
+  }
+  const usage = body.usage;
 
   const existing = await getAlarmKeyRecord(env, fingerprint);
   if (existing) {
@@ -164,6 +180,7 @@ export async function handleAlarmKeyRegister(request: Request, env: Env): Promis
     pubkey: body.pubkey as string,
     tenant_id: pre.session.tenantId,
     label,
+    usage,
     created_at: now,
   };
   await env.AUTH_CONFIG.put(recordKey(fingerprint), JSON.stringify(record));
@@ -186,8 +203,13 @@ export async function handleAlarmKeyList(request: Request, env: Env): Promise<Re
   if (pre instanceof Response) return pre;
 
   const fingerprints = await readTenantIndex(env, pre.session.tenantId);
-  const keys: Array<{ fingerprint: string; label: string; created_at: number; revoked_at?: number }> =
-    [];
+  const keys: Array<{
+    fingerprint: string;
+    label: string;
+    usage: AlarmKeyUsage;
+    created_at: number;
+    revoked_at?: number;
+  }> = [];
   for (const fingerprint of fingerprints) {
     const record = await getAlarmKeyRecord(env, fingerprint);
     // 他 tenant の鍵は索引が指していても混入させない (二重の tenant 検査)。
@@ -195,6 +217,7 @@ export async function handleAlarmKeyList(request: Request, env: Env): Promise<Re
     keys.push({
       fingerprint,
       label: record.label,
+      usage: record.usage,
       created_at: record.created_at,
       ...(record.revoked_at !== undefined ? { revoked_at: record.revoked_at } : {}),
     });

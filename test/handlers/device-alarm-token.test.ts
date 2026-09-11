@@ -60,15 +60,17 @@ function signNonceAscii(privateKey: crypto.KeyObject, nonce: string): string {
   return b64url(new Uint8Array(crypto.sign(null, Buffer.from(nonce, "ascii"), privateKey)));
 }
 
+/** usage の既定はこの口の用途 (kiosk)。null で usage を持たない record にする。 */
 function alarmKeySeed(
   pubRaw: Uint8Array,
-  opts: { revoked?: boolean } = {},
+  opts: { revoked?: boolean; usage?: string | null } = {},
 ): { fp: string; kv: Record<string, string> } {
   const fp = fingerprintHex(pubRaw);
   const record = {
     pubkey: b64url(pubRaw),
     tenant_id: TENANT_ID,
     label: "テスト警告灯",
+    ...(opts.usage === null ? {} : { usage: opts.usage ?? "kiosk" }),
     created_at: 1_700_000_000,
     ...(opts.revoked ? { revoked_at: 1_700_000_500 } : {}),
   };
@@ -234,6 +236,22 @@ describe("POST /device/alarm-token", () => {
   it("失効した鍵は 401", async () => {
     const keypair = generateKeypair();
     const env = makeEnv(alarmKeySeed(keypair.pubRaw, { revoked: true }).kv);
+    await expectInvalid(
+      await handleDeviceAlarmToken(tokenRequest(await signedBody(env, keypair)), env),
+    );
+  });
+
+  it("用途 admin-login で登録した鍵は 401 (用途違い)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "admin-login" }).kv);
+    await expectInvalid(
+      await handleDeviceAlarmToken(tokenRequest(await signedBody(env, keypair)), env),
+    );
+  });
+
+  it("usage を持たない鍵の record は 401 (fail-closed)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: null }).kv);
     await expectInvalid(
       await handleDeviceAlarmToken(tokenRequest(await signedBody(env, keypair)), env),
     );

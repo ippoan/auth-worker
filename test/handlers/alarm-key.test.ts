@@ -80,7 +80,7 @@ describe("handleAlarmKeyRegister", () => {
     const res = await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: fakePubkey(1), label: "cab-1" },
+        { pubkey: fakePubkey(1), label: "cab-1", usage: "kiosk" },
         await withOpCookieAndOrigin(),
       ),
       env,
@@ -93,7 +93,7 @@ describe("handleAlarmKeyRegister", () => {
   it("401 without a session cookie", async () => {
     const env = makeEnv();
     const res = await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(2), label: "x" }, originHeaders),
+      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(2), label: "x", usage: "kiosk" }, originHeaders),
       env,
     );
     expect(res.status).toBe(401);
@@ -102,7 +102,7 @@ describe("handleAlarmKeyRegister", () => {
   it("403 bad_origin when Origin header doesn't match the issuer", async () => {
     const env = makeEnv();
     const res = await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(3), label: "x" }, await opCookie()),
+      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(3), label: "x", usage: "kiosk" }, await opCookie()),
       env,
     );
     expect(res.status).toBe(403);
@@ -114,7 +114,7 @@ describe("handleAlarmKeyRegister", () => {
     const res = await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: "not-base64url-32-bytes", label: "x" },
+        { pubkey: "not-base64url-32-bytes", label: "x", usage: "kiosk" },
         await withOpCookieAndOrigin(),
       ),
       env,
@@ -128,7 +128,7 @@ describe("handleAlarmKeyRegister", () => {
     const res = await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: shortKey, label: "x" },
+        { pubkey: shortKey, label: "x", usage: "kiosk" },
         await withOpCookieAndOrigin(),
       ),
       env,
@@ -141,7 +141,7 @@ describe("handleAlarmKeyRegister", () => {
     const empty = await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: fakePubkey(4), label: "" },
+        { pubkey: fakePubkey(4), label: "", usage: "kiosk" },
         await withOpCookieAndOrigin(),
       ),
       env,
@@ -151,7 +151,7 @@ describe("handleAlarmKeyRegister", () => {
     const tooLong = await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: fakePubkey(5), label: "x".repeat(65) },
+        { pubkey: fakePubkey(5), label: "x".repeat(65), usage: "kiosk" },
         await withOpCookieAndOrigin(),
       ),
       env,
@@ -164,15 +164,52 @@ describe("handleAlarmKeyRegister", () => {
     const headers = await withOpCookieAndOrigin();
     const pubkey = fakePubkey(6);
     const first = await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey, label: "cab-1" }, headers),
+      postJson("/device/setup/alarm-key", { pubkey, label: "cab-1", usage: "kiosk" }, headers),
       env,
     );
     expect(first.status).toBe(200);
     const second = await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey, label: "cab-1-dup" }, headers),
+      postJson("/device/setup/alarm-key", { pubkey, label: "cab-1-dup", usage: "kiosk" }, headers),
       env,
     );
     expect(second.status).toBe(409);
+  });
+
+  it.each([
+    ["usage が無い", undefined],
+    ["空文字", ""],
+    ["未知の値", "admin"],
+    ["大文字違い", "KIOSK"],
+    ["文字列でない", 1],
+    ["配列 (集合にしない)", ["kiosk"]],
+  ])("400 when usage is invalid: %s (record も索引も書かない)", async (_label, usage) => {
+    const { env, kv } = makeEnvWithKv();
+    const res = await handleAlarmKeyRegister(
+      postJson(
+        "/device/setup/alarm-key",
+        { pubkey: fakePubkey(14), label: "cab-1", usage },
+        await withOpCookieAndOrigin(),
+      ),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(Object.keys(kv._data).filter((k) => k.startsWith("alarmkey"))).toEqual([]);
+  });
+
+  it.each(["admin-login", "kiosk"])("registers with usage=%s and stores it on the record", async (usage) => {
+    const { env, kv } = makeEnvWithKv();
+    const res = await handleAlarmKeyRegister(
+      postJson(
+        "/device/setup/alarm-key",
+        { pubkey: fakePubkey(15), label: "cab-1", usage },
+        await withOpCookieAndOrigin(),
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const { fingerprint } = (await res.json()) as { fingerprint: string };
+    const stored = JSON.parse(kv._data[`alarmkey:${fingerprint}`]!) as { usage: string };
+    expect(stored.usage).toBe(usage);
   });
 });
 
@@ -181,7 +218,7 @@ describe("handleAlarmKeyList", () => {
     const env = makeEnv();
     const headers = await withOpCookieAndOrigin();
     await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(7), label: "cab-1" }, headers),
+      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(7), label: "cab-1", usage: "kiosk" }, headers),
       env,
     );
     const res = await handleAlarmKeyList(
@@ -190,12 +227,40 @@ describe("handleAlarmKeyList", () => {
     );
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
-      keys: Array<{ fingerprint: string; label: string; created_at: number; revoked_at?: number }>;
+      keys: Array<{
+        fingerprint: string;
+        label: string;
+        usage: string;
+        created_at: number;
+        revoked_at?: number;
+      }>;
     };
     expect(data.keys).toHaveLength(1);
     expect(data.keys[0]!.label).toBe("cab-1");
+    expect(data.keys[0]!.usage).toBe("kiosk");
     expect(data.keys[0]!.revoked_at).toBeUndefined();
     expect(data.keys[0]).not.toHaveProperty("pubkey");
+  });
+
+  it("shows each key's usage (admin-login / kiosk)", async () => {
+    const env = makeEnv();
+    const headers = await withOpCookieAndOrigin();
+    for (const [seed, label, usage] of [
+      [16, "voice", "admin-login"],
+      [17, "cores3", "kiosk"],
+    ] as const) {
+      const reg = await handleAlarmKeyRegister(
+        postJson("/device/setup/alarm-key", { pubkey: fakePubkey(seed), label, usage }, headers),
+        env,
+      );
+      expect(reg.status).toBe(200);
+    }
+    const res = await handleAlarmKeyList(getReq("/device/setup/alarm-keys", headers), env);
+    const data = (await res.json()) as { keys: Array<{ label: string; usage: string }> };
+    expect(data.keys.map((k) => [k.label, k.usage])).toEqual([
+      ["voice", "admin-login"],
+      ["cores3", "kiosk"],
+    ]);
   });
 
   it("401 without a session cookie", async () => {
@@ -209,7 +274,7 @@ describe("handleAlarmKeyList", () => {
     await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: fakePubkey(8), label: "tenant-1-key" },
+        { pubkey: fakePubkey(8), label: "tenant-1-key", usage: "kiosk" },
         await withOpCookieAndOrigin({ tenant_id: "tenant-1" }),
       ),
       env,
@@ -217,7 +282,7 @@ describe("handleAlarmKeyList", () => {
     await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: fakePubkey(9), label: "tenant-2-key" },
+        { pubkey: fakePubkey(9), label: "tenant-2-key", usage: "kiosk" },
         await withOpCookieAndOrigin({ tenant_id: "tenant-2" }),
       ),
       env,
@@ -236,7 +301,7 @@ describe("handleAlarmKeyRevoke", () => {
     const env = makeEnv();
     const headers = await withOpCookieAndOrigin();
     const reg = await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(10), label: "cab-1" }, headers),
+      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(10), label: "cab-1", usage: "kiosk" }, headers),
       env,
     );
     const { fingerprint } = (await reg.json()) as { fingerprint: string };
@@ -318,7 +383,7 @@ describe("handleAlarmKeyRevoke", () => {
     const reg = await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: fakePubkey(11), label: "tenant-1-key" },
+        { pubkey: fakePubkey(11), label: "tenant-1-key", usage: "kiosk" },
         await withOpCookieAndOrigin({ tenant_id: "tenant-1" }),
       ),
       env,
@@ -363,7 +428,7 @@ describe("dev / device-key token: 登録・失効を弾く", () => {
       const res = await handleAlarmKeyRegister(
         postJson(
           "/device/setup/alarm-key",
-          { pubkey: fakePubkey(20), label: "x" },
+          { pubkey: fakePubkey(20), label: "x", usage: "kiosk" },
           await tokenHeaders(tokenKind),
         ),
         env,
@@ -380,7 +445,7 @@ describe("dev / device-key token: 登録・失効を弾く", () => {
       const reg = await handleAlarmKeyRegister(
         postJson(
           "/device/setup/alarm-key",
-          { pubkey: fakePubkey(21), label: "cab-1" },
+          { pubkey: fakePubkey(21), label: "cab-1", usage: "kiosk" },
           await withOpCookieAndOrigin(),
         ),
         env,
@@ -415,7 +480,7 @@ describe("dev / device-key token: 登録・失効を弾く", () => {
       await handleAlarmKeyRegister(
         postJson(
           "/device/setup/alarm-key",
-          { pubkey: fakePubkey(22), label: "cab-1" },
+          { pubkey: fakePubkey(22), label: "cab-1", usage: "kiosk" },
           await withOpCookieAndOrigin(),
         ),
         env,
@@ -437,7 +502,7 @@ describe("body / KV の壊れたデータに対するフォールバック", () 
     const res = await handleAlarmKeyRegister(
       postJson(
         "/device/setup/alarm-key",
-        { pubkey: "!!!not valid base64!!!", label: "x" },
+        { pubkey: "!!!not valid base64!!!", label: "x", usage: "kiosk" },
         await withOpCookieAndOrigin(),
       ),
       env,
@@ -473,7 +538,7 @@ describe("body / KV の壊れたデータに対するフォールバック", () 
     const { env, kv } = makeEnvWithKv();
     const headers = await withOpCookieAndOrigin();
     const reg = await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(12), label: "cab-1" }, headers),
+      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(12), label: "cab-1", usage: "kiosk" }, headers),
       env,
     );
     const { fingerprint } = (await reg.json()) as { fingerprint: string };
@@ -519,7 +584,7 @@ describe("body / KV の壊れたデータに対するフォールバック", () 
     const headers = await withOpCookieAndOrigin();
     const pubkey = fakePubkey(13);
     const reg = await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey, label: "cab-1" }, headers),
+      postJson("/device/setup/alarm-key", { pubkey, label: "cab-1", usage: "kiosk" }, headers),
       env,
     );
     const { fingerprint } = (await reg.json()) as { fingerprint: string };
@@ -527,7 +592,7 @@ describe("body / KV の壊れたデータに対するフォールバック", () 
     delete kv._data[`alarmkey:${fingerprint}`];
 
     const second = await handleAlarmKeyRegister(
-      postJson("/device/setup/alarm-key", { pubkey, label: "cab-1-again" }, headers),
+      postJson("/device/setup/alarm-key", { pubkey, label: "cab-1-again", usage: "kiosk" }, headers),
       env,
     );
     expect(second.status).toBe(200);
