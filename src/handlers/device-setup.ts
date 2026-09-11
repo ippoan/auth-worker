@@ -439,17 +439,20 @@ interface AdminRequest {
 /**
  * この worker 配下の management endpoint (device/setup 系に限らず、今後
  * cookie session + Origin 検査を要る handler 全般) が共通して踏む前処理の
- * **2 段目まで**: cookie session (無ければ 401) → Origin が自分の issuer で
- * なければ 403 (bad origin、browser CSRF 対策)。`deviceCommandRequest` は
- * これを呼んだ上で body 化 + `device_id` 必須の 2 段を足す (alarm-key.ts の
- * handler 3 本も同じくこれを直接呼ぶ — device_id を扱わないため)。
+ * **2 段目まで**: cookie session (無ければ 401) → GET 以外は Origin が
+ * 自分の issuer でなければ 403 (bad origin、browser CSRF 対策)。GET は
+ * 状態を変えないため Origin 検査を課さない (同一オリジンの GET には
+ * ブラウザが Origin ヘッダを付けないため、課すと一覧取得が常に弾かれる)。
+ * `deviceCommandRequest` はこれを呼んだ上で body 化 + `device_id` 必須の
+ * 2 段を足す (alarm-key.ts の handler 3 本も同じくこれを直接呼ぶ —
+ * device_id を扱わないため)。
  *
  * 検証を通れば `{session}`、弾いたときはそのまま返す `Response`。
  */
 export async function adminRequest(request: Request, env: Env): Promise<AdminRequest | Response> {
   const session = await cookieSession(request, env);
   if (!session) return jsonNoStore({ error: "unauthorized" }, 401);
-  if (request.headers.get("Origin") !== issuerOf(env)) {
+  if (request.method !== "GET" && request.headers.get("Origin") !== issuerOf(env)) {
     return jsonNoStore({ error: "bad_origin" }, 403);
   }
   return { session };
