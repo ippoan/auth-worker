@@ -1,10 +1,13 @@
 /**
  * /admin/notify — recipient / group management for notify system.
  *
- * 3 tabs:
+ * 4 tabs:
  *   1. LINE WORKS から追加 — proxy of GET /notify/lineworks/users, bulk POST /notify/recipients/bulk
  *   2. Recipients — list + edit enabled flag + delete (GET/PUT/DELETE /notify/recipients)
  *   3. Groups — list + CRUD + add/remove members (/notify/groups/*)
+ *   4. ログイン状況 — proxy of GET /notify/lineworks/login-activity?days=N
+ *      (Refs #540。LINE WORKS 監査ログ API 由来の最終ログイン日時を N 日しきい値で確認する用途。
+ *      リマインド送信等の自動アクションは対象外、一覧確認のみ)
  *
  * Auth: 共通門番 `__adminAuth` (cookie `logi_auth_token` → sessionStorage `auth_token`)。
  * どちらも無ければ /login へ (Refs #474)。
@@ -68,6 +71,7 @@ export function renderAdminNotifyPage(alcApiOrigin: string): string {
       <button class="tab active" data-tab="lineworks">LINE WORKS から追加</button>
       <button class="tab" data-tab="recipients">受信者一覧</button>
       <button class="tab" data-tab="groups">グループ管理</button>
+      <button class="tab" data-tab="login-activity">ログイン状況</button>
     </div>
 
     <div id="tab-lineworks" class="tab-panel active">
@@ -109,6 +113,20 @@ export function renderAdminNotifyPage(alcApiOrigin: string): string {
         <tbody id="group-body"><tr><td colspan="4" class="muted">読み込み中...</td></tr></tbody>
       </table>
     </div>
+
+    <div id="tab-login-activity" class="tab-panel">
+      <p class="muted" style="margin-bottom:0.5rem;">LINE WORKS の監査ログ (ログイン履歴) から最終ログイン日時を確認します。確認のみ・自動送信はしません。モバイルアプリはセッションを保持するため「記録なし」でも未使用とは限りません。</p>
+      <div class="row">
+        <button id="la-reload" class="btn btn-gray btn-sm">再読み込み</button>
+        <label>N日以上ログインなし: <input type="number" id="la-days" value="3" min="0" style="width:4rem;"></label>
+      </div>
+      <table>
+        <thead>
+          <tr><th>名前</th><th>メール</th><th>最終ログイン</th><th>状態</th></tr>
+        </thead>
+        <tbody id="la-body"><tr><td colspan="4" class="muted">読み込み中...</td></tr></tbody>
+      </table>
+    </div>
   </div>
 
 ${renderAdminAuthScript()}
@@ -146,6 +164,7 @@ ${renderAdminAuthScript()}
       if (btn.dataset.tab === 'recipients') loadRecipients();
       else if (btn.dataset.tab === 'groups') loadGroups();
       else if (btn.dataset.tab === 'lineworks') loadLineworksUsers();
+      else if (btn.dataset.tab === 'login-activity') loadLoginActivity();
     });
   });
 
@@ -361,6 +380,43 @@ ${renderAdminAuthScript()}
     showAlert('success', 'グループを作成しました');
     loadGroups();
   });
+
+  // --- Login activity (#540) ---
+  async function loadLoginActivity() {
+    var body = document.getElementById('la-body');
+    body.innerHTML = '<tr><td colspan="4" class="muted">読み込み中...</td></tr>';
+    var days = document.getElementById('la-days').value;
+    if (days === '' || Number(days) < 0) days = '3';
+    var res = await api('/notify/lineworks/login-activity?days=' + encodeURIComponent(days));
+    if (res.status === 403) {
+      body.innerHTML = '<tr><td colspan="4"><div class="alert alert-warn">LINE WORKS Developer Console で <b>audit.read</b> scope を Service Account に追加してください (監査の管理者権限も必要)。追加後、トークンは scope 別にキャッシュされるので次回呼び出しから反映されます。</div></td></tr>';
+      return;
+    }
+    if (!res.ok) {
+      body.innerHTML = '<tr><td colspan="4" class="alert alert-error">読み込み失敗: HTTP ' + res.status + '</td></tr>';
+      return;
+    }
+    var rows = await res.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      body.innerHTML = '<tr><td colspan="4" class="muted">LINE WORKS ユーザーがいません</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map(function(r){
+      var lastLogin = r.last_login_at ? esc(r.last_login_at) : '<span class="muted">記録なし</span>';
+      var badge = r.stale
+        ? '<span class="chip chip-gray">' + (r.days_since_login == null ? '記録なし' : esc(String(r.days_since_login)) + '日') + '</span>'
+        : '<span class="chip chip-green">直近</span>';
+      return '<tr>' +
+        '<td>' + esc(r.user_name || '') + '</td>' +
+        '<td>' + esc(r.email || '') + '</td>' +
+        '<td>' + lastLogin + '</td>' +
+        '<td>' + badge + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  document.getElementById('la-reload').addEventListener('click', loadLoginActivity);
+  document.getElementById('la-days').addEventListener('change', loadLoginActivity);
 
   // initial load
   loadLineworksUsers();
