@@ -269,6 +269,23 @@ describe("handleAlarmKeyList", () => {
     expect(res.status).toBe(401);
   });
 
+  it("200 with a session cookie but no Origin header (same-origin browser GET)", async () => {
+    const env = makeEnv();
+    const headers = await opCookie();
+    await handleAlarmKeyRegister(
+      postJson(
+        "/device/setup/alarm-key",
+        { pubkey: fakePubkey(19), label: "cab-1", usage: "kiosk" },
+        await withOpCookieAndOrigin(),
+      ),
+      env,
+    );
+    const res = await handleAlarmKeyList(getReq("/device/setup/alarm-keys", headers), env);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { keys: Array<{ label: string }> };
+    expect(data.keys.map((k) => k.label)).toEqual(["cab-1"]);
+  });
+
   it("does not include another tenant's keys", async () => {
     const env = makeEnv();
     await handleAlarmKeyRegister(
