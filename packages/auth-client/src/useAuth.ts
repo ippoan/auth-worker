@@ -11,6 +11,7 @@
 import { computed } from 'vue'
 import { useRouter, useRuntimeConfig, useState } from '#imports'
 import { decodeJwtClaims, decodeJwtPayloadFromToken } from './jwt'
+import { findValidAuthCookieToken } from './authCookie'
 
 const AUTH_STORAGE_KEY = 'logi_auth'
 const AUTH_COOKIE_NAME = 'logi_auth_token'
@@ -129,7 +130,14 @@ export const useAuth = () => {
         }
         authState.value = stored
       } else {
-        clearStorage()
+        // 期限切れなのは **この app の localStorage のコピー**であって、共有 cookie
+        // ではない。ここで clearStorage() (= cookie も破棄) を呼ぶと、Cloudflare
+        // Access → auth-worker OIDC → Google で **いま届いたばかりの有効な cookie**
+        // まで消してしまい、直後の recoverFromCookie() が空振りして /login →
+        // Google をもう一度踏む (dtako.ippoan.org の「Google ログイン 2 回」の
+        // 正体、Refs ohishi-exp/nuxt-dtako-admin#922)。localStorage だけ捨てて、
+        // cookie の採否は recoverFromCookie() の exp 判定に任せる。
+        localStorage.removeItem(AUTH_STORAGE_KEY)
         authState.value = null
       }
     }
@@ -213,14 +221,15 @@ export const useAuth = () => {
    */
   function recoverFromCookie(): boolean {
     if (typeof window === 'undefined') return false
-    const tokenCookie = document.cookie.split('; ').find(c => c.startsWith(AUTH_COOKIE_NAME + '='))
-    if (!tokenCookie) return false
-    const token = tokenCookie.split('=').slice(1).join('=')
+    // 同名 cookie (host-only / Domain 付き) が複数届くことがあり、先頭 1 件だけ
+    // 見ると古い方に隠れて有効な cookie を取りこぼす (shadowing)。全候補から
+    // exp が未来の最初の token を採る (auth-worker の getAuthCookies と同型)。
+    const now = Math.floor(Date.now() / 1000)
+    const token = findValidAuthCookieToken(document.cookie, AUTH_COOKIE_NAME, now)
+    if (!token) return false
     try {
       const payload = decodeJwtPayloadFromToken(token)
-      const exp = payload.exp as number | undefined
-      const now = Math.floor(Date.now() / 1000)
-      if (!exp || exp <= now) return false
+      const exp = payload.exp as number
       const state: AuthState = {
         token,
         orgId: (payload.tenant_id as string) || (payload.org as string),
