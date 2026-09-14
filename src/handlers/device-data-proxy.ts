@@ -95,6 +95,14 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * フォローアップ) は、kiosk の「管理者タブ」(RoleAuthGate の manager 要件 =
  * NFC + 顔認証で通過、Google ログイン不要) が既定表示で呼ぶ経路なので含める。
  * resume だけは上のとおり rust 側 AuthUser 必須のため対象外。
+ *
+ * 管理者タブの「測定履歴」(一覧) と、点呼詳細から開く測定詳細 (測定 1 件・
+ * 顔写真・動画) も、同じ理由で含める (Refs ippoan/alc-app-s3#135)。
+ * **server は manager かどうかを検査しない** (RoleAuthGate の NFC + 顔認証は
+ * クライアント側の判定)。よってこの 4 本は **kiosk JWT の保持者全員に、
+ * tenant の全測定・顔写真・動画 (生体の個人情報を含む) を開く**。これは
+ * 意図した判断 (先例: `GET /api/employees/face-data` は既に開いている)。
+ * 他の管理者タブの GET はここに入れない。
  */
 const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees$/ },
@@ -111,6 +119,10 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/api\/measurements$/ },
   { method: "POST", pattern: /^\/api\/measurements\/start$/ },
   { method: "PUT", pattern: /^\/api\/measurements\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/measurements$/ },
+  { method: "GET", pattern: /^\/api\/measurements\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/measurements\/[^/]+\/face-photo$/ },
+  { method: "GET", pattern: /^\/api\/measurements\/[^/]+\/video$/ },
   { method: "POST", pattern: /^\/api\/upload\/face-photo$/ },
   { method: "POST", pattern: /^\/api\/upload\/blow-video$/ },
   { method: "POST", pattern: /^\/api\/upload\/report-audio$/ },
