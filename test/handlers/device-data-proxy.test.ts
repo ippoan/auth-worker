@@ -410,6 +410,10 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "POST", path: "/api/measurements" },
     { method: "POST", path: "/api/measurements/start" },
     { method: "PUT", path: "/api/measurements/m-1" },
+    { method: "GET", path: "/api/measurements" },
+    { method: "GET", path: "/api/measurements/m-1" },
+    { method: "GET", path: "/api/measurements/m-1/face-photo" },
+    { method: "GET", path: "/api/measurements/m-1/video" },
     { method: "POST", path: "/api/upload/face-photo" },
     { method: "POST", path: "/api/upload/blow-video" },
     { method: "POST", path: "/api/upload/report-audio" },
@@ -474,11 +478,13 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     const fetchMock = okFetch();
     const cases: ReadonlyArray<{ method: string; path: string }> = [
       { method: "DELETE", path: "/api/employees/emp-1" },
-      { method: "GET", path: "/api/measurements/start" },
       { method: "PUT", path: "/api/tenko/dashboard" },
       { method: "DELETE", path: "/api/tenko/sessions/s-1" },
       { method: "PUT", path: "/api/timecard/cards/card-1" },
       { method: "DELETE", path: "/api/timecard/cards" },
+      { method: "DELETE", path: "/api/measurements/m-1" },
+      { method: "POST", path: "/api/measurements/m-1/video" },
+      { method: "PUT", path: "/api/measurements/m-1/face-photo" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
