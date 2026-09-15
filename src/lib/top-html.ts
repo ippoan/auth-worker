@@ -3,6 +3,7 @@
  * WOFF SDK auth + app navigation menu
  * LINE WORKS アプリ内ブラウザ向けモバイルファースト UI
  */
+import { renderAuthCookieScript, AUTH_COOKIE_GLOBAL } from "./auth-cookie-script";
 
 export interface AppEntry {
   name: string;
@@ -401,6 +402,8 @@ export function renderTopPage(
     const LW_DOMAIN_KEY = 'logi_lw_domain';
     const LW_DOMAIN_COOKIE = 'lw_domain';
 
+    ${renderAuthCookieScript()}
+
     function getParentDomain() {
       const parts = window.location.hostname.split('.');
       return parts.length > 2 ? '.' + parts.slice(-2).join('.') : window.location.hostname;
@@ -412,29 +415,13 @@ export function renderTopPage(
     }
 
     /**
-     * 同名 cookie を **全て** 返す (server 側 getAuthCookies (cookies.ts) と同型、
-     * Refs #387/#529)。host-only cookie と Domain 付き cookie は別物としてブラウザが
-     * 両方送るため、古い/無効な方が document.cookie の先頭に来ると getCookie()
-     * (先頭のみ) では有効な cookie が陰に隠れる (shadowing)。server は
-     * getAuthCookies で全候補を verify するのに、client がここで先頭だけ見ていると
-     * 「server は 200 を返すのに client は毎回未ログイン扱いして /login に戻す」
-     * ループになる (2026-09-10 本番実測)。
+     * AUTH_COOKIE の候補を全部試し、有効期限内に decode できた最初の値を返す。
+     * 無ければ null。cookie 走査 (shadowing 対策、Refs #387/#529) と JWT decode は
+     * 共通 snippet (${AUTH_COOKIE_GLOBAL}、auth-cookie-script.ts) に委ねる
+     * (ippoan/auth-worker#560)。
      */
-    function getAllCookies(name) {
-      return document.cookie.split('; ')
-        .filter(c => c.startsWith(name + '='))
-        .map(c => c.split('=').slice(1).join('='));
-    }
-
-    /** AUTH_COOKIE の候補を全部試し、有効期限内に decode できた最初の値を返す。無ければ null。 */
     function findValidAuthCookie() {
-      var candidates = getAllCookies(AUTH_COOKIE);
-      var now = Math.floor(Date.now() / 1000);
-      for (var i = 0; i < candidates.length; i++) {
-        var p = decodeJwtPayload(candidates[i]);
-        if (p && p.exp > now) return candidates[i];
-      }
-      return null;
+      return window.${AUTH_COOKIE_GLOBAL}.findValidToken([AUTH_COOKIE], Math.floor(Date.now() / 1000));
     }
 
     function setCookie(name, value, maxAge) {
@@ -455,25 +442,11 @@ export function renderTopPage(
     }
 
     /**
-     * JWT payload (2番目のセグメント) を decode する。JWT は base64url
-     * (jwt.ts の base64UrlEncodeStr が出す形式、-/_ を含みうる) だが、
-     * ブラウザ標準の atob() は標準base64しか読めず、payload に -/_ が乗ると
-     * InvalidCharacterError を投げる (Refs #529: /top↔/login 無限ループの原因。
-     * サーバー側の base64UrlDecodeUtf8 (jwt.ts) と同じ変換をクライアントにも
-     * 持たせる)。壊れていれば null。
+     * JWT payload (2番目のセグメント) を decode する (base64url 対応、Refs #529)。
+     * 実体は共通 snippet (${AUTH_COOKIE_GLOBAL}、auth-cookie-script.ts)。
      */
     function decodeJwtPayload(token) {
-      try {
-        var b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-        // atob() は latin1 解釈なので name 等の多バイト claim がそのままだと
-        // mojibake になる。TextDecoder を挟んで UTF-8 として読み直す
-        // (jwt.ts の base64UrlDecodeUtf8 と同型)。
-        var binary = atob(b64);
-        var bytes = Uint8Array.from(binary, function (c) { return c.charCodeAt(0); });
-        return JSON.parse(new TextDecoder().decode(bytes));
-      } catch (e) {
-        return null;
-      }
+      return window.${AUTH_COOKIE_GLOBAL}.decodeJwtPayload(token);
     }
 
     /**

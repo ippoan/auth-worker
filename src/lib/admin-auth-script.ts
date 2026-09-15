@@ -21,6 +21,11 @@
  *   - 期限切れしか無ければ「無い」扱いにして `/login` へ送る (再ログインで新しい
  *     cookie が載るのでループしない)。署名不正の毒 cookie は client 側では判別
  *     できないので通し、API の 401 として各ページの既存ハンドリングに委ねる。
+ *   - exp を読めない token (JWT でない / payload に exp が無い) は **使わない**
+ *     (ippoan/auth-worker#560: server の `verifyJwt` / auth-client / `/top` と
+ *     同じ判定に揃える。実運用の `logi_auth_token` は `createAccessToken` /
+ *     device-login とも必ず exp を持つ)。以前は「期限不明は使える扱い」だったが、
+ *     共通 snippet 化に合わせて仕様を統一した。
  *
  * 公開 API は `window.__adminAuth`:
  *   - `readToken()`      → string | null   (cookie → sessionStorage)
@@ -29,6 +34,7 @@
  *   - `loginUrl(cb)`     → string
  */
 import { AUTH_COOKIE, LEGACY_ADMIN_COOKIE } from "./cookies";
+import { renderAuthCookieScript, AUTH_COOKIE_GLOBAL } from "./auth-cookie-script";
 
 /** admin ページ JS から見た門番のグローバル名 */
 export const ADMIN_AUTH_GLOBAL = "__adminAuth";
@@ -36,62 +42,25 @@ export const ADMIN_AUTH_GLOBAL = "__adminAuth";
 /**
  * 門番スクリプト本体 (`<script>` タグ込み)。各 admin ページ / callback ページの
  * HTML に、ページ固有 script より **前** に埋め込む。
+ *
+ * cookie 走査 / JWT decode は `auth-cookie-script.ts` の共通 snippet
+ * (`window.${AUTH_COOKIE_GLOBAL}`) に委ねる (ippoan/auth-worker#560)。
  */
 export function renderAdminAuthScript(): string {
   return `<script>
+${renderAuthCookieScript()}
 (function () {
   var COOKIE_NAME = ${JSON.stringify(AUTH_COOKIE)};
   var LEGACY_COOKIE_NAME = ${JSON.stringify(LEGACY_ADMIN_COOKIE)};
 
-  /** JWT の exp (秒) を署名検証せず読む。読めなければ null (= 期限不明)。 */
-  function expOf(token) {
-    try {
-      var parts = String(token).split('.');
-      if (parts.length !== 3) return null;
-      var b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-      var payload = JSON.parse(atob(b64));
-      return typeof payload.exp === 'number' ? payload.exp : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /** 期限が読めて、かつ既に過ぎている時だけ true (期限不明は使える扱い)。 */
-  function isExpired(token) {
-    var exp = expOf(token);
-    return exp !== null && exp * 1000 <= Date.now();
-  }
-
-  /** 同名 cookie の値を **全て** 返す (#387 の shadowing 対策)。 */
-  function cookieValues(name) {
-    var out = [];
-    var pairs = String(document.cookie || '').split(';');
-    for (var i = 0; i < pairs.length; i++) {
-      var eq = pairs[i].indexOf('=');
-      if (eq < 0) continue;
-      if (pairs[i].slice(0, eq).trim() !== name) continue;
-      var value = pairs[i].slice(eq + 1).trim();
-      if (!value) continue;
-      if (value.indexOf('%') >= 0) {
-        try { value = decodeURIComponent(value); } catch (e) { /* raw のまま使う */ }
-      }
-      out.push(value);
-    }
-    return out;
-  }
-
   function fromCookie() {
-    var values = cookieValues(COOKIE_NAME).concat(cookieValues(LEGACY_COOKIE_NAME));
-    for (var i = 0; i < values.length; i++) {
-      if (!isExpired(values[i])) return values[i];
-    }
-    return null;
+    return window.${AUTH_COOKIE_GLOBAL}.findValidToken([COOKIE_NAME, LEGACY_COOKIE_NAME], Math.floor(Date.now() / 1000));
   }
 
   function fromSession() {
     try {
       var token = sessionStorage.getItem('auth_token');
-      return token && !isExpired(token) ? token : null;
+      return token && window.${AUTH_COOKIE_GLOBAL}.isValidToken(token, Math.floor(Date.now() / 1000)) ? token : null;
     } catch (e) {
       return null;
     }

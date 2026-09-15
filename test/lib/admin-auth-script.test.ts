@@ -154,12 +154,12 @@ describe("readToken — cookie の細部", () => {
     expect(gate.readToken()).toBe(token);
   });
 
-  it("exp を読めない token (JWT でない / payload 不正) は期限不明として使う", () => {
+  it("exp を読めない token (JWT でない / payload 不正) は使わない (ippoan/auth-worker#560: server / auth-client / /top と同じ判定に揃える)", () => {
     const { gate: a } = load({ cookie: `${AUTH_COOKIE}=opaque-token` });
-    expect(a.readToken()).toBe("opaque-token");
+    expect(a.readToken()).toBeNull();
     const noExp = `${b64url(JSON.stringify({ alg: "HS256" }))}.${b64url(JSON.stringify({ sub: "u" }))}.sig`;
     const { gate: b } = load({ cookie: `${AUTH_COOKIE}=${noExp}` });
-    expect(b.readToken()).toBe(noExp);
+    expect(b.readToken()).toBeNull();
   });
 
   it("sessionStorage が使えない環境 (private mode 等) でも cookie で動く", () => {
