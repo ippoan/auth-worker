@@ -1,30 +1,54 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { renderTopPage, renderStagingFooter } from "../../src/lib/top-html";
+import { renderAuthCookieScript } from "../../src/lib/auth-cookie-script";
+
+/**
+ * 共通 snippet (auth-cookie-script.ts) を fake window へ eval し、
+ * `window.__ippoanAuthCookie` を確立する (ippoan/auth-worker#560)。top-html.ts の
+ * `decodeJwtPayload` / `findValidAuthCookie` は薄い wrapper になっていて、実行時に
+ * この global を参照するため、抽出した wrapper を呼ぶ前に必ず呼ぶ。冪等 (何度呼んでも
+ * 上書きするだけ) なので都度呼んでよい。
+ */
+function ensureAuthCookieGlobalInstalled(): void {
+  const g = globalThis as { window?: Record<string, unknown> };
+  if (!g.window) g.window = {};
+  // eslint-disable-next-line no-new-func
+  new Function("window", renderAuthCookieScript())(g.window);
+}
 
 /**
  * 埋め込み `<script>` から `decodeJwtPayload` (Refs #529) の本体だけを取り出して
  * 実行可能な関数にする。renderTopPage は DOM 前提の巨大な inline script を返す
  * ので、jsdom を足さずにこの純粋関数だけを実機の atob() で検証する。
+ *
+ * html には共通 snippet 自身の同名内部関数も含まれる (ippoan/auth-worker#560 で
+ * 埋め込むようになった)。抽出対象は **top-html.ts 側の薄い wrapper** (snippet の
+ * 後に定義される = 最後の出現) なので、最後のマッチを使う。
  */
 function extractDecodeJwtPayload(html: string): (token: string) => unknown {
-  const m = /function decodeJwtPayload\(token\) \{[\s\S]*?\n {4}\}/.exec(html);
+  const matches = [...html.matchAll(/function decodeJwtPayload\(token\) \{[\s\S]*?\n {4}\}/g)];
+  const m = matches[matches.length - 1];
   if (!m) throw new Error("decodeJwtPayload not found in rendered HTML");
+  ensureAuthCookieGlobalInstalled();
   // eslint-disable-next-line no-new-func
   return new Function(`return (${m[0]});`)() as (token: string) => unknown;
 }
 
 /**
  * 複数の named function を辿って抽出し、まとめて実行可能にする (互いに呼び合う
- * decodeJwtPayload / getAllCookies / findValidAuthCookie を一括で eval する用途)。
- * `document` はテスト側でグローバルに差し込む。
+ * decodeJwtPayload / findValidAuthCookie を一括で eval する用途)。`document` は
+ * テスト側でグローバルに差し込む。html には共通 snippet 自身の同名内部関数
+ * (decodeJwtPayload) も含まれるため、各名前について **最後の出現** (= top-html.ts
+ * 側の wrapper) を使う。
  */
 function extractClientFunctions<T extends Record<string, (...args: never[]) => unknown>>(
   html: string,
   names: (keyof T & string)[],
 ): T {
   const sources = names.map((name) => {
-    const re = new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n {4}\\}`);
-    const m = re.exec(html);
+    const re = new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n {4}\\}`, "g");
+    const matches = [...html.matchAll(re)];
+    const m = matches[matches.length - 1];
     if (!m) throw new Error(`${name} not found in rendered HTML`);
     return m[0];
   });
@@ -32,6 +56,7 @@ function extractClientFunctions<T extends Record<string, (...args: never[]) => u
   // 一緒に extract して eval scope に持ち込む。
   const constMatch = /const AUTH_COOKIE = [^;]+;/.exec(html);
   const consts = constMatch ? constMatch[0] : "";
+  ensureAuthCookieGlobalInstalled();
   const body = `${consts}\n${sources.join("\n")}\nreturn { ${names.join(", ")} };`;
   // eslint-disable-next-line no-new-func
   return new Function(body)() as T;
@@ -118,6 +143,11 @@ describe("renderTopPage", () => {
     const REALISTIC_PAYLOAD_B64URL =
       "eyJzdWIiOiJ1MCIsImVtYWlsIjoidGFybzBAZXhhbXBsZS5jb20iLCJuYW1lIjoi5aSn55-zIOWkqumDjiIsInRlbmFudF9pZCI6IjAwMDAwMDAwLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsInJvbGUiOiJtZW1iZXIiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6OTk5OTk5OTk5OX0";
 
+    afterAll(() => {
+      // @ts-expect-error test-only global stub (ensureAuthCookieGlobalInstalled が立てる)
+      delete globalThis.window;
+    });
+
     it("has a `-` in the payload segment (sanity check for the fixture below)", () => {
       expect(REALISTIC_PAYLOAD_B64URL).toContain("-");
     });
@@ -153,15 +183,16 @@ describe("renderTopPage", () => {
     afterAll(() => {
       // @ts-expect-error test-only global stub
       delete globalThis.document;
+      // @ts-expect-error test-only global stub (ensureAuthCookieGlobalInstalled が立てる)
+      delete globalThis.window;
     });
 
     it("skips a stale/expired cookie candidate and picks a later valid one", () => {
       const html = renderTopPage([], "https://auth.example.com");
       const fns = extractClientFunctions<{
         decodeJwtPayload: (token: string) => unknown;
-        getAllCookies: (name: string) => string[];
         findValidAuthCookie: () => string | null;
-      }>(html, ["decodeJwtPayload", "getAllCookies", "findValidAuthCookie"]);
+      }>(html, ["decodeJwtPayload", "findValidAuthCookie"]);
 
       const now = Math.floor(Date.now() / 1000);
       const staleToken = fakeJwt({ exp: now - 3600, org: "stale" }); // 期限切れ (古い host-only cookie 相当)
@@ -170,7 +201,6 @@ describe("renderTopPage", () => {
       // @ts-expect-error test-only global stub
       globalThis.document = { cookie: `logi_auth_token=${staleToken}; logi_auth_token=${validToken}` };
 
-      expect(fns.getAllCookies("logi_auth_token")).toEqual([staleToken, validToken]);
       expect(fns.findValidAuthCookie()).toBe(validToken);
     });
 
@@ -178,9 +208,8 @@ describe("renderTopPage", () => {
       const html = renderTopPage([], "https://auth.example.com");
       const fns = extractClientFunctions<{
         decodeJwtPayload: (token: string) => unknown;
-        getAllCookies: (name: string) => string[];
         findValidAuthCookie: () => string | null;
-      }>(html, ["decodeJwtPayload", "getAllCookies", "findValidAuthCookie"]);
+      }>(html, ["decodeJwtPayload", "findValidAuthCookie"]);
 
       const now = Math.floor(Date.now() / 1000);
       const staleToken = fakeJwt({ exp: now - 3600, org: "stale" });
@@ -206,15 +235,16 @@ describe("renderTopPage", () => {
       delete globalThis.document;
       // @ts-expect-error test-only global stub
       delete globalThis.sessionStorage;
+      // @ts-expect-error test-only global stub (ensureAuthCookieGlobalInstalled が立てる)
+      delete globalThis.window;
     });
 
     function extractGetValidToken(html: string) {
       return extractClientFunctions<{
         decodeJwtPayload: (token: string) => unknown;
-        getAllCookies: (name: string) => string[];
         findValidAuthCookie: () => string | null;
         getValidToken: () => { token: string; orgId?: string; expiresAt: number } | null;
-      }>(html, ["decodeJwtPayload", "getAllCookies", "findValidAuthCookie", "getValidToken"]);
+      }>(html, ["decodeJwtPayload", "findValidAuthCookie", "getValidToken"]);
     }
 
     it("falls back to a valid cookie when sessionStorage holds an expired token", () => {

@@ -19,6 +19,13 @@ branches = true
 path = "src/lib/device-pair.ts"
 branches = true
 
+# ippoan/auth-worker#560: /top と admin 門番が共有する cookie 走査 / JWT decode の
+# 共通 snippet。片方にしか修正が入らない (#529 の base64url 対応が漏れた等) 事故の
+# 再発防止が目的なので 100% を維持する。
+[[files]]
+path = "src/lib/auth-cookie-script.ts"
+branches = true
+
 # Refs #474: admin ページ共通の門番 (cookie → sessionStorage)。ここが落ちると
 # 管理画面がログイン無限ループに戻るので 100% を維持する。
 [[files]]
