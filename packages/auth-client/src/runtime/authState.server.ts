@@ -22,7 +22,7 @@
 import { defineNuxtPlugin, useRequestEvent, useRequestHeaders, useRuntimeConfig, useState } from '#imports'
 import { setResponseHeader } from 'h3'
 import { authStateFromToken, findValidAuthCookieToken } from '../authCookie.mjs'
-import { AUTH_COOKIE_NAME, AUTH_LOADING_KEY, AUTH_STATE_KEY } from '../useAuth'
+import { AUTH_COOKIE_NAME, AUTH_LOADING_KEY, AUTH_STATE_KEY, type AuthState } from '../useAuth'
 
 export default defineNuxtPlugin({
   name: 'ippoan-auth-state',
@@ -41,8 +41,8 @@ export default defineNuxtPlugin({
     if (!state) return
 
     // ★ payload に生 JWT を載せない: token は空にして派生 state だけを渡す。
-    useState(AUTH_STATE_KEY, () => null).value = { ...state, token: '' }
-    useState(AUTH_LOADING_KEY, () => true).value = false
+    useState<AuthState | null>(AUTH_STATE_KEY, () => null).value = { ...state, token: '' }
+    useState<boolean>(AUTH_LOADING_KEY, () => true).value = false
 
     const event = useRequestEvent()
     if (event) setResponseHeader(event, 'Cache-Control', 'private, no-store')
