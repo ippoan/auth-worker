@@ -435,6 +435,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "GET", path: "/api/tenko/sessions" },
     { method: "GET", path: "/api/tenko/sessions/s-1" },
     { method: "POST", path: "/api/tenko/sessions/s-1/interrupt" },
+    { method: "POST", path: "/api/car-inspections/lookup" },
   ];
 
   for (const { method, path } of ALLOWED) {
@@ -485,6 +486,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "DELETE", path: "/api/measurements/m-1" },
       { method: "POST", path: "/api/measurements/m-1/video" },
       { method: "PUT", path: "/api/measurements/m-1/face-photo" },
+      { method: "GET", path: "/api/car-inspections/lookup" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
@@ -502,6 +504,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "POST", path: "/api/tenko/sessions/s-1/resume" },
       { method: "PUT", path: "/api/carrying-items/c-1" },
       { method: "GET", path: "/api/employees/emp-1/license" },
+      { method: "GET", path: "/api/car-inspections/current" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
