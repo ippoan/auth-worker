@@ -11,10 +11,15 @@
 import { computed } from 'vue'
 import { useRouter, useRuntimeConfig, useState } from '#imports'
 import { decodeJwtClaims, decodeJwtPayloadFromToken } from './jwt'
-import { findValidAuthCookieToken } from './authCookie'
+import { authStateFromToken, findValidAuthCookieToken } from './authCookie.mjs'
+import type { AuthCookieState } from './authCookie.d.mts'
 
 const AUTH_STORAGE_KEY = 'logi_auth'
-const AUTH_COOKIE_NAME = 'logi_auth_token'
+/** 共有 auth cookie 名。module の SSR plugin (`runtime/authState.server.ts`) とも共用。 */
+export const AUTH_COOKIE_NAME = 'logi_auth_token'
+/** `useState` キー。SSR plugin と client (このファイル) で hydration が一致するよう定数化。 */
+export const AUTH_STATE_KEY = 'auth'
+export const AUTH_LOADING_KEY = 'auth_loading'
 const LW_DOMAIN_KEY = 'logi_lw_domain'
 const LW_DOMAIN_COOKIE = 'lw_domain'
 
@@ -96,8 +101,8 @@ export const useAuth = () => {
   const authWorkerUrl = (config.public.authWorkerUrl as string | undefined) || ''
 
   // Global reactive state (shared across all composable calls via key 'auth')
-  const authState = useState<AuthState | null>('auth', () => null)
-  const isLoading = useState<boolean>('auth_loading', () => true)
+  const authState = useState<AuthState | null>(AUTH_STATE_KEY, () => null)
+  const isLoading = useState<boolean>(AUTH_LOADING_KEY, () => true)
 
   /** localStorage からトークンを復元。期限切れなら破棄。staging bypass 対応。 */
   function loadFromStorage(): void {
@@ -112,6 +117,25 @@ export const useAuth = () => {
         username: 'staging',
         provider: 'staging',
       }
+      isLoading.value = false
+      return
+    }
+
+    // SSR (module の authState plugin) で hydrate 済みの state を localStorage の
+    // 古いコピーで上書きしない (#560)。payload には token を載せない設計なので
+    // Bearer 用の token だけ cookie から補う。localStorage は client 側ナビゲー
+    // ション用に同期だけする。
+    const nowForHydrateCheck = Math.floor(Date.now() / 1000)
+    if (authState.value && authState.value.expiresAt > nowForHydrateCheck) {
+      if (!authState.value.token) {
+        const cookieToken = findValidAuthCookieToken(
+          document.cookie,
+          AUTH_COOKIE_NAME,
+          nowForHydrateCheck,
+        )
+        if (cookieToken) authState.value = { ...authState.value, token: cookieToken }
+      }
+      writeStorage(authState.value)
       isLoading.value = false
       return
     }
@@ -227,21 +251,12 @@ export const useAuth = () => {
     const now = Math.floor(Date.now() / 1000)
     const token = findValidAuthCookieToken(document.cookie, AUTH_COOKIE_NAME, now)
     if (!token) return false
+    // findValidAuthCookieToken で exp 判定済みなので、ここで null が返るのは
+    // payload が decode できない (壊れている) ときだけ。
+    const cookieState: AuthCookieState | null = authStateFromToken(token)
+    if (!cookieState) return false
     try {
-      const payload = decodeJwtPayloadFromToken(token)
-      const exp = payload.exp as number
-      const state: AuthState = {
-        token,
-        orgId: (payload.tenant_id as string) || (payload.org as string),
-        expiresAt: exp,
-        username:
-          (payload.username as string) ||
-          (payload.email as string) ||
-          (payload.name as string) ||
-          undefined,
-        provider: (payload.provider as string) || undefined,
-        orgSlug: (payload.org_slug as string) || undefined,
-      }
+      const state: AuthState = cookieState
       authState.value = state
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(state))
       // lw_domain cookie → localStorage 同期
