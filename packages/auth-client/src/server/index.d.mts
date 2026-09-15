@@ -297,6 +297,15 @@ export {
   extractTenantIdFromAuth,
 } from '../jwt-core.mjs'
 
+// ----- authCookie re-export (issue #560) -----
+
+export {
+  readCookieValues,
+  findValidAuthCookieToken,
+  authStateFromToken,
+} from '../authCookie.mjs'
+export type { AuthCookieState } from '../authCookie.d.mts'
+
 // ----- dev-login (issue #423/#425) -----
 
 export declare const DEV_COOKIE_NAME: string
