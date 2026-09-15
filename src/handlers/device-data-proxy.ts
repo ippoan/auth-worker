@@ -103,6 +103,9 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * tenant の全測定・顔写真・動画 (生体の個人情報を含む) を開く**。これは
  * 意図した判断 (先例: `GET /api/employees/face-data` は既に開いている)。
  * 他の管理者タブの GET はここに入れない。
+ *
+ * 車検期限の照合 (body に管理番号 / 車両 ID、Refs ippoan/alc-app-s3#110)。応答は
+ * 期限・matched_by・登録番号だけで、所有者・住所は rust 側が返さない。
  */
 const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees$/ },
@@ -142,6 +145,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/tenko\/sessions$/ },
   { method: "GET", pattern: /^\/api\/tenko\/sessions\/[^/]+$/ },
   { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/interrupt$/ },
+  { method: "POST", pattern: /^\/api\/car-inspections\/lookup$/ },
 ];
 
 function jsonError(status: number, error: string): Response {
