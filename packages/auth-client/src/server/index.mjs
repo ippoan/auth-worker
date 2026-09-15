@@ -51,6 +51,14 @@ export {
   extractTenantIdFromAuth,
 } from '../jwt-core.mjs'
 
+// issue #560: consumer の Nitro route が cookie 全候補から認証状態を決めるための
+// helper (requireAuth の introspect 経路とは独立に使える)。
+export {
+  readCookieValues,
+  findValidAuthCookieToken,
+  authStateFromToken,
+} from '../authCookie.mjs'
+
 // rust-alc-api#434 step 3: Cloud Run IAM lockdown 用の OIDC ID token mint。
 export { mintGoogleIdToken } from './oidc.mjs'
 

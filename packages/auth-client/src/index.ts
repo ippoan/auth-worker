@@ -10,6 +10,12 @@ export {
   decodeJwtClaims,
   extractTenantIdFromAuth,
 } from './jwt'
+export {
+  readCookieValues,
+  findValidAuthCookieToken,
+  authStateFromToken,
+} from './authCookie.mjs'
+export type { AuthCookieState } from './authCookie.d.mts'
 export { authMiddleware } from './authMiddleware'
 export type { AuthMiddlewareOptions } from './authMiddleware'
 export { default as AuthToolbar } from './AuthToolbar.vue'

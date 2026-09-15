@@ -30,8 +30,9 @@
  *
  * .mjs なのは Nitro (rollup) が node_modules の .ts を transpile しないため。
  */
-import { createError, getCookie, getHeader, getRequestURL } from 'h3'
+import { createError, getHeader, getRequestURL } from 'h3'
 import { introspectToken } from './introspectCore.mjs'
+import { findValidAuthCookieToken } from '../authCookie.mjs'
 
 /** logi_auth_token cookie の既定名。`.ippoan.org` 共有 cookie。 */
 const DEFAULT_COOKIE_NAME = 'logi_auth_token'
@@ -60,9 +61,16 @@ function bearerToken(authHeader) {
  * @throws 401 (createError) when the token is missing / invalid / disallowed
  */
 export async function requireAuth(event, options) {
-  const token =
-    getCookie(event, options.cookieName ?? DEFAULT_COOKIE_NAME) ??
-    bearerToken(getHeader(event, 'authorization'))
+  // #560: 同名 cookie (host-only / Domain 付き) の shadowing に耐性を持たせるため
+  // h3 の getCookie (先頭 1 件) ではなく候補全走査 + exp 判定を使う。exp を持たない
+  // cookie は候補から外れ (fail-closed 方向)、Authorization: Bearer へフォール
+  // スルーする — auth-worker が発行する logi_auth_token は必ず exp を持つ。
+  const cookieToken = findValidAuthCookieToken(
+    getHeader(event, 'cookie') ?? '',
+    options.cookieName ?? DEFAULT_COOKIE_NAME,
+    Math.floor(Date.now() / 1000),
+  )
+  const token = cookieToken ?? bearerToken(getHeader(event, 'authorization'))
   const origin = options.origin ?? getRequestURL(event).origin
 
   const result = await introspectToken({

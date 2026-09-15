@@ -60,6 +60,28 @@ consumer 側で書き忘れると**対策が黙って無効化される**。modu
 - リロードは 60 秒の時間窓で最大 2 回まで。超えたら画面に案内を出して止まる (無限リロード防止)
 - 無効化する場合は `ippoanAuthClient: { chunkReload: false }`
 
+## SSR 認証状態 (`ippoanAuthClient: { authState: true }`、issue #560、既定 off)
+
+SSR (`cloudflare_module` 等) が生きている consumer では、server が request の
+`logi_auth_token` cookie から認証状態 (`expiresAt` / `orgId` / `username` 等) を
+1 回決めて `useState('auth')` に載せ、client の `loadFromStorage` がそれを
+localStorage の古いコピーで上書きしないようにできる (Access 経由ログイン直後の
+Google 2 回目対策 #559 の恒久版)。既定は **off** — consumer が 1 行で opt-in する:
+
+```typescript
+export default defineNuxtConfig({
+  modules: ['@ippoan/auth-client/module'],
+  ippoanAuthClient: { authState: true },
+})
+```
+
+- SSR payload には**生 JWT を載せない** (`token: ''`)。Bearer 送信用の token は
+  client 側で `loadFromStorage` が cookie から補う。
+- fragment 配送 (`#token=`) や `?lw_callback=1` の判断は従来どおり client のまま —
+  server はこれらを見られないため、cookie が無い場合は何もしない (redirect しない)。
+- state を載せた応答には `Cache-Control: private, no-store` を付ける。
+- 全 consumer で確認が取れ次第、既定を反転する予定。
+
 ## API
 
 ```typescript
@@ -68,7 +90,7 @@ const {
   isAuthenticated,  // ComputedRef<boolean> — 認証済みか
   token,            // ComputedRef<string | null> — JWTトークン
   orgId,            // ComputedRef<string | null> — 組織ID
-  loadFromStorage,  // () => void — localStorageから復元
+  loadFromStorage,  // () => void — localStorageから復元 (SSR で hydrate 済みなら上書きしない)
   consumeFragment,  // () => boolean — URL fragment (#token=...) を解析・保存
   redirectToLogin,  // () => void — ログイン画面へリダイレクト（LWドメイン保存済みなら自動ログイン）
   logout,           // () => void — ログアウト（LWドメインもクリア）
