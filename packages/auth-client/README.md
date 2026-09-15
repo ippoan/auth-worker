@@ -60,18 +60,19 @@ consumer 側で書き忘れると**対策が黙って無効化される**。modu
 - リロードは 60 秒の時間窓で最大 2 回まで。超えたら画面に案内を出して止まる (無限リロード防止)
 - 無効化する場合は `ippoanAuthClient: { chunkReload: false }`
 
-## SSR 認証状態 (`ippoanAuthClient: { authState: true }`、issue #560、既定 off)
+## SSR 認証状態 (`ippoanAuthClient: { authState: false }` で無効化、issue #560、既定 on)
 
 SSR (`cloudflare_module` 等) が生きている consumer では、server が request の
 `logi_auth_token` cookie から認証状態 (`expiresAt` / `orgId` / `username` 等) を
 1 回決めて `useState('auth')` に載せ、client の `loadFromStorage` がそれを
 localStorage の古いコピーで上書きしないようにできる (Access 経由ログイン直後の
-Google 2 回目対策 #559 の恒久版)。既定は **off** — consumer が 1 行で opt-in する:
+Google 2 回目対策 #559 の恒久版)。既定は **true**。無効にする場合は 1 行で
+opt-out する:
 
 ```typescript
 export default defineNuxtConfig({
   modules: ['@ippoan/auth-client/module'],
-  ippoanAuthClient: { authState: true },
+  ippoanAuthClient: { authState: false },
 })
 ```
 
@@ -80,7 +81,6 @@ export default defineNuxtConfig({
 - fragment 配送 (`#token=`) や `?lw_callback=1` の判断は従来どおり client のまま —
   server はこれらを見られないため、cookie が無い場合は何もしない (redirect しない)。
 - state を載せた応答には `Cache-Control: private, no-store` を付ける。
-- 全 consumer で確認が取れ次第、既定を反転する予定。
 
 ## API
 

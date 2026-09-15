@@ -12,8 +12,8 @@
  * - chunk load 失敗からの自動復旧 (Refs ippoan/nuxt-trouble#236)。
  *   これを consumer 側の手書き plugin にすると `experimental.emitRouteChunkError`
  *   の設定漏れで**対策が黙って無効化される**ため、module 側で一括して面倒を見る。
- * - (opt-in, issue #560) SSR で `logi_auth_token` cookie から認証状態を決めて
- *   `useState('auth')` に載せる server plugin の追加。
+ * - (既定 on、`authState: false` で無効化可、issue #560) SSR で `logi_auth_token`
+ *   cookie から認証状態を決めて `useState('auth')` に載せる server plugin の追加。
  */
 import { addPlugin, createResolver, defineNuxtModule } from '@nuxt/kit'
 
@@ -22,8 +22,8 @@ export interface AuthClientModuleOptions {
   chunkReload?: boolean
   /**
    * SSR 時に `logi_auth_token` cookie から認証状態を決めて `useState('auth')` に
-   * 載せる server plugin を有効にする (既定 **false**)。consumer が
-   * `ippoanAuthClient: { authState: true }` で opt-in する。
+   * 載せる server plugin を有効にする (既定 **true**、ippoan/auth-worker#560 の
+   * 段 E で反転)。無効にするなら `ippoanAuthClient: { authState: false }`。
    *
    * 有効にすると:
    * - server が cookie から `expiresAt` / `orgId` / `username` 等を決めて SSR
@@ -33,8 +33,8 @@ export interface AuthClientModuleOptions {
    *   client 側で cookie から補う。
    * - fragment 配送 (`#token=`) / `?lw_callback=1` の判断は従来どおり client。
    *
-   * 段階投入・rollback 可を優先するため既定 off。全 consumer で確認後に
-   * 既定を反転する予定 (#560)。
+   * 段階投入の経緯: #561 で既定 off として導入 → consumer 10 repo で opt-in・
+   * 本番確認 → 反転。
    */
   authState?: boolean
 }
@@ -46,7 +46,7 @@ export default defineNuxtModule<AuthClientModuleOptions>({
   },
   defaults: {
     chunkReload: true,
-    authState: false,
+    authState: true,
   },
   setup(options, nuxt) {
     if (options.chunkReload || options.authState) {
