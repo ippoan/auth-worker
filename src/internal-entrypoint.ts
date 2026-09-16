@@ -25,8 +25,8 @@ import { resolveSecret } from "./lib/secret";
 import { mintGoogleIdToken } from "./lib/oidc";
 
 /**
- * rust-alc-api へ転送を許可する path。**この 4 本だけ** (呼び手は
- * dtako-scraper-relay の 1 worker のみ)。
+ * rust-alc-api へ転送を許可する path。**この 5 本だけ** (呼び手は
+ * dtako-scraper-relay と timecard-cf-worker の 2 worker)。
  *
  * - `/api/scraper/history` / `/api/dtako/events/etags` — スクレイプ履歴と etag
  *   (Refs ohishi-exp/nuxt-dtako-admin#931 / #933)。`/device-data-proxy` の
@@ -44,6 +44,11 @@ import { mintGoogleIdToken } from "./lib/oidc";
  *   `POST /device/token` で mint) だった。**ここへ移すと credential そのものが
  *   要らなくなる** — `alc-tenant-rpc.ts` が #950 で同じ理由で寄せたのと同型で、
  *   「直接呼べる相手に bearer を提示する」形を 1 つ減らす。
+ * - `/api/timecard/cards/bulk-by-code` — 別システムのタイムカードが持つ IC カード
+ *   台帳を `timecard_cards` へ初回移行する口 (Refs ippoan/rust-alc-api#644)。
+ *   呼び手は dtako-scraper-relay ではなく **timecard-cf-worker** — オンプレ側
+ *   (社内ネットワークの backend) に資格情報を置かない設計のため、台帳取得から
+ *   投入まで Worker 経由に寄せた。tenant の根拠は他の path と同型で呼び手側にある。
  *
  * **method は見ない** — `/api/scraper/history` の 1 行で GET (履歴を読む =
  * #933) と POST (無人実行を載せる = #931) の両方が通る。読めない履歴に書いても
@@ -61,6 +66,7 @@ const FORWARDABLE_PATHS: ReadonlySet<string> = new Set([
   "/api/dtako/events/etags",
   "/api/employees/bulk-by-code",
   "/api/dtako-logs/bulk",
+  "/api/timecard/cards/bulk-by-code",
 ]);
 
 /** `forwardAlcTenantData` の引数。RPC 越しに渡るので serializable な素の値だけ。 */

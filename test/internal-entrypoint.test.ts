@@ -246,6 +246,52 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
     expect((init as RequestInit).body).toBe(body);
   });
 
+  it("カード台帳の初回移行 PUT (/api/timecard/cards/bulk-by-code) が body 付きで通る (rust-alc-api#644)", async () => {
+    const fetchMock = mockFetch(
+      new Response(JSON.stringify({ created: 12, updated: 3, skipped: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const body = JSON.stringify({ items: [{ code: "1078", card_idm: "dummy" }] });
+
+    const out = await rpc().forwardAlcTenantData({
+      tenantId: TENANT,
+      path: "/api/timecard/cards/bulk-by-code",
+      method: "PUT",
+      body,
+      contentType: "application/json",
+    });
+
+    expect(out.status).toBe(200);
+    expect(JSON.parse(out.body).created).toBe(12);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/timecard/cards/bulk-by-code");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("PUT");
+    // ★ 書き込み経路なので body が落ちていないことまで見る (落ちると呼び手側が
+    // 「移行できた」と誤認しかねない = bulk-by-code と同じ理由)。
+    expect((init as RequestInit).body).toBe(body);
+  });
+
+  it("★ timecard/cards/bulk-by-code を足しても兄弟の path は通らない (完全一致のまま)", async () => {
+    // ★ 陰性対照 — 1 行足したことで前方一致や近い名前まで開いていないこと。
+    const fetchMock = mockFetch();
+    for (const path of [
+      "/api/timecard/cards",
+      "/api/timecard/cards/bulk-by-code/",
+      "/api/timecard/cards/1",
+      "/api/timecard/cards/bulk-by-code/../../employees",
+    ]) {
+      const out = await rpc().forwardAlcTenantData({ tenantId: TENANT, path, method: "PUT" });
+      expect(out.status).toBe(403);
+      expect(JSON.parse(out.body).error).toBe("path_not_forwardable");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("★ dtako-logs/bulk を足しても兄弟の path は通らない (完全一致のまま)", async () => {
     // ★ 陰性対照 — 1 行足したことで前方一致や近い名前まで開いていないこと。
     const fetchMock = mockFetch();
