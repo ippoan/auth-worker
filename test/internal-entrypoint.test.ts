@@ -276,6 +276,52 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
     expect((init as RequestInit).body).toBe(body);
   });
 
+  it("カード台帳の継続同期の削除 POST (/api/timecard/cards/delete-by-card) が body 付きで通る (rust-alc-api#644)", async () => {
+    const fetchMock = mockFetch(
+      new Response(JSON.stringify({ deleted: 1 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const body = JSON.stringify({ card_idm: "dummy" });
+
+    const out = await rpc().forwardAlcTenantData({
+      tenantId: TENANT,
+      path: "/api/timecard/cards/delete-by-card",
+      method: "POST",
+      body,
+      contentType: "application/json",
+    });
+
+    expect(out.status).toBe(200);
+    expect(JSON.parse(out.body).deleted).toBe(1);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/timecard/cards/delete-by-card");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("POST");
+    // ★ 書き込み経路 (削除) なので body が落ちていないことまで見る。
+    expect((init as RequestInit).body).toBe(body);
+  });
+
+  it("★ timecard/cards/delete-by-card を足しても兄弟の path は通らない (完全一致のまま)", async () => {
+    // ★ 陰性対照 — 1 行足したことで前方一致や近い名前 (bulk-by-code 含む) まで
+    // 開いていないこと。
+    const fetchMock = mockFetch();
+    for (const path of [
+      "/api/timecard/cards",
+      "/api/timecard/cards/delete-by-card/",
+      "/api/timecard/cards/1",
+      "/api/timecard/cards/delete-by-card/../bulk-by-code",
+    ]) {
+      const out = await rpc().forwardAlcTenantData({ tenantId: TENANT, path, method: "POST" });
+      expect(out.status).toBe(403);
+      expect(JSON.parse(out.body).error).toBe("path_not_forwardable");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("★ timecard/cards/bulk-by-code を足しても兄弟の path は通らない (完全一致のまま)", async () => {
     // ★ 陰性対照 — 1 行足したことで前方一致や近い名前まで開いていないこと。
     const fetchMock = mockFetch();

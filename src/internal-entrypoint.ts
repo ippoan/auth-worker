@@ -25,7 +25,7 @@ import { resolveSecret } from "./lib/secret";
 import { mintGoogleIdToken } from "./lib/oidc";
 
 /**
- * rust-alc-api へ転送を許可する path。**この 5 本だけ** (呼び手は
+ * rust-alc-api へ転送を許可する path。**この 6 本だけ** (呼び手は
  * dtako-scraper-relay と timecard-cf-worker の 2 worker)。
  *
  * - `/api/scraper/history` / `/api/dtako/events/etags` — スクレイプ履歴と etag
@@ -49,10 +49,20 @@ import { mintGoogleIdToken } from "./lib/oidc";
  *   呼び手は dtako-scraper-relay ではなく **timecard-cf-worker** — オンプレ側
  *   (社内ネットワークの backend) に資格情報を置かない設計のため、台帳取得から
  *   投入まで Worker 経由に寄せた。tenant の根拠は他の path と同型で呼び手側にある。
+ * - `/api/timecard/cards/delete-by-card` — IC カード台帳の継続同期で、外部の画面から
+ *   カードが削除されたときに `timecard_cards` 側からも消す口 (Refs
+ *   ippoan/rust-alc-api#644)。呼び手は `bulk-by-code` と同じ **timecard-cf-worker**
+ *   1 つだけ、tenant の根拠も同型 (呼び手側にある)。**1 リクエストで消せるのは 1 枚だけ**
+ *   (bulk 系と違い一括削除にはしていない)。
  *
- * **method は見ない** — `/api/scraper/history` の 1 行で GET (履歴を読む =
- * #933) と POST (無人実行を載せる = #931) の両方が通る。読めない履歴に書いても
- * 意味が無いので意図的にそうしている。
+ * **method は見ない** (`.has(path)` のみで判定、下の FORWARDABLE_PATHS 参照) —
+ * `/api/scraper/history` の 1 行で GET (履歴を読む = #933) と POST (無人実行を
+ * 載せる = #931) の両方が通る。読めない履歴に書いても意味が無いので意図的に
+ * そうしている。★ `delete-by-card` も同じ理由で GET/PUT 等でも転送されてしまう —
+ * **この口が安全なのは、受け側 (rust-alc-api) が `delete-by-card` を POST 以外
+ * 405 で閉じているから**であり、ここでは method を絞っていないことを常に前提に
+ * すること (allowlist を足す側と 405 を持つ側、両方読まないと「なぜ安全か」が
+ * わからない設計になっている)。
  *
  * ★ 書き先の tenant は**呼び手が渡す `tenantId` そのもの**で、ここでは絞れない
  * (この口の identity は `X-Tenant-ID` 注入だけ)。`bulk-by-code` を足せる根拠は
@@ -67,6 +77,7 @@ const FORWARDABLE_PATHS: ReadonlySet<string> = new Set([
   "/api/employees/bulk-by-code",
   "/api/dtako-logs/bulk",
   "/api/timecard/cards/bulk-by-code",
+  "/api/timecard/cards/delete-by-card",
 ]);
 
 /** `forwardAlcTenantData` の引数。RPC 越しに渡るので serializable な素の値だけ。 */
