@@ -106,10 +106,17 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  *
  * 車検期限の照合 (body に管理番号 / 車両 ID、Refs ippoan/alc-app-s3#110)。応答は
  * 期限・matched_by・登録番号だけで、所有者・住所は rust 側が返さない。
+ *
+ * NFC 照会 (Refs ippoan/rust-alc-api#644)。旧い GET エンドポイントは、免許証 IC 由来の
+ * 16 桁 ID を URL パスに載せていたため、アクセスログ・Referer・devtools に平文で
+ * 残っていた。rust-alc-api 側が `POST /api/employees/lookup` (body に `nfc_id`) へ
+ * 移したのに合わせ、こちらも同じ形に置き換える (追加ではなく差し替え。旧 GET entry は
+ * 残さない)。読み取り専用の口 (body で照会するだけ) で、`/api/car-inspections/lookup`
+ * と同型。
  */
 const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees$/ },
-  { method: "GET", pattern: /^\/api\/employees\/by-nfc\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/employees\/lookup$/ },
   { method: "GET", pattern: /^\/api\/employees\/by-code\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/employees\/face-data$/ },
   { method: "PUT", pattern: /^\/api\/employees\/[^/]+\/face$/ },

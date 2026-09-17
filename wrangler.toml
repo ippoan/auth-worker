@@ -42,7 +42,14 @@ ALC_API_PREVIEW_HOST_SUFFIX = "rust-alc-api-747065218280.asia-northeast1.run.app
 # し忘れた consumer は無防備」という弱点がある。ここでの allowlist が
 # **唯一の source of truth** — consumer 側の allowlist は今後冗長になる想定
 # (二重管理を避けるため、consumer 側は将来的に簡略化/撤去してよい)。
-ALC_PROXY_DEV_WRITE_ALLOWLIST = ""
+# #c644-26: 旧い、NFC ID を URL パスに含む GET エンドポイント (safe method、dev token に常時
+# 開いていた) を POST /api/employees/lookup (body に nfc_id、Refs
+# ippoan/rust-alc-api#644) へ置き換えたことによる到達性の復元。追加しても
+# 「dev token は書けない」は緩まない — /api/employees/lookup は読み取り専用の口
+# (device-data-proxy.ts の KIOSK_ROUTES doc 参照)。
+# ★ この口に書き込みを足すな — 安全性は「常に読み取り専用であること」に依存する
+# (rust-alc-api 側のハンドラにも同じコメントを #c644-25 が入れる)。
+ALC_PROXY_DEV_WRITE_ALLOWLIST = "/api/employees/lookup"
 WORKER_ENV = "prod"
 # #434 Phase D: prod でも internal call の認証 token を Google OIDC ID token
 # (aud=alc-api-internal、ALC_API_PROXY_SA_KEY で mint) にする。staging で実証済み。
