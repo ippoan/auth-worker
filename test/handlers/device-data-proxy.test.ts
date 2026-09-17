@@ -397,7 +397,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
   // ★ KIOSK_ROUTES の全行を method + path で固定する (表駆動)。
   const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
     { method: "GET", path: "/api/employees" },
-    { method: "GET", path: "/api/employees/by-nfc/nfc-1" },
+    { method: "POST", path: "/api/employees/lookup" },
     { method: "GET", path: "/api/employees/by-code/E001" },
     { method: "GET", path: "/api/employees/face-data" },
     { method: "PUT", path: "/api/employees/emp-1/face" },
@@ -519,8 +519,8 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
   it("segment が 1 つ多い path は 403", async () => {
     const fetchMock = okFetch();
     const res = await handleDeviceDataProxy(
-      req("/device-data-proxy/api/employees/by-nfc/nfc-1/extra", {
-        method: "GET",
+      req("/device-data-proxy/api/employees/lookup/extra", {
+        method: "POST",
         token: await kioskToken(),
       }),
       env(),
