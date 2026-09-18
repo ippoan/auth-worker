@@ -344,6 +344,23 @@ describe("handleTopPage", () => {
     );
   });
 
+  it("maps maintenance.ippoan.org to 車両整備", async () => {
+    const env = createMockEnv({
+      allowedOrigins: "https://maintenance.ippoan.org",
+    });
+    const req = new Request("https://auth.test.example/top", {
+      headers: { Cookie: await authedCookie() },
+    });
+
+    await handleTopPage(req, env);
+
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [{ name: "車両整備", url: "https://maintenance.ippoan.org", icon: "🔧", description: "定期点検・修理・部品交換の記録" }],
+      "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+    );
+  });
+
   it("falls back to generic app entry for unknown origins", async () => {
     const env = createMockEnv({
       allowedOrigins: "https://unknown.example",

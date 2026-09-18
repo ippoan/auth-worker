@@ -41,6 +41,7 @@ const APP_PATTERNS: Array<{
   { match: (o) => o.includes("nuxt-ichibanboshi") || o.includes("ichibanboshi"), name: "一番星", icon: "⭐", description: "一番星管理" },
   { match: (o) => o.includes("nuxt-notify") || o.includes("notify"), name: "通知管理", icon: "📨", description: "メッセージ配信" },
   { match: (o) => o.includes("nuxt-trouble") || o.includes("trouble"), name: "トラブル管理", icon: "🚨", description: "トラブル・事故管理" },
+  { match: (o) => o.includes("vehicle-maintenance") || o.includes("maintenance"), name: "車両整備", icon: "🔧", description: "定期点検・修理・部品交換の記録" },
 ];
 
 /** Map origin URL to app metadata */
