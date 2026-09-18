@@ -19,7 +19,11 @@ import {
 import { handleDeviceNonce, handleDeviceLogin } from "../../src/handlers/device-login";
 import { handleDeviceDataProxy } from "../../src/handlers/device-data-proxy";
 import { handleDeviceClaimTicket } from "../../src/handlers/device-claim-ticket";
-import { DEVICE_JWT_AUDIENCE, DEVICE_ROLE_KIOSK } from "../../src/lib/device";
+import {
+  DEVICE_JWT_AUDIENCE,
+  DEVICE_ROLE_KIOSK,
+  DEVICE_ROLE_TENKO_MANAGER,
+} from "../../src/lib/device";
 import { decodeJwtPayload } from "../../src/lib/jwt";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
@@ -588,5 +592,263 @@ describe("device-login 側: nonce の purpose", () => {
     url.searchParams.set("redirect_uri", noLongerAllowed);
     const res = await handleDeviceLogin(new Request(url.toString()), env);
     expect(res.status).toBe(401);
+  });
+});
+
+/**
+ * 運行管理者席の用途 (`tenko-manager`、Refs ippoan/alc-app#337)。
+ *
+ * ここで固定したいのは 2 つ:
+ *   - その用途の鍵 + その用途の nonce のときだけ `device-tenko-manager` が出る
+ *   - **キオスクの鍵からは絶対に出ない** (鍵の用途違い / nonce の purpose 違いの両方)
+ */
+describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-app#337)", () => {
+  /** 指定した用途の nonce を取る (usage 省略時は既定 = kiosk)。 */
+  async function issueNonce(env: Env, usage?: string): Promise<string> {
+    const url = usage
+      ? `${AUTH_ORIGIN}/device/alarm-nonce?usage=${encodeURIComponent(usage)}`
+      : `${AUTH_ORIGIN}/device/alarm-nonce`;
+    const res = await handleDeviceAlarmNonce(new Request(url), env);
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { nonce: string }).nonce;
+  }
+
+  /** nonce の用途と body の用途を別々に指定できる token request を組み立てる。 */
+  async function tokenBody(
+    env: Env,
+    keypair: Keypair,
+    opts: { nonceUsage?: string; bodyUsage?: string },
+  ): Promise<Record<string, unknown>> {
+    const nonce = await issueNonce(env, opts.nonceUsage);
+    return {
+      nonce,
+      pubkey: b64url(keypair.pubRaw),
+      sig: signNonceAscii(keypair.privateKey, nonce),
+      ...(opts.bodyUsage === undefined ? {} : { usage: opts.bodyUsage }),
+    };
+  }
+
+  describe("GET /device/alarm-nonce の usage", () => {
+    it("?usage=tenko-manager は purpose=tenko-manager の nonce を積む", async () => {
+      const env = makeEnv();
+      const nonce = await issueNonce(env, "tenko-manager");
+      const stored = JSON.parse(
+        (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`]!,
+      ) as Record<string, unknown>;
+      expect(stored.purpose).toBe("tenko-manager");
+    });
+
+    it("usage 省略 / 空文字は既定の purpose=kiosk (既存ファームとの後方互換)", async () => {
+      const env = makeEnv();
+      for (const usage of [undefined, ""]) {
+        const nonce = await issueNonce(env, usage);
+        const stored = JSON.parse(
+          (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`]!,
+        ) as Record<string, unknown>;
+        expect(stored.purpose, String(usage)).toBe("kiosk");
+      }
+    });
+
+    it.each(["admin-login", "manager", "KIOSK", "login"])(
+      "表に無い usage=%s は 400 で nonce を積まない",
+      async (usage) => {
+        const env = makeEnv();
+        const res = await handleDeviceAlarmNonce(
+          new Request(`${AUTH_ORIGIN}/device/alarm-nonce?usage=${encodeURIComponent(usage)}`),
+          env,
+        );
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "invalid_usage" });
+        const keys = Object.keys((env.AUTH_CONFIG as unknown as MockKV)._data).filter((k) =>
+          k.startsWith("devnonce:"),
+        );
+        expect(keys).toEqual([]);
+      },
+    );
+  });
+
+  it("用途 tenko-manager の鍵 + その用途の nonce で role=device-tenko-manager が出る", async () => {
+    const keypair = generateKeypair();
+    const { fp, kv } = alarmKeySeed(keypair.pubRaw, { usage: "tenko-manager" });
+    const env = makeEnv(kv);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const res = await handleDeviceAlarmToken(
+        tokenRequest(
+          await tokenBody(env, keypair, {
+            nonceUsage: "tenko-manager",
+            bodyUsage: "tenko-manager",
+          }),
+        ),
+        env,
+      );
+      expect(res.status).toBe(200);
+      const { access_token, tenant_id } = (await res.json()) as {
+        access_token: string;
+        tenant_id: string;
+      };
+      expect(tenant_id).toBe(TENANT_ID);
+      const payload = decodeJwtPayload(access_token)!;
+      expect(payload.role).toBe(DEVICE_ROLE_TENKO_MANAGER);
+      expect(payload.role).toBe("device-tenko-manager");
+      expect(payload.aud).toBe(DEVICE_JWT_AUDIENCE);
+      expect(payload.sub).toBe(`alarm:${fp}`);
+      expect(payload.tenant_id).toBe(TENANT_ID);
+      // 値は log に出さない (既存方針)。
+      expect(logSpy.mock.calls.map((c) => String(c[0])).some((l) => l.includes(access_token))).toBe(
+        false,
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("★ キオスクの鍵では運行管理者の role は出ない (鍵の用途違いで 401)", async () => {
+    const keypair = generateKeypair();
+    // 用途 kiosk で登録された鍵 (= CoreS3 の運行者端末の鍵)。
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "kiosk" }).kv);
+    await expectInvalid(
+      await handleDeviceAlarmToken(
+        tokenRequest(
+          await tokenBody(env, keypair, {
+            nonceUsage: "tenko-manager",
+            bodyUsage: "tenko-manager",
+          }),
+        ),
+        env,
+      ),
+    );
+  });
+
+  it("★ 運行管理者の鍵で usage を省略しても kiosk の role は出ない (401)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "tenko-manager" }).kv);
+    await expectInvalid(
+      await handleDeviceAlarmToken(
+        tokenRequest(await tokenBody(env, keypair, {})),
+        env,
+      ),
+    );
+  });
+
+  it("★ 運行者端末向けに出した nonce への署名は運行管理者の JWT に使えない (purpose 違いで 401)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "tenko-manager" }).kv);
+    await expectInvalid(
+      await handleDeviceAlarmToken(
+        tokenRequest(await tokenBody(env, keypair, { bodyUsage: "tenko-manager" })),
+        env,
+      ),
+    );
+  });
+
+  it("★ 運行管理者向けに出した nonce への署名はキオスクの JWT に使えない (逆向きも 401)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "kiosk" }).kv);
+    await expectInvalid(
+      await handleDeviceAlarmToken(
+        tokenRequest(await tokenBody(env, keypair, { nonceUsage: "tenko-manager" })),
+        env,
+      ),
+    );
+  });
+
+  it.each(["admin-login", "manager", "TENKO-MANAGER", "login", 1, ["tenko-manager"], {}])(
+    "この口に無い usage=%s は 401",
+    async (usage) => {
+      const keypair = generateKeypair();
+      const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "tenko-manager" }).kv);
+      const nonce = await issueNonce(env, "tenko-manager");
+      await expectInvalid(
+        await handleDeviceAlarmToken(
+          tokenRequest({
+            nonce,
+            pubkey: b64url(keypair.pubRaw),
+            sig: signNonceAscii(keypair.privateKey, nonce),
+            usage,
+          }),
+          env,
+        ),
+      );
+    },
+  );
+
+  it("鍵ごとの rate limit の枠は用途ごとに別 (kiosk の枠を使い切っても運行管理者は通る)", async () => {
+    await withFixedDate(currentMinuteMs(), async () => {
+      const kioskKey = generateKeypair();
+      const managerKey = generateKeypair();
+      const env = makeEnv({
+        ...alarmKeySeed(kioskKey.pubRaw, { usage: "kiosk" }).kv,
+        ...alarmKeySeed(managerKey.pubRaw, { usage: "tenko-manager" }).kv,
+      });
+      for (let i = 0; i < 10; i++) {
+        const res = await handleDeviceAlarmToken(
+          tokenRequest(await signedBody(env, kioskKey)),
+          env,
+        );
+        expect(res.status, `kiosk attempt ${i + 1}`).toBe(200);
+      }
+      expect((await handleDeviceAlarmToken(tokenRequest(await signedBody(env, kioskKey)), env)).status).toBe(
+        429,
+      );
+
+      const res = await handleDeviceAlarmToken(
+        tokenRequest(
+          await tokenBody(env, managerKey, {
+            nonceUsage: "tenko-manager",
+            bodyUsage: "tenko-manager",
+          }),
+        ),
+        env,
+      );
+      expect(res.status).toBe(200);
+    });
+  });
+
+  it("出した JWT は /device-data-proxy の予定の口を通り、kiosk 専用の口では 403", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "tenko-manager" }).kv);
+    const res = await handleDeviceAlarmToken(
+      tokenRequest(
+        await tokenBody(env, keypair, { nonceUsage: "tenko-manager", bodyUsage: "tenko-manager" }),
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const { access_token } = (await res.json()) as { access_token: string };
+
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const ok = await handleDeviceDataProxy(
+      new Request(`${AUTH_ORIGIN}/device-data-proxy/api/tenko/schedules`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${access_token}` },
+      }),
+      env,
+    );
+    expect(ok.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT_ID);
+
+    const denied = await handleDeviceDataProxy(
+      new Request(`${AUTH_ORIGIN}/device-data-proxy/api/tenko/dashboard`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${access_token}` },
+      }),
+      env,
+    );
+    expect(denied.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("キオスクの鍵で出した JWT の role は今までどおり device-kiosk (退行検知)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "kiosk" }).kv);
+    const token = await mintKioskToken(env, keypair);
+    expect(decodeJwtPayload(token)!.role).toBe(DEVICE_ROLE_KIOSK);
   });
 });

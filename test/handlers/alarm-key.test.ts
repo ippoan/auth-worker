@@ -196,21 +196,24 @@ describe("handleAlarmKeyRegister", () => {
     expect(Object.keys(kv._data).filter((k) => k.startsWith("alarmkey"))).toEqual([]);
   });
 
-  it.each(["admin-login", "kiosk"])("registers with usage=%s and stores it on the record", async (usage) => {
-    const { env, kv } = makeEnvWithKv();
-    const res = await handleAlarmKeyRegister(
-      postJson(
-        "/device/setup/alarm-key",
-        { pubkey: fakePubkey(15), label: "cab-1", usage },
-        await withOpCookieAndOrigin(),
-      ),
-      env,
-    );
-    expect(res.status).toBe(200);
-    const { fingerprint } = (await res.json()) as { fingerprint: string };
-    const stored = JSON.parse(kv._data[`alarmkey:${fingerprint}`]!) as { usage: string };
-    expect(stored.usage).toBe(usage);
-  });
+  it.each(["admin-login", "kiosk", "tenko-manager"])(
+    "registers with usage=%s and stores it on the record",
+    async (usage) => {
+      const { env, kv } = makeEnvWithKv();
+      const res = await handleAlarmKeyRegister(
+        postJson(
+          "/device/setup/alarm-key",
+          { pubkey: fakePubkey(15), label: "cab-1", usage },
+          await withOpCookieAndOrigin(),
+        ),
+        env,
+      );
+      expect(res.status).toBe(200);
+      const { fingerprint } = (await res.json()) as { fingerprint: string };
+      const stored = JSON.parse(kv._data[`alarmkey:${fingerprint}`]!) as { usage: string };
+      expect(stored.usage).toBe(usage);
+    },
+  );
 });
 
 describe("handleAlarmKeyList", () => {

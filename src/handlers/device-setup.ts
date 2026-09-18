@@ -878,18 +878,21 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <thead><tr><th>ラベル</th><th>種別</th><th>拠点ID</th><th>接続</th><th>バージョン</th><th>更新</th><th>再登録</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
-<h2>デバイスの署名鍵 (VoiceS3R = 管理者ログイン / CoreS3 = 運行者端末)</h2>
+<h2>デバイスの署名鍵 (VoiceS3R = 管理者ログイン / 運行管理者席、CoreS3 = 運行者端末)</h2>
 <p class="muted">デバイスが機体内で作った署名鍵の公開鍵を、用途を選んで登録・失効します
 (秘密鍵は機体から出ません)。1 つの鍵は 1 つの用途にだけ使えます。デバイスを USB で
 接続し、用途を選んでから押してください。</p>
 <p><label>用途 <select id="alarm-key-usage">
 <option value="" selected disabled>選択してください</option>
 <option value="kiosk">運行者端末 (kiosk)</option>
+<option value="tenko-manager">運行管理者席 (tenko-manager)</option>
 <option value="admin-login">管理者ログイン (admin-login)</option>
 </select></label>
 <button id="alarm-key-register" type="button">デバイスの鍵を登録</button></p>
 <p class="muted">管理者ログイン: この用途の鍵を挿した端末では管理者として入れます。
 管理者が手元で使う機体の鍵にだけ選んでください。</p>
+<p class="muted">運行管理者席: この用途の鍵を挿した端末から点呼予定を作成・変更できます
+(管理者ログインにはなりません)。運行管理者が座る席の機体の鍵にだけ選んでください。</p>
 <p id="alarm-key-result"></p>
 <p id="alarm-keys-status" class="muted">読み込み中...</p>
 <table id="alarm-keys" style="display:none">
@@ -2003,7 +2006,11 @@ const alarmKeyRegisterBtn = document.getElementById("alarm-key-register");
 const alarmKeyResultEl = document.getElementById("alarm-key-result");
 const alarmKeyUsageEl = document.getElementById("alarm-key-usage");
 // 鍵の用途 → 表示名 (サーバ側 AlarmKeyUsage と対)
-const ALARM_KEY_USAGE_DISPLAY = { kiosk: "運行者端末", "admin-login": "管理者ログイン" };
+const ALARM_KEY_USAGE_DISPLAY = {
+  kiosk: "運行者端末",
+  "tenko-manager": "運行管理者席",
+  "admin-login": "管理者ログイン",
+};
 
 // operator の tenant に登録済みの警告デバイス鍵一覧を読み込んで描画する。
 async function loadAlarmKeys() {
@@ -2161,7 +2168,7 @@ async function registerAlarmKey() {
     await port.close().catch(() => {});
     port = null;
 
-    const defaultLabel = usage === "admin-login" ? "voice-s3r" : "cores3";
+    const defaultLabel = usage === "kiosk" ? "cores3" : "voice-s3r";
     const label = (prompt("このデバイスのラベル (1〜64文字)", defaultLabel) || "").trim();
     if (!label) throw new Error("ラベルが未入力のため中止しました");
 

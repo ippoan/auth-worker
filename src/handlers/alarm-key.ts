@@ -12,8 +12,9 @@
  *   POST /device/setup/alarm-key/revoke  — {fingerprint} → 失効 (削除しない)
  *
  * 鍵は登録時に用途 (`usage`) を 1 つだけ持つ。`admin-login` は `/auth/device-login`
- * (VoiceS3R)、`kiosk` は `/device/alarm-token` (CoreS3 の運行者端末) でだけ受け付ける
- * (照合は `lib/alarm-nonce.ts::verifyAlarmSignature` の 1 か所)。
+ * (VoiceS3R)、`kiosk` は `/device/alarm-token` (CoreS3 の運行者端末)、
+ * `tenko-manager` は同じく `/device/alarm-token` (運行管理者席の VoiceS3R) でだけ
+ * 受け付ける (照合は `lib/alarm-nonce.ts::verifyAlarmSignature` の 1 か所)。
  *
  * KV (AUTH_CONFIG):
  *   `alarmkey:<fingerprint>`   → AlarmKeyRecord
@@ -37,11 +38,18 @@ function jsonNoStore(body: unknown, status = 200): Response {
   });
 }
 
-/** 鍵の用途。`admin-login` = device-login、`kiosk` = alarm-token。1 鍵 1 用途。 */
-export type AlarmKeyUsage = "admin-login" | "kiosk";
+/**
+ * 鍵の用途。`admin-login` = device-login、`kiosk` / `tenko-manager` = alarm-token。
+ * 1 鍵 1 用途 — 用途が違えば署名検証の時点で落ちるので、キオスクの鍵で運行管理者の
+ * JWT は出せない (Refs ippoan/alc-app#337)。
+ */
+export type AlarmKeyUsage = "admin-login" | "kiosk" | "tenko-manager";
+
+/** 受理する用途の正本 (一覧・表示順もここに揃える)。 */
+const ALARM_KEY_USAGES: ReadonlyArray<AlarmKeyUsage> = ["admin-login", "kiosk", "tenko-manager"];
 
 function isAlarmKeyUsage(value: unknown): value is AlarmKeyUsage {
-  return value === "admin-login" || value === "kiosk";
+  return typeof value === "string" && (ALARM_KEY_USAGES as ReadonlyArray<string>).includes(value);
 }
 
 /** KV に保管する警告デバイス公開鍵レコード。 */
@@ -166,7 +174,7 @@ export async function handleAlarmKeyRegister(request: Request, env: Env): Promis
   }
   const label = body.label as string;
   if (!isAlarmKeyUsage(body.usage)) {
-    return jsonNoStore({ error: "usage は admin-login か kiosk で必要です" }, 400);
+    return jsonNoStore({ error: `usage は ${ALARM_KEY_USAGES.join(" / ")} のどれかで必要です` }, 400);
   }
   const usage = body.usage;
 
