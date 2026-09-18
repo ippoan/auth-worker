@@ -10,6 +10,7 @@ import {
   handleDeviceSetupVersion,
   handleDeviceSetupGw,
   handleDeviceSetupBus5v,
+  handleDeviceSetupBpStatus,
   handleDeviceSetupReboot,
   handleDeviceSetupSite,
   handleDeviceSetupBattery,
@@ -139,6 +140,19 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("/device/setup/version");
     expect(html).toContain("/device/setup/latest");
     expect(html).toContain("queryVersion");
+    // 血圧計ボンド状態の列 (Refs #574): version と同じく接続中のみ自動照会し、
+    // 4 状態 (ボンド済み/未ボンド/まだ確認できていない/未対応) を出し分ける —
+    // bp_read=false (未確認) や空 ack (未対応) を「未ボンド」と混同しない
+    // (isOldFirmwareResult を bus5v/reboot と共用)
+    expect(html).toContain("血圧計ボンド");
+    expect(html).toContain("/device/setup/bp_status");
+    expect(html).toContain("queryBpStatus");
+    expect(html).toContain("ボンド済み");
+    expect(html).toContain("未ボンド");
+    expect(html).toContain("まだ確認できていません");
+    expect(html).toContain("未対応 (OTA が必要)");
+    // 未接続の端末は照会しない (version と同じ isConn ガード)
+    expect(html).toContain('if (isConn) queryBpStatus(d.device_id, bpSpan);');
     // dev ビルド選択は developer 以外には表示しない (alc-app-s3#44)
     expect(html).not.toContain('id="dev-build-cores3"');
     // AtomS3 印刷ブリッジのプリンター宛先 (PRINTER ADDR) 設定 UI (Refs #395、
@@ -1142,6 +1156,171 @@ describe("handleDeviceSetupBus5v / handleDeviceSetupReboot", () => {
 });
 
 /**
+ * 血圧計のボンド状態照会 (Refs #574, ippoan/alc-app-s3#250)。version/battery/bus5v と
+ * 完全に同型: 認可の 3 段は共通前処理 `deviceCommandRequest` + `sendDeviceCommand` 由来。
+ * ★ 4 状態 (ボンド済み/未ボンド/まだ確認できていない/未対応) の出し分けは client JS
+ * (`queryBpStatus`) の責務なので、ここでは「サーバが action:bp_status を forward し
+ * command id を返す」ところまでを確認する (recorder の command_result 中身は不透過に
+ * 通す既存の `getCommandResult`/`handleDeviceSetupOtaStatus` が既にカバーしている)。
+ */
+describe("handleDeviceSetupBpStatus", () => {
+  function mockRecorder(handler: (req: Request) => Response) {
+    const calls: Array<{ url: string; method: string; auth: string | null; body: string }> = [];
+    const fetcher = {
+      async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+        const req = new Request(input as string, init);
+        calls.push({
+          url: req.url,
+          method: req.method,
+          auth: req.headers.get("Authorization"),
+          body: init?.body ? String(init.body) : "",
+        });
+        return handler(req);
+      },
+    };
+    return { fetcher, calls };
+  }
+
+  async function bpEnv(recorder: unknown) {
+    const env = makeEnv({
+      ALC_RECORDER: recorder,
+      INTERNAL_SHARED_SECRET: "shared-abc",
+    });
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    return { env, deviceId: cred.device_id };
+  }
+
+  async function okHeaders(): Promise<Record<string, string>> {
+    return { ...(await opCookie()), Origin: ISSUER };
+  }
+
+  it("action:bp_status を転送し command id を返す", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "bp-1" }), { status: 202 }),
+    );
+    const { env, deviceId } = await bpEnv(fetcher);
+    const res = await handleDeviceSetupBpStatus(
+      postJson("/device/setup/bp_status", { device_id: deviceId }, await okHeaders()),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "bp-1" });
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.auth).toBe("shared-abc");
+    expect(calls[0]!.url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
+    expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "bp_status" } });
+  });
+
+  it("不正入力・認証: session なし 401 / bad origin 403 / device_id なし 400", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env, deviceId } = await bpEnv(fetcher);
+    expect(
+      (
+        await handleDeviceSetupBpStatus(postJson("/device/setup/bp_status", { device_id: deviceId }), env)
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleDeviceSetupBpStatus(
+          postJson(
+            "/device/setup/bp_status",
+            { device_id: deviceId },
+            { ...(await opCookie()), Origin: "https://evil.example" },
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (await handleDeviceSetupBpStatus(postJson("/device/setup/bp_status", {}, await okHeaders()), env))
+        .status,
+    ).toBe(400);
+    expect(calls.length).toBe(0);
+  });
+
+  it("他テナントの device_id は 403 (recorder を叩かない)", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env } = await bpEnv(fetcher);
+    const otherHeaders = { ...(await opCookie({ tenant_id: "tenant-2" })), Origin: ISSUER };
+    const other = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "z" }, otherHeaders), env)
+    ).json()) as PairResponse;
+    const res = await handleDeviceSetupBpStatus(
+      postJson("/device/setup/bp_status", { device_id: other.device_id }, await okHeaders()),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(calls.length).toBe(0);
+  });
+
+  it("device 未接続 (recorder 404) は 409、recorder binding 未設定は 503", async () => {
+    const { fetcher } = mockRecorder(() => new Response("{}", { status: 404 }));
+    const { env, deviceId } = await bpEnv(fetcher);
+    expect(
+      (
+        await handleDeviceSetupBpStatus(
+          postJson("/device/setup/bp_status", { device_id: deviceId }, await okHeaders()),
+          env,
+        )
+      ).status,
+    ).toBe(409);
+
+    const bare = makeEnv();
+    const headers = await okHeaders();
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), bare)
+    ).json()) as PairResponse;
+    expect(
+      (
+        await handleDeviceSetupBpStatus(
+          postJson("/device/setup/bp_status", { device_id: cred.device_id }, headers),
+          bare,
+        )
+      ).status,
+    ).toBe(503);
+  });
+
+  /**
+   * ★ 受け入れ条件の 4 状態テスト本体。recorder の command_result 経路
+   * (`getCommandResult` → `handleDeviceSetupOtaStatus`) は action 名を問わず
+   * payload を不透過に返すため、`{bp_bonded:true,bp_read:true}` /
+   * `{bp_bonded:false,bp_read:true}` / `{bp_read:false}` (bp_bonded キー自体が
+   * 無い、まだ確認できていない) / 空 `{}` (古い firmware の既定 ack、未対応) の
+   * どれでもそのまま素通しされることを確認する。「bp_read:false = 未ボンド」
+   * 「空 = 未ボンド」に丸めないこと自体は client の `queryBpStatus`/
+   * `isOldFirmwareResult` (bus5v/reboot と共用) の責務 — ここではサーバがその
+   * 判定材料 (4 種の payload) を握り潰さず届けることを保証する。
+   */
+  it.each([
+    [{ bp_bonded: true, bp_read: true }, "ボンド済み相当のペイロード"],
+    [{ bp_bonded: false, bp_read: true }, "未ボンド相当のペイロード (空と誤認してはいけない)"],
+    [{ bp_read: false }, "まだ確認できていない (bp_bonded キー自体が無い、未ボンドと混同してはいけない)"],
+    [{}, "古い firmware の空 ack (未対応 = 未ボンド/未確認と混同してはいけない)"],
+  ])("command_result %o (%s) を素通しする", async (payload: unknown, _label: string) => {
+    const { env, deviceId } = await bpEnv(
+      mockRecorder(() => new Response(JSON.stringify({ id: "bp-poll" }), { status: 202 })).fetcher,
+    );
+    const pollRecorder = {
+      async fetch(): Promise<Response> {
+        return new Response(JSON.stringify({ payload }), { status: 200 });
+      },
+    };
+    const pollEnv = { ...env, ALC_RECORDER: pollRecorder } as unknown as Env;
+    void deviceId;
+    const res = await handleDeviceSetupOtaStatus(
+      getReq("/device/setup/ota/bp-poll", await okHeaders()),
+      pollEnv,
+      "bp-poll",
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(payload);
+  });
+});
+
+/**
  * dev-login (`token_kind: "dev"`) / device-key (`token_kind: "device-key"`) の
  * cookie では `/device/setup/*` の書き込む口を 403 で弾く。
  * `/alc-proxy` の read-only enforcement (issue #433) は `/device/setup/*` を
@@ -1307,6 +1486,20 @@ describe("dev / device-key token: /device/setup の書き込み口を弾く", ()
       );
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ id: "b5v-ok" });
+    },
+  );
+
+  it.each(["dev", "device-key"])(
+    "POST /device/setup/bp_status (読み取りの照会) は token_kind=%s でも通る (Refs #574)",
+    async (tokenKind) => {
+      const { fetcher } = mockRecorder(() => new Response(JSON.stringify({ id: "bp-ok" }), { status: 202 }));
+      const { env, deviceId } = await envWithDevice(fetcher);
+      const res = await handleDeviceSetupBpStatus(
+        postJson("/device/setup/bp_status", { device_id: deviceId }, await tokenHeaders(tokenKind)),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "bp-ok" });
     },
   );
 

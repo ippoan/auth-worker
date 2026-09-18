@@ -716,6 +716,34 @@ export async function handleDeviceSetupBus5v(request: Request, env: Env): Promis
 }
 
 /**
+ * POST /device/setup/bp_status — 接続中デバイスへ血圧計のボンド状態の照会を送る
+ * (自動点呼の血圧必須判定に使う、Refs ippoan/alc-app#322, ippoan/alc-app-s3#250)。
+ * recorder の command API に `{action:"bp_status"}` を投げ command id を返す
+ * (web は `/device/setup/ota/:id` で結果をポーリングする)。
+ *
+ * 結果は 4 状態 (`battery`/`bus5v_status` の `read`/`power_read` と同じ「まだ読めて
+ * いない」ゲート付き、確定契約は #p310-c574-1):
+ *   - `{bp_bonded:true, bp_read:true}`  → ボンド済み
+ *   - `{bp_bonded:false, bp_read:true}` → 未ボンド (確認できた)
+ *   - `{bp_read:false}` (`bp_bonded` キー自体が無い) → まだ確認できていない
+ *     (起動直後 / BLE スキャン未実行 / lock 失敗)
+ *   - `{}` (未知 action への既定 ack、`ws_uplink.rs` の match 既定) → 未対応 (OTA 必要)
+ *
+ * ★ `bp_read:false` の間は `bp_bonded` を読んではいけない (欠落している)。
+ * 「まだ確認できていない」を「未ボンド」や「未対応」に丸めると、
+ * `ippoan/alc-app#322` で繰り返された「確認できていないことを確認済みのように
+ * 見せる」と同じ形になる — 4 状態を潰さない。
+ */
+export async function handleDeviceSetupBpStatus(request: Request, env: Env): Promise<Response> {
+  // 読み取りの照会 (状態を変更しない) — dev/device-key token でも許可する。
+  const pre = await deviceCommandRequest(request, env, "device_id が必要です", true);
+  if (pre instanceof Response) return pre;
+  return commandIdResponse(
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "bp_status" }),
+  );
+}
+
+/**
  * POST /device/setup/reboot — 接続中デバイスへ再起動指示を送る
  * (Refs ippoan/alc-app-s3#200)。body: `{ device_id }`。
  *
@@ -875,7 +903,7 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <p id="latest" class="muted"></p>
 <p id="devices-status" class="muted">読み込み中...</p>
 <table id="devices" style="display:none">
-<thead><tr><th>ラベル</th><th>種別</th><th>拠点ID</th><th>接続</th><th>バージョン</th><th>更新</th><th>再登録</th></tr></thead>
+<thead><tr><th>ラベル</th><th>種別</th><th>拠点ID</th><th>接続</th><th>バージョン</th><th>血圧計ボンド</th><th>更新</th><th>再登録</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
 <h2>デバイスの署名鍵 (VoiceS3R = 管理者ログイン / 運行管理者席、CoreS3 = 運行者端末)</h2>
@@ -1173,6 +1201,16 @@ async function loadDevices() {
       verTd.appendChild(verSpan);
       tr.appendChild(verTd);
 
+      // 血圧計のボンド状態 (接続中は自動照会 / 未接続は照会不可、Refs #574)。
+      // 4 状態 (ボンド済み/未ボンド/まだ確認できていない/未対応(要OTA)) を
+      // queryBpStatus が出し分ける — bp_read=false (未確認) や空 ack (未対応) を
+      // 「未ボンド」と混同しない。
+      const bpTd = document.createElement("td");
+      const bpSpan = document.createElement("span");
+      bpSpan.textContent = isConn ? "照会中..." : "—";
+      bpTd.appendChild(bpSpan);
+      tr.appendChild(bpTd);
+
       // 更新セル: 更新あり時のみ赤ボタン / 最新なら「最新」表示 + 進捗
       const otaTd = document.createElement("td");
       otaTd.className = "ota-cell";
@@ -1301,8 +1339,9 @@ async function loadDevices() {
       tr.appendChild(reregTd);
 
       body.appendChild(tr);
-      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bus5vChkBtn, rebootBtn, bar, barFill, msg, otaNote });
+      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, bpSpan, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bus5vChkBtn, rebootBtn, bar, barFill, msg, otaNote });
       if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
+      if (isConn) queryBpStatus(d.device_id, bpSpan);
     }
     statusEl.textContent = "";
     table.style.display = "";
@@ -1341,6 +1380,7 @@ function applyConnected(deviceId, isConn) {
   if (OTA_BUSY.has(deviceId)) return; // OTA フロー (startOta/pollOta/refreshVersionAfterReboot) が進捗表示を管理中
   if (isConn) {
     row.verSpan.textContent = "照会中...";
+    row.bpSpan.textContent = "照会中...";
     row.btn.style.display = "none";
     row.btn.disabled = true;
     row.otaNote.textContent = "確認中...";
@@ -1355,8 +1395,10 @@ function applyConnected(deviceId, isConn) {
       if (row.rebootBtn) row.rebootBtn.style.display = "";
     }
     queryVersion(deviceId, row.kind, row.verSpan, row.btn, row.otaNote);
+    queryBpStatus(deviceId, row.bpSpan);
   } else {
     row.verSpan.textContent = "—";
+    row.bpSpan.textContent = "—";
     row.btn.disabled = true;
     row.btn.classList.remove("update");
     row.btn.style.display = "";
@@ -1555,6 +1597,26 @@ async function queryBus5v(deviceId, msg) {
   msg.textContent = "USB=" + (p.usb_host ? "有" : "無")
     + " 5V出力=" + (p.ext_5v_out ? "有" : "無")
     + " 電池=" + (p.power_read ? (p.battery_present ? "有" : "無") : "不明");
+}
+
+// 血圧計のボンド状態照会 (WS bp_status コマンド、Refs #574, ippoan/alc-app-s3#250)。
+// 結果は 4 状態 (battery/bus5v_status の read/power_read と同じ「まだ読めていない」
+// ゲート付き):
+//   {bp_bonded:true,  bp_read:true}  → ボンド済み
+//   {bp_bonded:false, bp_read:true}  → 未ボンド
+//   {bp_read:false}   (bp_bonded キー自体が無い) → まだ確認できていない
+//   {}                (未知 action への古い firmware の空 ack) → 未対応 (OTA が必要)
+// ★ bp_read が無い/false のときに bp_bonded を読んではいけない — キーが欠けている
+// (起動直後・BLE スキャン未実行・lock 失敗)。「まだ確認できていない」を「未ボンド」や
+// 「未対応」に丸めない (確認できていないことを確認済みのように見せない、
+// Refs ippoan/alc-app#322)。4 状態を潰さない。
+async function queryBpStatus(deviceId, bpSpan) {
+  const p = await sendAndPoll("/device/setup/bp_status", { device_id: deviceId }, bpSpan, "血圧計照会",
+    (x) => x && (typeof x.bp_read === "boolean" || isOldFirmwareResult(x)));
+  if (!p) return;
+  if (isOldFirmwareResult(p)) { bpSpan.textContent = "未対応 (OTA が必要)"; return; }
+  if (p.bp_read === false) { bpSpan.textContent = "まだ確認できていません (しばらく待って再照会)"; return; }
+  bpSpan.textContent = p.bp_bonded ? "ボンド済み" : "未ボンド";
 }
 
 // 再起動 (WS reboot コマンド)。
