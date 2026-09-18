@@ -110,11 +110,18 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   const sigB64 = stringField(body.sig);
   if (!nonce || !pubkeyB64 || !sigB64) return invalidAlarmToken();
 
+  // 血圧計のボンド状態 (Refs #571)。無ければ undefined (古いファーム、「不明」として
+  // 扱う = 今までどおり nonce だけで検証)。boolean 以外の値が付いていれば不正な body。
+  const bpBondedRaw = body.bp_bonded;
+  if (bpBondedRaw !== undefined && typeof bpBondedRaw !== "boolean") return invalidAlarmToken();
+  const bpBonded = bpBondedRaw as boolean | undefined;
+
   // a. nonce を消費 (single-use、purpose=kiosk で発行したものだけ)。
   if (!(await consumeAlarmNonce(env, nonce, "kiosk"))) return invalidAlarmToken();
 
-  // b. 登録済み・未失効・用途が kiosk の鍵で署名を検証する。
-  const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce, usage: "kiosk" });
+  // b. 登録済み・未失効・用途が kiosk の鍵で署名を検証する (署名対象は nonce + bpBonded、
+  //    `verifyAlarmSignature` 内の `buildAlarmSignedMessage` が組み立て直す)。
+  const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce, usage: "kiosk", bpBonded });
   if (!verified) return invalidAlarmToken();
   const { fingerprint, record } = verified;
 
@@ -129,7 +136,8 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   if (!okKeyRate) return rateLimited();
 
   // d. mint は `/device/token` と同じ `mintDeviceJwt`。device record は無いので
-  //    必要な 3 項目だけを渡す。
+  //    必要な 3 項目だけを渡す。bpBonded は署名検証を通った値そのもの (b で確かめ済み)
+  //    なので、そのまま claim に渡してよい。
   let token: string;
   try {
     token = await mintDeviceJwt(
@@ -137,6 +145,7 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
       { device_id: `alarm:${fingerprint}`, tenant_id: record.tenant_id, role: DEVICE_ROLE_KIOSK },
       Math.floor(Date.now() / 1000),
       ALARM_TOKEN_TTL_SEC,
+      { bpBonded },
     );
   } catch {
     return jsonNoStoreCors({ error: "server_error" }, 503);

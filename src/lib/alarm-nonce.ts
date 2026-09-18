@@ -8,6 +8,12 @@
  *   - nonce = 小文字 hex 32 文字。署名対象は **その ASCII 32 バイト**
  *   - pubkey / sig は base64url の raw bytes (32 B / 64 B)。decode は `alarm-key.ts` の正本
  *
+ * 血圧計のボンド状態込みの署名 (Refs #571、`ippoan/alc-app-s3#249` と合意済みの形。
+ * 変える時は両側で揃えること):
+ *   - `<nonce>|bp=1` ボンドされている / `<nonce>|bp=0` ボンドされていない /
+ *     `<nonce>` だけ (古いファーム、ボンド状態は「不明」)。区切りは半角パイプ 1 文字、
+ *     `bp=` の後は `1`/`0` のみ、空白なし。組み立ては `buildAlarmSignedMessage`。
+ *
  * nonce の record は `purpose` を持つ。消費時は purpose の一致を要求し、purpose の
  * 無い record は拒否する (fail-closed)。ログイン用に発行した nonce への署名を端末 JWT に
  * (またはその逆に) 使い回させないため。
@@ -45,6 +51,18 @@ export interface AlarmNonceRecord {
 export interface VerifiedAlarmKey {
   fingerprint: string;
   record: AlarmKeyRecord;
+}
+
+/**
+ * 署名対象の ASCII 文字列を組み立てる (Refs #571、`ippoan/alc-app-s3#249` と 1 文字も
+ * 違わずに揃えた形):
+ *   - `bpBonded` が `undefined` (古いファームは値を送らない) → `<nonce>` だけ
+ *     (ボンド状態は「不明」として扱う。後方互換)
+ *   - `true` → `<nonce>|bp=1` / `false` → `<nonce>|bp=0`
+ */
+export function buildAlarmSignedMessage(nonce: string, bpBonded?: boolean): string {
+  if (bpBonded === undefined) return nonce;
+  return `${nonce}|bp=${bpBonded ? "1" : "0"}`;
 }
 
 /** 小文字 hex 32 文字の nonce (16 random bytes)。 */
@@ -111,7 +129,7 @@ export async function consumeAlarmNonce(
  */
 export async function verifyAlarmSignature(
   env: Env,
-  input: { pubkeyB64: string; sigB64: string; nonce: string; usage: AlarmKeyUsage },
+  input: { pubkeyB64: string; sigB64: string; nonce: string; usage: AlarmKeyUsage; bpBonded?: boolean },
 ): Promise<VerifiedAlarmKey | null> {
   let pubkeyRaw: Uint8Array;
   let sig: Uint8Array;
@@ -138,8 +156,9 @@ export async function verifyAlarmSignature(
     return null;
   }
 
-  // 署名対象は nonce の ASCII バイト (hex→raw にデコードした 16 バイトではない)。
-  const message = new TextEncoder().encode(input.nonce);
+  // 署名対象は nonce (+ ボンド状態) の ASCII バイト (hex→raw にデコードした 16 バイトでは
+  // ない)。bpBonded が undefined なら nonce だけ (古いファーム、今までどおり素通し)。
+  const message = new TextEncoder().encode(buildAlarmSignedMessage(input.nonce, input.bpBonded));
   const ok = await verifyEd25519(recordPubkeyRaw, sig, message);
   return ok ? { fingerprint, record } : null;
 }

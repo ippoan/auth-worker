@@ -214,6 +214,14 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   const contentType = request.headers.get("content-type");
   if (contentType) fwdHeaders["Content-Type"] = contentType;
 
+  // 血圧計のボンド状態 (Refs #571)。**必ず検証済み JWT の claim から組み立てる** —
+  // fwdHeaders はここまで request.headers を一切コピーしていない新規オブジェクトなので、
+  // client (ブラウザ) が同名ヘッダを付けて送っても素通りしない (明示的な delete は不要、
+  // そもそも入る経路が無い)。claim が無ければ「不明」としてヘッダ自体を付けない。
+  const bpBonded = payload.bp_bonded;
+  if (bpBonded === true) fwdHeaders["X-Device-Bp-Bonded"] = "1";
+  else if (bpBonded === false) fwdHeaders["X-Device-Bp-Bonded"] = "0";
+
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? await request.arrayBuffer() : undefined;

@@ -4,6 +4,7 @@ import {
   issueAlarmNonce,
   consumeAlarmNonce,
   verifyAlarmSignature,
+  buildAlarmSignedMessage,
   ALARM_NONCE_TTL_SEC,
 } from "../../src/lib/alarm-nonce";
 import type { AlarmKeyUsage } from "../../src/handlers/alarm-key";
@@ -141,6 +142,92 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
     const { pubkeyB64, sigB64 } = seedSignedKey(env, "admin");
     expect(
       await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk" }),
+    ).toBeNull();
+  });
+});
+
+describe("buildAlarmSignedMessage (Refs #571、ippoan/alc-app-s3#249 と合意済みの形)", () => {
+  it("bpBonded が undefined なら nonce だけ (古いファーム)", () => {
+    expect(buildAlarmSignedMessage(NONCE)).toBe(NONCE);
+    expect(buildAlarmSignedMessage(NONCE, undefined)).toBe(NONCE);
+  });
+
+  it("true/false は半角パイプ区切りで bp=1 / bp=0", () => {
+    expect(buildAlarmSignedMessage(NONCE, true)).toBe(`${NONCE}|bp=1`);
+    expect(buildAlarmSignedMessage(NONCE, false)).toBe(`${NONCE}|bp=0`);
+  });
+});
+
+describe("verifyAlarmSignature のボンド状態 (bp) 署名 (Refs #571)", () => {
+  /**
+   * `seedSignedKey` と同じ鍵登録だが、署名対象は `buildAlarmSignedMessage(NONCE, bpBonded)`
+   * (bpBonded 省略時は seedSignedKey と同じ nonce だけの署名 = 後方互換)。
+   */
+  function seedSignedKeyWithBp(
+    env: Env,
+    usage: AlarmKeyUsage,
+    bpBonded?: boolean,
+  ): { pubkeyB64: string; sigB64: string; fp: string } {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+    const pubDer = publicKey.export({ format: "der", type: "spki" });
+    const pubRaw = pubDer.subarray(pubDer.length - 32);
+    const fp = crypto.createHash("sha256").update(pubRaw).digest("hex").slice(0, 16);
+    kv(env)._data[`alarmkey:${fp}`] = JSON.stringify({
+      pubkey: pubRaw.toString("base64url"),
+      tenant_id: "tenant-1",
+      label: "test",
+      usage,
+      created_at: 1_700_000_000,
+    });
+    const message = buildAlarmSignedMessage(NONCE, bpBonded);
+    const sig = crypto.sign(null, Buffer.from(message, "ascii"), privateKey);
+    return { pubkeyB64: pubRaw.toString("base64url"), sigB64: sig.toString("base64url"), fp };
+  }
+
+  it("後方互換: nonce だけの署名 (bpBonded 未指定) は今までどおり通る", async () => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64, fp } = seedSignedKeyWithBp(env, "kiosk");
+    const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk" });
+    expect(verified?.fingerprint).toBe(fp);
+  });
+
+  it.each<[boolean, string]>([
+    [true, "bp=1"],
+    [false, "bp=0"],
+  ])("新形式: nonce|%s への署名を bpBonded=%s で検証できる", async (bpBonded) => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64, fp } = seedSignedKeyWithBp(env, "kiosk", bpBonded);
+    const verified = await verifyAlarmSignature(env, {
+      pubkeyB64,
+      sigB64,
+      nonce: NONCE,
+      usage: "kiosk",
+      bpBonded,
+    });
+    expect(verified?.fingerprint).toBe(fp);
+  });
+
+  it("bpBonded の値が署名対象と食い違えば null (bp=1 の署名を bp=0 として検証)", async () => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64 } = seedSignedKeyWithBp(env, "kiosk", true);
+    expect(
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk", bpBonded: false }),
+    ).toBeNull();
+  });
+
+  it("bp 付きの署名を bpBonded 未指定 (nonce だけ) で検証しても null", async () => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64 } = seedSignedKeyWithBp(env, "kiosk", true);
+    expect(
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk" }),
+    ).toBeNull();
+  });
+
+  it("nonce だけの署名を bpBonded 付きで検証しても null", async () => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64 } = seedSignedKeyWithBp(env, "kiosk");
+    expect(
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk", bpBonded: true }),
     ).toBeNull();
   });
 });
