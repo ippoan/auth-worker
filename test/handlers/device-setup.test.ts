@@ -141,13 +141,15 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("/device/setup/latest");
     expect(html).toContain("queryVersion");
     // 血圧計ボンド状態の列 (Refs #574): version と同じく接続中のみ自動照会し、
-    // 3 状態 (ボンド済み/未ボンド/未対応) を出し分ける — 空 ack を「未ボンド」と
-    // 混同しない (isOldFirmwareResult を bus5v/reboot と共用)
+    // 4 状態 (ボンド済み/未ボンド/まだ確認できていない/未対応) を出し分ける —
+    // bp_read=false (未確認) や空 ack (未対応) を「未ボンド」と混同しない
+    // (isOldFirmwareResult を bus5v/reboot と共用)
     expect(html).toContain("血圧計ボンド");
     expect(html).toContain("/device/setup/bp_status");
     expect(html).toContain("queryBpStatus");
     expect(html).toContain("ボンド済み");
     expect(html).toContain("未ボンド");
+    expect(html).toContain("まだ確認できていません");
     expect(html).toContain("未対応 (OTA が必要)");
     // 未接続の端末は照会しない (version と同じ isConn ガード)
     expect(html).toContain('if (isConn) queryBpStatus(d.device_id, bpSpan);');
@@ -1156,10 +1158,10 @@ describe("handleDeviceSetupBus5v / handleDeviceSetupReboot", () => {
 /**
  * 血圧計のボンド状態照会 (Refs #574, ippoan/alc-app-s3#250)。version/battery/bus5v と
  * 完全に同型: 認可の 3 段は共通前処理 `deviceCommandRequest` + `sendDeviceCommand` 由来。
- * ★ 3 状態 (ボンド済み/未ボンド/未対応) の出し分けは client JS (`queryBpStatus`) の
- * 責務なので、ここでは「サーバが action:bp_status を forward し command id を返す」
- * ところまでを確認する (recorder の command_result 中身は不透過に通す既存の
- * `getCommandResult`/`handleDeviceSetupOtaStatus` が既にカバーしている)。
+ * ★ 4 状態 (ボンド済み/未ボンド/まだ確認できていない/未対応) の出し分けは client JS
+ * (`queryBpStatus`) の責務なので、ここでは「サーバが action:bp_status を forward し
+ * command id を返す」ところまでを確認する (recorder の command_result 中身は不透過に
+ * 通す既存の `getCommandResult`/`handleDeviceSetupOtaStatus` が既にカバーしている)。
  */
 describe("handleDeviceSetupBpStatus", () => {
   function mockRecorder(handler: (req: Request) => Response) {
@@ -1282,18 +1284,21 @@ describe("handleDeviceSetupBpStatus", () => {
   });
 
   /**
-   * ★ 受け入れ条件の 3 状態テスト本体。recorder の command_result 経路
+   * ★ 受け入れ条件の 4 状態テスト本体。recorder の command_result 経路
    * (`getCommandResult` → `handleDeviceSetupOtaStatus`) は action 名を問わず
-   * payload を不透過に返すため、`{bp_bonded:true}` / `{bp_bonded:false}` /
-   * 空 `{}` (古い firmware の既定 ack) のどれでもそのまま素通しされることを
-   * 確認する。「空 = 未ボンド」に丸めないこと自体は client の `isOldFirmwareResult`
-   * (bus5v/reboot と共用) の責務 — ここではサーバがその判定材料 (3 種の
-   * payload) を握り潰さず届けることを保証する。
+   * payload を不透過に返すため、`{bp_bonded:true,bp_read:true}` /
+   * `{bp_bonded:false,bp_read:true}` / `{bp_read:false}` (bp_bonded キー自体が
+   * 無い、まだ確認できていない) / 空 `{}` (古い firmware の既定 ack、未対応) の
+   * どれでもそのまま素通しされることを確認する。「bp_read:false = 未ボンド」
+   * 「空 = 未ボンド」に丸めないこと自体は client の `queryBpStatus`/
+   * `isOldFirmwareResult` (bus5v/reboot と共用) の責務 — ここではサーバがその
+   * 判定材料 (4 種の payload) を握り潰さず届けることを保証する。
    */
   it.each([
-    [{ bp_bonded: true }, "ボンド済み相当のペイロード"],
-    [{ bp_bonded: false }, "未ボンド相当のペイロード (空と誤認してはいけない)"],
-    [{}, "古い firmware の空 ack (未対応 = 未ボンドと混同してはいけない)"],
+    [{ bp_bonded: true, bp_read: true }, "ボンド済み相当のペイロード"],
+    [{ bp_bonded: false, bp_read: true }, "未ボンド相当のペイロード (空と誤認してはいけない)"],
+    [{ bp_read: false }, "まだ確認できていない (bp_bonded キー自体が無い、未ボンドと混同してはいけない)"],
+    [{}, "古い firmware の空 ack (未対応 = 未ボンド/未確認と混同してはいけない)"],
   ])("command_result %o (%s) を素通しする", async (payload: unknown, _label: string) => {
     const { env, deviceId } = await bpEnv(
       mockRecorder(() => new Response(JSON.stringify({ id: "bp-poll" }), { status: 202 })).fetcher,
