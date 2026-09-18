@@ -107,6 +107,7 @@ import {
   handleDeviceSetupBattery,
   handleDeviceSetupGw,
   handleDeviceSetupBus5v,
+  handleDeviceSetupBpStatus,
   handleDeviceSetupReboot,
   handleDeviceSetupSite,
   handleDeviceSetupLatest,
@@ -976,6 +977,10 @@ export default {
           // M-Bus 5V 出力状態の照会トリガ (recorder command {action:bus5v_status})。POST。
           case "/device/setup/bus5v":
             return await handleDeviceSetupBus5v(request, env);
+          // 血圧計ボンド状態の照会トリガ (recorder command {action:bp_status})。POST。
+          // (Refs #574, ippoan/alc-app-s3#250)
+          case "/device/setup/bp_status":
+            return await handleDeviceSetupBpStatus(request, env);
           // 再起動トリガ (recorder command {action:reboot})。POST。
           case "/device/setup/reboot":
             return await handleDeviceSetupReboot(request, env);
