@@ -325,6 +325,38 @@ describe("mintDeviceJwt", () => {
       mintDeviceJwt({ JWT_SECRET: undefined, WORKER_ENV: "staging" }, record, NOW),
     ).rejects.toThrow("JWT_SECRET not configured");
   });
+
+  describe("bp_bonded claim (Refs #571)", () => {
+    it("opts を渡さなければ claim 自体が無い (既存呼び出し互換、「不明」)", async () => {
+      const token = await mintDeviceJwt({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, record, NOW);
+      const payload = await verifyJwt(token, SECRET, "staging");
+      expect(payload).not.toHaveProperty("bp_bonded");
+    });
+
+    it("opts.bpBonded が undefined でも claim を付けない", async () => {
+      const token = await mintDeviceJwt(
+        { JWT_SECRET: SECRET, WORKER_ENV: "staging" },
+        record,
+        NOW,
+        undefined,
+        { bpBonded: undefined },
+      );
+      const payload = await verifyJwt(token, SECRET, "staging");
+      expect(payload).not.toHaveProperty("bp_bonded");
+    });
+
+    it.each([true, false])("opts.bpBonded=%s は claim に %s のまま載る (false と「無い」を区別)", async (bpBonded) => {
+      const token = await mintDeviceJwt(
+        { JWT_SECRET: SECRET, WORKER_ENV: "staging" },
+        record,
+        NOW,
+        undefined,
+        { bpBonded },
+      );
+      const payload = await verifyJwt(token, SECRET, "staging");
+      expect(payload!.bp_bonded).toBe(bpBonded);
+    });
+  });
 });
 
 describe("verifyDeviceJwt (Refs #519)", () => {

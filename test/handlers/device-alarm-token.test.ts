@@ -60,6 +60,19 @@ function signNonceAscii(privateKey: crypto.KeyObject, nonce: string): string {
   return b64url(new Uint8Array(crypto.sign(null, Buffer.from(nonce, "ascii"), privateKey)));
 }
 
+/**
+ * 血圧計のボンド状態込みの署名 (Refs #571)。`bpBonded` 省略時は `signNonceAscii` と
+ * 同じ (nonce だけの署名、古いファーム互換)。
+ */
+function signAlarmMessageAscii(
+  privateKey: crypto.KeyObject,
+  nonce: string,
+  bpBonded?: boolean,
+): string {
+  const message = bpBonded === undefined ? nonce : `${nonce}|bp=${bpBonded ? "1" : "0"}`;
+  return b64url(new Uint8Array(crypto.sign(null, Buffer.from(message, "ascii"), privateKey)));
+}
+
 /** usage の既定はこの口の用途 (kiosk)。null で usage を持たない record にする。 */
 function alarmKeySeed(
   pubRaw: Uint8Array,
@@ -112,6 +125,21 @@ async function signedBody(
 ): Promise<{ nonce: string; pubkey: string; sig: string }> {
   const nonce = await issueKioskNonce(env);
   return { nonce, pubkey: b64url(keypair.pubRaw), sig: signNonceAscii(keypair.privateKey, nonce) };
+}
+
+/** `signedBody` のボンド状態込み版 (Refs #571)。`bp_bonded` を body に含めて返す。 */
+async function signedBodyWithBp(
+  env: Env,
+  keypair: Keypair,
+  bpBonded: boolean,
+): Promise<{ nonce: string; pubkey: string; sig: string; bp_bonded: boolean }> {
+  const nonce = await issueKioskNonce(env);
+  return {
+    nonce,
+    pubkey: b64url(keypair.pubRaw),
+    sig: signAlarmMessageAscii(keypair.privateKey, nonce, bpBonded),
+    bp_bonded: bpBonded,
+  };
 }
 
 async function expectInvalid(res: Response): Promise<void> {
@@ -401,6 +429,74 @@ describe("POST /device/alarm-token", () => {
     const res = await handleDeviceAlarmToken(tokenRequest(await signedBody(env, keypair)), env);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: "server_error" });
+  });
+});
+
+describe("POST /device/alarm-token のボンド状態 (bp、Refs #571)", () => {
+  it("後方互換: 古いファーム (nonce だけの署名、bp_bonded 無し) は今までどおり 200 で、JWT に bp_bonded claim が無い", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
+    const res = await handleDeviceAlarmToken(tokenRequest(await signedBody(env, keypair)), env);
+    expect(res.status).toBe(200);
+    const { access_token } = (await res.json()) as { access_token: string };
+    const payload = decodeJwtPayload(access_token)!;
+    expect(payload).not.toHaveProperty("bp_bonded");
+  });
+
+  it.each([true, false])(
+    "新形式: nonce|bp=%s への署名は 200 で、JWT の bp_bonded claim に %s がそのまま載る",
+    async (bpBonded) => {
+      const keypair = generateKeypair();
+      const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
+      const res = await handleDeviceAlarmToken(
+        tokenRequest(await signedBodyWithBp(env, keypair, bpBonded)),
+        env,
+      );
+      expect(res.status).toBe(200);
+      const { access_token } = (await res.json()) as { access_token: string };
+      const payload = decodeJwtPayload(access_token)!;
+      expect(payload.bp_bonded).toBe(bpBonded);
+    },
+  );
+
+  it("bp_bonded=false と「claim 無し (不明)」は区別される", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
+
+    const falseRes = await handleDeviceAlarmToken(
+      tokenRequest(await signedBodyWithBp(env, keypair, false)),
+      env,
+    );
+    const falsePayload = decodeJwtPayload(
+      ((await falseRes.json()) as { access_token: string }).access_token,
+    )!;
+    expect("bp_bonded" in falsePayload).toBe(true);
+    expect(falsePayload.bp_bonded).toBe(false);
+
+    const unknownRes = await handleDeviceAlarmToken(tokenRequest(await signedBody(env, keypair)), env);
+    const unknownPayload = decodeJwtPayload(
+      ((await unknownRes.json()) as { access_token: string }).access_token,
+    )!;
+    expect("bp_bonded" in unknownPayload).toBe(false);
+  });
+
+  it("bp_bonded の値と署名対象が食い違えば (改ざん) 401", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
+    const body = await signedBodyWithBp(env, keypair, true);
+    // 署名は bp=1 のままだが、body の bp_bonded だけ false に書き換える。
+    await expectInvalid(
+      await handleDeviceAlarmToken(tokenRequest({ ...body, bp_bonded: false }), env),
+    );
+  });
+
+  it("bp_bonded が boolean でなければ 401", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
+    const body = await signedBody(env, keypair);
+    await expectInvalid(
+      await handleDeviceAlarmToken(tokenRequest({ ...body, bp_bonded: "true" }), env),
+    );
   });
 });
 

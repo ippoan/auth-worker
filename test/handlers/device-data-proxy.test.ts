@@ -551,3 +551,78 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     expect(res.status).toBe(403);
   });
 });
+
+describe("X-Device-Bp-Bonded ヘッダ転送 (Refs #571)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function kioskToken(claims: Record<string, unknown> = {}): Promise<string> {
+    return signTestJwt(
+      { sub: "device-kiosk-1", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK, ...claims },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  it.each<[boolean, string]>([
+    [true, "1"],
+    [false, "0"],
+  ])("JWT の bp_bonded=%s claim から X-Device-Bp-Bonded: %s を組み立てて転送する", async (bpBonded, want) => {
+    const fetchMock = okFetch();
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", {
+        method: "GET",
+        token: await kioskToken({ bp_bonded: bpBonded }),
+      }),
+      env(),
+    );
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Device-Bp-Bonded"]).toBe(want);
+  });
+
+  it("bp_bonded claim が無ければヘッダ自体を付けない (「不明」)", async () => {
+    const fetchMock = okFetch();
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", { method: "GET", token: await kioskToken() }),
+      env(),
+    );
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h).not.toHaveProperty("X-Device-Bp-Bonded");
+  });
+
+  it("★ 呼び手が X-Device-Bp-Bonded ヘッダを付けて送っても、転送されるのは JWT claim 由来の値 (偽装不可)", async () => {
+    const fetchMock = okFetch();
+    // claim は false だが、client は true (1) を偽装して送る。
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", {
+        method: "GET",
+        token: await kioskToken({ bp_bonded: false }),
+        headers: { "X-Device-Bp-Bonded": "1" },
+      }),
+      env(),
+    );
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Device-Bp-Bonded"]).toBe("0");
+  });
+
+  it("★ claim が無いのに呼び手がヘッダを付けて送っても、転送側では付かない (偽装で「不明」を詐称できない)", async () => {
+    const fetchMock = okFetch();
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", {
+        method: "GET",
+        token: await kioskToken(),
+        headers: { "X-Device-Bp-Bonded": "1" },
+      }),
+      env(),
+    );
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h).not.toHaveProperty("X-Device-Bp-Bonded");
+  });
+});

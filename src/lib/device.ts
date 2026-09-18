@@ -437,6 +437,14 @@ export interface DeviceJwtClaims {
   env: string;
   iat: number;
   exp: number;
+  /**
+   * 血圧計がボンドされているか (Refs #571)。`/device/alarm-token` が CoreS3 の署名
+   * (nonce + ボンド状態) を検証できたときだけ `true`/`false` で載る。**claim が無い
+   * (undefined) = 「不明」** — 古いファームの端末、または alarm 経路以外の device JWT。
+   * `false` と「無い」を必ず区別できることが肝で、下流 (rust-alc-api) は「不明」を
+   * 血圧必須側に倒す (`device-data-proxy.ts` はこの claim からヘッダを組み立てて転送する)。
+   */
+  bp_bonded?: boolean;
   [key: string]: unknown;
 }
 
@@ -453,12 +461,17 @@ export interface DeviceJwtClaims {
  * device record を持たない端末 (警告デバイスの署名で認証した PC) 向けに、この 3 項目を
  * 組み立てて渡す。型引数にしてあるのは、DeviceRecord 全体を object literal で渡す
  * 既存の呼び出しが excess property check に掛からないようにするため。
+ *
+ * `opts.bpBonded` (Refs #571) は `bp_bonded` claim に載せるかどうか。`undefined` なら
+ * claim 自体を付けない (「不明」)。既存の呼び出し (`/device/token`) は渡さないので
+ * 影響しない。
  */
 export async function mintDeviceJwt<R extends Pick<DeviceRecord, "device_id" | "tenant_id" | "role">>(
   env: DeviceJwtEnv,
   record: R,
   now: number,
   ttlSeconds: number = DEVICE_JWT_TTL_SECONDS,
+  opts?: { bpBonded?: boolean },
 ): Promise<string> {
   const secret = await resolveSecret(env.JWT_SECRET);
   if (!secret) {
@@ -473,6 +486,7 @@ export async function mintDeviceJwt<R extends Pick<DeviceRecord, "device_id" | "
     iat: now,
     exp: now + ttlSeconds,
   };
+  if (opts?.bpBonded !== undefined) claims.bp_bonded = opts.bpBonded;
   return signHs256(claims, secret);
 }
 
