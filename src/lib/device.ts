@@ -145,6 +145,24 @@ export const DEVICE_ROLE_GATEWAY = "device-gateway";
  */
 export const DEVICE_ROLE_TIMECARD = "device-timecard";
 
+/**
+ * 運行管理者席 (VoiceS3R を挿した PC) 専用 role (Refs ippoan/alc-app#337)。
+ * `/device/alarm-token` に用途 `tenko-manager` で登録した鍵の署名を出したときだけ
+ * mint される。`/device-data-proxy` で通せるのは点呼予定 (`/api/tenko/schedules*`)
+ * だけで、`device-kiosk` (CoreS3 の運行者端末) とは blast radius を分離する —
+ * **端末の鍵に予定 CRUD を与えない**のがこの role を足す理由そのもの。
+ *
+ * **意図して `DEVICE_ROLES` に入れていない。** あちらは pairing (`/device/pair` 等) で
+ * 受理する role の allowlist で、この role は device credential を発行せず
+ * 「登録済みの鍵で nonce に署名できる VoiceS3R が今繋がっている」ことだけを根拠に
+ * 短命 JWT として出す (`device-alarm-token.ts` の設計)。入れると長寿命の
+ * credential でも運行管理者の権限を持てるようになってしまう。
+ *
+ * 鍵が証明するのは「どの運行管理者席か」までで、人は alc-app 側の NFC/ID + 顔認証で
+ * 特定する (ippoan/alc-app#337 の「承知しておくこと」)。
+ */
+export const DEVICE_ROLE_TENKO_MANAGER = "device-tenko-manager";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
 export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,

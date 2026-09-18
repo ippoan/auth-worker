@@ -31,8 +31,15 @@ import {
 } from "../handlers/alarm-key";
 import { verifyEd25519 } from "./ed25519";
 
-/** nonce を何に使うか。`login` = device-login、`kiosk` = alarm-token。 */
-export type AlarmNoncePurpose = "login" | "kiosk";
+/**
+ * nonce を何に使うか。`login` = device-login、`kiosk` / `tenko-manager` = alarm-token
+ * (同じ口だが用途ごとに purpose を分ける — 運行者端末の nonce への署名で運行管理者の
+ * JWT を取らせないため。Refs ippoan/alc-app#337)。
+ */
+export type AlarmNoncePurpose = "login" | "kiosk" | "tenko-manager";
+
+/** 受理する purpose の正本。 */
+const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = ["login", "kiosk", "tenko-manager"];
 
 /** nonce の TTL (秒)。両エンドポイントの `expires_in` と一致させる。 */
 export const ALARM_NONCE_TTL_SEC = 60;
@@ -73,7 +80,9 @@ function generateNonceHex(): string {
 }
 
 function isPurpose(value: unknown): value is AlarmNoncePurpose {
-  return value === "login" || value === "kiosk";
+  return (
+    typeof value === "string" && (ALARM_NONCE_PURPOSES as ReadonlyArray<string>).includes(value)
+  );
 }
 
 function parseAlarmNonceRecord(raw: string | null): AlarmNonceRecord | null {

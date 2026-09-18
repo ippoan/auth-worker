@@ -6,6 +6,7 @@ import {
   DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_ROLE_DTAKO_RELAY,
   DEVICE_ROLE_KIOSK,
+  DEVICE_ROLE_TENKO_MANAGER,
 } from "../../src/lib/device";
 
 // OIDC mint は別ユニットでテスト済み。ここでは handler の flow
@@ -624,5 +625,195 @@ describe("X-Device-Bp-Bonded ヘッダ転送 (Refs #571)", () => {
     );
     const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
     expect(h).not.toHaveProperty("X-Device-Bp-Bonded");
+  });
+});
+
+describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#337)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function managerToken(): Promise<string> {
+    return signTestJwt(
+      { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role: DEVICE_ROLE_TENKO_MANAGER },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  async function kioskToken(): Promise<string> {
+    return signTestJwt(
+      { sub: "device-kiosk-1", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  // ★ TENKO_MANAGER_ROUTES の全行を method + path で固定する (表駆動)。
+  const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
+    { method: "GET", path: "/api/tenko/schedules" },
+    { method: "POST", path: "/api/tenko/schedules" },
+    { method: "POST", path: "/api/tenko/schedules/batch" },
+    { method: "GET", path: "/api/tenko/schedules/sch-1" },
+    { method: "PUT", path: "/api/tenko/schedules/sch-1" },
+    { method: "DELETE", path: "/api/tenko/schedules/sch-1" },
+  ];
+
+  for (const { method, path } of ALLOWED) {
+    it(`${method} ${path} を forward する (X-Tenant-ID は JWT の tenant)`, async () => {
+      const fetchMock = okFetch();
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, {
+          method,
+          token: await managerToken(),
+          ...(method !== "GET"
+            ? { headers: { "content-type": "application/json" }, body: JSON.stringify({}) }
+            : {}),
+        }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toBe(`https://alc-api.test.example${path}`);
+      const h = (init as RequestInit).headers as Record<string, string>;
+      expect(h["X-Tenant-ID"]).toBe(TENANT);
+    });
+  }
+
+  it("★ 予定以外の口は 1 本も通らない (既定拒否 — kiosk の許可表を引き継がない)", async () => {
+    const fetchMock = okFetch();
+    // kiosk が通せる口を中心に、運行管理者タブの他タブが叩く経路まで並べる。
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/employees" },
+      { method: "POST", path: "/api/employees/lookup" },
+      { method: "GET", path: "/api/employees/emp-1" },
+      { method: "GET", path: "/api/employees/face-data" },
+      { method: "PUT", path: "/api/employees/emp-1/face" },
+      { method: "GET", path: "/api/tenko/dashboard" },
+      { method: "GET", path: "/api/tenko/sessions" },
+      { method: "GET", path: "/api/tenko/sessions/s-1" },
+      { method: "POST", path: "/api/tenko/sessions/start" },
+      { method: "GET", path: "/api/measurements" },
+      { method: "GET", path: "/api/measurements/m-1/face-photo" },
+      { method: "POST", path: "/api/measurements" },
+      { method: "POST", path: "/api/upload/face-photo" },
+      { method: "GET", path: "/api/timecard/punches" },
+      { method: "GET", path: "/api/carrying-items" },
+      { method: "POST", path: "/api/car-inspections/lookup" },
+      { method: "GET", path: "/api/files" },
+      { method: "POST", path: "/api/scraper/history" },
+      { method: "POST", path: "/api/upload" },
+      // 予定でも kiosk 側の口 (乗務員ごとの未実施一覧) は運行管理者の表に無い。
+      { method: "GET", path: "/api/tenko/schedules/pending/emp-1" },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await managerToken() }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("表にある path でも違う method は 403", async () => {
+    const fetchMock = okFetch();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "PUT", path: "/api/tenko/schedules" },
+      { method: "DELETE", path: "/api/tenko/schedules" },
+      { method: "POST", path: "/api/tenko/schedules/sch-1" },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await managerToken() }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("batch は {id} の pattern にも当たるので GET/PUT/DELETE も通る (rust 側で 405)", async () => {
+    const fetchMock = okFetch();
+    for (const method of ["GET", "PUT", "DELETE"]) {
+      const res = await handleDeviceDataProxy(
+        req("/device-data-proxy/api/tenko/schedules/batch", {
+          method,
+          token: await managerToken(),
+        }),
+        env(),
+      );
+      // `batch` を予約語として除外していない (negative lookahead を足すほどの実害が
+      // 無い — 転送先は同じ予定リソースで、rust 側は batch に POST しか生やして
+      // いないため 405 が返る)。意図した状態としてここで固定する。
+      expect(res.status, method).toBe(200);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("segment が 1 つ多い path は 403", async () => {
+    const fetchMock = okFetch();
+    for (const path of ["/api/tenko/schedules/sch-1/extra", "/api/tenko/schedules/batch/extra"]) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method: "GET", token: await managerToken() }),
+        env(),
+      );
+      expect(res.status, path).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 呼び手が X-Tenant-ID を詐称しても JWT の tenant で上書きされる", async () => {
+    const fetchMock = okFetch();
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/tenko/schedules", {
+        method: "GET",
+        token: await managerToken(),
+        headers: { "X-Tenant-ID": "99999999-9999-9999-9999-999999999999" },
+      }),
+      env(),
+    );
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("★ device-kiosk は予定の CRUD を叩けないまま (KIOSK_ROUTES を広げていない)", async () => {
+    const fetchMock = okFetch();
+    for (const { method, path } of ALLOWED) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await kioskToken() }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 他 role は運行管理者の path を叩けない (最小権限 — 双方向に広げない)", async () => {
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/tenko/schedules", { method: "GET", token: await deviceToken() }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("role を持たない / 未知の role は何も転送できない (既定拒否)", async () => {
+    const fetchMock = okFetch();
+    const unknown = await signTestJwt(
+      { sub: "x", tenant_id: TENANT, role: "device-unknown" },
+      TEST_JWT_SECRET,
+    );
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/tenko/schedules", { method: "GET", token: unknown }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

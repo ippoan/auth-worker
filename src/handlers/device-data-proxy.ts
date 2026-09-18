@@ -34,6 +34,7 @@ import {
   DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_ROLE_DTAKO_RELAY,
   DEVICE_ROLE_KIOSK,
+  DEVICE_ROLE_TENKO_MANAGER,
 } from "../lib/device";
 
 const ROUTE_PREFIX = "/device-data-proxy";
@@ -155,6 +156,53 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/api\/car-inspections\/lookup$/ },
 ];
 
+/**
+ * `device-tenko-manager` role (運行管理者席の VoiceS3R を挿した PC) 専用の
+ * method + path 許可表 (Refs ippoan/alc-app#337)。
+ *
+ * **入れるのは点呼予定 (`/api/tenko/schedules*`) だけ。** 運行管理者タブの他のタブ
+ * (乗務員 / 点呼 / 測定履歴 など) は今も `device-kiosk` の JWT で通っているので、
+ * ここには足さない — この role は「予定管理が 403 になる」1 点のために足したもので、
+ * 足りない口が出たらその都度ここに 1 行足す (既定拒否)。
+ *
+ * **`ROLE_PATH_ALLOWLIST` (method を見ない Set) ではなくこちらの方式にした理由**:
+ * 予定の取得・更新・削除は `/api/tenko/schedules/{id}` で **path が可変**なので、
+ * 完全一致の Set では表現できない。regex が要る以上、ついでに method も照合して
+ * おく方が安い (kiosk と同じ理由 — 一覧しか要らない口から DELETE まで通さない)。
+ *
+ * rust-alc-api 側は `crates/alc-tenko/src/tenko_schedules.rs` の `tenant_router()`
+ * (= `require_tenant_header` の data 経路、`AuthUser` 不要) で、この 3 path に
+ * create / batch_create / list / get / update / delete が載っている。
+ * `/api/tenko/schedules/pending/{employee_id}` は運行者端末 (kiosk) の口なので
+ * 対象外 (2 segment なので下の `[^/]+$` にも当たらない)。
+ *
+ * `batch` は `{id}` の pattern にも当たる (GET/PUT/DELETE も通る) が、予約語として
+ * 除外はしていない — 転送先は同じ予定リソースで、rust 側は `batch` に POST しか
+ * 生やしていないので 405 になるだけ。許可の範囲は広がらない。
+ */
+const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: "GET", pattern: /^\/api\/tenko\/schedules$/ },
+  { method: "POST", pattern: /^\/api\/tenko\/schedules$/ },
+  { method: "POST", pattern: /^\/api\/tenko\/schedules\/batch$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/schedules\/[^/]+$/ },
+  { method: "PUT", pattern: /^\/api\/tenko\/schedules\/[^/]+$/ },
+  { method: "DELETE", pattern: /^\/api\/tenko\/schedules\/[^/]+$/ },
+];
+
+/**
+ * method + path で照合する role → 許可表。ここに無い role は従来どおり
+ * `ROLE_PATH_ALLOWLIST` (method を見ない Set 完全一致) を引く。どちらにも
+ * 無い role は何も転送できない (既定拒否)。
+ *
+ * `Map` にしてあるのは、role が検証済み JWT 由来とはいえ `Object.prototype` の
+ * key (`toString` 等) を引かせないため。
+ */
+const METHOD_ROUTE_TABLES: ReadonlyMap<string, ReadonlyArray<{ method: string; pattern: RegExp }>> =
+  new Map([
+    [DEVICE_ROLE_KIOSK, KIOSK_ROUTES],
+    [DEVICE_ROLE_TENKO_MANAGER, TENKO_MANAGER_ROUTES],
+  ]);
+
 function jsonError(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
@@ -184,9 +232,10 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   // ── ② role → path allowlist (盗難時の blast radius を role 単位で限定) ──────
   const url = new URL(request.url);
   const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
-  if (role === DEVICE_ROLE_KIOSK) {
-    // kiosk だけ method + path で判定 (上の KIOSK_ROUTES doc を参照)。
-    const matched = KIOSK_ROUTES.some(
+  const methodRoutes = METHOD_ROUTE_TABLES.get(role);
+  if (methodRoutes) {
+    // kiosk / tenko-manager は method + path で判定 (上の各 doc を参照)。
+    const matched = methodRoutes.some(
       (r) => r.method === request.method && r.pattern.test(backendPath),
     );
     if (!matched) return jsonError(403, "forbidden");
