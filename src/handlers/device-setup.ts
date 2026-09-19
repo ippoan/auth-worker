@@ -39,7 +39,6 @@ import {
   DEVICE_ROLE_PRINT,
   DEVICE_ROLE_GATEWAY,
   DEVICE_ROLE_TIMECARD,
-  DEVICE_ROLE_BP_STATION,
 } from "../lib/device";
 
 function jsonNoStore(body: unknown, status = 200): Response {
@@ -59,13 +58,16 @@ const PAGES_BASE = "https://ippoan.github.io/alc-app-s3";
 /** 本ページで管理する機種 (kind)。role・firmware・manifest を機種単位で束ねる。 */
 export interface DeviceKind {
   /**
-   * credential の role (= 誤配布防止 gate の単位)。
-   * credential を発行しない機種 (`installerOnly`) は role を持たない。警告
-   * デバイスのように **1 本のファームが複数の用途 (運行管理者席 / 運行者端末)
-   * に挿さる**機種があり、席は `/device/setup` で登録する alarm-key の用途で
-   * 決まってファームでは決まらないため、機種に単一の role を持たせられない。
-   * 既存 role の使い回しもしない (`kindNameForRole` の逆引きが実機を誤って
-   * 説明する)。
+   * pairing (`POST /device/setup/pair`) で発行する **device credential** の role。
+   * `DEVICE_ROLES` (lib/device.ts) の allowlist と対になる軸で、**alarm-key の
+   * 署名で取る短命 JWT の role (usage から決まる) とは別軸**。同じ `device-…`
+   * の形の文字列になるので混同しやすいが、こちらは「機種 → credential」の
+   * 1:1 対応表。
+   *
+   * **role を持たない機種**は credential を発行しない = USB で焼くだけの機種
+   * (ネットワークを持たず、身元は alarm-key の方で持つ)。機種 select には
+   * 出さず、`pair` も fail-closed で弾く。**Web インストーラーのリンクにだけ
+   * 出る。**
    */
   role?: string;
   /** デバイスラベルの既定値 */
@@ -88,14 +90,6 @@ export interface DeviceKind {
   installerUrl: string;
   /** 表示名 */
   display: string;
-  /**
-   * true なら Web インストーラーのリンクには出すが、credential 発行の機種
-   * (「セットアップ実行」の機種 select・`/device/setup/pair`) としては出さない。
-   * ネットワークを持たず device credential を必要としない機種 (血圧測定台) 用。
-   * pairing allowlist (`DEVICE_ROLES`) に入れない決定と、リンクを出す要求を
-   * 両立させるための印 (Refs ippoan/alc-app#353、ippoan/auth-worker#578)。
-   */
-  installerOnly?: boolean;
 }
 
 /**
@@ -144,30 +138,22 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     display: "NFC タイムカード端末",
   },
   /**
-   * 血圧測定台 (Atom VoiceS3R + Unit NFC、ippoan/alc-app-s3#260 で配布済み) —
-   * ネットワークを持たず device credential を必要としない機種。身元は
-   * `/device/setup` の alarm-key (用途 `bp-station`) 側で登録し、この role
-   * (`DEVICE_ROLE_BP_STATION`) は alarm-key 経由の短命 JWT でのみ付与される
-   * (`DEVICE_ROLES` = pairing allowlist には意図して入れない、Refs #578)。
-   * `installerOnly: true` で Web インストーラーのリンクにだけ出す。
-   * dev バリアントは持たない (timecard と同じ判断: 画面を持たない Atom 系に
-   * mem-hud は意味が無い) ため devAppUrl は付けない。
+   * 血圧測定台 (Atom VoiceS3R + Unit NFC、ippoan/alc-app-s3#260 で配布済み)。
+   * credential は発行しない (ネットワークを持たない)。身元は用途 `bp-station` の
+   * alarm-key の方で、role はそちらで決まる (Refs ippoan/auth-worker#578)
    */
   "bp-station": {
-    role: DEVICE_ROLE_BP_STATION,
     labelDefault: "bp-station",
     appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-nfc-s3r-app.bin`,
     manifestUrl: `${PAGES_BASE}/manifest-nfc.json`,
     installerUrl: `${PAGES_BASE}/atoms3-nfc.html`,
     display: "血圧測定台 (Atom VoiceS3R)",
-    installerOnly: true,
   },
   /**
    * 点呼端末の警告デバイス (Atom VoiceS3R、ippoan/alc-app-s3 で配布済み)。
-   * role は持たない。同じファームが運行管理者席 (usage=tenko-manager) にも
-   * 運行者端末 (usage=kiosk) にも挿さり、席は alarm-key の用途で決まる
-   * (Refs ippoan/alc-app#337)。DEVICE_ROLE_ALARM は存在しない。
-   * dev バリアントは持たない (血圧測定台と同じ理由) ため devAppUrl は付けない。
+   * credential は発行しない。身元は alarm-key の方で、**同じファーム 1 本が
+   * 運行管理者席 (usage=tenko-manager) にも運行者端末 (usage=kiosk) にも挿さる**
+   * ため、機種として単一の role が決まらない (Refs ippoan/alc-app#337)
    */
   alarm: {
     labelDefault: "alarm",
@@ -175,7 +161,6 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     manifestUrl: `${PAGES_BASE}/manifest-alarm.json`,
     installerUrl: `${PAGES_BASE}/alarm.html`,
     display: "点呼端末の警告デバイス (Atom VoiceS3R)",
-    installerOnly: true,
   },
   /**
    * Unit PoE-P4 (ippoan/alc-gw-p4) — hub_link の GW 側。cf-alc-recorder への
@@ -328,11 +313,8 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   // select から外すだけでは、body を直接組み立てれば通ってしまう。#509 で
   // 「インストーラでは焼けるのに機種として選べない」を直したとき 2 つのリストを
   // わざと 1 つの定数から生成する形にしたので、片方だけ外す今回は server 側でも
-  // 閉じる (installerOnly = credential を発行しない機種、Refs #353)。role を
-  // 持たない機種 (警告デバイス等) も同じく mint できてはいけないので合わせて弾く。
-  if (kind.installerOnly || !kind.role) {
-    return jsonNoStore({ error: "installer_only_kind" }, 400);
-  }
+  // 閉じる (role を持たない機種 = credential を発行しない機種、Refs #353)。
+  if (!kind.role) return jsonNoStore({ error: "kind_not_pairable" }, 400);
   const label = typeof body.label === "string" && body.label ? body.label : kind.labelDefault;
   const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
   const replaceLabel = body.replace_label === true;
@@ -873,10 +855,10 @@ function setupPage(issuer: string, email: string): string {
   // ハードコードしていた頃は #508 で timecard を足しても select だけ追随せず、
   // 「インストーラでは焼けるのに機種として選べない」状態になった (#509)。
   // 既定選択 = 先頭 option = DEVICE_KINDS の第 1 キー (cores3)。
-  // installerOnly の機種 (血圧測定台) は credential を発行しないので除外する
-  // (Refs #353、pairing allowlist に入れない決定と両立させるための gate)。
+  // role を持たない機種 (血圧測定台・警告デバイス) は credential を発行しないので
+  // 除外する (Refs #353、pairing allowlist に入れない決定と両立させるための gate)。
   const kindOptionsHtml = Object.entries(DEVICE_KINDS)
-    .filter(([, k]) => !k.installerOnly)
+    .filter(([, k]) => k.role)
     .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
     .join("\n");
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">

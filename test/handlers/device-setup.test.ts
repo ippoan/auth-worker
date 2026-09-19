@@ -175,13 +175,13 @@ describe("handleDeviceSetupPage", () => {
       m[1],
       m[2],
     ]);
-    // registry の全機種 (installerOnly を除く) が、キー順 (= 先頭が既定選択の
-    // cores3) でそのまま並ぶこと。#508 で timecard を足したとき、ハードコード
-    // だったここだけ追随しなかった。installerOnly (血圧測定台) は credential を
-    // 発行しない機種なので select には出ない (Refs #353)
+    // registry の role を持つ機種が、キー順 (= 先頭が既定選択の cores3) で
+    // そのまま並ぶこと。#508 で timecard を足したとき、ハードコードだった
+    // ここだけ追随しなかった。role を持たない機種 (血圧測定台・警告デバイス) は
+    // credential を発行しないので select には出ない (Refs #353)
     expect(options).toEqual(
       Object.entries(DEVICE_KINDS)
-        .filter(([, k]) => !k.installerOnly)
+        .filter(([, k]) => k.role)
         .map(([name, k]) => [name, k.display]),
     );
     expect(options).toContainEqual(["timecard", "NFC タイムカード端末"]);
@@ -190,7 +190,7 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain('"timecard":"timecard"');
   });
 
-  it("血圧測定台・警告デバイス (installerOnly) は Web インストーラーのリンクには出るが、機種 select には出ない (Refs #353)", async () => {
+  it("血圧測定台・警告デバイス (role を持たない機種) は Web インストーラーのリンクには出るが、機種 select には出ない (Refs #353)", async () => {
     const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
     const html = await res.text();
     // Web インストーラー導線には両方出る
@@ -436,7 +436,7 @@ describe("handleDeviceSetupPair", () => {
     expect(res.status).toBe(400);
   });
 
-  it("kind=bp-station は 400 で拒否し credential を発行しない (installerOnly、Refs #353)", async () => {
+  it("kind=bp-station は 400 で拒否し credential を発行しない (role を持たない機種、Refs #353)", async () => {
     const env = makeEnv();
     const headers = { ...(await opCookie()), Origin: ISSUER };
     const res = await handleDeviceSetupPair(
@@ -445,7 +445,7 @@ describe("handleDeviceSetupPair", () => {
     );
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error?: string };
-    expect(body.error).toBe("installer_only_kind");
+    expect(body.error).toBe("kind_not_pairable");
   });
 
   it("kind=alarm は 400 で拒否し credential を発行しない (role を持たない機種、Refs #353)", async () => {
@@ -457,7 +457,7 @@ describe("handleDeviceSetupPair", () => {
     );
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error?: string };
-    expect(body.error).toBe("installer_only_kind");
+    expect(body.error).toBe("kind_not_pairable");
   });
 
   it("defaults the label and tolerates an empty body", async () => {

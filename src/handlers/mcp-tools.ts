@@ -787,7 +787,7 @@ const TOOLS: ToolDef[] = [
       // 他テナント・revoked・未登録は null (fail-closed)。
       const kind = await managedDeviceKind(ctx.env, tenantId, deviceId);
       if (!kind) return { device_id: deviceId, error: "device_not_found" };
-      // role を持たない機種 (installerOnly。警告デバイス等) は managedDeviceKind
+      // role を持たない機種 (血圧測定台・警告デバイス等) は managedDeviceKind
       // (= kindNameForRole 経由) からは返らないはずだが、型上は string | undefined
       // なので fail-closed に倒す。
       if (!kind.role || !OTA_DEVICE_ROLES.has(kind.role)) {
