@@ -436,6 +436,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "GET", path: "/api/tenko/sessions" },
     { method: "GET", path: "/api/tenko/sessions/s-1" },
     { method: "POST", path: "/api/tenko/sessions/s-1/interrupt" },
+    { method: "POST", path: "/api/tenko/sessions/s-1/self-resume" },
     { method: "POST", path: "/api/car-inspections/lookup" },
   ];
 
