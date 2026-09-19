@@ -43,8 +43,8 @@ branches = true
 path = "src/lib/access-logout.ts"
 branches = true
 
-# issue #522: ed25519 署名検証 (警告デバイス device-login)。長さ検査を緩めると
-# 32/64 バイト以外の入力を WebCrypto に渡すことになり、fail-closed の前提が崩れる。
+# issue #522, #551: ed25519 署名検証 (警告デバイス VoiceS3R の nonce 署名)。長さ検査を
+# 緩めると 32/64 バイト以外の入力を WebCrypto に渡すことになり、fail-closed の前提が崩れる。
 [[files]]
 path = "src/lib/ed25519.ts"
 branches = true
@@ -89,7 +89,7 @@ branches = true
 # Refs #551, ippoan/alc-app#353: 警告デバイスの署名で短命の端末 JWT
 # (device-kiosk 等) を返す口の nonce 発行・消費 / 署名検証。purpose の照合・nonce の
 # single-use・revoked 判定は分岐 1 つずつなので、未検証の分岐を残さない。
-# (旧・管理者ログイン用途 (device-login) は本番で未使用だったため畳んだ)
+# (旧・管理者ログイン専用の用途とその口は本番で未使用だったため畳んだ)
 [[files]]
 path = "src/handlers/device-alarm-token.ts"
 branches = true
