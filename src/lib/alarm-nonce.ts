@@ -32,14 +32,19 @@ import {
 import { verifyEd25519 } from "./ed25519";
 
 /**
- * nonce を何に使うか。`login` = device-login、`kiosk` / `tenko-manager` = alarm-token
- * (同じ口だが用途ごとに purpose を分ける — 運行者端末の nonce への署名で運行管理者の
- * JWT を取らせないため。Refs ippoan/alc-app#337)。
+ * nonce を何に使うか。`login` = device-login、`kiosk` / `tenko-manager` / `bp-station` =
+ * alarm-token (同じ口だが用途ごとに purpose を分ける — 運行者端末の nonce への署名で
+ * 運行管理者の JWT を取らせないため。Refs ippoan/alc-app#337)。
  */
-export type AlarmNoncePurpose = "login" | "kiosk" | "tenko-manager";
+export type AlarmNoncePurpose = "login" | "kiosk" | "tenko-manager" | "bp-station";
 
 /** 受理する purpose の正本。 */
-const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = ["login", "kiosk", "tenko-manager"];
+const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = [
+  "login",
+  "kiosk",
+  "tenko-manager",
+  "bp-station",
+];
 
 /** nonce の TTL (秒)。両エンドポイントの `expires_in` と一致させる。 */
 export const ALARM_NONCE_TTL_SEC = 60;

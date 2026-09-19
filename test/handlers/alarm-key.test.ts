@@ -196,7 +196,7 @@ describe("handleAlarmKeyRegister", () => {
     expect(Object.keys(kv._data).filter((k) => k.startsWith("alarmkey"))).toEqual([]);
   });
 
-  it.each(["admin-login", "kiosk", "tenko-manager"])(
+  it.each(["admin-login", "kiosk", "tenko-manager", "bp-station"])(
     "registers with usage=%s and stores it on the record",
     async (usage) => {
       const { env, kv } = makeEnvWithKv();
