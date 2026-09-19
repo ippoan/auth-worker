@@ -153,6 +153,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/tenko\/sessions$/ },
   { method: "GET", pattern: /^\/api\/tenko\/sessions\/[^/]+$/ },
   { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/interrupt$/ },
+  { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/self-resume$/ },
   { method: "POST", pattern: /^\/api\/car-inspections\/lookup$/ },
 ];
 
