@@ -57,8 +57,15 @@ const PAGES_BASE = "https://ippoan.github.io/alc-app-s3";
 
 /** 本ページで管理する機種 (kind)。role・firmware・manifest を機種単位で束ねる。 */
 export interface DeviceKind {
-  /** credential の role (= 誤配布防止 gate の単位) */
-  role: string;
+  /**
+   * pairing (`POST /device/setup/pair`) で発行する **device credential** の role。
+   * `DEVICE_ROLES` (lib/device.ts) の allowlist と対。
+   *
+   * **role を持たない機種は credential を発行しない** — ネットワークを持たず、
+   * USB で焼くだけの機種。身元は alarm-key の方で持つ。機種 select には出さず
+   * `pair` も fail-closed で弾くが、**Web インストーラーのリンクには出る。**
+   */
+  role?: string;
   /** デバイスラベルの既定値 */
   labelDefault: string;
   /** OTA する app 単体イメージの既定 URL (build.yml の "Save OTA app image") */
@@ -127,6 +134,31 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     display: "NFC タイムカード端末",
   },
   /**
+   * 血圧測定台 (Atom VoiceS3R + Unit NFC、ippoan/alc-app-s3#260 で配布済み)。
+   * credential は発行しない (ネットワークを持たない)。身元は用途 `bp-station` の
+   * alarm-key の方で、role はそちらで決まる (Refs ippoan/auth-worker#578)
+   */
+  "bp-station": {
+    labelDefault: "bp-station",
+    appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-nfc-s3r-app.bin`,
+    manifestUrl: `${PAGES_BASE}/manifest-nfc.json`,
+    installerUrl: `${PAGES_BASE}/atoms3-nfc.html`,
+    display: "血圧測定台 (Atom VoiceS3R)",
+  },
+  /**
+   * 点呼端末の警告デバイス (Atom VoiceS3R、ippoan/alc-app-s3 で配布済み)。
+   * credential は発行しない。身元は alarm-key の方で、**同じファーム 1 本が
+   * 運行管理者席 (usage=tenko-manager) にも運行者端末 (usage=kiosk) にも挿さる**
+   * ため、機種として単一の role が決まらない (Refs ippoan/alc-app#337)
+   */
+  alarm: {
+    labelDefault: "alarm",
+    appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-alarm-app.bin`,
+    manifestUrl: `${PAGES_BASE}/manifest-alarm.json`,
+    installerUrl: `${PAGES_BASE}/alarm.html`,
+    display: "点呼端末の警告デバイス (Atom VoiceS3R)",
+  },
+  /**
    * Unit PoE-P4 (ippoan/alc-gw-p4) — hub_link の GW 側。cf-alc-recorder への
    * WS常設接続 (recorder_link) と OTA (esp_https_ota) を alc-gw-p4#15 で実装済み。
    * 配布は GitHub Releases (alc-gw-p4/.github/workflows/release.yml、
@@ -148,6 +180,7 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
 /** role → kind 名の逆引き (一覧表示・OTA gate 用)。 */
 function kindNameForRole(role: string | undefined): string | null {
   for (const [name, k] of Object.entries(DEVICE_KINDS)) {
+    if (!k.role) continue; // role を持たない機種 (警告デバイス等) は逆引きの対象外
     if (k.role === role) return name;
   }
   return null;
@@ -273,6 +306,11 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   const kindName = typeof body.kind === "string" && body.kind ? body.kind : "cores3";
   const kind = DEVICE_KINDS[kindName];
   if (!kind) return jsonNoStore({ error: "unknown kind" }, 400);
+  // select から外すだけでは、body を直接組み立てれば通ってしまう。#509 で
+  // 「インストーラでは焼けるのに機種として選べない」を直したとき 2 つのリストを
+  // わざと 1 つの定数から生成する形にしたので、片方だけ外す今回は server 側でも
+  // 閉じる (role を持たない機種 = credential を発行しない機種、Refs #353)。
+  if (!kind.role) return jsonNoStore({ error: "kind_not_pairable" }, 400);
   const label = typeof body.label === "string" && body.label ? body.label : kind.labelDefault;
   const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
   const replaceLabel = body.replace_label === true;
@@ -813,7 +851,10 @@ function setupPage(issuer: string, email: string): string {
   // ハードコードしていた頃は #508 で timecard を足しても select だけ追随せず、
   // 「インストーラでは焼けるのに機種として選べない」状態になった (#509)。
   // 既定選択 = 先頭 option = DEVICE_KINDS の第 1 キー (cores3)。
+  // role を持たない機種 (血圧測定台・警告デバイス) は credential を発行しないので
+  // 除外する (Refs #353、pairing allowlist に入れない決定と両立させるための gate)。
   const kindOptionsHtml = Object.entries(DEVICE_KINDS)
+    .filter(([, k]) => k.role)
     .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
     .join("\n");
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
