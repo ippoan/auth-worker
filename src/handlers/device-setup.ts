@@ -59,15 +59,11 @@ const PAGES_BASE = "https://ippoan.github.io/alc-app-s3";
 export interface DeviceKind {
   /**
    * pairing (`POST /device/setup/pair`) で発行する **device credential** の role。
-   * `DEVICE_ROLES` (lib/device.ts) の allowlist と対になる軸で、**alarm-key の
-   * 署名で取る短命 JWT の role (usage から決まる) とは別軸**。同じ `device-…`
-   * の形の文字列になるので混同しやすいが、こちらは「機種 → credential」の
-   * 1:1 対応表。
+   * `DEVICE_ROLES` (lib/device.ts) の allowlist と対。
    *
-   * **role を持たない機種**は credential を発行しない = USB で焼くだけの機種
-   * (ネットワークを持たず、身元は alarm-key の方で持つ)。機種 select には
-   * 出さず、`pair` も fail-closed で弾く。**Web インストーラーのリンクにだけ
-   * 出る。**
+   * **role を持たない機種は credential を発行しない** — ネットワークを持たず、
+   * USB で焼くだけの機種。身元は alarm-key の方で持つ。機種 select には出さず
+   * `pair` も fail-closed で弾くが、**Web インストーラーのリンクには出る。**
    */
   role?: string;
   /** デバイスラベルの既定値 */
