@@ -190,14 +190,16 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain('"timecard":"timecard"');
   });
 
-  it("血圧測定台 (installerOnly) は Web インストーラーのリンクには出るが、機種 select には出ない (Refs #353)", async () => {
+  it("血圧測定台・警告デバイス (installerOnly) は Web インストーラーのリンクには出るが、機種 select には出ない (Refs #353)", async () => {
     const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
     const html = await res.text();
-    // Web インストーラー導線には出る
+    // Web インストーラー導線には両方出る
     expect(html).toContain('href="https://ippoan.github.io/alc-app-s3/atoms3-nfc.html"');
-    // 機種 select には出ない (credential を発行しない機種のため)
+    expect(html).toContain('href="https://ippoan.github.io/alc-app-s3/alarm.html"');
+    // 機種 select にはどちらも出ない (credential を発行しない機種のため)
     const select = html.match(/<select id="kind"[^>]*>([\s\S]*?)<\/select>/)?.[1] ?? "";
-    expect(select).not.toContain("bp-station");
+    expect(select).not.toContain('value="bp-station"');
+    expect(select).not.toContain('value="alarm"');
   });
 
   it("developer アカウントには dev ビルド (mem-hud) 配信の選択を表示する (alc-app-s3#44)", async () => {
@@ -439,6 +441,18 @@ describe("handleDeviceSetupPair", () => {
     const headers = { ...(await opCookie()), Origin: ISSUER };
     const res = await handleDeviceSetupPair(
       postJson("/device/setup/pair", { kind: "bp-station" }, headers),
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("installer_only_kind");
+  });
+
+  it("kind=alarm は 400 で拒否し credential を発行しない (role を持たない機種、Refs #353)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupPair(
+      postJson("/device/setup/pair", { kind: "alarm" }, headers),
       env,
     );
     expect(res.status).toBe(400);

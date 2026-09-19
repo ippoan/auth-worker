@@ -787,7 +787,10 @@ const TOOLS: ToolDef[] = [
       // 他テナント・revoked・未登録は null (fail-closed)。
       const kind = await managedDeviceKind(ctx.env, tenantId, deviceId);
       if (!kind) return { device_id: deviceId, error: "device_not_found" };
-      if (!OTA_DEVICE_ROLES.has(kind.role)) {
+      // role を持たない機種 (installerOnly。警告デバイス等) は managedDeviceKind
+      // (= kindNameForRole 経由) からは返らないはずだが、型上は string | undefined
+      // なので fail-closed に倒す。
+      if (!kind.role || !OTA_DEVICE_ROLES.has(kind.role)) {
         return { device_id: deviceId, error: "unsupported_device_kind" };
       }
       // URL は入力から受け取らず、機種の公式配信先 (DEVICE_KINDS の定数) に固定する。
