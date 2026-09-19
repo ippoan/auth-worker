@@ -175,15 +175,29 @@ describe("handleDeviceSetupPage", () => {
       m[1],
       m[2],
     ]);
-    // registry の全機種が、キー順 (= 先頭が既定選択の cores3) でそのまま並ぶこと。
-    // #508 で timecard を足したとき、ハードコードだったここだけ追随しなかった
+    // registry の全機種 (installerOnly を除く) が、キー順 (= 先頭が既定選択の
+    // cores3) でそのまま並ぶこと。#508 で timecard を足したとき、ハードコード
+    // だったここだけ追随しなかった。installerOnly (血圧測定台) は credential を
+    // 発行しない機種なので select には出ない (Refs #353)
     expect(options).toEqual(
-      Object.entries(DEVICE_KINDS).map(([name, k]) => [name, k.display]),
+      Object.entries(DEVICE_KINDS)
+        .filter(([, k]) => !k.installerOnly)
+        .map(([name, k]) => [name, k.display]),
     );
     expect(options).toContainEqual(["timecard", "NFC タイムカード端末"]);
     expect(options[0]?.[0]).toBe("cores3");
     // ラベル既定値の追随も registry 由来 (機種を足したらラベルも追随する)
     expect(html).toContain('"timecard":"timecard"');
+  });
+
+  it("血圧測定台 (installerOnly) は Web インストーラーのリンクには出るが、機種 select には出ない (Refs #353)", async () => {
+    const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
+    const html = await res.text();
+    // Web インストーラー導線には出る
+    expect(html).toContain('href="https://ippoan.github.io/alc-app-s3/atoms3-nfc.html"');
+    // 機種 select には出ない (credential を発行しない機種のため)
+    const select = html.match(/<select id="kind"[^>]*>([\s\S]*?)<\/select>/)?.[1] ?? "";
+    expect(select).not.toContain("bp-station");
   });
 
   it("developer アカウントには dev ビルド (mem-hud) 配信の選択を表示する (alc-app-s3#44)", async () => {
@@ -418,6 +432,18 @@ describe("handleDeviceSetupPair", () => {
       env,
     );
     expect(res.status).toBe(400);
+  });
+
+  it("kind=bp-station は 400 で拒否し credential を発行しない (installerOnly、Refs #353)", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const res = await handleDeviceSetupPair(
+      postJson("/device/setup/pair", { kind: "bp-station" }, headers),
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("installer_only_kind");
   });
 
   it("defaults the label and tolerates an empty body", async () => {

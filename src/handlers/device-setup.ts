@@ -39,6 +39,7 @@ import {
   DEVICE_ROLE_PRINT,
   DEVICE_ROLE_GATEWAY,
   DEVICE_ROLE_TIMECARD,
+  DEVICE_ROLE_BP_STATION,
 } from "../lib/device";
 
 function jsonNoStore(body: unknown, status = 200): Response {
@@ -79,6 +80,14 @@ export interface DeviceKind {
   installerUrl: string;
   /** 表示名 */
   display: string;
+  /**
+   * true なら Web インストーラーのリンクには出すが、credential 発行の機種
+   * (「セットアップ実行」の機種 select・`/device/setup/pair`) としては出さない。
+   * ネットワークを持たず device credential を必要としない機種 (血圧測定台) 用。
+   * pairing allowlist (`DEVICE_ROLES`) に入れない決定と、リンクを出す要求を
+   * 両立させるための印 (Refs ippoan/alc-app#353、ippoan/auth-worker#578)。
+   */
+  installerOnly?: boolean;
 }
 
 /**
@@ -125,6 +134,25 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     manifestUrl: `${PAGES_BASE}/manifest-timecard.json`,
     installerUrl: `${PAGES_BASE}/timecard.html`,
     display: "NFC タイムカード端末",
+  },
+  /**
+   * 血圧測定台 (Atom VoiceS3R + Unit NFC、ippoan/alc-app-s3#260 で配布済み) —
+   * ネットワークを持たず device credential を必要としない機種。身元は
+   * `/device/setup` の alarm-key (用途 `bp-station`) 側で登録し、この role
+   * (`DEVICE_ROLE_BP_STATION`) は alarm-key 経由の短命 JWT でのみ付与される
+   * (`DEVICE_ROLES` = pairing allowlist には意図して入れない、Refs #578)。
+   * `installerOnly: true` で Web インストーラーのリンクにだけ出す。
+   * dev バリアントは持たない (timecard と同じ判断: 画面を持たない Atom 系に
+   * mem-hud は意味が無い) ため devAppUrl は付けない。
+   */
+  "bp-station": {
+    role: DEVICE_ROLE_BP_STATION,
+    labelDefault: "bp-station",
+    appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-nfc-s3r-app.bin`,
+    manifestUrl: `${PAGES_BASE}/manifest-nfc.json`,
+    installerUrl: `${PAGES_BASE}/atoms3-nfc.html`,
+    display: "血圧測定台 (Atom VoiceS3R)",
+    installerOnly: true,
   },
   /**
    * Unit PoE-P4 (ippoan/alc-gw-p4) — hub_link の GW 側。cf-alc-recorder への
@@ -273,6 +301,11 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   const kindName = typeof body.kind === "string" && body.kind ? body.kind : "cores3";
   const kind = DEVICE_KINDS[kindName];
   if (!kind) return jsonNoStore({ error: "unknown kind" }, 400);
+  // select から外すだけでは、body を直接組み立てれば通ってしまう。#509 で
+  // 「インストーラでは焼けるのに機種として選べない」を直したとき 2 つのリストを
+  // わざと 1 つの定数から生成する形にしたので、片方だけ外す今回は server 側でも
+  // 閉じる (installerOnly = credential を発行しない機種、Refs #353)。
+  if (kind.installerOnly) return jsonNoStore({ error: "installer_only_kind" }, 400);
   const label = typeof body.label === "string" && body.label ? body.label : kind.labelDefault;
   const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
   const replaceLabel = body.replace_label === true;
@@ -813,7 +846,10 @@ function setupPage(issuer: string, email: string): string {
   // ハードコードしていた頃は #508 で timecard を足しても select だけ追随せず、
   // 「インストーラでは焼けるのに機種として選べない」状態になった (#509)。
   // 既定選択 = 先頭 option = DEVICE_KINDS の第 1 キー (cores3)。
+  // installerOnly の機種 (血圧測定台) は credential を発行しないので除外する
+  // (Refs #353、pairing allowlist に入れない決定と両立させるための gate)。
   const kindOptionsHtml = Object.entries(DEVICE_KINDS)
+    .filter(([, k]) => !k.installerOnly)
     .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
     .join("\n");
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
