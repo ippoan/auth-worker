@@ -18,6 +18,7 @@
  *   |----------------|----------------|----------------|------------------------|
  *   | `kiosk` (既定) | 運行者端末     | `kiosk`        | `device-kiosk`         |
  *   | `tenko-manager`| 運行管理者席   | `tenko-manager`| `device-tenko-manager` |
+ *   | `bp-station`   | 血圧測定台     | `bp-station`   | `device-bp-station`    |
  *
  * **usage は「どの鍵を受け付けるか」と「何の role を出すか」を 1 つの表で同時に決める。**
  * 鍵 (`alarmkey:<fp>`) 側の `usage` と一致しなければ署名検証の時点で落ちるので、
@@ -48,7 +49,12 @@ import {
   verifyAlarmSignature,
   type AlarmNoncePurpose,
 } from "../lib/alarm-nonce";
-import { mintDeviceJwt, DEVICE_ROLE_KIOSK, DEVICE_ROLE_TENKO_MANAGER } from "../lib/device";
+import {
+  mintDeviceJwt,
+  DEVICE_ROLE_KIOSK,
+  DEVICE_ROLE_TENKO_MANAGER,
+  DEVICE_ROLE_BP_STATION,
+} from "../lib/device";
 
 /**
  * この口が受け付ける用途 → (nonce の purpose, mint する role) の正本。
@@ -63,6 +69,7 @@ import { mintDeviceJwt, DEVICE_ROLE_KIOSK, DEVICE_ROLE_TENKO_MANAGER } from "../
 const ALARM_TOKEN_USAGES = {
   kiosk: { noncePurpose: "kiosk", role: DEVICE_ROLE_KIOSK },
   "tenko-manager": { noncePurpose: "tenko-manager", role: DEVICE_ROLE_TENKO_MANAGER },
+  "bp-station": { noncePurpose: "bp-station", role: DEVICE_ROLE_BP_STATION },
 } as const satisfies Readonly<Record<string, { noncePurpose: AlarmNoncePurpose; role: string }>>;
 
 /** `ALARM_TOKEN_USAGES` の key (= この口で使える `AlarmKeyUsage` の部分集合)。 */

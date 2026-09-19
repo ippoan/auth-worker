@@ -35,6 +35,7 @@ import {
   DEVICE_ROLE_DTAKO_RELAY,
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_TENKO_MANAGER,
+  DEVICE_ROLE_BP_STATION,
 } from "../lib/device";
 
 const ROUTE_PREFIX = "/device-data-proxy";
@@ -191,6 +192,37 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
 ];
 
 /**
+ * `device-bp-station` role (血圧計をつないだ PC、血圧だけを測る測定台 PWA を開く
+ * 第二の端末クラス) 専用の method + path 許可表 (Refs ippoan/alc-app#353)。
+ *
+ * 許可するのは `alc-app` の `BloodPressureMeasurement.vue` から実際に辿った経路
+ * 4 本だけ (既定拒否): NFC 読取 → 従業員照会、顔認証用の顔データ同期、測定開始、
+ * 測定更新 (測定値の保存)。
+ *
+ * **`GET /api/devices/settings/[^/]+` は入れない。** 測定台は端末レコードを持たず
+ * `deviceId` が構造的に空なので、この口は呼ばれない (呼ばれない口を既定拒否の外に
+ * 出さない)。
+ *
+ * **`GET /api/employees/face-data` はこの role にも入れる ── ここが tenant の全顔
+ * データ (生体情報) を開く口である点は `KIOSK_ROUTES` の doc と同じ**。測定台は
+ * 無人になりうる第二の端末クラスだが、NFC が使えない/失敗した従業員を顔認証で
+ * 特定する必要があるため、kiosk と同じ範囲をここでも開く判断である。他の管理者向け
+ * GET はここに入れない。
+ *
+ * `ROLE_PATH_ALLOWLIST` (method を見ない Set) には入れない — あちらに置くと
+ * `/api/measurements/{id}` のような GET/POST 混在 path で、意図しない method まで
+ * 同時に開いてしまう。`KIOSK_ROUTES` / `TENKO_MANAGER_ROUTES` と同じ
+ * `{ method, pattern }` 方式にし、pattern は両端を `^…$` で固定、可変 segment は
+ * `[^/]+` のみ許可する。
+ */
+const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: "POST", pattern: /^\/api\/employees\/lookup$/ },
+  { method: "GET", pattern: /^\/api\/employees\/face-data$/ },
+  { method: "POST", pattern: /^\/api\/measurements\/start$/ },
+  { method: "PUT", pattern: /^\/api\/measurements\/[^/]+$/ },
+];
+
+/**
  * method + path で照合する role → 許可表。ここに無い role は従来どおり
  * `ROLE_PATH_ALLOWLIST` (method を見ない Set 完全一致) を引く。どちらにも
  * 無い role は何も転送できない (既定拒否)。
@@ -202,6 +234,7 @@ const METHOD_ROUTE_TABLES: ReadonlyMap<string, ReadonlyArray<{ method: string; p
   new Map([
     [DEVICE_ROLE_KIOSK, KIOSK_ROUTES],
     [DEVICE_ROLE_TENKO_MANAGER, TENKO_MANAGER_ROUTES],
+    [DEVICE_ROLE_BP_STATION, BP_STATION_ROUTES],
   ]);
 
 function jsonError(status: number, error: string): Response {

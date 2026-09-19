@@ -23,6 +23,7 @@ import {
   DEVICE_JWT_AUDIENCE,
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_TENKO_MANAGER,
+  DEVICE_ROLE_BP_STATION,
 } from "../../src/lib/device";
 import { decodeJwtPayload } from "../../src/lib/jwt";
 import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
@@ -850,5 +851,91 @@ describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-a
     const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "kiosk" }).kv);
     const token = await mintKioskToken(env, keypair);
     expect(decodeJwtPayload(token)!.role).toBe(DEVICE_ROLE_KIOSK);
+  });
+
+  it("用途 bp-station の鍵 + その用途の nonce で role=device-bp-station が出る", async () => {
+    const keypair = generateKeypair();
+    const { fp, kv } = alarmKeySeed(keypair.pubRaw, { usage: "bp-station" });
+    const env = makeEnv(kv);
+    const res = await handleDeviceAlarmToken(
+      tokenRequest(
+        await tokenBody(env, keypair, { nonceUsage: "bp-station", bodyUsage: "bp-station" }),
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const { access_token, tenant_id } = (await res.json()) as {
+      access_token: string;
+      tenant_id: string;
+    };
+    expect(tenant_id).toBe(TENANT_ID);
+    const payload = decodeJwtPayload(access_token)!;
+    expect(payload.role).toBe(DEVICE_ROLE_BP_STATION);
+    expect(payload.role).toBe("device-bp-station");
+    expect(payload.aud).toBe(DEVICE_JWT_AUDIENCE);
+    expect(payload.sub).toBe(`alarm:${fp}`);
+    expect(payload.tenant_id).toBe(TENANT_ID);
+  });
+
+  it("★ 血圧測定台の鍵で usage を省略すると kiosk とは用途が食い違うため 401", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "bp-station" }).kv);
+    await expectInvalid(
+      await handleDeviceAlarmToken(tokenRequest(await tokenBody(env, keypair, {})), env),
+    );
+  });
+
+  it("★ キオスクの鍵で usage=bp-station を名乗っても 401 (鍵の用途違い)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "kiosk" }).kv);
+    await expectInvalid(
+      await handleDeviceAlarmToken(
+        tokenRequest(
+          await tokenBody(env, keypair, { nonceUsage: "bp-station", bodyUsage: "bp-station" }),
+        ),
+        env,
+      ),
+    );
+  });
+
+  it("出した JWT は /device-data-proxy の測定台の口を通り、kiosk 専用の口では 403", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "bp-station" }).kv);
+    const res = await handleDeviceAlarmToken(
+      tokenRequest(
+        await tokenBody(env, keypair, { nonceUsage: "bp-station", bodyUsage: "bp-station" }),
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const { access_token } = (await res.json()) as { access_token: string };
+
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const ok = await handleDeviceDataProxy(
+      new Request(`${AUTH_ORIGIN}/device-data-proxy/api/measurements/start`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${access_token}`, "Content-Type": "application/json" },
+        body: "{}",
+      }),
+      env,
+    );
+    expect(ok.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT_ID);
+
+    const denied = await handleDeviceDataProxy(
+      new Request(`${AUTH_ORIGIN}/device-data-proxy/api/tenko/dashboard`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${access_token}` },
+      }),
+      env,
+    );
+    expect(denied.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

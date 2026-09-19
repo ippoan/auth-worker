@@ -7,6 +7,7 @@ import {
   DEVICE_ROLE_DTAKO_RELAY,
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_TENKO_MANAGER,
+  DEVICE_ROLE_BP_STATION,
 } from "../../src/lib/device";
 
 // OIDC mint は別ユニットでテスト済み。ここでは handler の flow
@@ -816,5 +817,141 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     );
     expect(res.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function bpToken(): Promise<string> {
+    return signTestJwt(
+      { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role: DEVICE_ROLE_BP_STATION },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  async function kioskToken(): Promise<string> {
+    return signTestJwt(
+      { sub: "device-kiosk-1", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  // ★ BP_STATION_ROUTES の全行を method + path で固定する (表駆動)。
+  const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
+    { method: "POST", path: "/api/employees/lookup" },
+    { method: "GET", path: "/api/employees/face-data" },
+    { method: "POST", path: "/api/measurements/start" },
+    { method: "PUT", path: "/api/measurements/m-1" },
+  ];
+
+  for (const { method, path } of ALLOWED) {
+    it(`${method} ${path} を forward する (X-Tenant-ID は JWT の tenant)`, async () => {
+      const fetchMock = okFetch();
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, {
+          method,
+          token: await bpToken(),
+          ...(method !== "GET"
+            ? { headers: { "content-type": "application/json" }, body: JSON.stringify({}) }
+            : {}),
+        }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toBe(`https://alc-api.test.example${path}`);
+      const h = (init as RequestInit).headers as Record<string, string>;
+      expect(h["X-Tenant-ID"]).toBe(TENANT);
+    });
+  }
+
+  it("★ 表に無い method+path は 403 (既定拒否 — kiosk の許可表を引き継がない)", async () => {
+    const fetchMock = okFetch();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      // 表にある path でも method 違い。
+      { method: "GET", path: "/api/measurements/m-1" },
+      { method: "DELETE", path: "/api/employees/lookup" },
+      { method: "PUT", path: "/api/employees/face-data" },
+      { method: "GET", path: "/api/measurements/start" },
+      // kiosk が通せる他の口 (測定台には要らない)。
+      { method: "GET", path: "/api/employees" },
+      { method: "GET", path: "/api/employees/emp-1" },
+      { method: "GET", path: "/api/measurements" },
+      { method: "POST", path: "/api/measurements" },
+      { method: "GET", path: "/api/tenko/dashboard" },
+      { method: "GET", path: "/api/timecard/punches" },
+      // 端末レコードを持たないので settings は呼ばれない口 (表に入れていない)。
+      { method: "GET", path: "/api/devices/settings/dev-1" },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await bpToken() }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("device-kiosk の許可表は BP_STATION_ROUTES 追加で変わらない (退行検知)", async () => {
+    // BP_STATION_ROUTES の 4 本は KIOSK_ROUTES にも元から含まれる (両 role とも
+    // 呼ぶ口)。ここでは KIOSK_ROUTES 側の table が新設した METHOD_ROUTE_TABLES
+    // エントリの影響を受けず今までどおり通ることだけを固定する。
+    const fetchMock = okFetch();
+    for (const { method, path } of [
+      { method: "POST", path: "/api/measurements/start" },
+      { method: "PUT", path: "/api/measurements/m-1" },
+    ]) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, {
+          method,
+          token: await kioskToken(),
+          ...(method !== "GET"
+            ? { headers: { "content-type": "application/json" }, body: JSON.stringify({}) }
+            : {}),
+        }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(200);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("★ 他 role は測定台の path を叩けない (最小権限 — 双方向に広げない)", async () => {
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees/lookup", {
+        method: "POST",
+        token: await deviceToken(),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("★ 呼び手が X-Tenant-ID を詐称しても JWT の tenant で上書きされる", async () => {
+    const fetchMock = okFetch();
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees/face-data", {
+        method: "GET",
+        token: await bpToken(),
+        headers: { "X-Tenant-ID": "99999999-9999-9999-9999-999999999999" },
+      }),
+      env(),
+    );
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
   });
 });

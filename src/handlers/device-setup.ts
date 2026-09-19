@@ -914,6 +914,7 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <option value="" selected disabled>選択してください</option>
 <option value="kiosk">運行者端末 (kiosk)</option>
 <option value="tenko-manager">運行管理者席 (tenko-manager)</option>
+<option value="bp-station">血圧測定台 (bp-station)</option>
 <option value="admin-login">管理者ログイン (admin-login)</option>
 </select></label>
 <button id="alarm-key-register" type="button">デバイスの鍵を登録</button></p>
@@ -2071,6 +2072,7 @@ const alarmKeyUsageEl = document.getElementById("alarm-key-usage");
 const ALARM_KEY_USAGE_DISPLAY = {
   kiosk: "運行者端末",
   "tenko-manager": "運行管理者席",
+  "bp-station": "血圧測定台",
   "admin-login": "管理者ログイン",
 };
 
