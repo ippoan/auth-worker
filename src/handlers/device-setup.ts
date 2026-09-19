@@ -61,11 +61,15 @@ export interface DeviceKind {
    * pairing (`POST /device/setup/pair`) で発行する **device credential** の role。
    * `DEVICE_ROLES` (lib/device.ts) の allowlist と対。
    *
-   * **role を持たない機種は credential を発行しない** — ネットワークを持たず、
+   * alarm-key 経由の短命 JWT の role (`device-alarm-token.ts::roleForUsage`) とは
+   * **別の発行経路**なので、フィールド名を経路で呼ぶ (`role` ではなく `pairRole`) —
+   * 同じ `device-…` 文字列になるため取り違えが起きた (Refs ippoan/alc-app#353)。
+   *
+   * **pairRole を持たない機種は credential を発行しない** — ネットワークを持たず、
    * USB で焼くだけの機種。身元は alarm-key の方で持つ。機種 select には出さず
    * `pair` も fail-closed で弾くが、**Web インストーラーのリンクには出る。**
    */
-  role?: string;
+  pairRole?: string;
   /** デバイスラベルの既定値 */
   labelDefault: string;
   /** OTA する app 単体イメージの既定 URL (build.yml の "Save OTA app image") */
@@ -103,7 +107,7 @@ const DEVELOPER_EMAILS = ["m.tama.ramu@gmail.com"];
  */
 export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
   cores3: {
-    role: DEVICE_ROLE_HUB,
+    pairRole: DEVICE_ROLE_HUB,
     labelDefault: "cores3",
     appUrl: `${PAGES_BASE}/firmware/alc-hub-cores3-app.bin`,
     devAppUrl: `${PAGES_BASE}/firmware/alc-hub-cores3-dev-app.bin`,
@@ -112,7 +116,7 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
     display: "CoreS3 統合ハブ",
   },
   "atoms3-print": {
-    role: DEVICE_ROLE_PRINT,
+    pairRole: DEVICE_ROLE_PRINT,
     labelDefault: "atoms3-print",
     appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-print-app.bin`,
     manifestUrl: `${PAGES_BASE}/manifest-atoms3-print.json`,
@@ -126,7 +130,7 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
    * 持たない Atom 系には意味がない) ため devAppUrl は付けない。
    */
   timecard: {
-    role: DEVICE_ROLE_TIMECARD,
+    pairRole: DEVICE_ROLE_TIMECARD,
     labelDefault: "timecard",
     appUrl: `${PAGES_BASE}/firmware/alc-hub-atoms3-timecard-app.bin`,
     manifestUrl: `${PAGES_BASE}/manifest-timecard.json`,
@@ -167,7 +171,7 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
    *   - dev版: releases/download/dev (main push の度に上書きされる rolling release)
    */
   "p4-gw": {
-    role: DEVICE_ROLE_GATEWAY,
+    pairRole: DEVICE_ROLE_GATEWAY,
     labelDefault: "p4-gw",
     appUrl: "https://github.com/ippoan/alc-gw-p4/releases/latest/download/alc_gw_p4_relay.bin",
     devAppUrl: "https://github.com/ippoan/alc-gw-p4/releases/download/dev/alc_gw_p4_relay.bin",
@@ -180,8 +184,8 @@ export const DEVICE_KINDS: Readonly<Record<string, DeviceKind>> = {
 /** role → kind 名の逆引き (一覧表示・OTA gate 用)。 */
 function kindNameForRole(role: string | undefined): string | null {
   for (const [name, k] of Object.entries(DEVICE_KINDS)) {
-    if (!k.role) continue; // role を持たない機種 (警告デバイス等) は逆引きの対象外
-    if (k.role === role) return name;
+    if (!k.pairRole) continue; // pairRole を持たない機種 (警告デバイス等) は逆引きの対象外
+    if (k.pairRole === role) return name;
   }
   return null;
 }
@@ -309,16 +313,16 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   // select から外すだけでは、body を直接組み立てれば通ってしまう。#509 で
   // 「インストーラでは焼けるのに機種として選べない」を直したとき 2 つのリストを
   // わざと 1 つの定数から生成する形にしたので、片方だけ外す今回は server 側でも
-  // 閉じる (role を持たない機種 = credential を発行しない機種、Refs #353)。
-  if (!kind.role) return jsonNoStore({ error: "kind_not_pairable" }, 400);
+  // 閉じる (pairRole を持たない機種 = credential を発行しない機種、Refs #353)。
+  if (!kind.pairRole) return jsonNoStore({ error: "kind_not_pairable" }, 400);
   const label = typeof body.label === "string" && body.label ? body.label : kind.labelDefault;
   const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
   const replaceLabel = body.replace_label === true;
 
   const now = Math.floor(Date.now() / 1000);
   const cred = replaceLabel
-    ? await createDeviceCredentialReplacingLabel(env, session.tenantId, label, now, kind.role, siteId)
-    : await createDeviceCredential(env, session.tenantId, label, now, kind.role, siteId);
+    ? await createDeviceCredentialReplacingLabel(env, session.tenantId, label, now, kind.pairRole, siteId)
+    : await createDeviceCredential(env, session.tenantId, label, now, kind.pairRole, siteId);
 
   return jsonNoStore(
     {
@@ -851,10 +855,10 @@ function setupPage(issuer: string, email: string): string {
   // ハードコードしていた頃は #508 で timecard を足しても select だけ追随せず、
   // 「インストーラでは焼けるのに機種として選べない」状態になった (#509)。
   // 既定選択 = 先頭 option = DEVICE_KINDS の第 1 キー (cores3)。
-  // role を持たない機種 (血圧測定台・警告デバイス) は credential を発行しないので
+  // pairRole を持たない機種 (血圧測定台・警告デバイス) は credential を発行しないので
   // 除外する (Refs #353、pairing allowlist に入れない決定と両立させるための gate)。
   const kindOptionsHtml = Object.entries(DEVICE_KINDS)
-    .filter(([, k]) => k.role)
+    .filter(([, k]) => k.pairRole)
     .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
     .join("\n");
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
@@ -947,7 +951,7 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <thead><tr><th>ラベル</th><th>種別</th><th>拠点ID</th><th>接続</th><th>バージョン</th><th>血圧計ボンド</th><th>更新</th><th>再登録</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
-<h2>デバイスの署名鍵 (VoiceS3R = 管理者ログイン / 運行管理者席、CoreS3 = 運行者端末)</h2>
+<h2>デバイスの署名鍵 (VoiceS3R = 運行管理者席、CoreS3 = 運行者端末)</h2>
 <p class="muted">デバイスが機体内で作った署名鍵の公開鍵を、用途を選んで登録・失効します
 (秘密鍵は機体から出ません)。1 つの鍵は 1 つの用途にだけ使えます。デバイスを USB で
 接続し、用途を選んでから押してください。</p>
@@ -956,13 +960,10 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <option value="kiosk">運行者端末 (kiosk)</option>
 <option value="tenko-manager">運行管理者席 (tenko-manager)</option>
 <option value="bp-station">血圧測定台 (bp-station)</option>
-<option value="admin-login">管理者ログイン (admin-login)</option>
 </select></label>
 <button id="alarm-key-register" type="button">デバイスの鍵を登録</button></p>
-<p class="muted">管理者ログイン: この用途の鍵を挿した端末では管理者として入れます。
-管理者が手元で使う機体の鍵にだけ選んでください。</p>
-<p class="muted">運行管理者席: この用途の鍵を挿した端末から点呼予定を作成・変更できます
-(管理者ログインにはなりません)。運行管理者が座る席の機体の鍵にだけ選んでください。</p>
+<p class="muted">運行管理者席: この用途の鍵を挿した端末から点呼予定を作成・変更できます。
+運行管理者が座る席の機体の鍵にだけ選んでください。</p>
 <p id="alarm-key-result"></p>
 <p id="alarm-keys-status" class="muted">読み込み中...</p>
 <table id="alarm-keys" style="display:none">
@@ -2114,7 +2115,6 @@ const ALARM_KEY_USAGE_DISPLAY = {
   kiosk: "運行者端末",
   "tenko-manager": "運行管理者席",
   "bp-station": "血圧測定台",
-  "admin-login": "管理者ログイン",
 };
 
 // operator の tenant に登録済みの警告デバイス鍵一覧を読み込んで描画する。

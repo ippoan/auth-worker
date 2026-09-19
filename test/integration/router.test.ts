@@ -840,6 +840,20 @@ describe("Router (index.ts)", () => {
     expect(res.status).toBe(404);
   });
 
+  // 管理者 session を出す用途 (旧 admin-login / /auth/device-login,
+  // /auth/device-nonce) は本番で未使用だったため畳んだ (Refs ippoan/alc-app#353)。
+  it("GET /auth/device-login returns 404 (route removed)", async () => {
+    const req = new Request("https://auth.test.example/auth/device-login");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /auth/device-nonce returns 404 (route removed)", async () => {
+    const req = new Request("https://auth.test.example/auth/device-nonce");
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
   it("POST unknown path returns 404", async () => {
     const req = new Request("https://auth.test.example/unknown", { method: "POST" });
     const res = await worker.fetch(req, env);

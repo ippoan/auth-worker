@@ -15,8 +15,8 @@ import {
   handleDeviceAlarmNonce,
   handleDeviceAlarmToken,
   ALARM_TOKEN_TTL_SEC,
+  roleForUsage,
 } from "../../src/handlers/device-alarm-token";
-import { handleDeviceNonce, handleDeviceLogin } from "../../src/handlers/device-login";
 import { handleDeviceDataProxy } from "../../src/handlers/device-data-proxy";
 import { handleDeviceClaimTicket } from "../../src/handlers/device-claim-ticket";
 import {
@@ -298,26 +298,6 @@ describe("POST /device/alarm-token", () => {
     await expectInvalid(await handleDeviceAlarmToken(tokenRequest(body), env));
   });
 
-  it("login 用 (device-nonce) の nonce への署名は 401", async () => {
-    const keypair = generateKeypair();
-    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
-    const nonceRes = await handleDeviceNonce(
-      new Request(`${AUTH_ORIGIN}/auth/device-nonce?redirect_uri=${encodeURIComponent(REDIRECT_URI)}`),
-      env,
-    );
-    const { nonce } = (await nonceRes.json()) as { nonce: string };
-    await expectInvalid(
-      await handleDeviceAlarmToken(
-        tokenRequest({
-          nonce,
-          pubkey: b64url(keypair.pubRaw),
-          sig: signNonceAscii(keypair.privateKey, nonce),
-        }),
-        env,
-      ),
-    );
-  });
-
   it("purpose の無い nonce record は 401 (fail-closed)", async () => {
     const keypair = generateKeypair();
     const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
@@ -560,39 +540,16 @@ describe("出した端末 JWT の届く範囲", () => {
   });
 });
 
-describe("device-login 側: nonce の purpose", () => {
-  it("kiosk 用 (alarm-nonce) の nonce への署名で device-login は 401", async () => {
-    const keypair = generateKeypair();
-    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
-    const nonce = await issueKioskNonce(env);
-    const url = new URL(`${AUTH_ORIGIN}/auth/device-login`);
-    url.searchParams.set("pubkey", b64url(keypair.pubRaw));
-    url.searchParams.set("nonce", nonce);
-    url.searchParams.set("sig", signNonceAscii(keypair.privateKey, nonce));
-    url.searchParams.set("redirect_uri", REDIRECT_URI);
-    const res = await handleDeviceLogin(new Request(url.toString()), env);
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: "invalid_device_login" });
-  });
-
-  it("purpose=login の nonce でも、redirect_uri が allowlist から外れていれば 401", async () => {
-    const keypair = generateKeypair();
-    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
-    const noLongerAllowed = "https://not-allowed.example/page";
-    const nonce = "c".repeat(32);
-    // 発行後に allowlist が変わった状況を模して KV へ直接書く。
-    (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`] = JSON.stringify({
-      purpose: "login",
-      redirect_uri: noLongerAllowed,
-      exp: Math.floor(Date.now() / 1000) + 60,
-    });
-    const url = new URL(`${AUTH_ORIGIN}/auth/device-login`);
-    url.searchParams.set("pubkey", b64url(keypair.pubRaw));
-    url.searchParams.set("nonce", nonce);
-    url.searchParams.set("sig", signNonceAscii(keypair.privateKey, nonce));
-    url.searchParams.set("redirect_uri", noLongerAllowed);
-    const res = await handleDeviceLogin(new Request(url.toString()), env);
-    expect(res.status).toBe(401);
+// Refs ippoan/alc-app#353: role は対応表ではなく `device-<usage>` の計算で出す。
+// 定数の値 (DEVICE_ROLE_*) と一致することをテストで固定する — 一致しなくなったら
+// ここが落ちる。
+describe("roleForUsage (Refs ippoan/alc-app#353)", () => {
+  it.each<[string, string]>([
+    ["kiosk", DEVICE_ROLE_KIOSK],
+    ["tenko-manager", DEVICE_ROLE_TENKO_MANAGER],
+    ["bp-station", DEVICE_ROLE_BP_STATION],
+  ])("roleForUsage(%s) === %s", (usage, expected) => {
+    expect(roleForUsage(usage as Parameters<typeof roleForUsage>[0])).toBe(expected);
   });
 });
 

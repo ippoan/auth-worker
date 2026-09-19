@@ -1,10 +1,8 @@
 /**
- * 警告デバイス (VoiceS3R) の nonce 発行・消費と署名検証。
+ * 警告デバイス (VoiceS3R) の nonce 発行・消費と署名検証。`/device/alarm-token`
+ * (#551、短命の端末 JWT を出す) が使う。
  *
- * `/auth/device-login` (#522、管理者 session を出す) と `/device/alarm-token`
- * (#551、短命の端末 JWT を出す) が同じ手順で VoiceS3R を確かめるので、ここに 1 本で置く。
- *
- * 契約 (device-login.ts 冒頭と同じ。変えるときは firmware / alc-app と合意する):
+ * 契約 (変えるときは firmware / alc-app と合意する):
  *   - nonce = 小文字 hex 32 文字。署名対象は **その ASCII 32 バイト**
  *   - pubkey / sig は base64url の raw bytes (32 B / 64 B)。decode は `alarm-key.ts` の正本
  *
@@ -15,8 +13,8 @@
  *     `bp=` の後は `1`/`0` のみ、空白なし。組み立ては `buildAlarmSignedMessage`。
  *
  * nonce の record は `purpose` を持つ。消費時は purpose の一致を要求し、purpose の
- * 無い record は拒否する (fail-closed)。ログイン用に発行した nonce への署名を端末 JWT に
- * (またはその逆に) 使い回させないため。
+ * 無い record は拒否する (fail-closed)。ある用途向けに発行した nonce への署名を
+ * 別の用途の JWT に使い回させないため。
  *
  * 鍵の record も用途 (`usage`) を持つ。署名検証時は呼び出し側 (口) の用途との一致を
  * 要求し、usage の無い record は拒否する (nonce の purpose と同じ fail-closed)。
@@ -26,25 +24,23 @@ import {
   decodeBase64Url,
   fingerprintFromRawPubkey,
   getAlarmKeyRecord,
+  ALARM_KEY_USAGES,
   type AlarmKeyRecord,
   type AlarmKeyUsage,
 } from "../handlers/alarm-key";
 import { verifyEd25519 } from "./ed25519";
 
 /**
- * nonce を何に使うか。`login` = device-login、`kiosk` / `tenko-manager` / `bp-station` =
- * alarm-token (同じ口だが用途ごとに purpose を分ける — 運行者端末の nonce への署名で
- * 運行管理者の JWT を取らせないため。Refs ippoan/alc-app#337)。
+ * nonce を何に使うか。**`AlarmKeyUsage` (`handlers/alarm-key.ts`) と同じ語彙** —
+ * 以前は usage と purpose を別々に手書きしていて、削除済みの旧・管理者ログイン
+ * 用途の 2 つの綴りが食い違っていた (Refs ippoan/alc-app#353)。用途ごとに
+ * purpose を分けるのは変わらず (運行者端末の nonce への署名で運行管理者の JWT を
+ * 取らせないため。Refs ippoan/alc-app#337)。
  */
-export type AlarmNoncePurpose = "login" | "kiosk" | "tenko-manager" | "bp-station";
+export type AlarmNoncePurpose = AlarmKeyUsage;
 
-/** 受理する purpose の正本。 */
-const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = [
-  "login",
-  "kiosk",
-  "tenko-manager",
-  "bp-station",
-];
+/** 受理する purpose の正本 (= `AlarmKeyUsage` と同じ配列)。 */
+export const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = ALARM_KEY_USAGES;
 
 /** nonce の TTL (秒)。両エンドポイントの `expires_in` と一致させる。 */
 export const ALARM_NONCE_TTL_SEC = 60;
@@ -53,7 +49,8 @@ const NONCE_KV_PREFIX = "devnonce:";
 
 export interface AlarmNonceRecord {
   purpose: AlarmNoncePurpose;
-  /** device-login (purpose=login) の nonce だけが持つ。消費側で完全一致を見る。 */
+  /** redirect_uri を伴う nonce だけが持つ (現状は未使用の口のみが渡していた。
+   *  消費側で完全一致を見る仕組み自体は汎用なので残す)。 */
   redirect_uri?: string;
   /** 失効時刻 (unix 秒)。KV の TTL に加えて消費時にも見る。 */
   exp: number;
