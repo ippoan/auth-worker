@@ -43,14 +43,14 @@ branches = true
 path = "src/lib/access-logout.ts"
 branches = true
 
-# issue #522: ed25519 署名検証 (警告デバイス device-login)。長さ検査を緩めると
-# 32/64 バイト以外の入力を WebCrypto に渡すことになり、fail-closed の前提が崩れる。
+# issue #522, #551: ed25519 署名検証 (警告デバイス VoiceS3R の nonce 署名)。長さ検査を
+# 緩めると 32/64 バイト以外の入力を WebCrypto に渡すことになり、fail-closed の前提が崩れる。
 [[files]]
 path = "src/lib/ed25519.ts"
 branches = true
 
-# issue #522: Google / device-login 共通のログイン後段 (ACL 2 段 → join → cookie/
-# fragment 配布)。ここが緩むと org/app ACL のどちらかが素通りする。
+# issue #522: ログイン後段の共通処理 (ACL 2 段 → join → cookie/fragment 配布)。
+# ここが緩むと org/app ACL のどちらかが素通りする。
 [[files]]
 path = "src/lib/finish-login.ts"
 branches = true
@@ -86,16 +86,10 @@ branches = true
 path = "src/handlers/alarm-key.ts"
 branches = true
 
-# issue #522: 警告デバイス device-login (nonce 発行 + ed25519 署名検証)。
-# nonce 再利用防止・redirect_uri 完全一致・revoked 判定のどれかが緩むと
-# 「他人の登録済み鍵で任意 redirect_uri に管理者 session を発行できる」経路になる。
-[[files]]
-path = "src/handlers/device-login.ts"
-branches = true
-
-# Refs #551: 警告デバイスの署名で短命の端末 JWT (device-kiosk) を返す口と、
-# device-login と共有する nonce 発行・消費 / 署名検証。purpose の照合・nonce の
+# Refs #551, ippoan/alc-app#353: 警告デバイスの署名で短命の端末 JWT
+# (device-kiosk 等) を返す口の nonce 発行・消費 / 署名検証。purpose の照合・nonce の
 # single-use・revoked 判定は分岐 1 つずつなので、未検証の分岐を残さない。
+# (旧・管理者ログイン専用の用途とその口は本番で未使用だったため畳んだ)
 [[files]]
 path = "src/handlers/device-alarm-token.ts"
 branches = true

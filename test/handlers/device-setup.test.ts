@@ -175,13 +175,13 @@ describe("handleDeviceSetupPage", () => {
       m[1],
       m[2],
     ]);
-    // registry の role を持つ機種が、キー順 (= 先頭が既定選択の cores3) で
+    // registry の pairRole を持つ機種が、キー順 (= 先頭が既定選択の cores3) で
     // そのまま並ぶこと。#508 で timecard を足したとき、ハードコードだった
-    // ここだけ追随しなかった。role を持たない機種 (血圧測定台・警告デバイス) は
+    // ここだけ追随しなかった。pairRole を持たない機種 (血圧測定台・警告デバイス) は
     // credential を発行しないので select には出ない (Refs #353)
     expect(options).toEqual(
       Object.entries(DEVICE_KINDS)
-        .filter(([, k]) => k.role)
+        .filter(([, k]) => k.pairRole)
         .map(([name, k]) => [name, k.display]),
     );
     expect(options).toContainEqual(["timecard", "NFC タイムカード端末"]);

@@ -4,18 +4,19 @@
  *
  * VoiceS3R は ed25519 の鍵対を機体内で作り、**公開鍵だけ**を USB 経由でここに
  * 登録する (秘密鍵は機体から一切出ない)。登録された公開鍵は「管理者が
- * VoiceS3R を USB で繋いでいる」ことを示す 2 要素目の認証に使う — ログイン
- * (nonce 署名 / device-login) は次の issue (この record の形を渡す)。
+ * VoiceS3R を USB で繋いでいる」ことを示す 2 要素目の認証に使う。
  *
  *   POST /device/setup/alarm-key         — {pubkey, label, usage} → 登録
  *   GET  /device/setup/alarm-keys        — operator の tenant の一覧
  *   POST /device/setup/alarm-key/revoke  — {fingerprint} → 失効 (削除しない)
  *
- * 鍵は登録時に用途 (`usage`) を 1 つだけ持つ。`admin-login` は `/auth/device-login`
- * (VoiceS3R)、`kiosk` は `/device/alarm-token` (CoreS3 の運行者端末)、
- * `tenko-manager` は同じく `/device/alarm-token` (運行管理者席の VoiceS3R)、
- * `bp-station` も同じく `/device/alarm-token` (血圧測定台の VoiceS3R) でだけ
- * 受け付ける (照合は `lib/alarm-nonce.ts::verifyAlarmSignature` の 1 か所)。
+ * 鍵は登録時に用途 (`usage`) を 1 つだけ持つ。`kiosk` は `/device/alarm-token`
+ * (CoreS3 の運行者端末)、`tenko-manager` は同じく `/device/alarm-token`
+ * (運行管理者席の VoiceS3R)、`bp-station` も同じく `/device/alarm-token`
+ * (血圧測定台の VoiceS3R) でだけ受け付ける (照合は
+ * `lib/alarm-nonce.ts::verifyAlarmSignature` の 1 か所)。管理者 session を出す
+ * 旧用途 (ブラウザ経由の管理者ログイン口) は本番で未使用だったため畳んだ
+ * (Refs ippoan/alc-app#353)。
  *
  * KV (AUTH_CONFIG):
  *   `alarmkey:<fingerprint>`   → AlarmKeyRecord
@@ -40,19 +41,16 @@ function jsonNoStore(body: unknown, status = 200): Response {
 }
 
 /**
- * 鍵の用途。`admin-login` = device-login、`kiosk` / `tenko-manager` / `bp-station` =
- * alarm-token。1 鍵 1 用途 — 用途が違えば署名検証の時点で落ちるので、キオスクの鍵で
- * 運行管理者の JWT は出せない (Refs ippoan/alc-app#337)。
+ * 鍵の用途。すべて `/device/alarm-token` 向け (`kiosk` = 運行者端末、
+ * `tenko-manager` = 運行管理者席、`bp-station` = 血圧測定台)。1 鍵 1 用途 —
+ * 用途が違えば署名検証の時点で落ちるので、キオスクの鍵で運行管理者の JWT は
+ * 出せない (Refs ippoan/alc-app#337)。**`AlarmNoncePurpose`
+ * (`lib/alarm-nonce.ts`) と同じ語彙** (Refs ippoan/alc-app#353)。
  */
-export type AlarmKeyUsage = "admin-login" | "kiosk" | "tenko-manager" | "bp-station";
+export type AlarmKeyUsage = "kiosk" | "tenko-manager" | "bp-station";
 
 /** 受理する用途の正本 (一覧・表示順もここに揃える)。 */
-const ALARM_KEY_USAGES: ReadonlyArray<AlarmKeyUsage> = [
-  "admin-login",
-  "kiosk",
-  "tenko-manager",
-  "bp-station",
-];
+export const ALARM_KEY_USAGES: ReadonlyArray<AlarmKeyUsage> = ["kiosk", "tenko-manager", "bp-station"];
 
 function isAlarmKeyUsage(value: unknown): value is AlarmKeyUsage {
   return typeof value === "string" && (ALARM_KEY_USAGES as ReadonlyArray<string>).includes(value);

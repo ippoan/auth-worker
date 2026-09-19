@@ -12,31 +12,29 @@
  *   3. `POST /device/alarm-token` `{nonce, pubkey, sig, usage?}`
  *        → `{access_token, token_type, expires_in, tenant_id}` (`/device/token` と同じ形)
  *
- * **用途 (usage) が role を決める** (`ALARM_TOKEN_USAGES`、Refs ippoan/alc-app#337):
+ * **用途 (usage) が role を決める** (Refs ippoan/alc-app#337):
  *
- *   | usage          | 誰の席か       | nonce purpose  | JWT の role            |
- *   |----------------|----------------|----------------|------------------------|
- *   | `kiosk` (既定) | 運行者端末     | `kiosk`        | `device-kiosk`         |
- *   | `tenko-manager`| 運行管理者席   | `tenko-manager`| `device-tenko-manager` |
- *   | `bp-station`   | 血圧測定台     | `bp-station`   | `device-bp-station`    |
+ *   | usage           | 誰の席か     | JWT の role             |
+ *   |-----------------|--------------|--------------------------|
+ *   | `kiosk` (既定)  | 運行者端末   | `device-kiosk`           |
+ *   | `tenko-manager` | 運行管理者席 | `device-tenko-manager`   |
+ *   | `bp-station`    | 血圧測定台   | `device-bp-station`      |
  *
- * **usage は「どの鍵を受け付けるか」と「何の role を出すか」を 1 つの表で同時に決める。**
- * 鍵 (`alarmkey:<fp>`) 側の `usage` と一致しなければ署名検証の時点で落ちるので、
+ * **3 用途とも role は `device-<usage>` の 1:1 対応**なので、対応表は持たず
+ * `roleForUsage` で計算する (Refs ippoan/alc-app#353。以前は管理者ログイン用途
+ * (ブラウザ経由、席ではなく口を表す別軸) が混ざっていたため対応表が要ったが、
+ * 本番で未使用だったため畳んだ — `AlarmKeyUsage` = `AlarmNoncePurpose` = この口が
+ * 受け付ける用途、の 3 つが完全に同じ語彙になった)。usage は nonce の purpose にもそのまま
+ * 使う。鍵 (`alarmkey:<fp>`) 側の `usage` と一致しなければ署名検証の時点で落ちるので、
  * **キオスクの鍵 (usage=kiosk) から運行管理者の role は出ない** — nonce の purpose も
  * 用途ごとに分けてあり、運行者端末向けに出した nonce への署名も使い回せない。
  * `usage` 省略時は `kiosk` (既存 CoreS3 ファーム / alc-app との後方互換)。
  *
  * JWT は `mintDeviceJwt` そのもの (aud=device、sub=`alarm:<fp>`、tenant_id=鍵のテナント、
- * role=上の表)。`/device-data-proxy` のその role の許可表をそのまま通り、device record を
- * 引く口 (`/device/claim-ticket` 等) は record が無いので通らない。
+ * role=`roleForUsage(usage)`)。`/device-data-proxy` のその role の許可表をそのまま通り、
+ * device record を引く口 (`/device/claim-ticket` 等) は record が無いので通らない。
  *
- * `/auth/device-login` (#522) と nonce・署名検証を共有するが、こちらは管理者 session を
- * 作らない。ログイン用の nonce も用途 `admin-login` の鍵もここでは使えない (Refs #554) —
- * 運行管理者席にブラウザ JWT を出さないのがこの口を使う理由そのもの
- * (`device-login` は `role: "admin"` のブラウザ JWT を出し、alc-app の顔認証要件を
- * 迂回してしまう。ippoan/alc-app#337 の却下案)。
- *
- * 失敗は device-login と同じく固定の 401 (どの段で落ちたかを外部に見せない)。
+ * 失敗は固定の 401 (どの段で落ちたかを外部に見せない)。
  * rate limit だけ 429 で区別する。ブラウザから直接 fetch されるので CORS を付ける。
  */
 import type { Env } from "../index";
@@ -47,56 +45,40 @@ import {
   issueAlarmNonce,
   consumeAlarmNonce,
   verifyAlarmSignature,
-  type AlarmNoncePurpose,
 } from "../lib/alarm-nonce";
-import {
-  mintDeviceJwt,
-  DEVICE_ROLE_KIOSK,
-  DEVICE_ROLE_TENKO_MANAGER,
-  DEVICE_ROLE_BP_STATION,
-} from "../lib/device";
+import { mintDeviceJwt } from "../lib/device";
+import { ALARM_KEY_USAGES, type AlarmKeyUsage } from "./alarm-key";
 
 /**
- * この口が受け付ける用途 → (nonce の purpose, mint する role) の正本。
- *
- * **ここが唯一の対応表**。鍵の照合 (`verifyAlarmSignature` の `usage`)・nonce の照合
- * (`consumeAlarmNonce` の purpose)・mint する role の 3 つを同じ 1 エントリから引くので、
- * 「キオスクの鍵で運行管理者の role が出る」取り違えが構造的に起きない。
- * 用途を足す時はこの表に 1 行足す (`AlarmKeyUsage` / `AlarmNoncePurpose` にも同名を足す)。
- *
- * `admin-login` は意図して入れない — あれは `/auth/device-login` (ブラウザ session) の用途。
+ * usage → 端末 JWT の role。`ALARM_KEY_USAGES` の 3 用途とも `device-<usage>` の
+ * 1:1 対応 (Refs ippoan/alc-app#353。`DEVICE_ROLE_KIOSK` 等の定数値と一致することは
+ * テストで固定する)。
  */
-const ALARM_TOKEN_USAGES = {
-  kiosk: { noncePurpose: "kiosk", role: DEVICE_ROLE_KIOSK },
-  "tenko-manager": { noncePurpose: "tenko-manager", role: DEVICE_ROLE_TENKO_MANAGER },
-  "bp-station": { noncePurpose: "bp-station", role: DEVICE_ROLE_BP_STATION },
-} as const satisfies Readonly<Record<string, { noncePurpose: AlarmNoncePurpose; role: string }>>;
-
-/** `ALARM_TOKEN_USAGES` の key (= この口で使える `AlarmKeyUsage` の部分集合)。 */
-type AlarmTokenUsage = keyof typeof ALARM_TOKEN_USAGES;
+export function roleForUsage(usage: AlarmKeyUsage): string {
+  return `device-${usage}`;
+}
 
 /** 用途の既定 (既存 CoreS3 ファーム / alc-app は usage を送らない)。 */
-const DEFAULT_ALARM_TOKEN_USAGE: AlarmTokenUsage = "kiosk";
+const DEFAULT_ALARM_TOKEN_USAGE: AlarmKeyUsage = "kiosk";
 
 /**
- * 外部入力 (query / body) の usage を表の key に解決する。未指定・空は既定 (kiosk)、
- * 表に無い値は null (= 呼び出し側が拒否する。`admin-login` もここで落ちる)。
+ * 外部入力 (query / body) の usage を `AlarmKeyUsage` に解決する。未指定・空は既定
+ * (kiosk)、`ALARM_KEY_USAGES` に無い値は null (= 呼び出し側が拒否する。fail-closed。
+ * 畳んだ旧・管理者ログイン用途もここで落ちる)。
  */
-function resolveAlarmTokenUsage(raw: unknown): AlarmTokenUsage | null {
+function resolveAlarmTokenUsage(raw: unknown): AlarmKeyUsage | null {
   if (raw === undefined || raw === null || raw === "") return DEFAULT_ALARM_TOKEN_USAGE;
   if (typeof raw !== "string") return null;
-  return Object.prototype.hasOwnProperty.call(ALARM_TOKEN_USAGES, raw)
-    ? (raw as AlarmTokenUsage)
-    : null;
+  return (ALARM_KEY_USAGES as ReadonlyArray<string>).includes(raw) ? (raw as AlarmKeyUsage) : null;
 }
 
 /** 端末 JWT の寿命 (秒)。 */
 export const ALARM_TOKEN_TTL_SEC = 900;
-/** alarm-nonce の per-IP rate limit (device-nonce と同じ 30/min)。 */
+/** alarm-nonce の per-IP rate limit。 */
 const NONCE_RATE_LIMIT_PER_MINUTE = 30;
 /** alarm-token の per-IP rate limit。 */
 const TOKEN_IP_RATE_LIMIT_PER_MINUTE = 30;
-/** alarm-token の鍵 (fingerprint) ごとの rate limit (device-login と同じ 10/min)。 */
+/** alarm-token の鍵 (fingerprint) ごとの rate limit。 */
 const TOKEN_KEY_RATE_LIMIT_PER_MINUTE = 10;
 
 /** 全失敗ケースで返す固定文言 (どの段で落ちたか外部に漏らさない)。 */
@@ -136,7 +118,7 @@ function clientIp(request: Request): string {
 
 /**
  * `GET /device/alarm-nonce[?usage=…]` — その用途の purpose を持つ nonce を発行する。
- * `usage` 省略時は `kiosk` (後方互換)。表に無い用途は 400。
+ * `usage` 省略時は `kiosk` (後方互換)。`ALARM_KEY_USAGES` に無い用途は 400。
  */
 export async function handleDeviceAlarmNonce(request: Request, env: Env): Promise<Response> {
   const okRate = await checkAndBumpRateLimit(
@@ -153,7 +135,8 @@ export async function handleDeviceAlarmNonce(request: Request, env: Env): Promis
   // (呼び出し側の綴り間違いを「鍵が違う」と誤診させない)。
   if (!usage) return jsonNoStoreCors({ error: "invalid_usage" }, 400);
 
-  const nonce = await issueAlarmNonce(env, { purpose: ALARM_TOKEN_USAGES[usage].noncePurpose });
+  // nonce の purpose は usage と同じ値 (`AlarmNoncePurpose` = `AlarmKeyUsage`)。
+  const nonce = await issueAlarmNonce(env, { purpose: usage });
   return jsonNoStoreCors({ nonce, expires_in: ALARM_NONCE_TTL_SEC });
 }
 
@@ -180,14 +163,14 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   if (bpBondedRaw !== undefined && typeof bpBondedRaw !== "boolean") return invalidAlarmToken();
   const bpBonded = bpBondedRaw as boolean | undefined;
 
-  // 用途。ここで決まった 1 エントリから nonce の purpose・鍵の usage・mint する role を
-  // 引くので、3 つがズレようがない (表に無い用途は他の失敗と同じ 401)。
+  // 用途。ここで決まった usage を nonce の purpose・鍵の usage・mint する role
+  // (`roleForUsage`) の 3 つにそのまま使うので、3 つがズレようがない
+  // (`ALARM_KEY_USAGES` に無い用途は他の失敗と同じ 401)。
   const usage = resolveAlarmTokenUsage(body.usage);
   if (!usage) return invalidAlarmToken();
-  const usageConfig = ALARM_TOKEN_USAGES[usage];
 
   // a. nonce を消費 (single-use、この用途の purpose で発行したものだけ)。
-  if (!(await consumeAlarmNonce(env, nonce, usageConfig.noncePurpose))) return invalidAlarmToken();
+  if (!(await consumeAlarmNonce(env, nonce, usage))) return invalidAlarmToken();
 
   // b. 登録済み・未失効・**用途が一致する**鍵で署名を検証する (署名対象は nonce + bpBonded、
   //    `verifyAlarmSignature` 内の `buildAlarmSignedMessage` が組み立て直す)。
@@ -197,7 +180,7 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   const { fingerprint, record } = verified;
 
   // c. 鍵ごとの rate limit。署名検証の後に置く (署名できない者に他人の鍵の枠を
-  //    消費させない)。device-login の枠とも、他の用途の枠とも subject を分ける。
+  //    消費させない)。他の用途の枠とも subject を分ける。
   const okKeyRate = await checkAndBumpGrantRateLimit(
     env,
     `alarm-${usage}:${fingerprint}`,
@@ -213,7 +196,7 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   try {
     token = await mintDeviceJwt(
       env,
-      { device_id: `alarm:${fingerprint}`, tenant_id: record.tenant_id, role: usageConfig.role },
+      { device_id: `alarm:${fingerprint}`, tenant_id: record.tenant_id, role: roleForUsage(usage) },
       Math.floor(Date.now() / 1000),
       ALARM_TOKEN_TTL_SEC,
       { bpBonded },

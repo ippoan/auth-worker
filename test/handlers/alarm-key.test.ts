@@ -179,6 +179,7 @@ describe("handleAlarmKeyRegister", () => {
     ["usage が無い", undefined],
     ["空文字", ""],
     ["未知の値", "admin"],
+    ["畳んだ旧用途 (Refs ippoan/alc-app#353)", "admin-login"],
     ["大文字違い", "KIOSK"],
     ["文字列でない", 1],
     ["配列 (集合にしない)", ["kiosk"]],
@@ -196,7 +197,7 @@ describe("handleAlarmKeyRegister", () => {
     expect(Object.keys(kv._data).filter((k) => k.startsWith("alarmkey"))).toEqual([]);
   });
 
-  it.each(["admin-login", "kiosk", "tenko-manager", "bp-station"])(
+  it.each(["kiosk", "tenko-manager", "bp-station"])(
     "registers with usage=%s and stores it on the record",
     async (usage) => {
       const { env, kv } = makeEnvWithKv();
@@ -245,11 +246,11 @@ describe("handleAlarmKeyList", () => {
     expect(data.keys[0]).not.toHaveProperty("pubkey");
   });
 
-  it("shows each key's usage (admin-login / kiosk)", async () => {
+  it("shows each key's usage (tenko-manager / kiosk)", async () => {
     const env = makeEnv();
     const headers = await withOpCookieAndOrigin();
     for (const [seed, label, usage] of [
-      [16, "voice", "admin-login"],
+      [16, "voice", "tenko-manager"],
       [17, "cores3", "kiosk"],
     ] as const) {
       const reg = await handleAlarmKeyRegister(
@@ -261,7 +262,7 @@ describe("handleAlarmKeyList", () => {
     const res = await handleAlarmKeyList(getReq("/device/setup/alarm-keys", headers), env);
     const data = (await res.json()) as { keys: Array<{ label: string; usage: string }> };
     expect(data.keys.map((k) => [k.label, k.usage])).toEqual([
-      ["voice", "admin-login"],
+      ["voice", "tenko-manager"],
       ["cores3", "kiosk"],
     ]);
   });

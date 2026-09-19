@@ -258,6 +258,21 @@ describe("handleGoogleCallback", () => {
     expect(location).toContain("lw_callback=1");
   });
 
+  it("fragment fallback keeps an existing lw_callback query param as-is (doesn't double-set it)", async () => {
+    const redirectWithCallback = "https://app1.test.example/page?lw_callback=1";
+    mockVerify.mockResolvedValue({ redirect_uri: redirectWithCallback });
+    mockIsAllowed.mockReturnValue(true);
+    stubLoginFetches(userResponse());
+    const req = new Request(
+      "https://auth-staging.m-tama-ramu.workers.dev/oauth/google/callback?code=abc&state=valid",
+    );
+    const res = await handleGoogleCallback(req, env);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("Location")!;
+    // 既存の lw_callback=1 を保った上での 1 個だけ (二重付与しない)。
+    expect(location.match(/lw_callback=1/g)?.length).toBe(1);
+  });
+
   it("302 redirects to /join/:slug/done on join flow", async () => {
     mockVerify.mockResolvedValue({
       redirect_uri: "https://app1.test.example/page",
@@ -342,6 +357,21 @@ describe("handleGoogleCallback", () => {
     const res = await handleGoogleCallback(req, aclEnv);
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("許可されていません");
+  });
+
+  it("403 when APP_TENANT_ACL denies the tenant for this app (finishLogin's per-app ACL layer)", async () => {
+    const appAclEnv = createMockEnv({
+      APP_TENANT_ACL: JSON.stringify({
+        apps: { "https://app1.test.example": ["some-other-tenant"] },
+      }),
+    });
+    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
+    mockIsAllowed.mockReturnValue(true);
+    stubLoginFetches(userResponse());
+    const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
+    const res = await handleGoogleCallback(req, appAclEnv);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("アクセスできません");
   });
 
   it("allows redirect when tenant IS in TENANT_ACL for an ohishi-exp target", async () => {

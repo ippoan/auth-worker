@@ -6,13 +6,24 @@ import {
   verifyAlarmSignature,
   buildAlarmSignedMessage,
   ALARM_NONCE_TTL_SEC,
+  ALARM_NONCE_PURPOSES,
 } from "../../src/lib/alarm-nonce";
-import type { AlarmKeyUsage } from "../../src/handlers/alarm-key";
+import { ALARM_KEY_USAGES, type AlarmKeyUsage } from "../../src/handlers/alarm-key";
 import { createMockEnv, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 const REDIRECT_URI = "https://app1.test.example/page";
 const NONCE = "0123456789abcdef0123456789abcdef";
+
+// Refs ippoan/alc-app#353: `AlarmKeyUsage` (鍵の usage) と `AlarmNoncePurpose`
+// (nonce の purpose) は同じ語彙のはずが、以前は別々に手書きしていて
+// `admin-login` (usage) と `login` (purpose) が食い違っていた。配列の一致を
+// 実行時に検査して固定する (型だけでは足し忘れが出ない)。
+describe("AlarmKeyUsage と AlarmNoncePurpose の語彙", () => {
+  it("ALARM_KEY_USAGES と ALARM_NONCE_PURPOSES が一致する", () => {
+    expect(ALARM_NONCE_PURPOSES).toEqual(ALARM_KEY_USAGES);
+  });
+});
 
 function kv(env: Env): MockKV {
   return env.AUTH_CONFIG as unknown as MockKV;
@@ -35,11 +46,11 @@ describe("issueAlarmNonce", () => {
     expect(ALARM_NONCE_TTL_SEC).toBe(60);
   });
 
-  it("login: redirect_uri も一緒に積む", async () => {
+  it("redirect_uri 付きでも積める (purpose は問わない)", async () => {
     const env = createMockEnv();
-    const nonce = await issueAlarmNonce(env, { purpose: "login", redirectUri: REDIRECT_URI });
+    const nonce = await issueAlarmNonce(env, { purpose: "kiosk", redirectUri: REDIRECT_URI });
     const stored = JSON.parse(kv(env)._data[`devnonce:${nonce}`]!) as Record<string, unknown>;
-    expect(stored.purpose).toBe("login");
+    expect(stored.purpose).toBe("kiosk");
     expect(stored.redirect_uri).toBe(REDIRECT_URI);
   });
 });
@@ -47,19 +58,19 @@ describe("issueAlarmNonce", () => {
 describe("consumeAlarmNonce", () => {
   it("purpose が一致すれば record を返し、KV から消す (single-use)", async () => {
     const env = createMockEnv();
-    const nonce = await issueAlarmNonce(env, { purpose: "login", redirectUri: REDIRECT_URI });
+    const nonce = await issueAlarmNonce(env, { purpose: "kiosk", redirectUri: REDIRECT_URI });
 
-    const first = await consumeAlarmNonce(env, nonce, "login");
-    expect(first).toMatchObject({ purpose: "login", redirect_uri: REDIRECT_URI });
+    const first = await consumeAlarmNonce(env, nonce, "kiosk");
+    expect(first).toMatchObject({ purpose: "kiosk", redirect_uri: REDIRECT_URI });
     expect(kv(env)._data[`devnonce:${nonce}`]).toBeUndefined();
 
-    expect(await consumeAlarmNonce(env, nonce, "login")).toBeNull();
+    expect(await consumeAlarmNonce(env, nonce, "kiosk")).toBeNull();
   });
 
   it("purpose が違えば null (その nonce は消費済みになる)", async () => {
     const env = createMockEnv();
     const nonce = await issueAlarmNonce(env, { purpose: "kiosk" });
-    expect(await consumeAlarmNonce(env, nonce, "login")).toBeNull();
+    expect(await consumeAlarmNonce(env, nonce, "tenko-manager")).toBeNull();
     expect(kv(env)._data[`devnonce:${nonce}`]).toBeUndefined();
     expect(await consumeAlarmNonce(env, nonce, "kiosk")).toBeNull();
   });
@@ -74,7 +85,7 @@ describe("consumeAlarmNonce", () => {
     const nonce = "d".repeat(32);
     kv(env)._data[`devnonce:${nonce}`] = JSON.stringify(record);
     expect(await consumeAlarmNonce(env, nonce, "kiosk")).toBeNull();
-    expect(await consumeAlarmNonce(env, nonce, "login")).toBeNull();
+    expect(await consumeAlarmNonce(env, nonce, "tenko-manager")).toBeNull();
   });
 
   it("record が無い / JSON として壊れている → null", async () => {
@@ -109,7 +120,7 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
     return { pubkeyB64: pubRaw.toString("base64url"), sigB64: sig.toString("base64url"), fp };
   }
 
-  it.each<AlarmKeyUsage>(["admin-login", "kiosk"])("用途 %s が一致すれば鍵を返す", async (usage) => {
+  it.each<AlarmKeyUsage>(["kiosk", "tenko-manager"])("用途 %s が一致すれば鍵を返す", async (usage) => {
     const env = createMockEnv();
     const { pubkeyB64, sigB64, fp } = seedSignedKey(env, usage);
     const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage });
@@ -118,8 +129,8 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
   });
 
   it.each<[AlarmKeyUsage, AlarmKeyUsage]>([
-    ["admin-login", "kiosk"],
-    ["kiosk", "admin-login"],
+    ["kiosk", "tenko-manager"],
+    ["tenko-manager", "kiosk"],
   ])("用途 %s の鍵を %s の口で使うと null", async (registered, requested) => {
     const env = createMockEnv();
     const { pubkeyB64, sigB64 } = seedSignedKey(env, registered);
@@ -128,7 +139,7 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
     ).toBeNull();
   });
 
-  it.each<AlarmKeyUsage>(["admin-login", "kiosk"])(
+  it.each<AlarmKeyUsage>(["kiosk", "tenko-manager"])(
     "usage を持たない record は %s の口でも null (fail-closed)",
     async (usage) => {
       const env = createMockEnv();
@@ -142,6 +153,56 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
     const { pubkeyB64, sigB64 } = seedSignedKey(env, "admin");
     expect(
       await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk" }),
+    ).toBeNull();
+  });
+
+  it("pubkey/sig が base64url として不正 (decode throws) は null", async () => {
+    const env = createMockEnv();
+    seedSignedKey(env, "kiosk");
+    expect(
+      await verifyAlarmSignature(env, {
+        pubkeyB64: "!!!not valid base64!!!",
+        sigB64: "y",
+        nonce: NONCE,
+        usage: "kiosk",
+      }),
+    ).toBeNull();
+  });
+
+  it("decode 後の pubkey/sig の長さが不正 (32B/64B でない) は null", async () => {
+    const env = createMockEnv();
+    seedSignedKey(env, "kiosk");
+    expect(
+      await verifyAlarmSignature(env, {
+        pubkeyB64: Buffer.from(new Uint8Array(10)).toString("base64url"), // 正しい base64url、長さが違う
+        sigB64: Buffer.from(new Uint8Array(64)).toString("base64url"),
+        nonce: NONCE,
+        usage: "kiosk",
+      }),
+    ).toBeNull();
+  });
+
+  it("登録済み record の pubkey が壊れている (decode throws) は null", async () => {
+    const env = createMockEnv();
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+    const pubDer = publicKey.export({ format: "der", type: "spki" });
+    const pubRaw = pubDer.subarray(pubDer.length - 32);
+    const fp = crypto.createHash("sha256").update(pubRaw).digest("hex").slice(0, 16);
+    kv(env)._data[`alarmkey:${fp}`] = JSON.stringify({
+      pubkey: "!!!corrupt!!!",
+      tenant_id: "tenant-1",
+      label: "test",
+      usage: "kiosk",
+      created_at: 1_700_000_000,
+    });
+    const sig = crypto.sign(null, Buffer.from(NONCE, "ascii"), privateKey);
+    expect(
+      await verifyAlarmSignature(env, {
+        pubkeyB64: pubRaw.toString("base64url"),
+        sigB64: sig.toString("base64url"),
+        nonce: NONCE,
+        usage: "kiosk",
+      }),
     ).toBeNull();
   });
 });

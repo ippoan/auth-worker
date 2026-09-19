@@ -117,7 +117,6 @@ import {
   handleAlarmKeyList,
   handleAlarmKeyRevoke,
 } from "./handlers/alarm-key";
-import { handleDeviceNonce, handleDeviceLogin } from "./handlers/device-login";
 import { handleDeviceAlarmNonce, handleDeviceAlarmToken } from "./handlers/device-alarm-token";
 import { handlePrintTestPdf } from "./handlers/print-test";
 import { handleMcpAuthCallback } from "./handlers/mcp-auth-callback";
@@ -669,14 +668,11 @@ export default {
             return await handleGoogleRedirect(request, env);
           case "/oauth/google/callback":
             return await handleGoogleCallback(request, env);
-          // 警告デバイス (VoiceS3R) の ed25519 署名で管理者 session を発行する
-          // 2 系統目のログイン (Refs #522)。
-          case "/auth/device-nonce":
-            return await handleDeviceNonce(request, env);
-          case "/auth/device-login":
-            return await handleDeviceLogin(request, env);
-          // 同じ署名で、管理者 session ではなく短命の端末 JWT (device-kiosk) を
-          // 出す口の nonce (Refs #551)。token は POST 側の /device/alarm-token。
+          // 警告デバイス (VoiceS3R) の ed25519 署名で短命の端末 JWT
+          // (device-kiosk 等) を出す口の nonce (Refs #551)。token は POST 側の
+          // /device/alarm-token。**管理者 session を出す旧用途 (ブラウザ経由の
+          // 管理者ログイン口、/auth/device-login) は使われていなかったため
+          // 畳んだ (Refs ippoan/alc-app#353)。**
           case "/device/alarm-nonce":
             return await handleDeviceAlarmNonce(request, env);
           case "/oauth/egov/redirect":
