@@ -120,9 +120,9 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   //
   // **GET だけ。** 受け口に `POST` は無い (取り込み直しは別の口の仕事)
   { path: "/api/kintai/unko-gaps", method: "GET" },
-  // 乗務員×暦日で拘束分数を SUM した読み出し口 (ohishi-exp/rust-ichibanboshi の
-  // day-parts、兄弟タスク #c1121-12)。最低賃金の検証タブで「同じ暦日に勤務が
-  // 2 本重なっていないか」を見るために使う。
+  // 乗務員×暦日で拘束分数を SUM した読み出し口 (受け口は ohishi-exp/rust-ichibanboshi の
+  // `src/routes/day_parts.rs`、Refs ohishi-exp/nuxt-dtako-admin#1123)。最低賃金の
+  // 検証タブで「同じ暦日に勤務が 2 本重なっていないか」を見るために使う。
   //
   // **`day-summaries` と同じ根拠で通している。** 受け口
   // (`src/routes/day_parts.rs`) は `X-Tenant-ID` を読まず、読み先は
