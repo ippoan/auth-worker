@@ -20,6 +20,7 @@ const DAY_SUMMARIES = "/ichibanboshi-proxy/api/kintai/day-summaries";
 const STALE_MONTHS = "/ichibanboshi-proxy/api/kintai/stale-months";
 const UNKO_GAPS = "/ichibanboshi-proxy/api/kintai/unko-gaps";
 const DAY_PARTS = "/ichibanboshi-proxy/api/kintai/day-parts";
+const SHIFT_OVERLAPS = "/ichibanboshi-proxy/api/kintai/shift-overlaps";
 const WAGE_SNAPSHOT = "/ichibanboshi-proxy/api/kintai/wage-snapshot";
 const WAGE_RANGE = "/ichibanboshi-proxy/api/kintai/wage-range";
 
@@ -252,6 +253,23 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
   it("**拘束分数サマリも読むだけ。** GET 以外は 403 (受け口に POST は無い)", async () => {
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
       const res = await handleIchibanboshiProxy(req(DAY_PARTS, { method }), env());
+      expect(res.status, method).toBe(403);
+    }
+  });
+
+  it("**勤務の時間帯の重なりも GET を query ごと通す** (最低賃金タブの条件3 用)", async () => {
+    const seen = captureFetch();
+    const res = await handleIchibanboshiProxy(req(`${SHIFT_OVERLAPS}?month=2026-06`), env());
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(`${ORIGIN}/api/kintai/shift-overlaps?month=2026-06`);
+    const h = seen[0]!.init.headers as Record<string, string>;
+    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+  });
+
+  it("**勤務の時間帯の重なりも読むだけ。** GET 以外は 403 (受け口に POST は無い)", async () => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const res = await handleIchibanboshiProxy(req(SHIFT_OVERLAPS, { method }), env());
       expect(res.status, method).toBe(403);
     }
   });
