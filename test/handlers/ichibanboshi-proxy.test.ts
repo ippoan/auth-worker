@@ -20,6 +20,7 @@ const DAY_SUMMARIES = "/ichibanboshi-proxy/api/kintai/day-summaries";
 const STALE_MONTHS = "/ichibanboshi-proxy/api/kintai/stale-months";
 const UNKO_GAPS = "/ichibanboshi-proxy/api/kintai/unko-gaps";
 const SHIFT_OVERLAPS = "/ichibanboshi-proxy/api/kintai/shift-overlaps";
+const CHANGE_LOG = "/ichibanboshi-proxy/api/kintai/change-log";
 const WAGE_SNAPSHOT = "/ichibanboshi-proxy/api/kintai/wage-snapshot";
 const WAGE_RANGE = "/ichibanboshi-proxy/api/kintai/wage-range";
 
@@ -252,6 +253,28 @@ describe("handleIchibanboshiProxy (ohishi-exp/rust-ichibanboshi#205 の 04b)", (
   it("**勤務の時間帯の重なりも読むだけ。** GET 以外は 403 (受け口に POST は無い)", async () => {
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
       const res = await handleIchibanboshiProxy(req(SHIFT_OVERLAPS, { method }), env());
+      expect(res.status, method).toBe(403);
+    }
+  });
+
+  it("**取り込み後の変更記録も GET を query ごと通す** (訴訟用の準備ページ用)", async () => {
+    const seen = captureFetch();
+    const res = await handleIchibanboshiProxy(
+      req(`${CHANGE_LOG}?driver=1194&from=2026-01-01&to=2026-09-30`),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(
+      `${ORIGIN}/api/kintai/change-log?driver=1194&from=2026-01-01&to=2026-09-30`,
+    );
+    const h = seen[0]!.init.headers as Record<string, string>;
+    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+  });
+
+  it("**変更記録も読むだけ。** GET 以外は 403 (書くのは push の内部)", async () => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const res = await handleIchibanboshiProxy(req(CHANGE_LOG, { method }), env());
       expect(res.status, method).toBe(403);
     }
   });

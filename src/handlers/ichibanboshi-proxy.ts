@@ -71,6 +71,9 @@ const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
  *     勤務時間も金額も載らない (`rust-ichibanboshi` の `src/routes/stale_months.rs`)。
  *   - `unko-gaps` も同じ受け口の作りで、返すのは運行NO (22 桁) と乗務員CD。
  *     **識別子だけで勤務データではない** (`rust-ichibanboshi` の `src/routes/unko_gaps.rs`)。
+ *   - `change-log` も同じ受け口の作りで、返すのは乗務員CD・暦日・記録時刻と、その日の
+ *     打刻の前後 (`occurred_at` / `state` / `source` / `unko_no`) — 勤務の時刻であって
+ *     **金額は含まない** (`rust-ichibanboshi` の `src/routes/change_log.rs`)。
  *
  * **受け口がヘッダでテナントを決めるように変わったら、その entry をここから外すこと。**
  * この allowlist が安全なのは受け口の実装が設定 pin だからで、ヘッダ方式に倒れた瞬間に
@@ -131,6 +134,20 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   //
   // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)
   { path: "/api/kintai/shift-overlaps", method: "GET" },
+  // 取り込み後の変更記録を返す読み出し口 (受け口は ohishi-exp/rust-ichibanboshi#320 の
+  // `src/routes/change_log.rs`、Refs ohishi-exp/nuxt-dtako-admin#1133・受け側の relay route
+  // は ohishi-exp/nuxt-dtako-admin#1137)。訴訟用の準備ページから「打刻の取り込み後の
+  // 変更記録」を読むために使う。
+  //
+  // **`day-summaries` / `shift-overlaps` と同じ根拠で通している。** 受け口
+  // (`src/routes/change_log.rs`) は `X-Tenant-ID` を読まず、読み先は
+  // `[kintai_events] tenant_id` の設定 pin で固定される。返すのは乗務員CD・暦日・
+  // 記録時刻と、その日の打刻の前後 (`occurred_at` / `state` / `source` / `unko_no`) —
+  // 勤務の時刻であって **金額は含まない**。
+  //
+  // **GET だけ。** 受け口に `POST` は無い (記録を書くのは push の内部で、この口は
+  // 読むだけ)
+  { path: "/api/kintai/change-log", method: "GET" },
   // 賃金確定値の月次スナップショット (Refs ohishi-exp/nuxt-dtako-admin#677、
   // 受け口は ohishi-exp/rust-ichibanboshi#293)。
   //
