@@ -616,6 +616,36 @@ export async function handleDeviceSetupOta(request: Request, env: Env): Promise<
 }
 
 /**
+ * POST /device/setup/serial-ota — Vein Station (USB でキオスクにぶら下がる
+ * atoms3-timecard の `station` ビルド) のシリアル OTA をテナント内の全キオスクへ
+ * 一斉に指示する (Refs ippoan/alc-app-s3#279)。station 自体は LAN/Wi-Fi を
+ * 持たずこの worker の管理対象デバイス一覧にも出ないため、device_id は扱わず
+ * (`deviceCommandRequest` は使わない) recorder のテナント一斉合図
+ * `POST /tenants/:t/serial-ota` を叩くだけ。宛先の絞り込み (待機画面か・古い版かの
+ * 判定) は recorder/キオスク側の役割で、ここは tenant 単位の一斉合図を出すのみ。
+ * 結果は各キオスクの待機画面にだけ出るため、ここでは受け取った台数 (`sent`) を
+ * 返すのみでポーリングは無い。
+ */
+export async function handleDeviceSetupSerialOta(request: Request, env: Env): Promise<Response> {
+  const pre = await adminRequest(request, env);
+  if (pre instanceof Response) return pre;
+  if (isReadOnlyToken(pre.session)) return readOnlyTokenForbidden();
+  const res = await recorderFetch(
+    env,
+    `/tenants/${encodeURIComponent(pre.session.tenantId)}/serial-ota`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "timecard-station" }),
+    },
+  );
+  if (!res) return jsonNoStore({ error: "recorder_unconfigured" }, 503);
+  if (!res.ok) return jsonNoStore({ error: `recorder_${res.status}` }, 502);
+  const data = (await res.json()) as { sent?: number };
+  return jsonNoStore({ sent: data.sent ?? 0 });
+}
+
+/**
  * GET /device/setup/ota/:id — OTA 進捗の取得。デバイスが command_result として
  * push した最新の進捗 payload (`{phase, received, total}` / `{phase:"ok"}` /
  * `{phase:"error"}`) を返す。まだ何も無ければ 404 相当の `{phase:"pending"}`。
@@ -946,6 +976,11 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 バージョンを自動照会し、その機種の公開中の最新版と違えば「更新あり」を表示します。
 「再登録」は firmware の再インストール等で credential が消えたデバイスの復旧用です —
 デバイスを USB で接続してから押すと、その行のラベルのまま再発行・注入します (旧 credential は失効)。</p>
+<p class="muted" style="margin-top:1.5rem">Vein Station (キオスクに USB で繋がる計量ユニット、station
+ビルド) は LAN/Wi-Fi を持たないため一覧に出ません — 下のボタンで、テナント内の
+キオスクにつながった Vein Station へ USB 経由でまとめて最新版を書き込みます。</p>
+<p><button id="serial-ota-run">Vein Station を最新にする (USB 経由)</button>
+<span id="serial-ota-result" style="margin-left:.5rem"></span></p>
 <p id="latest" class="muted"></p>
 <p id="devices-status" class="muted">読み込み中...</p>
 <table id="devices" style="display:none">
@@ -1739,6 +1774,41 @@ async function queryVersion(deviceId, kind, verSpan, otaBtn, otaNote) {
     showUpdatable();
     return false;
   }
+}
+
+// Vein Station への一斉シリアル OTA。station は一覧に出ないため device_id を
+// 扱わず、テナント内の全キオスクへ合図するだけ (結果はキオスク画面側にのみ出る
+// のでここでは受け取った台数を表示して終わる。ポーリングは無い)。
+const serialOtaBtn = document.getElementById("serial-ota-run");
+const serialOtaResult = document.getElementById("serial-ota-result");
+if (serialOtaBtn) {
+  serialOtaBtn.addEventListener("click", async () => {
+    if (!confirm(
+      "テナント内のキオスクにつながった Vein Station を最新版にします。" +
+      "待機画面のキオスクから順に更新されます (1 台 1 分ほど)。よろしいですか",
+    )) return;
+    serialOtaBtn.disabled = true;
+    serialOtaResult.textContent = "送信中...";
+    try {
+      const res = await fetch(ISSUER + "/device/setup/serial-ota", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      });
+      if (!res.ok) {
+        serialOtaResult.textContent = "送信失敗: HTTP " + res.status;
+        return;
+      }
+      const { sent } = await res.json();
+      serialOtaResult.textContent = sent > 0
+        ? sent + " 台のキオスクに送りました"
+        : "受け取れるキオスクがありません (キオスクの点呼画面が開いていません)";
+    } catch (e) {
+      serialOtaResult.textContent = "送信エラー";
+    } finally {
+      serialOtaBtn.disabled = false;
+    }
+  });
 }
 
 // OTA を開始し、command id で進捗をポーリングして表示する。
