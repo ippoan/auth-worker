@@ -101,6 +101,7 @@ import {
   handleDeviceSetupList,
   handleDeviceSetupOta,
   handleDeviceSetupOtaStatus,
+  handleDeviceSetupSerialOta,
   handleDeviceSetupConnected,
   handleDeviceSetupEvents,
   handleDeviceSetupVersion,
@@ -960,6 +961,10 @@ export default {
           // OTA トリガ (cookie session → recorder の下り command)。POST。
           case "/device/setup/ota":
             return await handleDeviceSetupOta(request, env);
+          // Vein Station (USB 経由) のシリアル OTA をテナント内の全キオスクへ
+          // 一斉指示 (recorder の serial-ota API、Refs alc-app-s3#279)。POST。
+          case "/device/setup/serial-ota":
+            return await handleDeviceSetupSerialOta(request, env);
           // バージョン照会トリガ (recorder command {action:version})。POST。
           case "/device/setup/version":
             return await handleDeviceSetupVersion(request, env);

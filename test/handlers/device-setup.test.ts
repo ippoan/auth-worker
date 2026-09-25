@@ -5,6 +5,7 @@ import {
   handleDeviceSetupList,
   handleDeviceSetupOta,
   handleDeviceSetupOtaStatus,
+  handleDeviceSetupSerialOta,
   handleDeviceSetupConnected,
   handleDeviceSetupEvents,
   handleDeviceSetupVersion,
@@ -756,6 +757,119 @@ describe("handleDeviceSetupOta / handleDeviceSetupOtaStatus", () => {
       env,
     );
     expect(res.status).toBe(403);
+  });
+});
+
+describe("handleDeviceSetupSerialOta (Vein Station 一斉シリアル OTA, Refs alc-app-s3#279)", () => {
+  function mockRecorder(handler: (req: Request) => Response) {
+    const calls: Array<{ url: string; method: string; auth: string | null; body: string }> = [];
+    const fetcher = {
+      async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+        const req = new Request(input as string, init);
+        calls.push({
+          url: req.url,
+          method: req.method,
+          auth: req.headers.get("Authorization"),
+          body: init?.body ? String(init.body) : "",
+        });
+        return handler(req);
+      },
+    };
+    return { fetcher, calls };
+  }
+
+  it("正常系: recorder へ POST /tenants/:t/serial-ota を shared secret 付きで送り {sent} を返す", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ sent: 3 }), { status: 200 }),
+    );
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const res = await handleDeviceSetupSerialOta(
+      postJson("/device/setup/serial-ota", {}, { ...(await opCookie()), Origin: ISSUER }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sent: 3 });
+    expect(calls.length).toBe(1);
+    const call = calls[0]!;
+    expect(call.method).toBe("POST");
+    expect(call.auth).toBe("shared-abc");
+    expect(call.url).toContain("/tenants/tenant-1/serial-ota");
+    expect(JSON.parse(call.body)).toEqual({ target: "timecard-station" });
+  });
+
+  it("0 台のときも {sent: 0} を返す", async () => {
+    const { fetcher } = mockRecorder(() => new Response(JSON.stringify({ sent: 0 }), { status: 200 }));
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const res = await handleDeviceSetupSerialOta(
+      postJson("/device/setup/serial-ota", {}, { ...(await opCookie()), Origin: ISSUER }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sent: 0 });
+  });
+
+  it("未ログインは 401", async () => {
+    const env = makeEnv({ ALC_RECORDER: mockRecorder(() => new Response("{}")).fetcher, INTERNAL_SHARED_SECRET: "s" });
+    const res = await handleDeviceSetupSerialOta(postJson("/device/setup/serial-ota", {}), env);
+    expect(res.status).toBe(401);
+  });
+
+  it("Origin 不一致は 403 (recorder を叩かない)", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}"));
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "s" });
+    const res = await handleDeviceSetupSerialOta(
+      postJson("/device/setup/serial-ota", {}, { ...(await opCookie()), Origin: "https://evil" }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(calls.length).toBe(0);
+  });
+
+  it.each(["dev", "device-key"])("token_kind=%s は 403 (recorder を叩かない)", async (tokenKind) => {
+    const { fetcher, calls } = mockRecorder(() => new Response(JSON.stringify({ sent: 1 })));
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const res = await handleDeviceSetupSerialOta(
+      postJson(
+        "/device/setup/serial-ota",
+        {},
+        { ...(await opCookie({ token_kind: tokenKind })), Origin: ISSUER },
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    expect(calls.length).toBe(0);
+  });
+
+  it("recorder binding 未設定は 503", async () => {
+    const env = makeEnv({ INTERNAL_SHARED_SECRET: "s" });
+    const res = await handleDeviceSetupSerialOta(
+      postJson("/device/setup/serial-ota", {}, { ...(await opCookie()), Origin: ISSUER }),
+      env,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "recorder_unconfigured" });
+  });
+
+  it("shared secret 未設定も 503", async () => {
+    const { fetcher } = mockRecorder(() => new Response(JSON.stringify({ sent: 1 })));
+    const env = makeEnv({ ALC_RECORDER: fetcher });
+    const res = await handleDeviceSetupSerialOta(
+      postJson("/device/setup/serial-ota", {}, { ...(await opCookie()), Origin: ISSUER }),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("recorder の非 2xx は 502", async () => {
+    const { fetcher } = mockRecorder(() => new Response("boom", { status: 500 }));
+    const env = makeEnv({ ALC_RECORDER: fetcher, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const res = await handleDeviceSetupSerialOta(
+      postJson("/device/setup/serial-ota", {}, { ...(await opCookie()), Origin: ISSUER }),
+      env,
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "recorder_500" });
   });
 });
 
