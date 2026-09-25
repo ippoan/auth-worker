@@ -727,7 +727,8 @@ export async function handleDeviceSetupGw(request: Request, env: Env): Promise<R
 /**
  * POST /device/setup/version — 接続中デバイスへ現在バージョンの照会を送る。
  * recorder の command API に `{action:"version"}` を投げ command id を返す
- * (web は `/device/setup/ota/:id` で結果 `{version, slot}` をポーリングする)。
+ * (web は `/device/setup/ota/:id` で結果 `{version, slot, net?}` をポーリングする。
+ * `net` は "wifi" | "lan" で、返さない旧ファームもある — ippoan/alc-app-s3#278)。
  */
 export async function handleDeviceSetupVersion(request: Request, env: Env): Promise<Response> {
   // 読み取りの照会 (状態を変更しない) — dev/device-key token でも許可する。
@@ -1712,7 +1713,11 @@ async function queryVersion(deviceId, kind, verSpan, otaBtn, otaNote) {
         p = await pr.json();
       } catch { continue; }
       if (p && typeof p.version === "string") {
-        verSpan.textContent = p.version + (p.slot ? " (" + p.slot + ")" : "");
+        // net = 載っている版 ("wifi" | "lan")。CoreS3 は Wi-Fi 版と LAN 版で version が
+        // 同じ形なので、ここでしか見分けられない。net を返さない旧ファームは出さない
+        const netLabel = p.net === "wifi" ? "Wi-Fi" : p.net === "lan" ? "LAN" : "";
+        const detail = [p.slot, netLabel].filter(Boolean).join(", ");
+        verSpan.textContent = p.version + (detail ? " (" + detail + ")" : "");
         const latest = LATEST[kind] || null;
         if (latest) {
           const tag = document.createElement("span");
