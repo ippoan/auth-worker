@@ -120,22 +120,11 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   //
   // **GET だけ。** 受け口に `POST` は無い (取り込み直しは別の口の仕事)
   { path: "/api/kintai/unko-gaps", method: "GET" },
-  // 乗務員×暦日で拘束分数を SUM した読み出し口 (受け口は ohishi-exp/rust-ichibanboshi の
-  // `src/routes/day_parts.rs`、Refs ohishi-exp/nuxt-dtako-admin#1123)。最低賃金の
-  // 検証タブで「同じ暦日に勤務が 2 本重なっていないか」を見るために使う。
-  //
-  // **`day-summaries` と同じ根拠で通している。** 受け口
-  // (`src/routes/day_parts.rs`) は `X-Tenant-ID` を読まず、読み先は
-  // `[kintai_events] tenant_id` の設定 pin で固定される。返すのも乗務員CD・
-  // 暦日・拘束の分数だけで、**金額は含まない**。
-  //
-  // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)
-  { path: "/api/kintai/day-parts", method: "GET" },
   // 同じ乗務員の勤務の時間帯の重なりを返す読み出し口 (受け口は ohishi-exp/rust-ichibanboshi の
   // `src/routes/shift_overlaps.rs`、Refs ohishi-exp/nuxt-dtako-admin#1123)。最低賃金の
   // 検証タブで「同じ乗務員の勤務の時間帯が重なっていないか」を見るために使う。
   //
-  // **`day-parts` と同じ根拠で通している。** 受け口
+  // **`day-summaries` と同じ根拠で通している。** 受け口
   // (`src/routes/shift_overlaps.rs`) は `X-Tenant-ID` を読まず、読み先は
   // `[kintai_events] tenant_id` の設定 pin で固定される。返すのも乗務員CD・
   // 勤務の開始・終了時刻だけで、**金額は含まない**。
