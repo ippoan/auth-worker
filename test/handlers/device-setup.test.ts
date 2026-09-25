@@ -140,6 +140,8 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("/device/setup/version");
     expect(html).toContain("/device/setup/latest");
     expect(html).toContain("queryVersion");
+    // 版 (Wi-Fi / LAN) を version 照会の net から出す (ippoan/alc-app-s3#278)
+    expect(html).toContain('p.net === "wifi" ? "Wi-Fi"');
     // 血圧計ボンド状態の列 (Refs #574): version と同じく接続中のみ自動照会し、
     // 4 状態 (ボンド済み/未ボンド/まだ確認できていない/未対応) を出し分ける —
     // bp_read=false (未確認) や空 ack (未対応) を「未ボンド」と混同しない
