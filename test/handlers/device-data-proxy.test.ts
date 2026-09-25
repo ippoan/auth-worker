@@ -403,6 +403,9 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "GET", path: "/api/employees/by-code/E001" },
     { method: "GET", path: "/api/employees/face-data" },
     { method: "PUT", path: "/api/employees/emp-1/face" },
+    { method: "PUT", path: "/api/vein/templates/emp-1" },
+    { method: "GET", path: "/api/vein/templates" },
+    { method: "POST", path: "/api/vein/identify" },
     { method: "GET", path: "/api/employees/emp-1" },
     { method: "GET", path: "/api/timecard/punches" },
     { method: "GET", path: "/api/timecard/punches/csv" },
@@ -508,6 +511,11 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "PUT", path: "/api/carrying-items/c-1" },
       { method: "GET", path: "/api/employees/emp-1/license" },
       { method: "GET", path: "/api/car-inspections/current" },
+      // 指静脈: 削除口はキオスクに開けない (顔と同じ)。
+      { method: "DELETE", path: "/api/vein/templates/emp-1" },
+      { method: "GET", path: "/api/vein/templates/emp-1" },
+      { method: "POST", path: "/api/vein/templates" },
+      { method: "PUT", path: "/api/vein/identify" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
@@ -893,6 +901,10 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "GET", path: "/api/timecard/punches" },
       // 端末レコードを持たないので settings は呼ばれない口 (表に入れていない)。
       { method: "GET", path: "/api/devices/settings/dev-1" },
+      // 指静脈: kiosk だけに開けた口で、測定台には開けない。
+      { method: "PUT", path: "/api/vein/templates/emp-1" },
+      { method: "GET", path: "/api/vein/templates" },
+      { method: "POST", path: "/api/vein/identify" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(

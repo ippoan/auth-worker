@@ -115,6 +115,16 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * 移したのに合わせ、こちらも同じ形に置き換える (追加ではなく差し替え。旧 GET entry は
  * 残さない)。読み取り専用の口 (body で照会するだけ) で、`/api/car-inspections/lookup`
  * と同型。
+ *
+ * 指静脈テンプレートの登録・1:N 照合 (Refs ippoan/vein-match#20)。**登録は顔
+ * (`PUT /api/employees/{id}/face`) と同じ扱いにする、というユーザー判断**
+ * (2026-09-25) で、`PUT /api/vein/templates/{employee_id}` (上書き登録) と
+ * `POST /api/vein/identify` (1:N 照合、当たった人の学習後テンプレートをサーバーが
+ * 書き戻す) をここに入れる。`GET /api/vein/templates` (オフライン照合用の
+ * テンプレート一覧) は **tenant 全員の指静脈テンプレート = 生体情報を開く口**で、
+ * `GET /api/employees/face-data` と同じ判断でここに入れる。**削除
+ * (`DELETE /api/vein/templates/{employee_id}`) は入れない** — 顔にもキオスクの
+ * 削除口は無く (管理者の browser JWT だけ)、指静脈もそれに揃える。
  */
 const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees$/ },
@@ -122,6 +132,9 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees\/by-code\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/employees\/face-data$/ },
   { method: "PUT", pattern: /^\/api\/employees\/[^/]+\/face$/ },
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/vein\/templates$/ },
+  { method: "POST", pattern: /^\/api\/vein\/identify$/ },
   { method: "GET", pattern: /^\/api\/employees\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/timecard\/punches$/ },
   { method: "GET", pattern: /^\/api\/timecard\/punches\/csv$/ },
