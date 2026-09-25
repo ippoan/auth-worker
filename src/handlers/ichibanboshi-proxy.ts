@@ -131,6 +131,17 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   //
   // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)
   { path: "/api/kintai/day-parts", method: "GET" },
+  // 同じ乗務員の勤務の時間帯の重なりを返す読み出し口 (受け口は ohishi-exp/rust-ichibanboshi の
+  // `src/routes/shift_overlaps.rs`、Refs ohishi-exp/nuxt-dtako-admin#1123)。最低賃金の
+  // 検証タブで「同じ乗務員の勤務の時間帯が重なっていないか」を見るために使う。
+  //
+  // **`day-parts` と同じ根拠で通している。** 受け口
+  // (`src/routes/shift_overlaps.rs`) は `X-Tenant-ID` を読まず、読み先は
+  // `[kintai_events] tenant_id` の設定 pin で固定される。返すのも乗務員CD・
+  // 勤務の開始・終了時刻だけで、**金額は含まない**。
+  //
+  // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)
+  { path: "/api/kintai/shift-overlaps", method: "GET" },
   // 賃金確定値の月次スナップショット (Refs ohishi-exp/nuxt-dtako-admin#677、
   // 受け口は ohishi-exp/rust-ichibanboshi#293)。
   //
