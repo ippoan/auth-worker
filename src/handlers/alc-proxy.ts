@@ -32,6 +32,11 @@ import { verifyJwt } from "../lib/jwt";
 import { checkAppTenant, checkOrgAccess } from "../lib/acl";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
+import {
+  forwardViaAlcBinding,
+  isUnsafeBackendPath,
+  resolveAlcBinding,
+} from "../lib/alc-backend-route";
 import { DEVICE_ROLES } from "../lib/device";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 
@@ -232,21 +237,11 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
     targetOrigin = previewOrigin;
   }
 
-  // ── OIDC mint (Cloud Run IAM lockdown 用)。aud = forward 先 service URL ──
-  let idToken: string;
-  try {
-    idToken = await mintGoogleIdToken(saKey, targetOrigin);
-  } catch {
-    return jsonError(502, "upstream auth error"); // 詳細は log のみ (ここでは出さない)
-  }
-
   // ── forward: targetOrigin + (/alc-proxy 以降の path) ──────────────────────
   // (backendPath は上の #433 enforcement で計算済みのものを再利用)
   const url = new URL(request.url);
-  const target = `${targetOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
 
   const fwdHeaders: Record<string, string> = {
-    Authorization: `Bearer ${idToken}`,
     "X-Tenant-ID": tenantId,
   };
   if (sub) fwdHeaders["X-User-ID"] = sub;
@@ -259,7 +254,34 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? await request.arrayBuffer() : undefined;
 
-  return fetch(target, { method, headers: fwdHeaders, body });
+  // ── domain worker (Service Binding) への振り分け ─────────────────────────
+  // 認証・ACL・ヘッダ付け直しは上で完了済み。binding 未定義 / 表に無い path /
+  // flip 前 preview override (Cloud Run の tagged revision 宛) は従来どおり Cloud Run。
+  // binding 経路では OIDC mint しない (Cloud Run IAM 用。mint 失敗で 502 にしない)。
+  const binding = previewBase ? null : resolveAlcBinding(backendPath, env);
+  if (binding) {
+    if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
+    return forwardViaAlcBinding(binding, backendPath, url.search, {
+      method,
+      headers: fwdHeaders,
+      body,
+    });
+  }
+
+  // ── OIDC mint (Cloud Run IAM lockdown 用)。aud = forward 先 service URL ──
+  let idToken: string;
+  try {
+    idToken = await mintGoogleIdToken(saKey, targetOrigin);
+  } catch {
+    return jsonError(502, "upstream auth error"); // 詳細は log のみ (ここでは出さない)
+  }
+
+  const target = `${targetOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
+  return fetch(target, {
+    method,
+    headers: { Authorization: `Bearer ${idToken}`, ...fwdHeaders },
+    body,
+  });
 }
 
 export { ROUTE_PREFIX as ALC_PROXY_PREFIX };

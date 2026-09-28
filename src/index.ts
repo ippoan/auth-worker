@@ -227,6 +227,10 @@ export interface Env {
    *  (Cloud Run ではなく同じ Cloudflare account 内 Worker 間の service binding)。
    *  未 bind なら `/cf-flickr-cam-worker-proxy/*` は 503 (fail-closed)。 */
   CF_FLICKR_CAM_WORKER?: Fetcher;
+  /** rust-alc-api 移行先 vein worker (`alc-vein`) への service binding。定義されている時だけ
+   *  `/api/vein/*` を alc-proxy / device-data-proxy が Cloud Run でなくここへ流す
+   *  (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+  ALC_VEIN?: Fetcher;
   /** cf-alc-recorder (CoreS3 測定データ WS 受口) への service binding。
    *  `/device/setup` の OTA トリガ/進捗ポーリングが recorder の内部 HTTP API
    *  (`Authorization: <INTERNAL_SHARED_SECRET>`) を叩く。未 bind なら OTA 系は
