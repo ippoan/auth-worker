@@ -30,6 +30,11 @@ import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
 import {
+  forwardViaAlcBinding,
+  isUnsafeBackendPath,
+  resolveAlcBinding,
+} from "../lib/alc-backend-route";
+import {
   DEVICE_ROLE,
   DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_ROLE_DTAKO_RELAY,
@@ -293,18 +298,8 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
     if (!allowed || !allowed.has(backendPath)) return jsonError(403, "forbidden");
   }
 
-  // ── ③ OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) ────────────────
-  let idToken: string;
-  try {
-    idToken = await mintGoogleIdToken(saKey, apiOrigin);
-  } catch {
-    return jsonError(502, "upstream auth error"); // 詳細は log のみ
-  }
-
-  // ── ④ forward (X-Tenant-ID は device record 由来、client からは詐称不能) ────
-  const target = `${apiOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
+  // ── ③ forward 用ヘッダ (X-Tenant-ID は device record 由来、client からは詐称不能) ──
   const fwdHeaders: Record<string, string> = {
-    Authorization: `Bearer ${idToken}`,
     "X-Tenant-ID": tenantId,
   };
   const contentType = request.headers.get("content-type");
@@ -322,7 +317,33 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? await request.arrayBuffer() : undefined;
 
-  return fetch(target, { method, headers: fwdHeaders, body });
+  // ── domain worker (Service Binding) への振り分け ─────────────────────────
+  // role×path allowlist 通過後のみ。binding 未定義 / 表に無い path は従来どおり Cloud Run。
+  // binding 経路では OIDC mint しない (Cloud Run IAM 用)。
+  const binding = resolveAlcBinding(backendPath, env);
+  if (binding) {
+    if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
+    return forwardViaAlcBinding(binding, backendPath, url.search, {
+      method,
+      headers: fwdHeaders,
+      body,
+    });
+  }
+
+  // ── ④ OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) + forward ─────
+  let idToken: string;
+  try {
+    idToken = await mintGoogleIdToken(saKey, apiOrigin);
+  } catch {
+    return jsonError(502, "upstream auth error"); // 詳細は log のみ
+  }
+
+  const target = `${apiOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
+  return fetch(target, {
+    method,
+    headers: { Authorization: `Bearer ${idToken}`, ...fwdHeaders },
+    body,
+  });
 }
 
 export { ROUTE_PREFIX as DEVICE_DATA_PROXY_PREFIX };
