@@ -363,6 +363,12 @@ branches = true
 path = "src/smb-ingest-entrypoint.ts"
 branches = true
 
+# Refs ohishi-exp/rust-ichibanboshi#322: 給与大臣 Worker 専用の認可の口。origin 固定・
+# allowlist 未設定なら 503 の fail-closed 分岐を含めて 100% を維持する。
+[[files]]
+path = "src/kyuyo-auth-entrypoint.ts"
+branches = true
+
 # InternalEntrypoint と SmbIngestEntrypoint が共有する OIDC mint → forward。
 [[files]]
 path = "src/lib/alc-tenant-forward.ts"

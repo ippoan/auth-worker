@@ -21,6 +21,10 @@
  *                     いるのと同じ位置づけ)、既存の origins:* / app-orgs と同じ
  *                     KV allowlist 規約に揃える方が GCP Secret Manager 側の
  *                     provisioning が要らず単純。
+ *   kyuyo-allowed-emails - JSON array of emails allowed to read 給与大臣
+ *                     (`KyuyoAuthEntrypoint`, Refs ohishi-exp/rust-ichibanboshi#322).
+ *                     Read **without** in-memory cache so removing someone
+ *                     denies them immediately.
  *
  * At runtime the worker reads `origins:<WORKER_ENV>` ∪ `origins:dev` ∪ `origins:wt`
  * and unions them.
@@ -145,6 +149,26 @@ export async function isWorktreeOrigin(
  */
 export async function getGoogleMcpUserAllowlist(env: Env): Promise<string> {
   return readKey(env, "google-mcp-user-allowlist");
+}
+
+/**
+ * 給与大臣の閲覧 allowlist (`kyuyo-allowed-emails` KV key)。前後空白を除いて小文字化
+ * した email の配列を返す。キー無し・空・JSON 配列でない・string 以外の要素を含む・
+ * 有効な要素が 0 のときは `null` (呼び手は「設定不備」として fail-closed する)。
+ * 外した人が即座に拒否されるよう、キャッシュしない読みを使う。
+ */
+export async function getKyuyoAllowedEmails(env: Env): Promise<string[] | null> {
+  const raw = await readKeyNoCache(env, "kyuyo-allowed-emails");
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) return null;
+  const emails = (parsed as string[]).map((x) => x.trim().toLowerCase()).filter((x) => x.length > 0);
+  return emails.length > 0 ? emails : null;
 }
 
 /** Test-only cache clear helper. */
