@@ -29,52 +29,14 @@ import type { Env } from "../index";
 import { extractToken } from "../lib/errors";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
-import { internalAuthToken } from "../lib/alc-internal";
+import {
+  MAX_NOTIFY_TEXT_LEN as MAX_TEXT_LEN,
+  notifyJsonError as jsonError,
+  resolveNotifyRecipient as resolveRecipient,
+  sendDeviceNotify,
+} from "../lib/device-notify-send";
 
 const ROUTE = "/device-notify";
-
-/** rust-alc-api の `require_internal_jwt` 経路 (`/alc-internal-proxy` と同じ path)。 */
-const SEND_PATH = "/api/internal/lineworks/send";
-
-/**
- * `role → recipient_id` の JSON map を置く AUTH_CONFIG KV のキー。
- *
- * **KV に置くのは、宛先変更に deploy を要らなくするため** (通知先は運用で変わる)。
- * `ohishi-exp/nuxt-dtako-admin` の relay が `netprint_targets` を自分の KV に持って
- * いるのと同じ形。値の投入は運用側の仕事で、この repo には入れない
- * (`recipient_id` をコードに焼かないこと — 焼くと deploy 無しで変えられなくなる)。
- */
-const TARGETS_KEY = "device-notify-targets";
-
-/** LINE WORKS のトークに流す 1 通の上限 (これ以上は運用上まず読まれない)。 */
-const MAX_TEXT_LEN = 1000;
-
-function jsonError(status: number, error: string): Response {
-  return new Response(JSON.stringify({ error }), {
-    status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-  });
-}
-
-/**
- * KV の `device-notify-targets` から role の宛先を引く。
- * 未設定 / 壊れた JSON / role 未登録はすべて `null` (呼び出し側で 403)。
- * 「通知先が無いのに送れたつもり」を作らないため、ここは必ず fail-closed。
- */
-async function resolveRecipient(env: Env, role: string): Promise<string | null> {
-  const raw = await env.AUTH_CONFIG.get(TARGETS_KEY);
-  if (!raw) return null;
-  let map: unknown;
-  try {
-    map = JSON.parse(raw);
-  } catch {
-    console.error(JSON.stringify({ event: "device_notify_targets_unparsable" }));
-    return null;
-  }
-  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
-  const recipient = (map as Record<string, unknown>)[role];
-  return typeof recipient === "string" && recipient ? recipient : null;
-}
 
 export async function handleDeviceNotify(request: Request, env: Env): Promise<Response> {
   // 送信専用の口なので POST 以外は入口で落とす。
@@ -139,39 +101,11 @@ export async function handleDeviceNotify(request: Request, env: Env): Promise<Re
   if (typeof text !== "string" || text.length === 0) return jsonError(400, "text required");
   if (text.length > MAX_TEXT_LEN) return jsonError(400, `text は ${MAX_TEXT_LEN} 文字以内`);
 
-  // ── ⑤ forward (internal JWT の mint は auth-worker が代行する) ──────────────
-  let internalToken: string;
-  try {
-    internalToken = await internalAuthToken(env);
-  } catch {
-    return jsonError(502, "upstream auth error"); // 詳細は log のみ
-  }
-
-  const target = `${apiOrigin.replace(/\/$/, "")}${SEND_PATH}`;
-  const upstream = await fetch(target, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${internalToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ recipient_id: recipientId, text }),
+  // ── ⑤ forward (internal JWT の mint は auth-worker が代行する。`lib/device-notify-send.ts`)
+  return sendDeviceNotify(env, apiOrigin, recipientId, text, {
+    event: "device_notify_upstream_failed",
+    role,
   });
-
-  if (!upstream.ok) {
-    // 上流の本文はそのまま返さない (内部情報)。原因追跡は log 側で。
-    const detail = await upstream.text().catch(() => "");
-    console.error(
-      JSON.stringify({
-        event: "device_notify_upstream_failed",
-        status: upstream.status,
-        role,
-        body: detail.slice(0, 200),
-      }),
-    );
-    return jsonError(502, "upstream error");
-  }
-
-  return upstream;
 }
 
 export { ROUTE as DEVICE_NOTIFY_ROUTE };

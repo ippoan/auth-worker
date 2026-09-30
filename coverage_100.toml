@@ -356,6 +356,23 @@ branches = true
 path = "src/internal-entrypoint.ts"
 branches = true
 
+# Refs ohishi-exp/smb-watch#14: smb Worker 専用の RPC の口。tenant / path / 宛先を
+# 呼び手に選ばせない (KV 固定・POST /api/files 固定) のが要なので、fail-closed の
+# 分岐を含めて 100% を維持する。
+[[files]]
+path = "src/smb-ingest-entrypoint.ts"
+branches = true
+
+# InternalEntrypoint と SmbIngestEntrypoint が共有する OIDC mint → forward。
+[[files]]
+path = "src/lib/alc-tenant-forward.ts"
+branches = true
+
+# /device-notify と SmbIngestEntrypoint#notify が共有する宛先解決 (fail-closed) と送信。
+[[files]]
+path = "src/lib/device-notify-send.ts"
+branches = true
+
 # #540 の掲示板調査用 MCP tool `lineworks_get` の宛先検証。Service Account の token で
 # 組織全体を読める口なので、ここが緩むと任意の LINE WORKS API を叩ける汎用転送口に
 # 化ける (internal-entrypoint と同じ理由)。

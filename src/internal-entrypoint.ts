@@ -21,8 +21,11 @@
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { Env } from "./index";
-import { resolveSecret } from "./lib/secret";
-import { mintGoogleIdToken } from "./lib/oidc";
+import {
+  alcRpcError as errorResult,
+  forwardAlcTenantRequest,
+  type AlcRpcResult,
+} from "./lib/alc-tenant-forward";
 
 /**
  * rust-alc-api へ転送を許可する path。**この 6 本だけ** (呼び手は
@@ -94,20 +97,10 @@ export interface ForwardAlcTenantDataInput {
 }
 
 /**
- * `forwardAlcTenantData` の戻り値。
- *
- * ★ `Response` をそのまま返さない — RPC 越しの `Response` は寿命の扱いが増えるだけで、
- * この用途 (小さい JSON) には要らない。**素の serializable オブジェクト**にする。
+ * `forwardAlcTenantData` の戻り値 (素の serializable オブジェクト。
+ * 形は `lib/alc-tenant-forward.ts` の `AlcRpcResult`)。
  */
-export interface ForwardAlcTenantDataResult {
-  status: number;
-  body: string;
-  contentType: string | null;
-}
-
-function errorResult(status: number, error: string): ForwardAlcTenantDataResult {
-  return { status, body: JSON.stringify({ error }), contentType: "application/json" };
-}
+export type ForwardAlcTenantDataResult = AlcRpcResult;
 
 export class InternalEntrypoint extends WorkerEntrypoint<Env> {
   /**
@@ -139,45 +132,15 @@ export class InternalEntrypoint extends WorkerEntrypoint<Env> {
     const path = input.path || "";
     if (!FORWARDABLE_PATHS.has(path)) return errorResult(403, "path_not_forwardable");
 
-    // ── ③ env guard ──────────────────────────────────────────────────────────
-    const saKey = await resolveSecret(this.env.ALC_API_PROXY_SA_KEY);
-    if (!saKey) return errorResult(503, "internal entrypoint not configured");
-    const apiOrigin = this.env.ALC_API_ORIGIN;
-    if (!apiOrigin) return errorResult(503, "server_error");
-
-    // ── ④ OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) ──────────────
-    let idToken: string;
-    try {
-      idToken = await mintGoogleIdToken(saKey, apiOrigin);
-    } catch {
-      return errorResult(502, "upstream auth error"); // 詳細は log のみ
-    }
-
-    // ── ⑤ forward ────────────────────────────────────────────────────────────
-    const rawSearch = input.search || "";
-    const search = !rawSearch || rawSearch.startsWith("?") ? rawSearch : `?${rawSearch}`;
-    const target = `${apiOrigin.replace(/\/$/, "")}${path}${search}`;
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${idToken}`,
-      "X-Tenant-ID": tenantId,
-    };
-    if (input.contentType) headers["Content-Type"] = input.contentType;
-
-    const method = (input.method || "GET").toUpperCase();
-    const hasBody = method !== "GET" && method !== "HEAD";
-
-    const res = await fetch(target, {
-      method,
-      headers,
-      body: hasBody ? input.body : undefined,
+    // ── ③〜⑤ env guard → OIDC mint → forward (`lib/alc-tenant-forward.ts`) ──
+    return forwardAlcTenantRequest(this.env, {
+      tenantId,
+      path,
+      method: input.method,
+      search: input.search,
+      body: input.body,
+      contentType: input.contentType,
     });
-
-    return {
-      status: res.status,
-      body: await res.text(),
-      contentType: res.headers.get("content-type"),
-    };
   }
 }
 

@@ -150,6 +150,9 @@ export { McpSession } from "./durable_objects/mcp-session-do";
 // **main module (ここ) から named export されている必要がある**。
 // `export default { fetch }` (下) の挙動には一切影響しない — 追加だけ。
 export { InternalEntrypoint } from "./internal-entrypoint";
+// ohishi-exp/smb-watch#14: smb Worker 専用の RPC の口 (`ingestFile` / `notify`)。
+// InternalEntrypoint と別 class にして、binding ごとに呼べるメソッドを分ける。
+export { SmbIngestEntrypoint } from "./smb-ingest-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
 import type { BrowserWorker } from "@cloudflare/puppeteer";
