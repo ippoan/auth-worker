@@ -111,6 +111,15 @@ service = "cf-flickr-cam-worker"
 binding = "ALC_RECORDER"
 service = "alc-recorder"
 
+# rust-alc-api の vein worker (workers/vein、ippoan/rust-alc-api#680 / #697) への service binding。
+# /alc-proxy と device-data-proxy が /api/vein/* をこの binding に回す (src/lib/alc-backend-route.ts)。
+# alc-vein は workers_dev = false・route なしで、届く経路はこの binding だけ。
+# env.staging には意図的に bind しない (staging の vein DB は一時的に運用者の機械上、ippoan/rust-alc-api#695)。
+# binding 未定義なら Cloud Run に流れるので、staging の /api/vein/* は従来どおり Cloud Run staging へ行く。
+[[services]]
+binding = "ALC_VEIN"
+service = "alc-vein"
+
 # ─── MCP_OAUTH_KV (issue #432: prod で MCP OAuth Provider を有効化) ──────────
 #
 # 経緯: 2026-07-24 以前は top-level (prod) に **意図的に bind しない**運用
