@@ -123,8 +123,38 @@ export async function handleAuthIntrospect(
   }
   const token = typeof body.token === "string" ? body.token : "";
   const originRaw = typeof body.origin === "string" ? body.origin : "";
+  return jsonNoStore(await introspectToken(env, jwtSecret, token, originRaw));
+}
+
+/** `introspectToken` の結果。`active: false` は理由を区別しない (情報リーク回避)。 */
+export type IntrospectResult =
+  | { active: false }
+  | {
+      active: true;
+      tenant_id: string;
+      role: string;
+      email: string;
+      sub: string;
+      exp: unknown;
+      org_wide: boolean;
+      token_kind?: unknown;
+    };
+
+/**
+ * token と origin を受けて `/auth/introspect` と同じ判定 (① `verifyJwt` →
+ * ② `checkOrgAccess` → `checkAppTenant`) を通し、応答本体を返す。
+ * HTTP ハンドラ (上) と `KyuyoAuthEntrypoint` (Refs ohishi-exp/rust-ichibanboshi#322)
+ * の両方から呼ぶ — 判定ロジックを複製しないため。呼び手の認証 (shared secret /
+ * service binding) と `JWT_SECRET` の解決は呼び手の責務。
+ */
+export async function introspectToken(
+  env: Env,
+  jwtSecret: string,
+  token: string,
+  originRaw: string,
+): Promise<IntrospectResult> {
   if (!token) {
-    return jsonNoStore({ active: false });
+    return { active: false };
   }
 
   // origin は ACL 分割に必須。省略 / 不正 → ACL を強制できないので fail-closed。
@@ -132,13 +162,13 @@ export async function handleAuthIntrospect(
   try {
     origin = new URL(originRaw).origin;
   } catch {
-    return jsonNoStore({ active: false });
+    return { active: false };
   }
 
   // ① 署名 + exp + env claim 検証 (鍵は auth-worker だけが持つ)。
   const payload = await verifyJwt(token, jwtSecret, env.WORKER_ENV);
   if (!payload) {
-    return jsonNoStore({ active: false });
+    return { active: false };
   }
 
   const tenantId =
@@ -152,10 +182,10 @@ export async function handleAuthIntrospect(
   // ② origin × tenant_id の ACL 判定 (OAuth callback と同じ二段 gate)。
   //    org-level が primary defense、app-level が同 org 内のテナント分割。
   if (!(await checkOrgAccess(env, origin, tenantId, email))) {
-    return jsonNoStore({ active: false });
+    return { active: false };
   }
   if (!checkAppTenant(env, origin, tenantId, email)) {
-    return jsonNoStore({ active: false });
+    return { active: false };
   }
 
   // org_wide — 冒頭 doc 参照。USER_ACL 由来の「テナント境界を越えてよい人」。
@@ -167,7 +197,7 @@ export async function handleAuthIntrospect(
     orgWide = isOrgWideUser(env, org, email);
   }
 
-  return jsonNoStore({
+  return {
     active: true,
     tenant_id: tenantId,
     role,
@@ -182,5 +212,5 @@ export async function handleAuthIntrospect(
     // 未設定 (通常の Google/LINE WORKS 等ログイン) は含めない — 既存 consumer は
     // このキーを見ないので additive で壊れない。
     ...(payload.token_kind !== undefined ? { token_kind: payload.token_kind } : {}),
-  });
+  };
 }
