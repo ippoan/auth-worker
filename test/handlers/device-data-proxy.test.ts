@@ -1258,6 +1258,111 @@ describe("運行管理者の鍵のセッション一覧 GET (開発用の鍵に�
   });
 });
 
+describe("運行管理者の鍵のカード照会 POST /api/timecard/cards/lookup (Refs ippoan/alc-app#387)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  const CID = "33333333-3333-3333-3333-333333333333";
+  const LOOKUP = "/api/timecard/cards/lookup";
+  const BODY = JSON.stringify({ card_id: "0123456789abcdef" });
+
+  async function tokenFor(role: string, claims: Record<string, unknown> = {}): Promise<string> {
+    return signTestJwt(
+      { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role, ...claims },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  function post(path: string, token: string): Request {
+    return req(`/device-data-proxy${path}`, {
+      method: "POST",
+      token,
+      headers: { "content-type": "application/json" },
+      body: BODY,
+    });
+  }
+
+  it("開発用でない運行管理者の鍵: 転送される (body・role・tenant が付き、X-Device-Dev は付かない)", async () => {
+    const fetchMock = okFetch();
+    const res = await handleDeviceDataProxy(post(LOOKUP, await tokenFor(DEVICE_ROLE_TENKO_MANAGER)), env());
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe(`https://alc-api.test.example${LOOKUP}`);
+    expect((init as RequestInit).method).toBe("POST");
+    expect(await new Response((init as RequestInit).body).text()).toBe(BODY);
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_TENKO_MANAGER);
+    expect(h["Content-Type"]).toBe("application/json");
+    expect(h).not.toHaveProperty("X-Device-Dev");
+  });
+
+  it("開発用の運行管理者の鍵 (dev_device: true): 転送され、X-Device-Dev: 1 が付く", async () => {
+    const fetchMock = okFetch();
+    const res = await handleDeviceDataProxy(
+      post(LOOKUP, await tokenFor(DEVICE_ROLE_TENKO_MANAGER, { dev_device: true })),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(`https://alc-api.test.example${LOOKUP}`);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Device-Dev"]).toBe("1");
+    expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_TENKO_MANAGER);
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("★ キオスクの鍵・測定台の鍵には開かない (開発用でも 403)", async () => {
+    const fetchMock = okFetch();
+    for (const role of [DEVICE_ROLE_KIOSK, DEVICE_ROLE_BP_STATION]) {
+      for (const claims of [{}, { dev_device: true }]) {
+        const res = await handleDeviceDataProxy(post(LOOKUP, await tokenFor(role, claims)), env());
+        expect(res.status, `${role} ${JSON.stringify(claims)}`).toBe(403);
+      }
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 席の鍵に増えた口は POST の lookup 1 本だけ (カードのほかの口・打刻・employees/lookup・GET・末尾スラッシュは 403)", async () => {
+    const fetchMock = okFetch();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/timecard/cards" },
+      { method: "POST", path: "/api/timecard/cards" },
+      { method: "POST", path: "/api/timecard/cards/bulk" },
+      { method: "GET", path: `/api/timecard/cards/${CID}` },
+      { method: "DELETE", path: `/api/timecard/cards/${CID}` },
+      { method: "POST", path: "/api/timecard/punch" },
+      { method: "GET", path: "/api/timecard/punches" },
+      { method: "POST", path: "/api/employees/lookup" },
+      { method: "GET", path: LOOKUP },
+      { method: "PUT", path: LOOKUP },
+      { method: "DELETE", path: LOOKUP },
+      { method: "POST", path: `${LOOKUP}/` },
+      { method: "POST", path: `${LOOKUP}/${CID}` },
+      { method: "POST", path: `/x${LOOKUP}` },
+    ];
+    for (const claims of [{}, { dev_device: true }]) {
+      for (const { method, path } of cases) {
+        const res = await handleDeviceDataProxy(
+          req(`/device-data-proxy${path}`, { method, token: await tokenFor(DEVICE_ROLE_TENKO_MANAGER, claims) }),
+          env(),
+        );
+        expect(res.status, `${method} ${path} ${JSON.stringify(claims)}`).toBe(403);
+      }
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", () => {
   beforeEach(() => vi.restoreAllMocks());
 

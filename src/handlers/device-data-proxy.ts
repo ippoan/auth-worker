@@ -192,9 +192,16 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * 開発用の鍵に限らず席の鍵すべてに開く。同じ正規表現の GET は `KIOSK_ROUTES` に既に在り、
  * 新しい種類の到達面ではない。開くのはこの GET 1 本だけで、`/sessions/start` や `PUT`・`POST` は開けない。
  *
+ * カードから社員を返す口 (`POST /api/timecard/cards/lookup`、body に `card_id`) は、IT点呼の
+ * 受け画面 (ログインなし) が IC カード・免許証のタッチで「この席の運行管理者」を登録するのに使う。
+ * backend 側は読み取り専用 (照会するだけで打刻しない)。開発用の鍵に限らず席の鍵すべてに開く。
+ * 開くのはこの POST 1 本だけ (両端固定)。
+ *
  * **入れない口 (モニターが呼ばない、または席が行を持たない)**:
  * - `GET /api/employees/face-data` — tenant 全員の生体情報。モニターからの呼び出しが 0 件。
  * - `GET /api/devices/settings/{id}` — 運行管理者席は devices に行を持たない。
+ * - `/api/timecard/cards` のほかの口 (一覧 GET・登録 POST・`{id}` の GET / DELETE・bulk)、
+ *   `/api/timecard/punch`・`/punches`、`POST /api/employees/lookup` — 席はカードの管理も打刻もしない。
  *
  * **判定の POST は運行管理者の鍵すべてに通す。** 「dev の鍵だけ」に絞るのは backend
  * (rust-alc-api) の仕事で、`X-Device-Role` と `X-Device-Dev` を見て判断する。ここでは
@@ -234,6 +241,7 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}$`) },
   { method: "GET", pattern: new RegExp(`^/api/tenko/driver-info/${UUID_SEGMENT}$`) },
   { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/judgment$`) },
+  { method: "POST", pattern: /^\/api\/timecard\/cards\/lookup$/ },
 ];
 
 /**
