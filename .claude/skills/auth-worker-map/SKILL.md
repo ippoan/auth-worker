@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:fb2a68aaf1eb892755988d4753c8e5191a170cff
+generated-from: auth-worker:4e3202f25e73301fcfd445dbce17787355ff401f
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
@@ -148,6 +148,13 @@ Google ログイン直後の本番状態が再現でき、ページ側の門番 
 - 一覧 (`GET /device/setup/list`、`GET /device/setup/alarm-keys`) の各行に `dev_device: boolean`。
   `/device/setup` の画面は「開発用」の印を全員に出し、切替ボタンは `IS_DEVELOPER` のときだけ出す
   (表示の出し分け。権限の根拠は上のサーバ側の検査)。
+- **1 台の CoreS3 は 2 つの登録簿に別の行で出る** (上の「デバイス」= `DeviceRecord`、本体の測定・打刻の鍵 /
+  下の「デバイスの署名鍵」= `AlarmKeyRecord` 用途 `kiosk`、キオスクの画面の token)。サーバ側に結ぶ欄は無い。
+  片方だけ切り替えて記録が本番に入った事故 (#387) があるので、画面 (client script) が**ラベルの完全一致で
+  相方を探し**、相方が両側から見てちょうど 1 つのときだけ、切替時に相方も続けて切り替える
+  (押した行 → 相方の順に既存の口へ 2 回 POST。サーバは変えていない)。
+- 食い違い (片方だけ `dev_device`) は**全員に**赤系のバッジ (`.tag.warn`) を両方の行に出す。相方が 0 個・2 個以上の行は
+  連動も警告も無し。相方の探し方は `findKioskKeysFor` / `findHubDevicesFor` の 1 か所。
 - **既知の前提 (未対応)**: staging と本番は `AUTH_CONFIG` (KV) と JWT の署名の秘密を共有し、
   ログインの JWT に環境を示す claim が無いので、staging で発行された cookie は本番でも通る。
   既存の書き込み口 (登録・失効・拠点 ID) と同じ根で、この口の強さも署名の秘密の保持者と

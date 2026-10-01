@@ -1983,3 +1983,124 @@ describe("dev_device の表示 (一覧の応答と画面、Refs ippoan/alc-app#3
     for (const s of scripts) expect(() => new Function(s)).not.toThrow();
   });
 });
+
+describe("端末と署名鍵の連動切替・食い違いの警告 (画面、Refs ippoan/alc-app#387)", () => {
+  const DEV_EMAIL = DEVELOPER_EMAILS[0]!;
+  const pageHtml = async () =>
+    (await handleDeviceSetupPage(getReq("/device/setup", await opCookie({ email: DEV_EMAIL })), makeEnv())).text();
+  // script から関数 1 つの本体を取り出す (次の top-level の function / コメント行までを 1 塊として切る)
+  const extractFn = (html: string, name: string): string => {
+    const start = html.indexOf(`function ${name}(`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = html.indexOf("\n}\n", start);
+    return html.slice(start, end + 3);
+  };
+  type Dev = { device_id: string; label: string; kind: string };
+  type Key = { fingerprint: string; label: string; usage: string; revoked_at?: number | null };
+
+  it("script に相方を探す関数・連動の confirm の文言・警告の文言・.tag.warn が在る", async () => {
+    const html = await pageHtml();
+    expect(html).toContain("function findKioskKeysFor(");
+    expect(html).toContain("function findHubDevicesFor(");
+    expect(html).toContain("同じラベルの『デバイスの署名鍵 (用途 kiosk)』の行も一緒に切り替えます。");
+    expect(html).toContain("同じラベルの『デバイス』の行も一緒に切り替えます。");
+    expect(html).toContain("署名鍵が本番のまま — キオスクの画面の記録は本番に入ります");
+    expect(html).toContain("端末が本番のまま — 本体からの記録は本番に入ります");
+    expect(html).toContain("相方の切り替えに失敗しました。もう一度押してください");
+    expect(html).toContain(".tag.warn{background:#fee2e2;color:#991b1b}");
+    // バッジは既存の .tag で、文言は textContent で入れる
+    const tag = extractFn(html, "pairWarnTag");
+    expect(tag).toContain('tag.className = "tag warn";');
+    expect(tag).toContain("tag.textContent = text;");
+    expect(tag).not.toContain("innerHTML");
+  });
+
+  it("連動は押した行 → 相方の 2 回 POST で、1 本目が失敗したら 2 本目は送らない", async () => {
+    const html = await pageHtml();
+    const fn = html.slice(html.indexOf("async function setDevDevice("), html.indexOf("// 拠点ID (site_id) の設定"));
+    expect(fn.indexOf("await postDevDevice(path, key, dev);")).toBeGreaterThan(0);
+    expect(fn.indexOf("await postDevDevice(path, key, dev);")).toBeLessThan(
+      fn.indexOf("await postDevDevice(pair.path, pair.key, dev);"),
+    );
+    // 相方の値が切替後と同じなら連動しない
+    expect(fn).toContain("partner.dev_device !== dev");
+    // 成功・失敗どちらでも 2 つの表を読み込み直す
+    expect(fn).toContain("loadDevices();");
+    expect(fn).toContain("loadAlarmKeys();");
+  });
+
+  it("読み直すのは POST が通った登録簿の表だけ (鍵の行だけの切替で端末の表を作り直さない)", async () => {
+    const html = await pageHtml();
+    const fn = html.slice(html.indexOf("async function setDevDevice("), html.indexOf("// 拠点ID (site_id) の設定"));
+    expect(fn).toContain("if (devicesChanged) loadDevices();");
+    expect(fn).toContain("if (keysChanged) loadAlarmKeys();");
+    // 無条件の読み直しは残さない
+    expect(fn).not.toMatch(/^\s*loadDevices\(\);/m);
+    expect(fn).not.toMatch(/^\s*loadAlarmKeys\(\);/m);
+    // 登録簿は path で見分け、POST が通った後にだけ印を付ける (1 本目の失敗では何も作り直さない)
+    expect(fn.indexOf("await postDevDevice(path, key, dev);")).toBeLessThan(fn.indexOf("markChanged(path);"));
+    expect(fn.indexOf("await postDevDevice(pair.path, pair.key, dev);")).toBeLessThan(
+      fn.indexOf("markChanged(pair.path);"),
+    );
+    // 警告の描き直しは行を作らず、置き場の span の中身だけを入れ替える
+    const refresh = extractFn(html, "refreshPairWarnings");
+    expect(refresh).not.toContain("createElement");
+    expect(refresh).not.toContain("ROWS");
+  });
+
+  it("画面: client script が構文として通る", async () => {
+    const html = await pageHtml();
+    const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+      .map((m) => m[1] ?? "")
+      .filter((s) => s.trim() !== "");
+    for (const s of scripts) expect(() => new Function(s)).not.toThrow();
+  });
+
+  describe("相方を探す純関数 (script から取り出して実行)", () => {
+    const load = async () => {
+      const html = await pageHtml();
+      const src = extractFn(html, "findKioskKeysFor") + extractFn(html, "findHubDevicesFor");
+      return new Function(`${src}; return { findKioskKeysFor, findHubDevicesFor };`)() as {
+        findKioskKeysFor: (label: string, keys: Key[]) => Key[];
+        findHubDevicesFor: (label: string, devs: Dev[]) => Dev[];
+      };
+    };
+    const key = (fp: string, label: string, usage = "kiosk", revoked_at: number | null = null): Key => ({
+      fingerprint: fp, label, usage, revoked_at,
+    });
+    const dev = (id: string, label: string, kind = "cores3"): Dev => ({ device_id: id, label, kind });
+
+    it("findKioskKeysFor: 一致 1 件 → その 1 件 / 0 件 → 空 / 2 件 → 2 件", async () => {
+      const { findKioskKeysFor } = await load();
+      expect(findKioskKeysFor("a", [key("k1", "a"), key("k2", "b")]).map((k) => k.fingerprint)).toEqual(["k1"]);
+      expect(findKioskKeysFor("a", [key("k2", "b")])).toEqual([]);
+      expect(findKioskKeysFor("a", [])).toEqual([]);
+      expect(findKioskKeysFor("a", [key("k1", "a"), key("k2", "a")])).toHaveLength(2);
+    });
+
+    it("findKioskKeysFor: 失効済み・用途が kiosk 以外・ラベルが部分一致のみ、は除く", async () => {
+      const { findKioskKeysFor } = await load();
+      expect(findKioskKeysFor("a", [key("k1", "a", "kiosk", 100)])).toEqual([]);
+      expect(findKioskKeysFor("a", [key("k1", "a", "tenko-manager"), key("k2", "a", "bp-station")])).toEqual([]);
+      expect(findKioskKeysFor("a", [key("k1", "a 2"), key("k2", "A")])).toEqual([]);
+    });
+
+    it("ラベルが空 (空文字・undefined) のときは相方なし", async () => {
+      const { findKioskKeysFor, findHubDevicesFor } = await load();
+      expect(findKioskKeysFor("", [key("k1", "")])).toEqual([]);
+      expect(findKioskKeysFor(undefined as unknown as string, [key("k1", undefined as unknown as string)])).toEqual([]);
+      expect(findHubDevicesFor("", [dev("d1", "")])).toEqual([]);
+      expect(findHubDevicesFor(undefined as unknown as string, [dev("d1", undefined as unknown as string)])).toEqual([]);
+    });
+
+    it("findHubDevicesFor: 一致 1 件 / 0 件 / 2 件、kind が cores3 以外は除く", async () => {
+      const { findHubDevicesFor } = await load();
+      expect(findHubDevicesFor("a", [dev("d1", "a"), dev("d2", "b")]).map((d) => d.device_id)).toEqual(["d1"]);
+      expect(findHubDevicesFor("a", [dev("d2", "b")])).toEqual([]);
+      expect(findHubDevicesFor("a", [dev("d1", "a"), dev("d2", "a")])).toHaveLength(2);
+      for (const kind of ["atoms3-print", "p4-gw", "timecard"]) {
+        expect(findHubDevicesFor("a", [dev("d1", "a", kind)])).toEqual([]);
+      }
+    });
+  });
+});
