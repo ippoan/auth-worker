@@ -134,6 +134,18 @@ const ALLOWED: ReadonlyArray<{ path: string; method: string }> = [
   //
   // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)
   { path: "/api/kintai/shift-overlaps", method: "GET" },
+  // 勤務ごとの始業・終業と、日別サマリ (分数)・暦日の按分 (分数) を、乗務員 1 人・1 か月ぶん
+  // 返す読み出し口 (受け口は ohishi-exp/rust-ichibanboshi の `src/routes/shift_days.rs`、
+  // Refs ohishi-exp/nuxt-dtako-admin#1133)。訴訟用の準備ページが、勤務の始業・終業と分数を
+  // 読むために使う。
+  //
+  // **`day-summaries` / `shift-overlaps` と同じ根拠で通している。** 受け口
+  // (`src/routes/shift_days.rs`) は `X-Tenant-ID` を読まず、読み先は
+  // `[kintai_events] tenant_id` の設定 pin で固定される。返すのは勤務の時刻と分数で、
+  // **金額は含まない**。`driver` (乗務員CD) の指定が必須で、全員ぶんを 1 回では返さない。
+  //
+  // **GET だけ。** 受け口に `POST` は無い (1 行も書かない口)
+  { path: "/api/kintai/shift-days", method: "GET" },
   // 取り込み後の変更記録を返す読み出し口 (受け口は ohishi-exp/rust-ichibanboshi#320 の
   // `src/routes/change_log.rs`、Refs ohishi-exp/nuxt-dtako-admin#1133・受け側の relay route
   // は ohishi-exp/nuxt-dtako-admin#1137)。訴訟用の準備ページから「打刻の取り込み後の
