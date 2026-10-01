@@ -12,6 +12,7 @@ import {
   handleDeviceSetupGw,
   handleDeviceSetupBus5v,
   handleDeviceSetupBpStatus,
+  handleDeviceSetupBpUnbond,
   handleDeviceSetupReboot,
   handleDeviceSetupSite,
   handleDeviceSetupDevDevice,
@@ -162,6 +163,19 @@ describe("handleDeviceSetupPage", () => {
     expect(html).toContain("未対応 (OTA が必要)");
     // 未接続の端末は照会しない (version と同じ isConn ガード)
     expect(html).toContain('if (isConn) queryBpStatus(d.device_id, bpSpan);');
+    // 血圧計のボンドを外すボタン (Refs ippoan/alc-app#401): 文言・確認・送信口・結果の出し分け。
+    // 出す条件は血圧計の照会と同じ (接続中だけ。applyConnected で切り替える)
+    expect(html).toContain("血圧計のボンドを外す");
+    expect(html).toContain(
+      "この端末の血圧計のボンドを外しますか? (外すと、もう一度ペアリングするまで、この端末で自動点呼を使えません)",
+    );
+    expect(html).toContain("/device/setup/bp_unbond");
+    expect(html).toContain("外す指示を送りました");
+    expect(html).toContain("点呼中または更新中のため外せません。終わってからもう一度押してください");
+    expect(html).toContain("setTimeout(() => queryBpStatus(deviceId, bpSpan), 3000);");
+    expect(html).toContain('bpUnbondBtn.style.display = isConn ? "" : "none";');
+    expect(html).toContain('if (row.bpUnbondBtn) row.bpUnbondBtn.style.display = "";');
+    expect(html).toContain('if (row.bpUnbondBtn) row.bpUnbondBtn.style.display = "none";');
     // dev ビルド選択は developer 以外には表示しない (alc-app-s3#44)
     expect(html).not.toContain('id="dev-build-cores3"');
     // AtomS3 印刷ブリッジのプリンター宛先 (PRINTER ADDR) 設定 UI (Refs #395、
@@ -1318,6 +1332,99 @@ describe("handleDeviceSetupBus5v / handleDeviceSetupReboot", () => {
 });
 
 /**
+ * 血圧計のボンドを外す指示 (Refs ippoan/alc-app#401)。reboot と同型の書き込み系:
+ * 認可は共通前処理 `deviceCommandRequest` (read-only の token の拒否は token_kind 別の
+ * 網羅のブロックで検査)。結果 (`{ok:true}` / `{ok:false,error:"busy"}` / 空 ack) の
+ * 出し分けは client JS (`unbondBp`) の責務で、recorder の payload は不透過に通る。
+ */
+describe("handleDeviceSetupBpUnbond", () => {
+  function mockRecorder(handler: (req: Request) => Response) {
+    const calls: Array<{ url: string; body: string }> = [];
+    const fetcher = {
+      async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+        const req = new Request(input as string, init);
+        calls.push({ url: req.url, body: init?.body ? String(init.body) : "" });
+        return handler(req);
+      },
+    };
+    return { fetcher, calls };
+  }
+
+  async function okHeaders(): Promise<Record<string, string>> {
+    return { ...(await opCookie()), Origin: ISSUER };
+  }
+
+  async function unbondEnv(recorder: unknown) {
+    const env = makeEnv({ ALC_RECORDER: recorder, INTERNAL_SHARED_SECRET: "shared-abc" });
+    const cred = (await (
+      await handleDeviceSetupPair(
+        postJson("/device/setup/pair", { label: "cores3" }, await okHeaders()),
+        env,
+      )
+    ).json()) as PairResponse;
+    return { env, deviceId: cred.device_id };
+  }
+
+  it("テナント管理者: action:bp_unbond (引数なし) を 1 回転送し command id を返す", async () => {
+    const { fetcher, calls } = mockRecorder(
+      () => new Response(JSON.stringify({ id: "ub-1" }), { status: 202 }),
+    );
+    const { env, deviceId } = await unbondEnv(fetcher);
+    const res = await handleDeviceSetupBpUnbond(
+      postJson("/device/setup/bp_unbond", { device_id: deviceId }, await okHeaders()),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "ub-1" });
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.url).toContain(`/tenants/tenant-1/devices/${deviceId}/command`);
+    expect(JSON.parse(calls[0]!.body)).toEqual({ payload: { action: "bp_unbond" } });
+  });
+
+  it("session なし 401 / bad origin 403 / device_id なし 400 (recorder を叩かない)", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env, deviceId } = await unbondEnv(fetcher);
+    expect(
+      (await handleDeviceSetupBpUnbond(postJson("/device/setup/bp_unbond", { device_id: deviceId }), env))
+        .status,
+    ).toBe(401);
+    expect(
+      (
+        await handleDeviceSetupBpUnbond(
+          postJson(
+            "/device/setup/bp_unbond",
+            { device_id: deviceId },
+            { ...(await opCookie()), Origin: "https://evil.example" },
+          ),
+          env,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (await handleDeviceSetupBpUnbond(postJson("/device/setup/bp_unbond", {}, await okHeaders()), env))
+        .status,
+    ).toBe(400);
+    expect(calls.length).toBe(0);
+  });
+
+  it("他テナントの device_id は 403 not_your_device (recorder を叩かない)", async () => {
+    const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+    const { env } = await unbondEnv(fetcher);
+    const otherHeaders = { ...(await opCookie({ tenant_id: "tenant-2" })), Origin: ISSUER };
+    const other = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "z" }, otherHeaders), env)
+    ).json()) as PairResponse;
+    const res = await handleDeviceSetupBpUnbond(
+      postJson("/device/setup/bp_unbond", { device_id: other.device_id }, await okHeaders()),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "not_your_device" });
+    expect(calls.length).toBe(0);
+  });
+});
+
+/**
  * 血圧計のボンド状態照会 (Refs #574, ippoan/alc-app-s3#250)。version/battery/bus5v と
  * 完全に同型: 認可の 3 段は共通前処理 `deviceCommandRequest` + `sendDeviceCommand` 由来。
  * ★ 4 状態 (ボンド済み/未ボンド/まだ確認できていない/未対応) の出し分けは client JS
@@ -1538,6 +1645,19 @@ describe("dev / device-key token: /device/setup の書き込み口を弾く", ()
         { device_id: deviceId, url: "https://fw.example.com/app.bin" },
         await tokenHeaders(tokenKind),
       ),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    expect(calls.length).toBe(0);
+  });
+
+  // 書き込み系 (ボンドを外す)。照会 (bp_status) と違い read-only の token は拒否する。
+  it.each(["dev", "device-key"])("POST /device/setup/bp_unbond は token_kind=%s で 403", async (tokenKind) => {
+    const { fetcher, calls } = mockRecorder(() => new Response(JSON.stringify({ id: "x" }), { status: 202 }));
+    const { env, deviceId } = await envWithDevice(fetcher);
+    const res = await handleDeviceSetupBpUnbond(
+      postJson("/device/setup/bp_unbond", { device_id: deviceId }, await tokenHeaders(tokenKind)),
       env,
     );
     expect(res.status).toBe(403);

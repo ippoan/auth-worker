@@ -865,6 +865,26 @@ export async function handleDeviceSetupReboot(request: Request, env: Env): Promi
 }
 
 /**
+ * POST /device/setup/bp_unbond — 接続中デバイスへ血圧計のボンドを外す指示を送る
+ * (Refs ippoan/alc-app#401)。body: `{ device_id }`。引数なしの `{action:"bp_unbond"}`。
+ *
+ * 結果は `/device/setup/ota/:id` で `{ok:true}` (受理しただけ。実際に外れたかは返らない —
+ * 結果は `bp_status` の照会で見る) / `{ok:false, error:"busy"}` (点呼中・OTA 中)。
+ * 未対応の古い firmware は空の ack (`isOldFirmwareResult`)。
+ *
+ * ★ 書き込み系。`bp_status` / `bus5v` と違い `deviceCommandRequest` の第 4 引数を渡さない
+ * (既定の false = 読み取り専用の token (dev / device-key) は拒否)。照会の形を写して
+ * `true` を渡すと、その token でボンドを外せてしまう。
+ */
+export async function handleDeviceSetupBpUnbond(request: Request, env: Env): Promise<Response> {
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
+  return commandIdResponse(
+    await sendDeviceCommand(env, pre.session.tenantId, pre.deviceId, { action: "bp_unbond" }),
+  );
+}
+
+/**
  * GET /device/setup/latest?kind= — 公開中の最新 firmware バージョン (Pages の
  * 機種別 manifest の `version`)。web が device のバージョンと突き合わせて
  * 「更新必要か」を判定する。kind 省略時は cores3 (後方互換)。取得不可は
@@ -1342,6 +1362,16 @@ async function loadDevices() {
       const bpSpan = document.createElement("span");
       bpSpan.textContent = isConn ? "照会中..." : "—";
       bpTd.appendChild(bpSpan);
+      // ボンドを外す (WS bp_unbond コマンド、Refs ippoan/alc-app#401)。出す条件は
+      // 血圧計の照会と同じ (接続中だけ。接続の切替は applyConnected)。
+      const bpUnbondBtn = document.createElement("button");
+      bpUnbondBtn.className = "small";
+      bpUnbondBtn.textContent = "血圧計のボンドを外す";
+      bpUnbondBtn.style.marginLeft = ".35rem";
+      bpUnbondBtn.style.display = isConn ? "" : "none";
+      bpUnbondBtn.title = "この端末に登録された血圧計のボンドを外します";
+      bpUnbondBtn.addEventListener("click", () => unbondBp(d.device_id, bpSpan));
+      bpTd.appendChild(bpUnbondBtn);
       tr.appendChild(bpTd);
 
       // 更新セル: 更新あり時のみ赤ボタン / 最新なら「最新」表示 + 進捗
@@ -1472,7 +1502,7 @@ async function loadDevices() {
       tr.appendChild(reregTd);
 
       body.appendChild(tr);
-      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, bpSpan, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bus5vChkBtn, rebootBtn, bar, barFill, msg, otaNote });
+      ROWS.set(d.device_id, { kind: d.kind, dot, connText, verSpan, bpSpan, bpUnbondBtn, btn, forceBtn, battBtn, gwBtn, gwChkBtn, bus5vChkBtn, rebootBtn, bar, barFill, msg, otaNote });
       if (isConn) queryVersion(d.device_id, d.kind, verSpan, btn, otaNote);
       if (isConn) queryBpStatus(d.device_id, bpSpan);
     }
@@ -1515,6 +1545,7 @@ function applyConnected(deviceId, isConn) {
   if (isConn) {
     row.verSpan.textContent = "照会中...";
     row.bpSpan.textContent = "照会中...";
+    if (row.bpUnbondBtn) row.bpUnbondBtn.style.display = "";
     row.btn.style.display = "none";
     row.btn.disabled = true;
     row.otaNote.textContent = "確認中...";
@@ -1533,6 +1564,7 @@ function applyConnected(deviceId, isConn) {
   } else {
     row.verSpan.textContent = "—";
     row.bpSpan.textContent = "—";
+    if (row.bpUnbondBtn) row.bpUnbondBtn.style.display = "none";
     row.btn.disabled = true;
     row.btn.classList.remove("update");
     row.btn.style.display = "";
@@ -1907,6 +1939,28 @@ async function queryBpStatus(deviceId, bpSpan) {
   if (isOldFirmwareResult(p)) { bpSpan.textContent = "未対応 (OTA が必要)"; return; }
   if (p.bp_read === false) { bpSpan.textContent = "まだ確認できていません (しばらく待って再照会)"; return; }
   bpSpan.textContent = p.bp_bonded ? "ボンド済み" : "未ボンド";
+}
+
+// 血圧計のボンドを外す (WS bp_unbond コマンド、Refs ippoan/alc-app#401)。
+// 結果 {ok:true} は「受理した」だけで、実際に外れたかは返らない。firmware はスキャン
+// 1 周ぶん遅れて状態が変わるので、3 秒後に queryBpStatus で表示を読み直す。
+// {ok:false, error:"busy"} は点呼中・OTA 中 (担保は firmware)。
+async function unbondBp(deviceId, bpSpan) {
+  if (!confirm("この端末の血圧計のボンドを外しますか? (外すと、もう一度ペアリングするまで、この端末で自動点呼を使えません)")) return;
+  const p = await sendAndPoll("/device/setup/bp_unbond", { device_id: deviceId }, bpSpan, "血圧計のボンド解除",
+    (x) => x && (typeof x.ok === "boolean" || isOldFirmwareResult(x)));
+  if (!p) return;
+  if (isOldFirmwareResult(p)) { bpSpan.textContent = "未対応 (OTA が必要)"; return; }
+  if (p.ok === true) {
+    bpSpan.textContent = "外す指示を送りました";
+    setTimeout(() => queryBpStatus(deviceId, bpSpan), 3000);
+    return;
+  }
+  if (p.error === "busy") {
+    bpSpan.textContent = "点呼中または更新中のため外せません。終わってからもう一度押してください";
+    return;
+  }
+  bpSpan.textContent = "血圧計のボンド解除に失敗: " + (p.error || p.message || "不明なエラー");
 }
 
 // 再起動 (WS reboot コマンド)。
