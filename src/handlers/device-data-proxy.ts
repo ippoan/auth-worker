@@ -181,18 +181,20 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * method + path 許可表 (Refs ippoan/alc-app#337)。
  *
  * **入れるのは点呼予定の CRUD (`/api/tenko/schedules*`) と、遠隔点呼モニター
- * (alc-app の `TenkoRemoteAdminView.vue`) が実際に呼ぶ口だけ** (Refs ippoan/alc-app#387):
- * 読み取り 5 本 (`GET /api/employees`、`GET /api/employees/{id}`、
- * `GET /api/employees/by-code/{code}`、`GET /api/tenko/sessions/{id}`、
- * `GET /api/tenko/driver-info/{id}`) と、判定 1 本
+ * (alc-app の `TenkoRemoteAdminView.vue`) と IT点呼の受け画面が実際に呼ぶ口だけ**
+ * (Refs ippoan/alc-app#387): 読み取り 6 本 (`GET /api/employees`、`GET /api/employees/{id}`、
+ * `GET /api/employees/by-code/{code}`、`GET /api/tenko/sessions` (一覧)、
+ * `GET /api/tenko/sessions/{id}`、`GET /api/tenko/driver-info/{id}`) と、判定 1 本
  * (`POST /api/tenko/sessions/{id}/judgment`)。足りない口が出たらその都度ここに 1 行足す (既定拒否)。
+ *
+ * 一覧 (`GET /api/tenko/sessions`) は、IT点呼の受け画面が「未完了の IT点呼」を
+ * `?tenko_method=…&judgment_pending=true` で引く口 (query は照合に入らずそのまま転送される)。
+ * 開発用の鍵に限らず席の鍵すべてに開く。同じ正規表現の GET は `KIOSK_ROUTES` に既に在り、
+ * 新しい種類の到達面ではない。開くのはこの GET 1 本だけで、`/sessions/start` や `PUT`・`POST` は開けない。
  *
  * **入れない口 (モニターが呼ばない、または席が行を持たない)**:
  * - `GET /api/employees/face-data` — tenant 全員の生体情報。モニターからの呼び出しが 0 件。
- * - `GET /api/tenko/sessions` (一覧) — モニターからの呼び出しが 0 件。
  * - `GET /api/devices/settings/{id}` — 運行管理者席は devices に行を持たない。
- *
- * 一覧は、開発用の鍵 (`dev_device === true`) にだけ下の `DEV_TENKO_MANAGER_ROUTES` で開く。
  *
  * **判定の POST は運行管理者の鍵すべてに通す。** 「dev の鍵だけ」に絞るのは backend
  * (rust-alc-api) の仕事で、`X-Device-Role` と `X-Device-Dev` を見て判断する。ここでは
@@ -228,6 +230,7 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/employees$/ },
   { method: "GET", pattern: new RegExp(`^/api/employees/${UUID_SEGMENT}$`) },
   { method: "GET", pattern: /^\/api\/employees\/by-code\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/sessions$/ },
   { method: "GET", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}$`) },
   { method: "GET", pattern: new RegExp(`^/api/tenko/driver-info/${UUID_SEGMENT}$`) },
   { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/judgment$`) },
@@ -249,24 +252,11 @@ const DEV_KIOSK_RECORD_ROUTES: ReadonlyArray<RegExp> = [
 ];
 
 /**
- * dev の鍵 (`dev_device === true` の `device-tenko-manager`) が、点呼セッションの一覧を引く口
- * (Refs ippoan/alc-app#387)。IT点呼の運行管理者側の専用画面が「未完了の IT点呼」を
- * `GET /api/tenko/sessions?tenko_method=…&judgment_pending=true` で引く (query は照合に
- * 入らず、そのまま転送される)。backend は `X-Device-Dev` で dev の行だけを返す。
- *
- * `TENKO_MANAGER_ROUTES` に入れないのは、その画面がテストが済むまで dev の鍵の席にしか
- * 出ないため — 本番の運行管理者の鍵には、呼ぶ画面が無い口を開かない (上の「入れない口」)。
- * IT点呼を通常の点呼へ統合するときに、この行を `TENKO_MANAGER_ROUTES` へ移してこの表を消す。
- */
-const DEV_TENKO_MANAGER_ROUTES: ReadonlyArray<RegExp> = [/^\/api\/tenko\/sessions$/];
-
-/**
  * role → dev の鍵 (`dev_device === true`) にだけ追加で開く GET の表。`METHOD_ROUTE_TABLES` が
  * 通さなかった要求についてだけ引く。ここに無い role の dev の鍵は、追加の口を持たない。
  */
 const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map([
   [DEVICE_ROLE_KIOSK, DEV_KIOSK_RECORD_ROUTES],
-  [DEVICE_ROLE_TENKO_MANAGER, DEV_TENKO_MANAGER_ROUTES],
 ]);
 
 /**
@@ -350,8 +340,7 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
     const matched = methodRoutes.some(
       (r) => r.method === request.method && r.pattern.test(backendPath),
     );
-    // dev の鍵にだけ開く GET (キオスクの記録簿 / 運行管理者のセッション一覧) は、role の
-    // 許可表が false のときだけ見る (既存の判定順は不変)。
+    // dev の鍵にだけ開く GET (キオスクの記録簿) は、role の許可表が false のときだけ見る (既存の判定順は不変)。
     const devExtra =
       !matched &&
       payload.dev_device === true &&
