@@ -325,6 +325,8 @@ export async function createDeviceCredential(
  * `devDevice` (開発用の鍵か、Refs ippoan/alc-app#387) は**明示されたときだけ**その値で書く。
  * 省略 (`undefined`) なら置き換え前の record の値を引き継ぐ (新規は非 dev) — 再認証で
  * 開発用の端末が黙って本番になることも、本番の端末が開発用になることも無い。
+ * **既に失効している旧 record からは引き継がない** (新規と同じ非 dev): ラベル索引は失効しても
+ * 残るので、引き継ぐと、開発用の端末を失効した後に同じラベルで登録した別の機体が黙って開発用になる。
  * 明示してよい呼び出し元かどうか (開発者の session か) の検査は呼び出し側の責務。
  */
 export async function createDeviceCredentialReplacingLabel(
@@ -340,7 +342,8 @@ export async function createDeviceCredentialReplacingLabel(
   const previousDeviceId = await env.AUTH_CONFIG.get(indexKey);
   let carryDevDevice = false;
   if (previousDeviceId) {
-    carryDevDevice = (await getDeviceRecord(env, previousDeviceId))?.dev_device === true;
+    const previous = await getDeviceRecord(env, previousDeviceId);
+    carryDevDevice = previous?.dev_device === true && previous.revoked !== true;
     await revokeDeviceCredential(env, previousDeviceId);
   }
 

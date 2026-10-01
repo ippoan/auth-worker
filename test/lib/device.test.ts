@@ -625,6 +625,23 @@ describe("dev_device (開発用の鍵、Refs ippoan/alc-app#387)", () => {
     expect((await getDeviceRecord(env, second.device_id))?.dev_device).toBe(true);
   });
 
+  it("createDeviceCredentialReplacingLabel: 置き換え前が dev_device: true でも失効済みなら引き継がない (新規と同じ非 dev)", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const first = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW, DEVICE_ROLE_HUB, undefined, true);
+    // 失効してもラベル索引は残る — 同じラベルで別の機体を登録すると、索引は失効済みの record を指す
+    await revokeDeviceCredential(env, first.device_id);
+    expect((await getDeviceRecord(env, first.device_id))?.dev_device).toBe(true);
+
+    const second = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW);
+    expect(second.device_id).not.toBe(first.device_id);
+    expect(second.record).not.toHaveProperty("dev_device");
+    expect(await getDeviceRecord(env, second.device_id)).not.toHaveProperty("dev_device");
+    // 明示は失効済みの旧 record に関わらずその値で書く
+    await revokeDeviceCredential(env, second.device_id);
+    const third = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW, DEVICE_ROLE_HUB, undefined, true);
+    expect((await getDeviceRecord(env, third.device_id))?.dev_device).toBe(true);
+  });
+
   it("createDeviceCredentialReplacingLabel: 置き換え前に dev_device が無ければ新 record にも無い", async () => {
     const env = { AUTH_CONFIG: createMockKV() };
     await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW);

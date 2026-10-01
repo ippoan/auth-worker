@@ -1940,6 +1940,19 @@ describe("handleDeviceSetupPair の dev_device (Refs ippoan/alc-app#387)", () =>
     expect((await getDeviceRecord(env, dev.device_id))?.revoked).toBe(true);
   });
 
+  it("明示なし + 置き換えで旧が dev かつ失効済み → 新は本番 (失効済みからは引き継がない)", async () => {
+    const env = makeEnv();
+    const dev = (await (
+      await pair(env, { label: "cores3", replace_label: true, dev_device: true }, await devHeaders())
+    ).json()) as PairResponse;
+    await revokeDeviceCredential(env, dev.device_id);
+    // 開発者でない管理者が、同じ (既定の) ラベルで別の機体を通常ペアリングする
+    const res = await pair(env, { label: "cores3", replace_label: true }, await opHeaders());
+    expect(res.status).toBe(201);
+    const next = (await res.json()) as PairResponse;
+    expect(await getDeviceRecord(env, next.device_id)).not.toHaveProperty("dev_device");
+  });
+
   it("明示なし + 置き換えで旧が本番 → 新も本番 / 明示なし + 新規 → 本番 (開発者の session でも)", async () => {
     const env = makeEnv();
     await pair(env, { label: "a", replace_label: true }, await opHeaders());

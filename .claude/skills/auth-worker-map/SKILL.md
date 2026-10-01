@@ -138,7 +138,9 @@ Google ログイン直後の本番状態が再現でき、ページ側の門番 
     新規は非 dev。開発者でない運用者の再ペアリングと `/device/pair-internal` (shared secret。`dev_device` を
     受けない = 常に明示なし) は値を変えられない — 開発用の端末が黙って本番にならず、本番の端末が
     開発用にもならない。引き継ぎの実体は `lib/device.ts::createDeviceCredentialReplacingLabel`
-    (第 7 引数 `devDevice` が `undefined` なら旧 record の値)。
+    (第 7 引数 `devDevice` が `undefined` なら旧 record の値)。**既に失効している旧 record からは引き継がない**
+    (新規と同じ非 dev) — ラベル索引は失効しても残るので、引き継ぐと、開発用の端末を失効した後に同じラベルで
+    登録した別の機体が黙って開発用になる。
   - 明示して書いたときだけ監査ログ `{event:"dev_device_set", registry:"device"|"alarm-key", dev_device}`
     (`logDevDeviceSet`。鍵の id・tenant・メールアドレスは出さない)。
   - 本番の record は**欄ごと持たない** (`false` を書かない)。
