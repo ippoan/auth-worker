@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:4e3202f25e73301fcfd445dbce17787355ff401f
+generated-from: auth-worker:e1aad4f077e3225c103feff5aa231a6eb65d79ab
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
@@ -159,6 +159,19 @@ Google ログイン直後の本番状態が再現でき、ページ側の門番 
   ログインの JWT に環境を示す claim が無いので、staging で発行された cookie は本番でも通る。
   既存の書き込み口 (登録・失効・拠点 ID) と同じ根で、この口の強さも署名の秘密の保持者と
   staging を含む backend の利用者表に依存する。
+
+## 血圧計のボンドを外す (`POST /device/setup/bp_unbond`、Refs ippoan/alc-app#401)
+
+`device-setup.ts::handleDeviceSetupBpUnbond`。body `{device_id}` → 端末へ `{action:"bp_unbond"}` (引数なし) を送り
+command id を返す。結果は `/device/setup/ota/:id` で `{ok:true}` (受理しただけ) / `{ok:false,error:"busy"}`
+(点呼中・OTA 中) / 古いファームは空 ack。
+
+- **書き込み系**: `deviceCommandRequest` の第 4 引数 (read-only token 許可) を**渡さない**ので dev / device-key の
+  token は 403 `dev_token_write_forbidden`。**照会の `bp_status` / `bus5v` の形を写さない** (写すと
+  その token でボンドを外せる)。写す先例は `reboot`。
+- 実際に外れたかは返らない。**結果は `bp_status` の照会で見る** (画面は受理の 3 秒後に `queryBpStatus` を呼び直す)。
+- 画面は血圧計の列 (`bpSpan`) の隣のボタン。出す条件は照会と同じ (接続中だけ、`applyConnected` で切替)。
+- MCP の道具からは送れない (`mcp-tools.ts` は action 固定。足さない)。
 
 ## CCoW から見た auth-worker
 

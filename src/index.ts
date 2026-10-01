@@ -109,6 +109,7 @@ import {
   handleDeviceSetupGw,
   handleDeviceSetupBus5v,
   handleDeviceSetupBpStatus,
+  handleDeviceSetupBpUnbond,
   handleDeviceSetupReboot,
   handleDeviceSetupSite,
   handleDeviceSetupDevDevice,
@@ -997,6 +998,10 @@ export default {
           // (Refs #574, ippoan/alc-app-s3#250)
           case "/device/setup/bp_status":
             return await handleDeviceSetupBpStatus(request, env);
+          // 血圧計のボンドを外す指示 (recorder command {action:bp_unbond})。POST。
+          // 書き込み系 (読み取り専用 token は拒否)。(Refs ippoan/alc-app#401)
+          case "/device/setup/bp_unbond":
+            return await handleDeviceSetupBpUnbond(request, env);
           // 再起動トリガ (recorder command {action:reboot})。POST。
           case "/device/setup/reboot":
             return await handleDeviceSetupReboot(request, env);
