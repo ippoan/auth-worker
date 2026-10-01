@@ -7,10 +7,11 @@
  * VoiceS3R を USB で繋いでいる」ことを示す 2 要素目の認証に使う。
  *
  *   POST /device/setup/alarm-key         — {pubkey, label, usage} → 登録
+ *                                          ({pubkey, replaces_pubkey} で作り直した鍵への差し替え。
+ *                                          dev_device で開発用の鍵として登録 — 明示できるのは
+ *                                          開発者の Google session だけ。Refs ippoan/alc-app#387)
  *   GET  /device/setup/alarm-keys        — operator の tenant の一覧
  *   POST /device/setup/alarm-key/revoke  — {fingerprint} → 失効 (削除しない)
- *   POST /device/setup/alarm-key/dev-device — {fingerprint, dev_device} → 開発用にする・外す
- *                                          (開発者の Google session だけ。Refs ippoan/alc-app#387)
  *
  * 鍵は登録時に用途 (`usage`) を 1 つだけ持つ。`kiosk` は `/device/alarm-token`
  * (CoreS3 の運行者端末)、`tenko-manager` は同じく `/device/alarm-token`
@@ -33,8 +34,7 @@
  */
 
 import type { Env } from "../index";
-import { adminRequest, isReadOnlyToken } from "./device-setup";
-import { isDeveloperGoogleSession } from "../lib/developer";
+import { adminRequest, explicitDevDevice, isReadOnlyToken, logDevDeviceSet } from "./device-setup";
 
 function jsonNoStore(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -69,7 +69,7 @@ export interface AlarmKeyRecord {
   created_at: number;
   /** 失効時刻 (unix 秒)。未設定 = 有効。 */
   revoked_at?: number;
-  /** 開発用の鍵。この鍵で書いた記録は本番の記録簿に出ない。立てる口は #c387-13。 */
+  /** 開発用の鍵。この鍵で書いた記録は本番の記録簿に出ない。登録時に決まり、後から書き換える口は無い。 */
   dev_device?: boolean;
 }
 
@@ -166,6 +166,15 @@ async function readTenantIndex(env: Env, tenantId: string): Promise<string[]> {
 /**
  * POST /device/setup/alarm-key — {pubkey, label, usage} を検証し、operator の
  * session tenant で record を作って登録する。
+ *
+ * **差し替え (`replaces_pubkey`)**: 機体が鍵を作り直した (`AUTH KEYGEN FORCE`) ときに、
+ * 作り直す前の公開鍵を添える。その record (同じ tenant・未失効) の `label` と `usage` を
+ * 新しい record に写し (body の label / usage は見ない)、新しい record を保存した**後に**
+ * 古い record を失効させる。古い record が見つからなければ 409 `replaced_key_not_found` で
+ * 何も書かない。
+ *
+ * **`dev_device`** (Refs ippoan/alc-app#387): 規則は `explicitDevDevice` の 1 つ。明示が無ければ
+ * 差し替えは古い record の値を引き継ぎ、新規は非 dev。
  */
 export async function handleAlarmKeyRegister(request: Request, env: Env): Promise<Response> {
   const pre = await adminRequest(request, env);
@@ -174,18 +183,46 @@ export async function handleAlarmKeyRegister(request: Request, env: Env): Promis
   if (isReadOnlyToken(pre.session)) return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
 
   const body = await readJsonBody(request);
+  const devDevice = explicitDevDevice(body, pre.session);
+  if (devDevice instanceof Response) return devDevice;
   const fingerprint = await validatePubkeyAndFingerprint(body.pubkey);
   if (!fingerprint) {
     return jsonNoStore({ error: "invalid pubkey (base64url of 32 raw bytes required)" }, 400);
   }
-  if (!isValidLabel(body.label)) {
-    return jsonNoStore({ error: "label は 1〜64 文字で必要です" }, 400);
+
+  // 差し替え元。形式不正・不在・他 tenant・失効済み・用途なしの旧 record は同じ応答にする
+  // (record の有無や所有 tenant を漏らさない)。
+  let replaced: { fingerprint: string; record: AlarmKeyRecord } | null = null;
+  if (body.replaces_pubkey !== undefined) {
+    const oldFingerprint = await validatePubkeyAndFingerprint(body.replaces_pubkey);
+    const old = oldFingerprint ? await getAlarmKeyRecord(env, oldFingerprint) : null;
+    if (
+      !oldFingerprint ||
+      !old ||
+      old.tenant_id !== pre.session.tenantId ||
+      old.revoked_at !== undefined ||
+      !isAlarmKeyUsage(old.usage)
+    ) {
+      return jsonNoStore({ error: "replaced_key_not_found" }, 409);
+    }
+    replaced = { fingerprint: oldFingerprint, record: old };
   }
-  const label = body.label as string;
-  if (!isAlarmKeyUsage(body.usage)) {
-    return jsonNoStore({ error: `usage は ${ALARM_KEY_USAGES.join(" / ")} のどれかで必要です` }, 400);
+
+  let label: string;
+  let usage: AlarmKeyUsage;
+  if (replaced) {
+    label = replaced.record.label;
+    usage = replaced.record.usage;
+  } else {
+    if (!isValidLabel(body.label)) {
+      return jsonNoStore({ error: "label は 1〜64 文字で必要です" }, 400);
+    }
+    label = body.label;
+    if (!isAlarmKeyUsage(body.usage)) {
+      return jsonNoStore({ error: `usage は ${ALARM_KEY_USAGES.join(" / ")} のどれかで必要です` }, 400);
+    }
+    usage = body.usage;
   }
-  const usage = body.usage;
 
   const existing = await getAlarmKeyRecord(env, fingerprint);
   if (existing) {
@@ -199,6 +236,8 @@ export async function handleAlarmKeyRegister(request: Request, env: Env): Promis
     label,
     usage,
     created_at: now,
+    // 開発用の鍵は欄を立て、本番は欄ごと持たない (未設定 = 非 dev の表現を 1 つに保つ)。
+    ...((devDevice ?? replaced?.record.dev_device === true) ? { dev_device: true } : {}),
   };
   await env.AUTH_CONFIG.put(recordKey(fingerprint), JSON.stringify(record));
 
@@ -210,6 +249,13 @@ export async function handleAlarmKeyRegister(request: Request, env: Env): Promis
     index.push(fingerprint);
     await env.AUTH_CONFIG.put(tenantIndexKey(pre.session.tenantId), JSON.stringify(index));
   }
+
+  // 新しい鍵が使える状態になってから古い鍵を落とす (途中で失敗しても鍵が 0 本にならない)。
+  if (replaced) {
+    replaced.record.revoked_at = now;
+    await env.AUTH_CONFIG.put(recordKey(replaced.fingerprint), JSON.stringify(replaced.record));
+  }
+  if (devDevice !== undefined) logDevDeviceSet("alarm-key", devDevice);
 
   return jsonNoStore({ fingerprint });
 }
@@ -271,50 +317,4 @@ export async function handleAlarmKeyRevoke(request: Request, env: Env): Promise<
   }
 
   return jsonNoStore({ fingerprint, revoked_at: record.revoked_at });
-}
-
-/**
- * POST /device/setup/alarm-key/dev-device — {fingerprint, dev_device} で鍵を
- * 開発用にする・外す (Refs ippoan/alc-app#387)。
- *
- * **開発者アカウントが Google でログインした session だけ** (`isDeveloperGoogleSession`)。
- * 開発用にするとその端末の記録が本番の記録簿から消え、webhook と通知も止まるため、
- * テナントの管理者にも付けさせない。検査は record を引く前に置く (開発者でない者に
- * 鍵の有無を漏らさない)。失効済みの鍵は書き換えない (409)。
- *
- * 発行済みの端末 JWT は claim に前の値を持ったまま期限 (最大 1 時間) まで生きる。
- * 反映は次の `/device/alarm-token` から。
- */
-export async function handleAlarmKeyDevDevice(request: Request, env: Env): Promise<Response> {
-  const pre = await adminRequest(request, env);
-  if (pre instanceof Response) return pre;
-  if (isReadOnlyToken(pre.session)) return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
-  if (!isDeveloperGoogleSession(pre.session)) {
-    return jsonNoStore({ error: "developer_google_session_required" }, 403);
-  }
-
-  const body = await readJsonBody(request);
-  const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint : "";
-  if (!fingerprint) return jsonNoStore({ error: "fingerprint が必要です" }, 400);
-  // boolean そのものだけ受ける ("true" や 1 を真に倒さない)。
-  const dev = body.dev_device;
-  if (typeof dev !== "boolean") {
-    return jsonNoStore({ error: "dev_device は boolean で必要です" }, 400);
-  }
-
-  const record = await getAlarmKeyRecord(env, fingerprint);
-  // revoke と同じく、不在と他 tenant は同じ応答にする (存在を漏らさない)。
-  if (!record || record.tenant_id !== pre.session.tenantId) {
-    return jsonNoStore({ error: "not_found" }, 403);
-  }
-  if (record.revoked_at !== undefined) return jsonNoStore({ error: "revoked" }, 409);
-
-  // 外すときは欄ごと消す (未設定 = 非 dev の表現を 1 つに保つ)。ほかの欄は変えない。
-  if (dev) record.dev_device = true;
-  else delete record.dev_device;
-  await env.AUTH_CONFIG.put(recordKey(fingerprint), JSON.stringify(record));
-  // 値 (fingerprint・tenant・メールアドレス) は出さない。
-  console.log(JSON.stringify({ event: "dev_device_set", registry: "alarm-key", dev_device: dev }));
-
-  return jsonNoStore({ fingerprint, dev_device: dev });
 }

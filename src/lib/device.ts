@@ -217,8 +217,9 @@ export interface DeviceRecord {
    */
   role?: string;
   /**
-   * 開発用の鍵。この鍵で書いた記録は本番の記録簿に出ない。立てる口は #c387-13
-   * (それまで全端末が未設定 = 非 dev)。`token_kind=dev` の dev ログインとは別物。
+   * 開発用の鍵。この鍵で書いた記録は本番の記録簿に出ない。**発行時 (USB で鍵を書き込む時) に
+   * 決まり、後から書き換える口は無い** — 切り替えは鍵の書き直し (旧 record は revoke)。
+   * 未設定 = 非 dev。`token_kind=dev` の dev ログインとは別物。
    */
   dev_device?: boolean;
   /**
@@ -285,6 +286,7 @@ export async function createDeviceCredential(
   now: number,
   role: string = DEVICE_ROLE,
   siteId?: string,
+  devDevice?: boolean,
 ): Promise<NewDeviceCredential> {
   const device_id = randomToken(16);
   const device_secret = randomToken(32);
@@ -300,6 +302,8 @@ export async function createDeviceCredential(
     label,
     role: normalizedRole,
     ...(resolvedSiteId ? { site_id: resolvedSiteId } : {}),
+    // 開発用の鍵は欄を立て、本番は欄ごと持たない (未設定 = 非 dev の表現を 1 つに保つ)。
+    ...(devDevice === true ? { dev_device: true } : {}),
     created_at: now,
     revoked: false,
   };
@@ -317,6 +321,13 @@ export async function createDeviceCredential(
  * (`/device/pair` browser flow 等) では蓄積していた。
  *
  * revoke 対象が既に無い/revoke 済みでも新規発行は続行する (冪等)。
+ *
+ * `devDevice` (開発用の鍵か、Refs ippoan/alc-app#387) は**明示されたときだけ**その値で書く。
+ * 省略 (`undefined`) なら置き換え前の record の値を引き継ぐ (新規は非 dev) — 再認証で
+ * 開発用の端末が黙って本番になることも、本番の端末が開発用になることも無い。
+ * **既に失効している旧 record からは引き継がない** (新規と同じ非 dev): ラベル索引は失効しても
+ * 残るので、引き継ぐと、開発用の端末を失効した後に同じラベルで登録した別の機体が黙って開発用になる。
+ * 明示してよい呼び出し元かどうか (開発者の session か) の検査は呼び出し側の責務。
  */
 export async function createDeviceCredentialReplacingLabel(
   env: DeviceKvEnv,
@@ -325,21 +336,18 @@ export async function createDeviceCredentialReplacingLabel(
   now: number,
   role: string = DEVICE_ROLE,
   siteId?: string,
+  devDevice?: boolean,
 ): Promise<NewDeviceCredential> {
   const indexKey = labelIndexKey(tenantId, label);
   const previousDeviceId = await env.AUTH_CONFIG.get(indexKey);
-  // 再認証で dev の印が消えないよう、置き換え前の record の dev_device を引き継ぐ。
   let carryDevDevice = false;
   if (previousDeviceId) {
-    carryDevDevice = (await getDeviceRecord(env, previousDeviceId))?.dev_device === true;
+    const previous = await getDeviceRecord(env, previousDeviceId);
+    carryDevDevice = previous?.dev_device === true && previous.revoked !== true;
     await revokeDeviceCredential(env, previousDeviceId);
   }
 
-  const cred = await createDeviceCredential(env, tenantId, label, now, role, siteId);
-  if (carryDevDevice) {
-    cred.record.dev_device = true;
-    await env.AUTH_CONFIG.put(KV_PREFIX + cred.device_id, JSON.stringify(cred.record));
-  }
+  const cred = await createDeviceCredential(env, tenantId, label, now, role, siteId, devDevice ?? carryDevDevice);
   await env.AUTH_CONFIG.put(indexKey, cred.device_id);
   return cred;
 }
@@ -359,26 +367,6 @@ export async function setDeviceSiteId(
   const record = await getDeviceRecord(env, deviceId);
   if (!record) return null;
   record.site_id = siteId;
-  await env.AUTH_CONFIG.put(KV_PREFIX + deviceId, JSON.stringify(record));
-  return record;
-}
-
-/**
- * 既存 device credential の `dev_device` を立てる・外す (Refs ippoan/alc-app#387)。
- * 外すときは欄ごと消す (`false` を書かない — 未設定 = 非 dev の表現を 1 つに保つ)。
- * ほかの欄は変えない。認可と対象の検査 (tenant・失効済み) は呼び出し側の責務。
- * 発行済みの token は claim に前の値を持ったまま期限 (最大 1 時間) まで生きる —
- * 反映は次の `/device/token` から。不在なら null。
- */
-export async function setDeviceDevFlag(
-  env: DeviceKvEnv,
-  deviceId: string,
-  dev: boolean,
-): Promise<DeviceRecord | null> {
-  const record = await getDeviceRecord(env, deviceId);
-  if (!record) return null;
-  if (dev) record.dev_device = true;
-  else delete record.dev_device;
   await env.AUTH_CONFIG.put(KV_PREFIX + deviceId, JSON.stringify(record));
   return record;
 }

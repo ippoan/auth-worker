@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:e1aad4f077e3225c103feff5aa231a6eb65d79ab
+generated-from: auth-worker:17654455b1340db88f42157929cf615e67575b17
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
@@ -115,23 +115,40 @@ Google ログイン直後の本番状態が再現でき、ページ側の門番 
 (`test/lib/cookies.test.ts`) が担保しているので、そこをローカルで踏み直す必要はない。
 
 
-## 端末の鍵を開発用にする (`dev_device`、Refs ippoan/alc-app#387)
+## 開発用の鍵 (`dev_device`) は USB で鍵を書き込む時点で決まる (Refs ippoan/alc-app#387)
 
 登録簿 2 種 (`DeviceRecord` = `src/lib/device.ts`、`AlarmKeyRecord` = `src/handlers/alarm-key.ts`)
-の `dev_device` を立てる・外す口。開発用の鍵で書いた記録は本番の記録簿に出ず、webhook と
-通知も止まる。
+の `dev_device`。開発用の鍵で書いた記録は本番の記録簿に出ず、webhook と通知も止まる。
 
-| path | handler | body / 応答 |
+**登録簿の旗を後から倒す口は無い** (`/device/setup/dev-device`・`/device/setup/alarm-key/dev-device`・
+`setDeviceDevFlag` は消した)。旗だけ倒しても、端末の鍵は変わらず、発行済みの token (TTL 900 秒 /
+3600 秒) と接続時に値を固定する WS が古い値のまま残り、切替の直後の点呼・打刻が本番に入った
+(2 回)。**切り替えは「USB で鍵を書き直す」** (古い鍵は revoke) の 1 通り。足し直さないこと。
+
+| 口 | body の欄 | 規則 |
 |---|---|---|
-| `POST /device/setup/dev-device` | `device-setup.ts::handleDeviceSetupDevDevice` (書き換えは `lib/device.ts::setDeviceDevFlag`) | `{device_id, dev_device}` → `{device_id, dev_device}` |
-| `POST /device/setup/alarm-key/dev-device` | `alarm-key.ts::handleAlarmKeyDevDevice` | `{fingerprint, dev_device}` → `{fingerprint, dev_device}`。失効済みは 409 `revoked` |
+| `POST /device/setup/pair` (`device-setup.ts::handleDeviceSetupPair`) | `dev_device?: boolean` | 下の「書く規則」 |
+| `POST /device/setup/alarm-key` (`alarm-key.ts::handleAlarmKeyRegister`) | `dev_device?: boolean`、`replaces_pubkey?: string` | 下の「書く規則」と「差し替え」 |
 
-- **認可は fail-closed で「開発者アカウントが Google でログインした session」だけ。**
-  順序は `adminRequest` (401 / 403 `bad_origin`) → 読み取り専用 token は 403
-  `dev_token_write_forbidden` → `isDeveloperGoogleSession` でなければ 403
-  `developer_google_session_required` → body → 対象の検査 → 書き換え。
-  テナントの管理者・LINE / LINE WORKS のログイン・dev ログイン・device-key の token は通らない。
-  開発者の検査は対象を引く前に置く (開発者でない者に鍵の有無を漏らさない)。
+- **`dev_device` を書く規則は 1 つ** (`device-setup.ts::explicitDevDevice`。2 つの口で共用):
+  - **明示 (true でも false でも) できるのは開発者アカウントが Google でログインした session だけ**
+    (`isDeveloperGoogleSession`)。それ以外が欄を送ると 403 `developer_google_session_required` で、
+    record は作られず旧 record も失効しない。boolean 以外 (文字列・数値・null) は 400。
+  - **明示が無いとき**: 置き換え (`replace_label: true` / `replaces_pubkey`) は**旧 record の値を引き継ぎ**、
+    新規は非 dev。開発者でない運用者の再ペアリングと `/device/pair-internal` (shared secret。`dev_device` を
+    受けない = 常に明示なし) は値を変えられない — 開発用の端末が黙って本番にならず、本番の端末が
+    開発用にもならない。引き継ぎの実体は `lib/device.ts::createDeviceCredentialReplacingLabel`
+    (第 7 引数 `devDevice` が `undefined` なら旧 record の値)。**既に失効している旧 record からは引き継がない**
+    (新規と同じ非 dev) — ラベル索引は失効しても残るので、引き継ぐと、開発用の端末を失効した後に同じラベルで
+    登録した別の機体が黙って開発用になる。
+  - 明示して書いたときだけ監査ログ `{event:"dev_device_set", registry:"device"|"alarm-key", dev_device}`
+    (`logDevDeviceSet`。鍵の id・tenant・メールアドレスは出さない)。
+  - 本番の record は**欄ごと持たない** (`false` を書かない)。
+- **署名鍵の差し替え (`replaces_pubkey`)**: 機体が鍵を作り直した (`AUTH KEYGEN FORCE`) ときに、作り直す前の
+  公開鍵を添える。その record (同じ tenant・未失効・用途あり) の **`label` と `usage` を新しい record に写し**
+  (body の label / usage は見ない)、新しい record を保存した**後に**古い record を失効させる。古い record が
+  見つからなければ (形式不正・不在・別 tenant・失効済みを区別せず) 409 `replaced_key_not_found` で何も書かない。
+  ラベル一致で端末と署名鍵を結ぶ処理はサーバに無い。
 - **開発者の判定は `src/lib/developer.ts` の 1 か所** (`DEVELOPER_EMAILS` / `isDeveloperEmail` /
   `isDeveloperGoogleSession`。`coverage_100.toml` 登録済み)。`isDeveloperEmail` は画面の出し分け
   だけ、サーバ側の認可は `isDeveloperGoogleSession`。`lib/admin-html.ts` の同名の定数は
@@ -141,23 +158,43 @@ Google ログイン直後の本番状態が再現でき、ページ側の門番 
   `isDeveloperGoogleSession` だけ** — ほかの認可・振り分け・introspect の応答に使わない・出さない。
   claim を足す前の cookie と、auth-worker 以外が発行し直した token (`/api/switch-org` が返す
   rust-alc-api 発行の token 等) には無いので、その session では 403 になる (Google で入り直す)。
-- `dev_device` は boolean そのものだけ受ける。外すときは**欄ごと消す** (`false` を書かない)。
-- **発行済みの token は期限 (最大 1 時間) まで前の値のまま。** `dev_device` は token の発行時に
-  claim へ焼かれ (`mintDeviceJwt`)、`/device-data-proxy` と `/auth/introspect` は claim だけを見る。
-  反映は次の `/device/token` / `/device/alarm-token` から。
+- **token の側は変えていない**: `dev_device` は token の発行時に record から claim へ焼かれ
+  (`mintDeviceJwt`。`/device/token`・`/device/alarm-token`)、`/device-data-proxy` と `/auth/introspect` は
+  claim だけを見る。鍵を書き直すと旧 record が revoke されるので、古い鍵では次の token が出ない。
 - 一覧 (`GET /device/setup/list`、`GET /device/setup/alarm-keys`) の各行に `dev_device: boolean`。
-  `/device/setup` の画面は「開発用」の印を全員に出し、切替ボタンは `IS_DEVELOPER` のときだけ出す
-  (表示の出し分け。権限の根拠は上のサーバ側の検査)。
-- **1 台の CoreS3 は 2 つの登録簿に別の行で出る** (上の「デバイス」= `DeviceRecord`、本体の測定・打刻の鍵 /
-  下の「デバイスの署名鍵」= `AlarmKeyRecord` 用途 `kiosk`、キオスクの画面の token)。サーバ側に結ぶ欄は無い。
-  片方だけ切り替えて記録が本番に入った事故 (#387) があるので、画面 (client script) が**ラベルの完全一致で
-  相方を探し**、相方が両側から見てちょうど 1 つのときだけ、切替時に相方も続けて切り替える
-  (押した行 → 相方の順に既存の口へ 2 回 POST。サーバは変えていない)。
-- 食い違い (片方だけ `dev_device`) は**全員に**赤系のバッジ (`.tag.warn`) を両方の行に出す。相方が 0 個・2 個以上の行は
-  連動も警告も無し。相方の探し方は `findKioskKeysFor` / `findHubDevicesFor` の 1 か所。
+  `/device/setup` の画面は「開発用」の印 (`devDeviceMark`) を全員に出す。
+
+### 画面の入口は 1 つ —「接続中の機体を開発用 / 本番として書き直す」
+
+`/device/setup` の「セットアップ実行」の下に、**開発者アカウントにだけ** (`isDeveloper` → HTML の出し分けと
+`IS_DEVELOPER`。権限の根拠は上のサーバ側の検査) ボタン 1 組と機種の select (`rewrite-kind`。`DEVICE_KINDS` の
+全機種)。ペアリングの画面・署名鍵の登録の画面に「開発用」のチェックは無い (新しい機体は普通に登録してから書き直す)。
+
+`rewriteConnectedDevice` は手順を持たず、既存の 2 つを引数 `rewrite` で順に呼ぶだけ (**手順の複製を作らない**):
+
+1. **端末の鍵** — `run(undefined, rewrite)` → `runCoreS3OrPrint` / `runP4Gateway`。pair の body に
+   `dev_device` を足す (`replace_label: true` は今までどおり)。**ラベル (と GW の拠点) は聞かない**:
+   `AUTH STATUS` / `cred show` が返す device_id で一覧の行を引き (`rewriteRowOf`)、その行の値で発行する
+   (フォームのラベルで発行すると、同じラベルの別の端末の鍵を失効させる)。一覧に無い機体・機種違いは止める。
+   `pairRole` を持たない機種 (bp-station・alarm = 署名鍵だけ) はこの手順を飛ばす。
+2. **署名鍵** — `registerAlarmKey(rewrite)`。`AUTH PUBKEY` で古い公開鍵を控え → `AUTH KEYGEN FORCE` →
+   `{pubkey, replaces_pubkey, dev_device}` を POST (ラベルと用途は聞かない)。`AUTH PUBKEY` が ERR
+   (鍵なし) の機体は、端末の鍵を書き直した後なら何もせず済み。P4 GW (別の console) はこの手順を飛ばす。
+3. 完了の文言 (キオスクの画面の再読み込み・古いファームは電源の入れ直し) を出し、2 つの表を読み直す。
+
+- **機体の選択 (`requestPort`) は confirm より前** — ブラウザの許可ダイアログは押した操作が有効なうちにしか
+  出せない。書き込みは confirm の後。同じ port を 2 つの手順で開き直して使う。
+- **途中で失敗すると食い違いが残る** (端末の鍵だけ替わり、署名鍵が古いまま 等)。**1 台の CoreS3 は 2 つの
+  登録簿に別の行で出る** (上の「デバイス」= `DeviceRecord`、本体の測定・打刻の鍵 / 下の「デバイスの署名鍵」=
+  `AlarmKeyRecord` 用途 `kiosk`、キオスクの画面の token) ので、画面が**ラベルの完全一致で相方を探し**
+  (`findKioskKeysFor` / `findHubDevicesFor`。相方が両側から見てちょうど 1 つのときだけ)、片方だけ
+  `dev_device` なら**全員に**赤系のバッジ (`.tag.warn`、`refreshPairWarnings`) を両方の行に出す。表示だけで、
+  書き込みはしない。直すにはもう一度書き直す。
+- `AUTH KEYGEN FORCE` の後に POST が失敗すると、機体の鍵は新しく、登録簿は古い鍵のまま (未失効) になる。
+  もう一度書き直すと `replaced_key_not_found` になるので、画面の案内どおり下の登録から登録し、古い行は手で失効する。
 - **既知の前提 (未対応)**: staging と本番は `AUTH_CONFIG` (KV) と JWT の署名の秘密を共有し、
   ログインの JWT に環境を示す claim が無いので、staging で発行された cookie は本番でも通る。
-  既存の書き込み口 (登録・失効・拠点 ID) と同じ根で、この口の強さも署名の秘密の保持者と
+  既存の書き込み口 (登録・失効・拠点 ID) と同じ根で、この規則の強さも署名の秘密の保持者と
   staging を含む backend の利用者表に依存する。
 
 ## 血圧計のボンドを外す (`POST /device/setup/bp_unbond`、Refs ippoan/alc-app#401)

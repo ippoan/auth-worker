@@ -15,7 +15,6 @@ import {
   handleDeviceSetupBpUnbond,
   handleDeviceSetupReboot,
   handleDeviceSetupSite,
-  handleDeviceSetupDevDevice,
   handleDeviceSetupBattery,
   DEVICE_KINDS,
 } from "../../src/handlers/device-setup";
@@ -1060,6 +1059,20 @@ describe("handleDeviceSetupSite (Refs #406)", () => {
     expect(res.status).toBe(400);
   });
 
+  it("管理対象外の role (DEVICE_KINDS に無い機種) の端末は 403 not_your_device", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    // 既定の role (uploader) は本ページの機種表に無い
+    const uploader = await createDeviceCredential(env, "tenant-1", "uploader", 1_700_000_000);
+    const res = await handleDeviceSetupSite(
+      postJson("/device/setup/site", { device_id: uploader.device_id }, headers),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "not_your_device" });
+    expect(await getDeviceRecord(env, uploader.device_id)).not.toHaveProperty("site_id");
+  });
+
   it("site_id を省略すると device_id 自身を既定にする (Refs #406 改訂、UIの「設定」ボタンが叩く経路)", async () => {
     const env = makeEnv();
     const headers = { ...(await opCookie()), Origin: ISSUER };
@@ -1825,200 +1838,158 @@ describe("dev / device-key token: /device/setup の書き込み口を弾く", ()
 });
 
 /**
- * 端末の鍵を開発用にする・外す口 (Refs ippoan/alc-app#387)。
- * 通すのは「開発者アカウントが Google でログインした session」だけ。
+ * 開発用かどうかは鍵を発行する時点 (`POST /device/setup/pair` の `dev_device`) で決まる
+ * (Refs ippoan/alc-app#387)。明示できるのは「開発者アカウントが Google でログインした session」だけ。
  * 開発者のメールアドレスの値はテストに書かない (登録簿の先頭を借りる)。
  */
-describe("handleDeviceSetupDevDevice (Refs ippoan/alc-app#387)", () => {
+describe("handleDeviceSetupPair の dev_device (Refs ippoan/alc-app#387)", () => {
   const DEV_EMAIL = DEVELOPER_EMAILS[0]!;
-  const PATH = "/device/setup/dev-device";
+  const PATH = "/device/setup/pair";
 
-  /** 開発者が Google で入った session (この口を通れる唯一の形)。 */
+  /** 開発者が Google で入った session (dev_device を明示できる唯一の形)。 */
   async function devHeaders(claims: Record<string, unknown> = {}): Promise<Record<string, string>> {
     return { ...(await opCookie({ email: DEV_EMAIL, idp: "google", ...claims })), Origin: ISSUER };
   }
-
-  /** tenant-1 に管理対象の端末 (cores3) を 1 台登録した env。 */
-  async function envWithDevice() {
-    const env = makeEnv();
-    const headers = { ...(await opCookie()), Origin: ISSUER };
-    const cred = (await (
-      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
-    ).json()) as PairResponse;
-    return { env, deviceId: cred.device_id };
+  /** 開発者でない管理者の session。 */
+  async function opHeaders(): Promise<Record<string, string>> {
+    return { ...(await opCookie({ idp: "google" })), Origin: ISSUER };
+  }
+  async function pair(env: Env, body: Record<string, unknown>, headers: Record<string, string>) {
+    return handleDeviceSetupPair(postJson(PATH, body, headers), env);
+  }
+  /** KV に在る device record の数 (拒否された request が何も作らないことの確認用)。 */
+  async function deviceRecordCount(env: Env): Promise<number> {
+    return (await env.AUTH_CONFIG.list({ prefix: "device:" })).keys.length;
   }
 
-  it("cookie なしは 401、Origin 違いは 403 bad_origin", async () => {
-    const { env, deviceId } = await envWithDevice();
-    const body = { device_id: deviceId, dev_device: true };
-    const noCookie = await handleDeviceSetupDevDevice(postJson(PATH, body, { Origin: ISSUER }), env);
-    expect(noCookie.status).toBe(401);
+  it("開発者 + dev_device:true → 新しい record が dev (新規でも置き換えでも)", async () => {
+    const env = makeEnv();
+    const fresh = (await (await pair(env, { label: "a", dev_device: true }, await devHeaders())).json()) as PairResponse;
+    expect((await getDeviceRecord(env, fresh.device_id))?.dev_device).toBe(true);
 
-    const badOrigin = await handleDeviceSetupDevDevice(
-      postJson(PATH, body, { ...(await devHeaders()), Origin: "https://evil.example" }),
-      env,
-    );
-    expect(badOrigin.status).toBe(403);
-    expect(await badOrigin.json()).toEqual({ error: "bad_origin" });
-    expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
+    // 本番の端末を、開発用として書き直す (旧 record は revoke)
+    const prod = (await (await pair(env, { label: "b", replace_label: true }, await opHeaders())).json()) as PairResponse;
+    expect(await getDeviceRecord(env, prod.device_id)).not.toHaveProperty("dev_device");
+    const res = await pair(env, { label: "b", replace_label: true, dev_device: true }, await devHeaders());
+    expect(res.status).toBe(201);
+    const next = (await res.json()) as PairResponse;
+    expect(next.device_id).not.toBe(prod.device_id);
+    expect((await getDeviceRecord(env, next.device_id))?.dev_device).toBe(true);
+    expect((await getDeviceRecord(env, prod.device_id))?.revoked).toBe(true);
   });
 
-  it.each(["dev", "device-key"])(
-    "開発者の email + idp=google でも token_kind=%s は 403 dev_token_write_forbidden",
-    async (tokenKind) => {
-      const { env, deviceId } = await envWithDevice();
-      const res = await handleDeviceSetupDevDevice(
-        postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders({ token_kind: tokenKind })),
-        env,
-      );
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
-      expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
-    },
-  );
+  it("開発者 + dev_device:false + 置き換えで旧が dev → 新は本番 (欄ごと無い)、旧は revoke", async () => {
+    const env = makeEnv();
+    const dev = (await (
+      await pair(env, { label: "a", replace_label: true, dev_device: true }, await devHeaders())
+    ).json()) as PairResponse;
+    const next = (await (
+      await pair(env, { label: "a", replace_label: true, dev_device: false }, await devHeaders())
+    ).json()) as PairResponse;
+    expect(await getDeviceRecord(env, next.device_id)).not.toHaveProperty("dev_device");
+    expect((await getDeviceRecord(env, next.device_id))?.revoked).toBe(false);
+    expect((await getDeviceRecord(env, dev.device_id))?.revoked).toBe(true);
+  });
 
   it.each([
     ["開発者でない管理者 (Google ログイン)", { email: "op@example.com", idp: "google" }],
     ["開発者の email だが idp なし (LINE WORKS のログイン・古い cookie)", { email: DEV_EMAIL }],
     ["開発者の email だが idp が別の値", { email: DEV_EMAIL, idp: "lineworks" }],
     ["email の無い session", { email: "", idp: "google" }],
-  ])("%s は 403 developer_google_session_required (書き換えない)", async (_name, claims) => {
-    const { env, deviceId } = await envWithDevice();
-    const res = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: deviceId, dev_device: true }, { ...(await opCookie(claims)), Origin: ISSUER }),
-      env,
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: "developer_google_session_required" });
-    expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
+  ])("%s が dev_device を送ると true でも false でも 403、record は作られず旧 record も失効しない", async (_name, claims) => {
+    const env = makeEnv();
+    const old = (await (
+      await pair(env, { label: "a", replace_label: true, dev_device: true }, await devHeaders())
+    ).json()) as PairResponse;
+    const before = await deviceRecordCount(env);
+    for (const dev of [true, false]) {
+      const res = await pair(
+        env,
+        { label: "a", replace_label: true, dev_device: dev },
+        { ...(await opCookie(claims)), Origin: ISSUER },
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "developer_google_session_required" });
+    }
+    expect(await deviceRecordCount(env)).toBe(before);
+    const still = await getDeviceRecord(env, old.device_id);
+    expect(still?.revoked).toBe(false);
+    expect(still?.dev_device).toBe(true);
   });
 
-  it("開発者でない者には、存在する鍵と存在しない鍵で応答が同じ (有無を漏らさない)", async () => {
-    const { env, deviceId } = await envWithDevice();
-    const headers = { ...(await opCookie({ idp: "google" })), Origin: ISSUER };
-    const existing = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: deviceId, dev_device: true }, headers),
-      env,
-    );
-    const missing = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: "missing", dev_device: true }, headers),
-      env,
-    );
-    expect(existing.status).toBe(403);
-    expect(missing.status).toBe(existing.status);
-    expect(await missing.text()).toBe(await existing.text());
+  it.each(["dev", "device-key"])(
+    "開発者の email + idp=google でも token_kind=%s は 403 dev_token_write_forbidden (今までどおり)",
+    async (tokenKind) => {
+      const env = makeEnv();
+      const res = await pair(env, { label: "a", dev_device: true }, await devHeaders({ token_kind: tokenKind }));
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+      expect(await deviceRecordCount(env)).toBe(0);
+    },
+  );
+
+  it("明示なし + 置き換えで旧が dev → 新も dev (引き継ぎ。開発者でない運用者の再ペアリング)", async () => {
+    const env = makeEnv();
+    const dev = (await (
+      await pair(env, { label: "a", replace_label: true, dev_device: true }, await devHeaders())
+    ).json()) as PairResponse;
+    const res = await pair(env, { label: "a", replace_label: true }, await opHeaders());
+    expect(res.status).toBe(201);
+    const next = (await res.json()) as PairResponse;
+    expect((await getDeviceRecord(env, next.device_id))?.dev_device).toBe(true);
+    expect((await getDeviceRecord(env, dev.device_id))?.revoked).toBe(true);
   });
 
-  it("device_id が無ければ 400", async () => {
-    const { env } = await envWithDevice();
-    const res = await handleDeviceSetupDevDevice(postJson(PATH, { dev_device: true }, await devHeaders()), env);
-    expect(res.status).toBe(400);
+  it("明示なし + 置き換えで旧が dev かつ失効済み → 新は本番 (失効済みからは引き継がない)", async () => {
+    const env = makeEnv();
+    const dev = (await (
+      await pair(env, { label: "cores3", replace_label: true, dev_device: true }, await devHeaders())
+    ).json()) as PairResponse;
+    await revokeDeviceCredential(env, dev.device_id);
+    // 開発者でない管理者が、同じ (既定の) ラベルで別の機体を通常ペアリングする
+    const res = await pair(env, { label: "cores3", replace_label: true }, await opHeaders());
+    expect(res.status).toBe(201);
+    const next = (await res.json()) as PairResponse;
+    expect(await getDeviceRecord(env, next.device_id)).not.toHaveProperty("dev_device");
+  });
+
+  it("明示なし + 置き換えで旧が本番 → 新も本番 / 明示なし + 新規 → 本番 (開発者の session でも)", async () => {
+    const env = makeEnv();
+    await pair(env, { label: "a", replace_label: true }, await opHeaders());
+    const replaced = (await (await pair(env, { label: "a", replace_label: true }, await opHeaders())).json()) as PairResponse;
+    expect(await getDeviceRecord(env, replaced.device_id)).not.toHaveProperty("dev_device");
+    for (const headers of [await opHeaders(), await devHeaders()]) {
+      const fresh = (await (await pair(env, { label: "b" }, headers)).json()) as PairResponse;
+      expect(await getDeviceRecord(env, fresh.device_id)).not.toHaveProperty("dev_device");
+    }
   });
 
   it.each([
-    ["文字列 \"true\"", { dev_device: "true" }],
-    ["数値 1", { dev_device: 1 }],
-    ["null", { dev_device: null }],
-    ["欠落", {}],
-  ])("dev_device が boolean でない (%s) は 400 (書き換えない)", async (_name, extra) => {
-    const { env, deviceId } = await envWithDevice();
-    const res = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: deviceId, ...extra }, await devHeaders()),
-      env,
-    );
+    ["文字列 \"true\"", "true"],
+    ["数値 1", 1],
+    ["null", null],
+  ])("dev_device が boolean でない (%s) は 400 (record は作られない)", async (_name, value) => {
+    const env = makeEnv();
+    const res = await pair(env, { label: "a", dev_device: value }, await devHeaders());
     expect(res.status).toBe(400);
-    expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
+    expect(await deviceRecordCount(env)).toBe(0);
   });
 
-  it("他 tenant の鍵・不在・失効済み・管理対象外の role は全部 403 not_your_device", async () => {
-    const { env, deviceId } = await envWithDevice();
-    // 他 tenant の session から tenant-1 の鍵を指す
-    const otherTenant = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders({ tenant_id: "tenant-2" })),
-      env,
-    );
-    const missing = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: "missing", dev_device: true }, await devHeaders()),
-      env,
-    );
-    // DEVICE_KINDS 外の role (既定の uploader)
-    const uploader = await createDeviceCredential(env, "tenant-1", "uploader", 1_700_000_000);
-    const outOfKinds = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: uploader.device_id, dev_device: true }, await devHeaders()),
-      env,
-    );
-    await revokeDeviceCredential(env, deviceId);
-    const revoked = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
-      env,
-    );
-    for (const res of [otherTenant, missing, outOfKinds, revoked]) {
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: "not_your_device" });
-    }
-    expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
-    expect(await getDeviceRecord(env, uploader.device_id)).not.toHaveProperty("dev_device");
-  });
-
-  it("開発者の Google session: true で record に dev_device: true (ほかの欄は不変)、2 回目も同じ", async () => {
-    const { env, deviceId } = await envWithDevice();
-    const before = await getDeviceRecord(env, deviceId);
-    for (let i = 0; i < 2; i++) {
-      const res = await handleDeviceSetupDevDevice(
-        postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
-        env,
-      );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ device_id: deviceId, dev_device: true });
-      expect(await getDeviceRecord(env, deviceId)).toEqual({ ...before, dev_device: true });
-    }
-  });
-
-  it("開発者の Google session: false で欄ごと消える (ほかの欄は不変)、2 回目も同じ", async () => {
-    const { env, deviceId } = await envWithDevice();
-    const before = await getDeviceRecord(env, deviceId);
-    await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
-      env,
-    );
-    for (let i = 0; i < 2; i++) {
-      const res = await handleDeviceSetupDevDevice(
-        postJson(PATH, { device_id: deviceId, dev_device: false }, await devHeaders()),
-        env,
-      );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ device_id: deviceId, dev_device: false });
-      const after = await getDeviceRecord(env, deviceId);
-      expect(after).not.toHaveProperty("dev_device");
-      expect(after).toEqual(before);
-    }
-  });
-
-  it("検査と書き換えの間に record が消えたら 404", async () => {
-    const { env, deviceId } = await envWithDevice();
-    const kv = env.AUTH_CONFIG as unknown as { get: (k: string) => Promise<string | null> };
-    const realGet = kv.get;
-    let reads = 0;
-    // 1 回目 (managedDeviceKind の検査) は通し、2 回目 (書き換え前の読み直し) で不在にする
-    kv.get = async (key: string) => (key === `device:${deviceId}` && ++reads > 1 ? null : realGet(key));
-    const res = await handleDeviceSetupDevDevice(
-      postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
-      env,
-    );
-    expect(res.status).toBe(404);
-  });
-
-  it("書き換えのログは登録簿の種別と真偽だけ (鍵の id・tenant・メールアドレスを出さない)", async () => {
-    const { env, deviceId } = await envWithDevice();
+  it("監査ログは明示したときだけ。登録簿の種別と真偽だけ (鍵の id・tenant・メールアドレスを出さない)", async () => {
+    const env = makeEnv();
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      await handleDeviceSetupDevDevice(
-        postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
-        env,
-      );
-      const lines = spy.mock.calls.map((c) => String(c[0]));
-      expect(lines).toEqual([
+      await pair(env, { label: "a", replace_label: true }, await devHeaders());
+      await pair(env, { label: "a", replace_label: true, dev_device: "true" }, await devHeaders());
+      await pair(env, { label: "a", replace_label: true, dev_device: true }, await opHeaders());
+      expect(spy.mock.calls).toEqual([]);
+      await pair(env, { label: "a", replace_label: true, dev_device: true }, await devHeaders());
+      // 明示なしの引き継ぎ (dev のまま) では出ない
+      await pair(env, { label: "a", replace_label: true }, await opHeaders());
+      await pair(env, { label: "a", replace_label: true, dev_device: false }, await devHeaders());
+      expect(spy.mock.calls.map((c) => String(c[0]))).toEqual([
         JSON.stringify({ event: "dev_device_set", registry: "device", dev_device: true }),
+        JSON.stringify({ event: "dev_device_set", registry: "device", dev_device: false }),
       ]);
     } finally {
       spy.mockRestore();
@@ -2036,16 +2007,15 @@ describe("dev_device の表示 (一覧の応答と画面、Refs ippoan/alc-app#3
       await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "plain" }, headers), env)
     ).json()) as PairResponse;
     const dev = (await (
-      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "dev" }, headers), env)
+      await handleDeviceSetupPair(
+        postJson(
+          "/device/setup/pair",
+          { label: "dev", dev_device: true },
+          { ...(await opCookie({ email: DEV_EMAIL, idp: "google" })), Origin: ISSUER },
+        ),
+        env,
+      )
     ).json()) as PairResponse;
-    await handleDeviceSetupDevDevice(
-      postJson(
-        "/device/setup/dev-device",
-        { device_id: dev.device_id, dev_device: true },
-        { ...(await opCookie({ email: DEV_EMAIL, idp: "google" })), Origin: ISSUER },
-      ),
-      env,
-    );
     const res = await handleDeviceSetupList(getReq("/device/setup/list", await opCookie()), env);
     const body = (await res.json()) as { devices: Array<{ device_id: string; dev_device: unknown }> };
     const byId = Object.fromEntries(body.devices.map((d) => [d.device_id, d.dev_device]));
@@ -2058,10 +2028,6 @@ describe("dev_device の表示 (一覧の応答と画面、Refs ippoan/alc-app#3
       await handleDeviceSetupPage(getReq("/device/setup", await opCookie({ email: DEV_EMAIL })), makeEnv())
     ).text();
     expect(devHtml).toContain("const IS_DEVELOPER = true;");
-    // 切替の導線 (口 2 本と再ログインの案内) が script に入っている
-    expect(devHtml).toContain('"/device/setup/dev-device"');
-    expect(devHtml).toContain('"/device/setup/alarm-key/dev-device"');
-    expect(devHtml).toContain("Google でログインし直してください");
 
     const opHtml = await (
       await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv())
@@ -2070,25 +2036,21 @@ describe("dev_device の表示 (一覧の応答と画面、Refs ippoan/alc-app#3
     expect(opHtml).not.toContain("const IS_DEVELOPER = true;");
   });
 
-  it("画面: 切替ボタンは状態で class が変わり、「開発用」の印は既存のバッジを使う", async () => {
-    const html = await (
-      await handleDeviceSetupPage(getReq("/device/setup", await opCookie({ email: DEV_EMAIL })), makeEnv())
-    ).text();
-    // 色の定義。disabled の灰色が勝つよう、dev-on / dev-off は button.small:disabled より前に置く
-    expect(html).toContain("button.small.dev-on{background:#b45309}");
-    expect(html).toContain("button.small.dev-off{background:#fff;color:#374151;border:1px solid #9ca3af}");
-    expect(html).toContain("button.small.dev-off:disabled{color:#fff}");
-    expect(html.indexOf("button.small.dev-on{")).toBeLessThan(html.indexOf("button.small:disabled{"));
-    expect(html.indexOf("button.small.dev-off{")).toBeLessThan(html.indexOf("button.small:disabled{"));
-    // 開発用の行 = 橙 (dev-on)、通常の行 = 白地 (dev-off)
-    expect(html).toContain('btn.className = isDev ? "small dev-on" : "small dev-off";');
-    // 印は .tag.new のバッジ (inline の fontSize / color は持たない)
-    const mark = html.slice(html.indexOf("function devDeviceMark()"), html.indexOf("function devDeviceButton("));
-    expect(mark).toContain('mark.className = "tag new";');
-    expect(mark).toContain('mark.textContent = "開発用";');
-    expect(mark).not.toContain("fontSize");
-    expect(mark).not.toContain("style.color");
-    expect(html).toContain(".tag.new{background:#fef3c7;color:#92400e}");
+  it("画面: 「開発用」の印は既存のバッジを使い、全員に出す", async () => {
+    for (const claims of [{ email: DEV_EMAIL }, {}]) {
+      const html = await (
+        await handleDeviceSetupPage(getReq("/device/setup", await opCookie(claims)), makeEnv())
+      ).text();
+      // 印は .tag.new のバッジ (inline の fontSize / color は持たない)
+      const mark = html.slice(html.indexOf("function devDeviceMark()"), html.indexOf("function findKioskKeysFor("));
+      expect(mark).toContain('mark.className = "tag new";');
+      expect(mark).toContain('mark.textContent = "開発用";');
+      expect(mark).not.toContain("fontSize");
+      expect(mark).not.toContain("style.color");
+      expect(html).toContain(".tag.new{background:#fef3c7;color:#92400e}");
+      // 2 つの表の行に印を置く
+      expect(html.split("appendChild(devDeviceMark())").length - 1).toBe(2);
+    }
   });
 
   it("画面: client script が構文として通る", async () => {
@@ -2104,10 +2066,13 @@ describe("dev_device の表示 (一覧の応答と画面、Refs ippoan/alc-app#3
   });
 });
 
-describe("端末と署名鍵の連動切替・食い違いの警告 (画面、Refs ippoan/alc-app#387)", () => {
+describe("端末と署名鍵の食い違いの警告 (画面、Refs ippoan/alc-app#387)", () => {
   const DEV_EMAIL = DEVELOPER_EMAILS[0]!;
   const pageHtml = async () =>
     (await handleDeviceSetupPage(getReq("/device/setup", await opCookie({ email: DEV_EMAIL })), makeEnv())).text();
+  /** 開発者でないアカウントの画面。 */
+  const opPageHtml = async () =>
+    (await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv())).text();
   // script から関数 1 つの本体を取り出す (次の top-level の function / コメント行までを 1 塊として切る)
   const extractFn = (html: string, name: string): string => {
     const start = html.indexOf(`function ${name}(`);
@@ -2118,54 +2083,42 @@ describe("端末と署名鍵の連動切替・食い違いの警告 (画面、Re
   type Dev = { device_id: string; label: string; kind: string };
   type Key = { fingerprint: string; label: string; usage: string; revoked_at?: number | null };
 
-  it("script に相方を探す関数・連動の confirm の文言・警告の文言・.tag.warn が在る", async () => {
-    const html = await pageHtml();
-    expect(html).toContain("function findKioskKeysFor(");
-    expect(html).toContain("function findHubDevicesFor(");
-    expect(html).toContain("同じラベルの『デバイスの署名鍵 (用途 kiosk)』の行も一緒に切り替えます。");
-    expect(html).toContain("同じラベルの『デバイス』の行も一緒に切り替えます。");
-    expect(html).toContain("署名鍵が本番のまま — キオスクの画面の記録は本番に入ります");
-    expect(html).toContain("端末が本番のまま — 本体からの記録は本番に入ります");
-    expect(html).toContain("相方の切り替えに失敗しました。もう一度押してください");
-    expect(html).toContain(".tag.warn{background:#fee2e2;color:#991b1b}");
-    // バッジは既存の .tag で、文言は textContent で入れる
-    const tag = extractFn(html, "pairWarnTag");
-    expect(tag).toContain('tag.className = "tag warn";');
-    expect(tag).toContain("tag.textContent = text;");
-    expect(tag).not.toContain("innerHTML");
+  it("script に相方を探す関数・警告の文言・.tag.warn が在る (開発者でないアカウントにも)", async () => {
+    for (const html of [await pageHtml(), await opPageHtml()]) {
+      expect(html).toContain("function findKioskKeysFor(");
+      expect(html).toContain("function findHubDevicesFor(");
+      expect(html).toContain("署名鍵が本番のまま — キオスクの画面の記録は本番に入ります");
+      expect(html).toContain("署名鍵が開発用のまま — キオスクの画面の記録は開発用になり、本番に入りません");
+      expect(html).toContain("端末が本番のまま — 本体からの記録は本番に入ります");
+      expect(html).toContain("鍵が本番のまま — キオスクの画面の記録は本番に入ります");
+      expect(html).toContain(".tag.warn{background:#fee2e2;color:#991b1b}");
+      // バッジは既存の .tag で、文言は textContent で入れる
+      const tag = extractFn(html, "pairWarnTag");
+      expect(tag).toContain('tag.className = "tag warn";');
+      expect(tag).toContain("tag.textContent = text;");
+      expect(tag).not.toContain("innerHTML");
+      // 警告の描き直しは行を作らず、置き場の span の中身だけを入れ替える
+      const refresh = extractFn(html, "refreshPairWarnings");
+      expect(refresh).not.toContain("createElement");
+      expect(refresh).not.toContain("ROWS");
+      // 2 つの表のどちらを読み直しても描き直す
+      expect(extractFn(html, "loadDevices")).toContain("refreshPairWarnings();");
+      expect(extractFn(html, "loadAlarmKeys")).toContain("refreshPairWarnings();");
+    }
   });
 
-  it("連動は押した行 → 相方の 2 回 POST で、1 本目が失敗したら 2 本目は送らない", async () => {
-    const html = await pageHtml();
-    const fn = html.slice(html.indexOf("async function setDevDevice("), html.indexOf("// 拠点ID (site_id) の設定"));
-    expect(fn.indexOf("await postDevDevice(path, key, dev);")).toBeGreaterThan(0);
-    expect(fn.indexOf("await postDevDevice(path, key, dev);")).toBeLessThan(
-      fn.indexOf("await postDevDevice(pair.path, pair.key, dev);"),
-    );
-    // 相方の値が切替後と同じなら連動しない
-    expect(fn).toContain("partner.dev_device !== dev");
-    // 成功・失敗どちらでも 2 つの表を読み込み直す
-    expect(fn).toContain("loadDevices();");
-    expect(fn).toContain("loadAlarmKeys();");
-  });
-
-  it("読み直すのは POST が通った登録簿の表だけ (鍵の行だけの切替で端末の表を作り直さない)", async () => {
-    const html = await pageHtml();
-    const fn = html.slice(html.indexOf("async function setDevDevice("), html.indexOf("// 拠点ID (site_id) の設定"));
-    expect(fn).toContain("if (devicesChanged) loadDevices();");
-    expect(fn).toContain("if (keysChanged) loadAlarmKeys();");
-    // 無条件の読み直しは残さない
-    expect(fn).not.toMatch(/^\s*loadDevices\(\);/m);
-    expect(fn).not.toMatch(/^\s*loadAlarmKeys\(\);/m);
-    // 登録簿は path で見分け、POST が通った後にだけ印を付ける (1 本目の失敗では何も作り直さない)
-    expect(fn.indexOf("await postDevDevice(path, key, dev);")).toBeLessThan(fn.indexOf("markChanged(path);"));
-    expect(fn.indexOf("await postDevDevice(pair.path, pair.key, dev);")).toBeLessThan(
-      fn.indexOf("markChanged(pair.path);"),
-    );
-    // 警告の描き直しは行を作らず、置き場の span の中身だけを入れ替える
-    const refresh = extractFn(html, "refreshPairWarnings");
-    expect(refresh).not.toContain("createElement");
-    expect(refresh).not.toContain("ROWS");
+  it("登録簿の旗を後から倒す口は画面に無い (切替ボタン・連動・口の path)", async () => {
+    for (const html of [await pageHtml(), await opPageHtml()]) {
+      expect(html).not.toContain("/device/setup/dev-device");
+      expect(html).not.toContain("/device/setup/alarm-key/dev-device");
+      expect(html).not.toContain("dev-device");
+      for (const gone of ["setDevDevice", "postDevDevice", "devDeviceButton", "partnerOfDevice", "partnerOfKey"]) {
+        expect(html).not.toContain(gone);
+      }
+      expect(html).not.toContain("開発用にする");
+      expect(html).not.toContain("開発用を外す");
+      expect(html).not.toContain("一緒に切り替えます");
+    }
   });
 
   it("画面: client script が構文として通る", async () => {
@@ -2222,5 +2175,146 @@ describe("端末と署名鍵の連動切替・食い違いの警告 (画面、Re
         expect(findHubDevicesFor("a", [dev("d1", "a", kind)])).toEqual([]);
       }
     });
+  });
+});
+
+/**
+ * 切り替えの入口は 1 つ —「接続中の機体を開発用 / 本番として書き直す」(開発者にだけ出す)。
+ * 既存のペアリングの手順 (run) と署名鍵の登録の手順 (registerAlarmKey) を引数で再利用する。
+ */
+describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)", () => {
+  const DEV_EMAIL = DEVELOPER_EMAILS[0]!;
+  const pageHtml = async (claims: Record<string, unknown> = { email: DEV_EMAIL }) =>
+    (await handleDeviceSetupPage(getReq("/device/setup", await opCookie(claims)), makeEnv())).text();
+  const extractFn = (html: string, name: string): string => {
+    const start = html.indexOf(`function ${name}(`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    return html.slice(start, html.indexOf("\n}\n", start) + 3);
+  };
+
+  it("開発者の画面: ボタン 1 組と、DEVICE_KINDS の全機種の select が在る", async () => {
+    const html = await pageHtml();
+    expect(html).toContain('<button id="rewrite-dev" type="button"');
+    expect(html).toContain(">接続中の機体を開発用として書き直す</button>");
+    expect(html).toContain('<button id="rewrite-prod" type="button"');
+    expect(html).toContain(">接続中の機体を本番として書き直す</button>");
+    const select = html.slice(html.indexOf('<select id="rewrite-kind"'));
+    const options = select.slice(0, select.indexOf("</select>"));
+    for (const name of Object.keys(DEVICE_KINDS)) expect(options).toContain(`value="${name}"`);
+    // ペアリングの画面・署名鍵の登録の画面に「開発用」のチェックは足さない
+    expect(html).not.toMatch(/type="checkbox"[^>]*dev[_-]device/);
+  });
+
+  it("開発者でないアカウントの画面には、書き直すボタンも機種の select も無い", async () => {
+    const html = await pageHtml({});
+    expect(html).not.toContain('id="rewrite-dev"');
+    expect(html).not.toContain('id="rewrite-prod"');
+    expect(html).not.toContain('id="rewrite-kind"');
+    expect(html).not.toContain("接続中の機体を開発用として書き直す");
+    expect(html).not.toContain("接続中の機体を本番として書き直す");
+    // ボタンを探すのは IS_DEVELOPER のときだけ (無い要素に addEventListener しない)
+    expect(html).toMatch(/if \(IS_DEVELOPER\) \{\s+const rewriteDevBtn = document\.getElementById\("rewrite-dev"\);/);
+  });
+
+  it("confirm と完了の文言", async () => {
+    const html = await pageHtml();
+    const fn = extractFn(html, "rewriteConnectedDevice");
+    expect(fn).toContain('"接続中の機体を" + (devDevice ? "開発用" : "本番") +');
+    expect(fn).toContain('"として書き直しますか? (端末の鍵と署名鍵を作り直します。古い鍵は使えなくなります)"');
+    // 機体の選択 (許可ダイアログ) → confirm → 書き込み、の順
+    expect(fn.indexOf("navigator.serial.requestPort()")).toBeLessThan(fn.indexOf("confirm("));
+    expect(fn.indexOf("confirm(")).toBeLessThan(fn.indexOf("await run("));
+    expect(html).toContain(
+      "書き直しました。キオスクの画面を再読み込みしてください。ファームが古い端末は、書き直した後に電源を入れ直してください",
+    );
+    expect(fn).toContain("REWRITE_DONE");
+    // 済んだら 2 つの表を読み直す
+    expect(fn).toContain("loadDevices();");
+    expect(fn).toContain("loadAlarmKeys();");
+  });
+
+  it("端末の鍵 → 署名鍵の順に既存の手順を再利用し、機種で通す手順を決める", async () => {
+    const html = await pageHtml();
+    const fn = extractFn(html, "rewriteConnectedDevice");
+    expect(html).toContain(
+      `const PAIRABLE_KINDS = ${JSON.stringify(
+        Object.entries(DEVICE_KINDS).filter(([, k]) => k.pairRole).map(([name]) => name),
+      )};`,
+    );
+    // credential を発行する機種だけ端末の鍵の手順、P4 GW 以外は署名鍵の手順
+    expect(fn).toContain("paired: PAIRABLE_KINDS.includes(kind)");
+    expect(fn).toContain("if (rewrite.paired) {");
+    expect(fn).toContain("if (!(await run(undefined, rewrite))) return;");
+    expect(fn).toContain('if (kind !== "p4-gw" && !(await registerAlarmKey(rewrite))) return;');
+    expect(fn.indexOf("await run(undefined, rewrite)")).toBeLessThan(fn.indexOf("await registerAlarmKey(rewrite)"));
+    // 手順の複製を作らない: シリアルの手順 (PING の準備・AUTH SET) は既存の 2 か所 + 署名鍵の 1 か所のまま
+    expect(html.split('"AUTH SET "').length - 1).toBe(1);
+    expect(html.split('"cred set "').length - 1).toBe(1);
+    expect(html.split("AUTH KEYGEN").length - 1).toBe(html.split("async function registerAlarmKey(").length - 1 + 2);
+  });
+
+  it("端末の鍵: pair の body に dev_device を足す (書き直しのときだけ)。ラベルは一覧の行から引く", async () => {
+    const html = await pageHtml();
+    for (const name of ["runCoreS3OrPrint", "runP4Gateway"]) {
+      const fn = extractFn(html, name);
+      expect(fn).toContain("rewrite ? { dev_device: rewrite.devDevice } : {}");
+      expect(fn).toContain("replace_label: true");
+      expect(fn).toContain("const row = rewrite ? rewriteRowOf(");
+      expect(fn).toContain("const label = row ? row.label : labelInput.value ||");
+      expect(fn).toContain("throw await pairError(res);");
+    }
+    expect(extractFn(html, "pairError")).toContain("Google でログインし直してください");
+    expect(extractFn(html, "pairError")).toContain('"credential 発行に失敗: HTTP " + res.status');
+    // 書き直し以外 (セットアップ実行・再登録) は dev_device を送らない
+    expect(html).toContain('runBtn.addEventListener("click", () => run());');
+    expect(html).toContain('run(d.kind === "p4-gw" ? d.site_id : undefined);');
+  });
+
+  it("rewriteRowOf: 一覧に在る機体はその行、無い機体・機種違いは止める (script から取り出して実行)", async () => {
+    const html = await pageHtml();
+    const rowOf = new Function(
+      "LAST_DEVICES",
+      "KIND_DISPLAY",
+      `${extractFn(html, "rewriteRowOf")}; return rewriteRowOf;`,
+    )([{ device_id: "d1", label: "a", kind: "cores3" }], { cores3: "CoreS3 統合ハブ" }) as (
+      id: string,
+      kind: string,
+    ) => { label: string };
+    expect(rowOf("d1", "cores3").label).toBe("a");
+    expect(() => rowOf("d2", "cores3")).toThrow("登録簿に見つかりません");
+    expect(() => rowOf("", "cores3")).toThrow("登録簿に見つかりません");
+    expect(() => rowOf("d1", "timecard")).toThrow("選んだ機種が、接続中の機体 (CoreS3 統合ハブ) と違います");
+  });
+
+  it("署名鍵: 古い公開鍵を控えて AUTH KEYGEN FORCE、replaces_pubkey と dev_device で差し替える", async () => {
+    const html = await pageHtml();
+    const fn = extractFn(html, "registerAlarmKey");
+    expect(fn).toContain('await send(rewrite ? "AUTH KEYGEN FORCE" : "AUTH KEYGEN");');
+    expect(fn).toContain(
+      "body: JSON.stringify({ pubkey, replaces_pubkey: oldPubkey, dev_device: rewrite.devDevice }),",
+    );
+    // 古い公開鍵 (AUTH PUBKEY) → 作り直し、の順。控えた応答行は捨ててから作り直す
+    expect(fn.indexOf("oldPubkey = (await waitLine(")).toBeLessThan(fn.indexOf('"AUTH KEYGEN FORCE"'));
+    // 今までの登録 (ラベルと用途を聞く) の body は変えない
+    expect(fn).toContain("body: JSON.stringify({ pubkey, label, usage }),");
+    expect(html).toContain('alarmKeyRegisterBtn.addEventListener("click", () => registerAlarmKey());');
+    // 失敗の文言
+    expect(fn).toContain(
+      "この機体の署名鍵は登録簿に見つかりませんでした。下の「署名鍵の登録」から登録してください",
+    );
+    expect(fn).toContain('err === "replaced_key_not_found"');
+    expect(fn).toContain("署名鍵の登録に失敗しました。もう一度書き直してください");
+    // 署名鍵を持たない機体: 端末の鍵を書き直した後なら何もせず済み、署名鍵だけの機種なら止める
+    expect(fn).toContain("if (!rewrite.paired) throw new Error(");
+  });
+
+  it("画面: client script が構文として通る (開発者・開発者でないアカウントの両方)", async () => {
+    for (const html of [await pageHtml(), await pageHtml({})]) {
+      const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+        .map((m) => m[1] ?? "")
+        .filter((s) => s.trim() !== "");
+      expect(scripts.length).toBeGreaterThan(0);
+      for (const s of scripts) expect(() => new Function(s)).not.toThrow();
+    }
   });
 });
