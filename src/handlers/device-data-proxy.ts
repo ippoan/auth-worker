@@ -192,6 +192,8 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * - `GET /api/tenko/sessions` (一覧) — モニターからの呼び出しが 0 件。
  * - `GET /api/devices/settings/{id}` — 運行管理者席は devices に行を持たない。
  *
+ * 一覧は、開発用の鍵 (`dev_device === true`) にだけ下の `DEV_TENKO_MANAGER_ROUTES` で開く。
+ *
  * **判定の POST は運行管理者の鍵すべてに通す。** 「dev の鍵だけ」に絞るのは backend
  * (rust-alc-api) の仕事で、`X-Device-Role` と `X-Device-Dev` を見て判断する。ここでは
  * dev を条件にしない。
@@ -237,13 +239,35 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
  * `KIOSK_ROUTES` に入れないのは、本番のキオスクに記録簿を開けないため。
  *
  * role で引く表ではなく **claim を見る別次元の判定**なので、`METHOD_ROUTE_TABLES` には
- * 入れず `handleDeviceDataProxy` 内で明示的に分岐する (GET のみ)。
+ * 入れず `handleDeviceDataProxy` 内で明示的に分岐する (GET のみ。表は下の
+ * `DEV_EXTRA_GET_ROUTES` から引く)。
  */
 const DEV_KIOSK_RECORD_ROUTES: ReadonlyArray<RegExp> = [
   /^\/api\/tenko\/records$/,
   /^\/api\/tenko\/records\/csv$/,
   /^\/api\/tenko\/records\/[^/]+$/,
 ];
+
+/**
+ * dev の鍵 (`dev_device === true` の `device-tenko-manager`) が、点呼セッションの一覧を引く口
+ * (Refs ippoan/alc-app#387)。IT点呼の運行管理者側の専用画面が「未完了の IT点呼」を
+ * `GET /api/tenko/sessions?tenko_method=…&judgment_pending=true` で引く (query は照合に
+ * 入らず、そのまま転送される)。backend は `X-Device-Dev` で dev の行だけを返す。
+ *
+ * `TENKO_MANAGER_ROUTES` に入れないのは、その画面がテストが済むまで dev の鍵の席にしか
+ * 出ないため — 本番の運行管理者の鍵には、呼ぶ画面が無い口を開かない (上の「入れない口」)。
+ * IT点呼を通常の点呼へ統合するときに、この行を `TENKO_MANAGER_ROUTES` へ移してこの表を消す。
+ */
+const DEV_TENKO_MANAGER_ROUTES: ReadonlyArray<RegExp> = [/^\/api\/tenko\/sessions$/];
+
+/**
+ * role → dev の鍵 (`dev_device === true`) にだけ追加で開く GET の表。`METHOD_ROUTE_TABLES` が
+ * 通さなかった要求についてだけ引く。ここに無い role の dev の鍵は、追加の口を持たない。
+ */
+const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map([
+  [DEVICE_ROLE_KIOSK, DEV_KIOSK_RECORD_ROUTES],
+  [DEVICE_ROLE_TENKO_MANAGER, DEV_TENKO_MANAGER_ROUTES],
+]);
 
 /**
  * `device-bp-station` role (血圧計をつないだ PC、血圧だけを測る測定台 PWA を開く
@@ -326,14 +350,14 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
     const matched = methodRoutes.some(
       (r) => r.method === request.method && r.pattern.test(backendPath),
     );
-    // dev キオスクの記録簿 GET は、KIOSK_ROUTES が false のときだけ見る (既存の判定順は不変)。
-    const devKioskRecord =
+    // dev の鍵にだけ開く GET (キオスクの記録簿 / 運行管理者のセッション一覧) は、role の
+    // 許可表が false のときだけ見る (既存の判定順は不変)。
+    const devExtra =
       !matched &&
-      role === DEVICE_ROLE_KIOSK &&
       payload.dev_device === true &&
       request.method === "GET" &&
-      DEV_KIOSK_RECORD_ROUTES.some((p) => p.test(backendPath));
-    if (!matched && !devKioskRecord) return jsonError(403, "forbidden");
+      (DEV_EXTRA_GET_ROUTES.get(role) ?? []).some((p) => p.test(backendPath));
+    if (!matched && !devExtra) return jsonError(403, "forbidden");
   } else {
     // 他 role は既存どおり method を見ない Set 完全一致 (ROLE_PATH_ALLOWLIST の
     // doc コメントが説明する意図を変えない)。

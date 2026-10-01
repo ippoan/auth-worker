@@ -1043,6 +1043,163 @@ describe("dev キオスクの記録簿 GET (Refs ippoan/alc-app#387)", () => {
   });
 });
 
+describe("dev の運行管理者の鍵のセッション一覧 GET (Refs ippoan/alc-app#387)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  const SID = "22222222-2222-2222-2222-222222222222";
+  const LIST = "/api/tenko/sessions";
+
+  async function tokenFor(role: string, claims: Record<string, unknown> = {}): Promise<string> {
+    return signTestJwt(
+      { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role, ...claims },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  const managerToken = (claims: Record<string, unknown> = {}) => tokenFor(DEVICE_ROLE_TENKO_MANAGER, claims);
+
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  it("dev_device: true の運行管理者の鍵: GET /api/tenko/sessions は通り、X-Device-Dev: 1 と role が付く", async () => {
+    const fetchMock = okFetch();
+    const res = await handleDeviceDataProxy(
+      req(`/device-data-proxy${LIST}`, { method: "GET", token: await managerToken({ dev_device: true }) }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(`https://alc-api.test.example${LIST}`);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Device-Dev"]).toBe("1");
+    expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_TENKO_MANAGER);
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("dev_device: true の運行管理者の鍵: query 付きでも通り、query はそのまま転送される", async () => {
+    const fetchMock = okFetch();
+    const query = "?tenko_method=it&judgment_pending=true";
+    const res = await handleDeviceDataProxy(
+      req(`/device-data-proxy${LIST}${query}`, { method: "GET", token: await managerToken({ dev_device: true }) }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(`https://alc-api.test.example${LIST}${query}`);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Device-Dev"]).toBe("1");
+    expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_TENKO_MANAGER);
+  });
+
+  it("dev_device なしの運行管理者の鍵: GET /api/tenko/sessions は 403 (本番の鍵には開かない。query 付きでも)", async () => {
+    const fetchMock = okFetch();
+    for (const path of [LIST, `${LIST}?tenko_method=it&judgment_pending=true`]) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method: "GET", token: await managerToken() }),
+        env(),
+      );
+      expect(res.status, path).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dev_device が true 以外 (false / \"true\" / \"1\" / 1 / null) の運行管理者の鍵: 一覧は 403", async () => {
+    const fetchMock = okFetch();
+    for (const dev of [false, "true", "1", 1, null]) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${LIST}`, { method: "GET", token: await managerToken({ dev_device: dev }) }),
+        env(),
+      );
+      expect(res.status, JSON.stringify(dev)).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dev_device: true の運行管理者の鍵でも、表に無い口は 403 (開くのは一覧の GET だけ)", async () => {
+    const fetchMock = okFetch();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "POST", path: LIST },
+      { method: "PUT", path: LIST },
+      { method: "DELETE", path: LIST },
+      { method: "GET", path: `${LIST}/start` },
+      { method: "POST", path: `${LIST}/start` },
+      { method: "GET", path: `${LIST}/` },
+      { method: "GET", path: `${LIST}/${SID}/extra` },
+      { method: "GET", path: "/api/tenko/dashboard" },
+      { method: "GET", path: "/api/employees/face-data" },
+      { method: "GET", path: `/api/devices/settings/${SID}` },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await managerToken({ dev_device: true }) }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("既存の運行管理者の口は dev_device の有無に関わらず従来どおり通る", async () => {
+    const fetchMock = okFetch();
+    for (const claims of [{}, { dev_device: true }]) {
+      for (const path of ["/api/tenko/schedules", `${LIST}/${SID}`]) {
+        const res = await handleDeviceDataProxy(
+          req(`/device-data-proxy${path}`, { method: "GET", token: await managerToken(claims) }),
+          env(),
+        );
+        expect(res.status, path).toBe(200);
+      }
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("dev のキオスクの鍵の挙動は変わらない (記録簿 GET は通る、一覧は KIOSK_ROUTES で dev に関わらず通る)", async () => {
+    const fetchMock = okFetch();
+    const records = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/tenko/records", {
+        method: "GET",
+        token: await tokenFor(DEVICE_ROLE_KIOSK, { dev_device: true }),
+      }),
+      env(),
+    );
+    expect(records.status).toBe(200);
+    for (const claims of [{}, { dev_device: true }]) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${LIST}`, { method: "GET", token: await tokenFor(DEVICE_ROLE_KIOSK, claims) }),
+        env(),
+      );
+      expect(res.status).toBe(200);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // dev でないキオスクには記録簿を開かないまま。
+    const closed = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/tenko/records", { method: "GET", token: await tokenFor(DEVICE_ROLE_KIOSK) }),
+      env(),
+    );
+    expect(closed.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("dev_device: true でも、追加の表を持たない role (測定台 / dtako ingest) には一覧も記録簿も開かない", async () => {
+    const fetchMock = okFetch();
+    for (const role of [DEVICE_ROLE_BP_STATION, DEVICE_ROLE_DTAKO_INGEST]) {
+      for (const path of [LIST, "/api/tenko/records"]) {
+        const res = await handleDeviceDataProxy(
+          req(`/device-data-proxy${path}`, { method: "GET", token: await tokenFor(role, { dev_device: true }) }),
+          env(),
+        );
+        expect(res.status, `${role} ${path}`).toBe(403);
+      }
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", () => {
   beforeEach(() => vi.restoreAllMocks());
 
@@ -1233,5 +1390,27 @@ describe("X-Device-Dev / X-Device-Role ヘッダ転送 (Refs ippoan/alc-app#387)
     });
     expect(h).not.toHaveProperty("X-Device-Dev");
     expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_KIOSK);
+  });
+});
+
+describe("Service Binding へ振り分ける path の defense-in-depth (isUnsafeBackendPath)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  // `%2f` は pathname に残るので KIOSK_ROUTES の `[^/]+` には当たる。binding へ渡す前に 403 で止める。
+  it("kiosk の PUT /api/vein/templates/%2e%2e%2fadmin は 403 で、binding にも Cloud Run にも届かない", async () => {
+    const cloudRun = vi.fn(async (): Promise<Response> => new Response("ok", { status: 200 }));
+    globalThis.fetch = cloudRun as unknown as typeof fetch;
+    const binding = { fetch: vi.fn(async (): Promise<Response> => new Response("from-binding")) };
+    const token = await signTestJwt(
+      { sub: "device-kiosk-1", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK },
+      TEST_JWT_SECRET,
+    );
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/vein/templates/%2e%2e%2fadmin", { method: "PUT", token }),
+      env({ ALC_VEIN: binding as unknown as Fetcher }),
+    );
+    expect(res.status).toBe(403);
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 });
