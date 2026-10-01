@@ -73,6 +73,7 @@ import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
 import { handleAuthIntrospect } from "./handlers/auth-introspect";
 import { handleInternalHubDevices } from "./handlers/internal-hub-devices";
+import { handleInternalDeviceLabels } from "./handlers/internal-device-labels";
 import { handleMcpJwtPickup } from "./handlers/mcp-jwt-pickup";
 import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
@@ -802,6 +803,10 @@ export default {
           // (cf-alc-recorder cron 用、Refs ippoan/alc-app#121 / #401)。
           case "/internal/hub-devices":
             return await handleInternalHubDevices(request, env);
+          // テナントの未失効の端末の id と label だけを返す internal API
+          // (alc-app の端末一覧と報告の照合用、Refs ippoan/alc-app#403)。
+          case "/internal/device-labels":
+            return await handleInternalDeviceLabels(request, env);
           // 注: /device/setup/ota と /device/setup/version は **POST** なので
           // 下の POST 用 switch 側に置く (GET switch に入れると 404 になる)。
           // テスト用 PDF (公開 — デバイスは認証ヘッダを付けずに GET する)。
