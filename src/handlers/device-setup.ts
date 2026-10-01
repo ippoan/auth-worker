@@ -1651,14 +1651,17 @@ function devDeviceMark() {
   return mark;
 }
 
+const DEV_DEVICE_PATH = "/device/setup/dev-device";
 // 1 台の CoreS3 は 2 つの登録簿に別の行で出る: 上の「デバイス」(kind cores3、本体の測定・打刻の鍵) と
 // 下の「デバイスの署名鍵」(用途 kiosk、キオスクの画面の鍵)。結ぶ欄は無く、手掛かりはラベルの完全一致だけ。
 // 失効していない用途 kiosk の署名鍵のうち、端末のラベルと一致するもの。
 function findKioskKeysFor(deviceLabel, alarmKeys) {
+  if (!deviceLabel) return []; // 空のラベル同士は相方にしない
   return (alarmKeys || []).filter((k) => k.usage === "kiosk" && !k.revoked_at && k.label === deviceLabel);
 }
 // kind cores3 の端末のうち、署名鍵のラベルと一致するもの。
 function findHubDevicesFor(keyLabel, devices) {
+  if (!keyLabel) return []; // 空のラベル同士は相方にしない
   return (devices || []).filter((d) => d.kind === "cores3" && d.label === keyLabel);
 }
 // 相方は「ちょうど 1 つ」で、しかも相手から見ても自分が唯一のときだけ (0 個・2 個以上は取り違えを避けて対象外)。
@@ -1759,7 +1762,9 @@ async function postDevDevice(path, key, dev) {
 // auth-worker の KV の欄を書き換えるだけなので、端末の接続状態に関わらず押せる。
 // 発行済みのトークンは前の値のまま期限まで生きる (反映は次のトークン更新から)。
 // 相方があり、その値が切替後と違うときは相方も続けて切り替える (押した行 → 相方の順に 2 回 POST。
-// 1 本目が失敗したら 2 本目は送らない)。どちらの場合も最後に 2 つの表を読み込み直す。
+// 1 本目が失敗したら 2 本目は送らない)。読み直すのは POST が通った登録簿の表だけ — 端末の表を
+// 作り直すと進行中の OTA の進捗や照会の表示が消えるので、鍵の行だけの切替では loadDevices を呼ばない。
+// 作り直した側の load が、もう一方の表の警告バッジも (行を作らずに) 描き直す。
 async function setDevDevice(path, key, dev, label, msgEl, partner) {
   const pair = partner && partner.dev_device !== dev ? partner : null;
   let text = dev
@@ -1768,11 +1773,19 @@ async function setDevDevice(path, key, dev, label, msgEl, partner) {
   if (pair) text += "\\n" + pair.note;
   if (!confirm("「" + label + "」: " + text)) return;
   let second = false;
+  let devicesChanged = false;
+  let keysChanged = false;
+  const markChanged = (p) => {
+    if (p === DEV_DEVICE_PATH) devicesChanged = true;
+    else keysChanged = true;
+  };
   try {
     await postDevDevice(path, key, dev);
+    markChanged(path);
     if (pair) {
       second = true;
       await postDevDevice(pair.path, pair.key, dev);
+      markChanged(pair.path);
     }
   } catch (e) {
     const m = e && e.message ? e.message : e;
@@ -1780,8 +1793,8 @@ async function setDevDevice(path, key, dev, label, msgEl, partner) {
       ? "相方の切り替えに失敗しました。もう一度押してください: " + m
       : "開発用の切替に失敗: " + m;
   }
-  loadDevices();
-  loadAlarmKeys();
+  if (devicesChanged) loadDevices();
+  if (keysChanged) loadAlarmKeys();
 }
 
 // 拠点ID (site_id) の設定 (Refs #406)。この改訂前に登録済みで site_id が

@@ -2029,6 +2029,25 @@ describe("端末と署名鍵の連動切替・食い違いの警告 (画面、Re
     expect(fn).toContain("loadAlarmKeys();");
   });
 
+  it("読み直すのは POST が通った登録簿の表だけ (鍵の行だけの切替で端末の表を作り直さない)", async () => {
+    const html = await pageHtml();
+    const fn = html.slice(html.indexOf("async function setDevDevice("), html.indexOf("// 拠点ID (site_id) の設定"));
+    expect(fn).toContain("if (devicesChanged) loadDevices();");
+    expect(fn).toContain("if (keysChanged) loadAlarmKeys();");
+    // 無条件の読み直しは残さない
+    expect(fn).not.toMatch(/^\s*loadDevices\(\);/m);
+    expect(fn).not.toMatch(/^\s*loadAlarmKeys\(\);/m);
+    // 登録簿は path で見分け、POST が通った後にだけ印を付ける (1 本目の失敗では何も作り直さない)
+    expect(fn.indexOf("await postDevDevice(path, key, dev);")).toBeLessThan(fn.indexOf("markChanged(path);"));
+    expect(fn.indexOf("await postDevDevice(pair.path, pair.key, dev);")).toBeLessThan(
+      fn.indexOf("markChanged(pair.path);"),
+    );
+    // 警告の描き直しは行を作らず、置き場の span の中身だけを入れ替える
+    const refresh = extractFn(html, "refreshPairWarnings");
+    expect(refresh).not.toContain("createElement");
+    expect(refresh).not.toContain("ROWS");
+  });
+
   it("画面: client script が構文として通る", async () => {
     const html = await pageHtml();
     const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
@@ -2064,6 +2083,14 @@ describe("端末と署名鍵の連動切替・食い違いの警告 (画面、Re
       expect(findKioskKeysFor("a", [key("k1", "a", "kiosk", 100)])).toEqual([]);
       expect(findKioskKeysFor("a", [key("k1", "a", "tenko-manager"), key("k2", "a", "bp-station")])).toEqual([]);
       expect(findKioskKeysFor("a", [key("k1", "a 2"), key("k2", "A")])).toEqual([]);
+    });
+
+    it("ラベルが空 (空文字・undefined) のときは相方なし", async () => {
+      const { findKioskKeysFor, findHubDevicesFor } = await load();
+      expect(findKioskKeysFor("", [key("k1", "")])).toEqual([]);
+      expect(findKioskKeysFor(undefined as unknown as string, [key("k1", undefined as unknown as string)])).toEqual([]);
+      expect(findHubDevicesFor("", [dev("d1", "")])).toEqual([]);
+      expect(findHubDevicesFor(undefined as unknown as string, [dev("d1", undefined as unknown as string)])).toEqual([]);
     });
 
     it("findHubDevicesFor: 一致 1 件 / 0 件 / 2 件、kind が cores3 以外は除く", async () => {
