@@ -127,6 +127,10 @@ export async function handleGoogleCallback(
     { id: user.id, email: user.email, name: user.name, tenant_id: user.tenant_id, role: user.role },
     jwtSecret,
     user.slug,
+    undefined,
+    // Google で入った session であることを claim に残す (Refs ippoan/alc-app#387。
+    // 読むのは lib/developer.ts の開発者の判定だけ)。
+    "google",
   );
   const expiresAt = String(Math.floor(Date.now() / 1000) + ACCESS_TOKEN_EXPIRY_SECS);
 

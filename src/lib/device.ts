@@ -364,6 +364,26 @@ export async function setDeviceSiteId(
 }
 
 /**
+ * 既存 device credential の `dev_device` を立てる・外す (Refs ippoan/alc-app#387)。
+ * 外すときは欄ごと消す (`false` を書かない — 未設定 = 非 dev の表現を 1 つに保つ)。
+ * ほかの欄は変えない。認可と対象の検査 (tenant・失効済み) は呼び出し側の責務。
+ * 発行済みの token は claim に前の値を持ったまま期限 (最大 1 時間) まで生きる —
+ * 反映は次の `/device/token` から。不在なら null。
+ */
+export async function setDeviceDevFlag(
+  env: DeviceKvEnv,
+  deviceId: string,
+  dev: boolean,
+): Promise<DeviceRecord | null> {
+  const record = await getDeviceRecord(env, deviceId);
+  if (!record) return null;
+  if (dev) record.dev_device = true;
+  else delete record.dev_device;
+  await env.AUTH_CONFIG.put(KV_PREFIX + deviceId, JSON.stringify(record));
+  return record;
+}
+
+/**
  * tenant に紐づく有効な (revoke されていない) device credential 一覧を
  * 発行日時降順で返す (Refs /device/setup の登録済み一覧)。
  *

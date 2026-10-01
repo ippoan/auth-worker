@@ -1,9 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   handleAlarmKeyRegister,
   handleAlarmKeyList,
   handleAlarmKeyRevoke,
+  handleAlarmKeyDevDevice,
 } from "../../src/handlers/alarm-key";
+import { DEVELOPER_EMAILS } from "../../src/lib/developer";
 import { createMockKV, type MockKV } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 import type { Env } from "../../src/index";
@@ -619,5 +621,222 @@ describe("body / KV の壊れたデータに対するフォールバック", () 
     expect(second.status).toBe(200);
     const index = JSON.parse(kv._data["alarmkeys:tenant-1"]!) as string[];
     expect(index.filter((f) => f === fingerprint)).toHaveLength(1);
+  });
+});
+
+/**
+ * 警告デバイスの鍵を開発用にする・外す口 (Refs ippoan/alc-app#387)。
+ * 通すのは「開発者アカウントが Google でログインした session」だけ。
+ * 開発者のメールアドレスの値はテストに書かない (登録簿の先頭を借りる)。
+ */
+describe("handleAlarmKeyDevDevice (Refs ippoan/alc-app#387)", () => {
+  const DEV_EMAIL = DEVELOPER_EMAILS[0]!;
+  const PATH = "/device/setup/alarm-key/dev-device";
+
+  /** 開発者が Google で入った session (この口を通れる唯一の形)。 */
+  async function devHeaders(claims: Record<string, unknown> = {}): Promise<Record<string, string>> {
+    return withOpCookieAndOrigin({ email: DEV_EMAIL, idp: "google", ...claims });
+  }
+
+  /** tenant-1 に鍵を 1 本登録した env。 */
+  async function envWithKey(seed: number) {
+    const { env, kv } = makeEnvWithKv();
+    const reg = await handleAlarmKeyRegister(
+      postJson(
+        "/device/setup/alarm-key",
+        { pubkey: fakePubkey(seed), label: "cab-1", usage: "kiosk" },
+        await withOpCookieAndOrigin(),
+      ),
+      env,
+    );
+    const { fingerprint } = (await reg.json()) as { fingerprint: string };
+    const read = () => JSON.parse(kv._data[`alarmkey:${fingerprint}`]!) as Record<string, unknown>;
+    return { env, fingerprint, read };
+  }
+
+  it("cookie なしは 401、Origin 違いは 403 bad_origin", async () => {
+    const { env, fingerprint, read } = await envWithKey(40);
+    const body = { fingerprint, dev_device: true };
+    const noCookie = await handleAlarmKeyDevDevice(postJson(PATH, body, originHeaders), env);
+    expect(noCookie.status).toBe(401);
+
+    const badOrigin = await handleAlarmKeyDevDevice(
+      postJson(PATH, body, { ...(await devHeaders()), Origin: "https://evil.example" }),
+      env,
+    );
+    expect(badOrigin.status).toBe(403);
+    expect(await badOrigin.json()).toEqual({ error: "bad_origin" });
+    expect(read()).not.toHaveProperty("dev_device");
+  });
+
+  it.each(["dev", "device-key"])(
+    "開発者の email + idp=google でも token_kind=%s は 403 dev_token_write_forbidden",
+    async (tokenKind) => {
+      const { env, fingerprint, read } = await envWithKey(41);
+      const res = await handleAlarmKeyDevDevice(
+        postJson(PATH, { fingerprint, dev_device: true }, await devHeaders({ token_kind: tokenKind })),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+      expect(read()).not.toHaveProperty("dev_device");
+    },
+  );
+
+  it.each([
+    ["開発者でない管理者 (Google ログイン)", { email: "op@example.com", idp: "google" }],
+    ["開発者の email だが idp なし (LINE WORKS のログイン・古い cookie)", { email: DEV_EMAIL }],
+    ["開発者の email だが idp が別の値", { email: DEV_EMAIL, idp: "lineworks" }],
+    ["email の無い session", { email: "", idp: "google" }],
+  ])("%s は 403 developer_google_session_required (書き換えない)", async (_name, claims) => {
+    const { env, fingerprint, read } = await envWithKey(42);
+    const res = await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint, dev_device: true }, await withOpCookieAndOrigin(claims)),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "developer_google_session_required" });
+    expect(read()).not.toHaveProperty("dev_device");
+  });
+
+  it("開発者でない者には、存在する鍵と存在しない鍵で応答が同じ (有無を漏らさない)", async () => {
+    const { env, fingerprint } = await envWithKey(43);
+    const headers = await withOpCookieAndOrigin({ idp: "google" });
+    const existing = await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint, dev_device: true }, headers),
+      env,
+    );
+    const missing = await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint: "fp-missing", dev_device: true }, headers),
+      env,
+    );
+    expect(existing.status).toBe(403);
+    expect(missing.status).toBe(existing.status);
+    expect(await missing.text()).toBe(await existing.text());
+  });
+
+  it("fingerprint が無ければ 400", async () => {
+    const { env } = await envWithKey(44);
+    const res = await handleAlarmKeyDevDevice(postJson(PATH, { dev_device: true }, await devHeaders()), env);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ["文字列 \"true\"", { dev_device: "true" }],
+    ["数値 1", { dev_device: 1 }],
+    ["null", { dev_device: null }],
+    ["欠落", {}],
+  ])("dev_device が boolean でない (%s) は 400 (書き換えない)", async (_name, extra) => {
+    const { env, fingerprint, read } = await envWithKey(45);
+    const res = await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint, ...extra }, await devHeaders()),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(read()).not.toHaveProperty("dev_device");
+  });
+
+  it("他 tenant の鍵と不在の鍵は同じ 403 not_found", async () => {
+    const { env, fingerprint, read } = await envWithKey(46);
+    const otherTenant = await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint, dev_device: true }, await devHeaders({ tenant_id: "tenant-2" })),
+      env,
+    );
+    const missing = await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint: "fp-missing", dev_device: true }, await devHeaders()),
+      env,
+    );
+    for (const res of [otherTenant, missing]) {
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "not_found" });
+    }
+    expect(read()).not.toHaveProperty("dev_device");
+  });
+
+  it("失効済みの鍵は 409 revoked (書き換えない)", async () => {
+    const { env, fingerprint, read } = await envWithKey(47);
+    await handleAlarmKeyRevoke(
+      postJson("/device/setup/alarm-key/revoke", { fingerprint }, await withOpCookieAndOrigin()),
+      env,
+    );
+    const before = read();
+    const res = await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint, dev_device: true }, await devHeaders()),
+      env,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "revoked" });
+    expect(read()).toEqual(before);
+  });
+
+  it("開発者の Google session: true で record に dev_device: true (ほかの欄は不変)、2 回目も同じ", async () => {
+    const { env, fingerprint, read } = await envWithKey(48);
+    const before = read();
+    for (let i = 0; i < 2; i++) {
+      const res = await handleAlarmKeyDevDevice(
+        postJson(PATH, { fingerprint, dev_device: true }, await devHeaders()),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ fingerprint, dev_device: true });
+      expect(read()).toEqual({ ...before, dev_device: true });
+    }
+  });
+
+  it("開発者の Google session: false で欄ごと消える (ほかの欄は不変)、2 回目も同じ", async () => {
+    const { env, fingerprint, read } = await envWithKey(49);
+    const before = read();
+    await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint, dev_device: true }, await devHeaders()),
+      env,
+    );
+    for (let i = 0; i < 2; i++) {
+      const res = await handleAlarmKeyDevDevice(
+        postJson(PATH, { fingerprint, dev_device: false }, await devHeaders()),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ fingerprint, dev_device: false });
+      expect(read()).not.toHaveProperty("dev_device");
+      expect(read()).toEqual(before);
+    }
+  });
+
+  it("書き換えのログは登録簿の種別と真偽だけ (fingerprint・tenant・メールアドレスを出さない)", async () => {
+    const { env, fingerprint } = await envWithKey(50);
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await handleAlarmKeyDevDevice(
+        postJson(PATH, { fingerprint, dev_device: false }, await devHeaders()),
+        env,
+      );
+      expect(spy.mock.calls.map((c) => String(c[0]))).toEqual([
+        JSON.stringify({ event: "dev_device_set", registry: "alarm-key", dev_device: false }),
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("GET /device/setup/alarm-keys は各行に dev_device を boolean で返す", async () => {
+    const { env, fingerprint } = await envWithKey(51);
+    const second = await handleAlarmKeyRegister(
+      postJson(
+        "/device/setup/alarm-key",
+        { pubkey: fakePubkey(52), label: "cab-2", usage: "kiosk" },
+        await withOpCookieAndOrigin(),
+      ),
+      env,
+    );
+    const plainFp = ((await second.json()) as { fingerprint: string }).fingerprint;
+    await handleAlarmKeyDevDevice(
+      postJson(PATH, { fingerprint, dev_device: true }, await devHeaders()),
+      env,
+    );
+    const res = await handleAlarmKeyList(getReq("/device/setup/alarm-keys", await opCookie()), env);
+    const data = (await res.json()) as { keys: Array<{ fingerprint: string; dev_device: unknown }> };
+    const byFp = Object.fromEntries(data.keys.map((k) => [k.fingerprint, k.dev_device]));
+    expect(byFp[fingerprint]).toBe(true);
+    expect(byFp[plainFp]).toBe(false);
   });
 });

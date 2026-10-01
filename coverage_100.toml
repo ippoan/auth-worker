@@ -19,6 +19,12 @@ branches = true
 path = "src/lib/device-pair.ts"
 branches = true
 
+# Refs ippoan/alc-app#387: 端末の鍵を開発用にする口の認可 (開発者の Google session だけ)。
+# 判定が緩むと、開発者でない者が端末の記録を本番の記録簿から消せるので 100% を維持する。
+[[files]]
+path = "src/lib/developer.ts"
+branches = true
+
 # ippoan/auth-worker#560: /top と admin 門番が共有する cookie 走査 / JWT decode の
 # 共通 snippet。片方にしか修正が入らない (#529 の base64url 対応が漏れた等) 事故の
 # 再発防止が目的なので 100% を維持する。

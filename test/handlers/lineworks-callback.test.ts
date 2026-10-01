@@ -27,6 +27,7 @@ vi.mock("../../src/lib/acl", () => ({
 }));
 
 import { handleLineworksCallback } from "../../src/handlers/lineworks-callback";
+import { decodeJwtPayload } from "../../src/lib/jwt";
 import { verifyOAuthState, isAllowedRedirectUri } from "../../src/lib/security";
 import { resolveSsoConfig, upsertLineworksUser, saveRefreshToken } from "../../src/lib/alc-internal";
 import { exchangeCode, fetchUserProfile } from "../../src/lib/lineworks-oauth";
@@ -149,6 +150,9 @@ describe("handleLineworksCallback", () => {
     expect(loc).toContain("expires_in=3600");
     expect(loc).toContain("lw_callback=1");
     expect(res.headers.get("Set-Cookie")).toContain("logi_auth_token=");
+    // Google の callback だけが idp を載せる。LINE WORKS の token には key ごと無い (Refs ippoan/alc-app#387)
+    const token = res.headers.get("Set-Cookie")!.match(/logi_auth_token=([^;]+)/)![1]!;
+    expect(decodeJwtPayload(token)).not.toHaveProperty("idp");
     expect(mockUpsert).toHaveBeenCalledWith(env, {
       tenant_id: okUser.tenant_id,
       lineworks_id: "lw1",
