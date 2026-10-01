@@ -967,3 +967,56 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     expect(h["X-Tenant-ID"]).toBe(TENANT);
   });
 });
+
+describe("X-Device-Dev / X-Device-Role ヘッダ転送 (Refs ippoan/alc-app#387)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function kioskToken(claims: Record<string, unknown> = {}): Promise<string> {
+    return signTestJwt(
+      { sub: "device-kiosk-1", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK, ...claims },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  async function forwardedHeaders(
+    token: string,
+    headers?: Record<string, string>,
+  ): Promise<Record<string, string>> {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", { method: "GET", token, headers }),
+      env(),
+    );
+    return (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+  }
+
+  it("dev_device claim ありなら X-Device-Dev: 1 と X-Device-Role (token の role) を付けて転送する", async () => {
+    const h = await forwardedHeaders(await kioskToken({ dev_device: true }));
+    expect(h["X-Device-Dev"]).toBe("1");
+    expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_KIOSK);
+  });
+
+  it("dev_device claim なしなら X-Device-Dev は付かず、X-Device-Role は付く", async () => {
+    const h = await forwardedHeaders(await kioskToken());
+    expect(h).not.toHaveProperty("X-Device-Dev");
+    expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_KIOSK);
+  });
+
+  it("dev_device claim が true 以外 (false / 文字列) なら X-Device-Dev は付かない", async () => {
+    expect(await forwardedHeaders(await kioskToken({ dev_device: false }))).not.toHaveProperty("X-Device-Dev");
+    expect(await forwardedHeaders(await kioskToken({ dev_device: "1" }))).not.toHaveProperty("X-Device-Dev");
+  });
+
+  it("★ client が X-Device-Dev: 1 と X-Device-Role: device-tenko-manager を付けても、claim の無い token なら X-Device-Dev は無く、X-Device-Role は token の role", async () => {
+    const h = await forwardedHeaders(await kioskToken(), {
+      "X-Device-Dev": "1",
+      "X-Device-Role": DEVICE_ROLE_TENKO_MANAGER,
+    });
+    expect(h).not.toHaveProperty("X-Device-Dev");
+    expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_KIOSK);
+  });
+});

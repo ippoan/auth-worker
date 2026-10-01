@@ -36,7 +36,9 @@
  *
  * Response (RFC 7662 風):
  *   - 有効          : 200 `{ active: true, tenant_id, role, email, sub, exp,
- *                            org_wide, token_kind? }`
+ *                            org_wide, dev_device, token_kind? }`
+ *     `dev_device` (boolean) は device JWT の `dev_device` claim が true のときだけ
+ *     true、それ以外は false (開発用の鍵から出した token かどうか)
  *     `token_kind` は payload にある場合のみ含める (issue #522: alc-app が
  *     device-key ログインを区別するため。通常ログインは省略され、既存
  *     consumer はキー自体を見ないので additive で壊れない)
@@ -137,6 +139,7 @@ export type IntrospectResult =
       sub: string;
       exp: unknown;
       org_wide: boolean;
+      dev_device: boolean;
       token_kind?: unknown;
     };
 
@@ -208,6 +211,8 @@ export async function introspectToken(
     sub,
     exp: payload.exp,
     org_wide: orgWide,
+    // 開発用の鍵 (device JWT の `dev_device` claim)。claim が true のときだけ true。
+    dev_device: payload.dev_device === true,
     // issue #522: alc-app が device-key (VoiceS3R ログイン) を区別できるように。
     // 未設定 (通常の Google/LINE WORKS 等ログイン) は含めない — 既存 consumer は
     // このキーを見ないので additive で壊れない。

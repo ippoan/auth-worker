@@ -199,7 +199,7 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
       { device_id: `alarm:${fingerprint}`, tenant_id: record.tenant_id, role: roleForUsage(usage) },
       Math.floor(Date.now() / 1000),
       ALARM_TOKEN_TTL_SEC,
-      { bpBonded },
+      { bpBonded, devDevice: record.dev_device },
     );
   } catch {
     return jsonNoStoreCors({ error: "server_error" }, 503);

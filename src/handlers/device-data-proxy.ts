@@ -313,6 +313,11 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   if (bpBonded === true) fwdHeaders["X-Device-Bp-Bonded"] = "1";
   else if (bpBonded === false) fwdHeaders["X-Device-Bp-Bonded"] = "0";
 
+  // 開発用の鍵 (登録簿 `dev_device` → claim)。bp_bonded と同じ作法で claim からだけ組み立てる。
+  // true 以外はヘッダ自体を付けない。X-Device-Role は検証済み token の role (常に付ける)。
+  if (payload.dev_device === true) fwdHeaders["X-Device-Dev"] = "1";
+  fwdHeaders["X-Device-Role"] = role;
+
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? await request.arrayBuffer() : undefined;

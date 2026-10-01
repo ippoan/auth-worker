@@ -217,6 +217,11 @@ export interface DeviceRecord {
    */
   role?: string;
   /**
+   * 開発用の鍵。この鍵で書いた記録は本番の記録簿に出ない。立てる口は #c387-13
+   * (それまで全端末が未設定 = 非 dev)。`token_kind=dev` の dev ログインとは別物。
+   */
+  dev_device?: boolean;
+  /**
    * 拠点 ID (Refs #406)。`device-hub` / `device-gateway` の 1:1 束縛と
    * `/device/hub-token` の claim に使う。
    *
@@ -323,11 +328,18 @@ export async function createDeviceCredentialReplacingLabel(
 ): Promise<NewDeviceCredential> {
   const indexKey = labelIndexKey(tenantId, label);
   const previousDeviceId = await env.AUTH_CONFIG.get(indexKey);
+  // 再認証で dev の印が消えないよう、置き換え前の record の dev_device を引き継ぐ。
+  let carryDevDevice = false;
   if (previousDeviceId) {
+    carryDevDevice = (await getDeviceRecord(env, previousDeviceId))?.dev_device === true;
     await revokeDeviceCredential(env, previousDeviceId);
   }
 
   const cred = await createDeviceCredential(env, tenantId, label, now, role, siteId);
+  if (carryDevDevice) {
+    cred.record.dev_device = true;
+    await env.AUTH_CONFIG.put(KV_PREFIX + cred.device_id, JSON.stringify(cred.record));
+  }
   await env.AUTH_CONFIG.put(indexKey, cred.device_id);
   return cred;
 }
@@ -476,6 +488,11 @@ export interface DeviceJwtClaims {
    * 血圧必須側に倒す (`device-data-proxy.ts` はこの claim からヘッダを組み立てて転送する)。
    */
   bp_bonded?: boolean;
+  /**
+   * 開発用の鍵から出した token (登録簿の `dev_device`)。**true のときだけ載る**
+   * (false / 未設定では claim 自体が無い)。`/device-data-proxy` が `X-Device-Dev` に写す。
+   */
+  dev_device?: boolean;
   [key: string]: unknown;
 }
 
@@ -496,13 +513,16 @@ export interface DeviceJwtClaims {
  * `opts.bpBonded` (Refs #571) は `bp_bonded` claim に載せるかどうか。`undefined` なら
  * claim 自体を付けない (「不明」)。既存の呼び出し (`/device/token`) は渡さないので
  * 影響しない。
+ *
+ * `opts.devDevice` は登録簿の `dev_device`。**`true` のときだけ** claim `dev_device: true`
+ * を載せる (false / 未設定では claim 自体を付けない)。
  */
 export async function mintDeviceJwt<R extends Pick<DeviceRecord, "device_id" | "tenant_id" | "role">>(
   env: DeviceJwtEnv,
   record: R,
   now: number,
   ttlSeconds: number = DEVICE_JWT_TTL_SECONDS,
-  opts?: { bpBonded?: boolean },
+  opts?: { bpBonded?: boolean; devDevice?: boolean },
 ): Promise<string> {
   const secret = await resolveSecret(env.JWT_SECRET);
   if (!secret) {
@@ -518,6 +538,7 @@ export async function mintDeviceJwt<R extends Pick<DeviceRecord, "device_id" | "
     exp: now + ttlSeconds,
   };
   if (opts?.bpBonded !== undefined) claims.bp_bonded = opts.bpBonded;
+  if (opts?.devDevice === true) claims.dev_device = true;
   return signHs256(claims, secret);
 }
 

@@ -205,7 +205,9 @@ export async function handleDeviceToken(request: Request, env: Env): Promise<Res
 
   let token: string;
   try {
-    token = await mintDeviceJwt(env, record, Math.floor(Date.now() / 1000));
+    token = await mintDeviceJwt(env, record, Math.floor(Date.now() / 1000), undefined, {
+      devDevice: record.dev_device,
+    });
   } catch {
     return jsonNoStore({ error: "server_error" }, 503);
   }

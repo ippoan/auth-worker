@@ -570,3 +570,38 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(res.status).toBe(502);
   });
 });
+
+describe("handleAlcInternalProxy: X-Device-Dev の転送 (Refs ippoan/alc-app#387)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function forwardedHeaders(headers: Record<string, string>): Promise<Record<string, string>> {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/hub/measurements", { method: "POST", headers, body: "{}" }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    return (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+  }
+
+  it("caller の X-Device-Dev: 1 は転送される", async () => {
+    expect((await forwardedHeaders({ "X-Device-Dev": "1" }))["X-Device-Dev"]).toBe("1");
+  });
+
+  it.each(["true", "0", "", "11"])("X-Device-Dev: %j は転送されない", async (value) => {
+    expect(await forwardedHeaders({ "X-Device-Dev": value })).not.toHaveProperty("X-Device-Dev");
+  });
+
+  it("X-Device-Dev が無ければ付かない", async () => {
+    expect(await forwardedHeaders({})).not.toHaveProperty("X-Device-Dev");
+  });
+
+  it("X-Device-Role は転送されない", async () => {
+    const h = await forwardedHeaders({ "X-Device-Dev": "1", "X-Device-Role": "device-tenko-manager" });
+    expect(h).not.toHaveProperty("X-Device-Role");
+  });
+});
