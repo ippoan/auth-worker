@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:17654455b1340db88f42157929cf615e67575b17
+generated-from: auth-worker:f488275bb6942f120dfdb57e1c8d7b2323ab0c23
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
@@ -209,6 +209,14 @@ command id を返す。結果は `/device/setup/ota/:id` で `{ok:true}` (受理
 - 実際に外れたかは返らない。**結果は `bp_status` の照会で見る** (画面は受理の 3 秒後に `queryBpStatus` を呼び直す)。
 - 画面は血圧計の列 (`bpSpan`) の隣のボタン。出す条件は照会と同じ (接続中だけ、`applyConnected` で切替)。
 - MCP の道具からは送れない (`mcp-tools.ts` は action 固定。足さない)。
+
+## 端末のラベルを返す内部 route (`GET /internal/device-labels?tenant_id=`、Refs ippoan/alc-app#403)
+
+`internal-device-labels.ts`。**shared secret** (`Authorization: <INTERNAL_SHARED_SECRET*>`。検査は
+`internal-hub-devices.ts::rejectUnlessSharedSecret` を `/internal/hub-devices` と共用 — 未 bind 503 / 不一致 401)。
+テナントの**未失効の端末の `device_id` と `label` だけ**を返す (`{devices:[{device_id,label|null}]}`、`tenant_id` 無し 400)。
+alc-app のサーバが端末一覧の表示と、キオスクが報告した `device_id` の登録済み照合に使う。
+**`/internal/hub-devices` は label を返さないまま** (cron 用の最小参照。混ぜない)。
 
 ## CCoW から見た auth-worker
 

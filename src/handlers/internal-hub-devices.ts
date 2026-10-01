@@ -20,7 +20,7 @@ import type { Env } from "../index";
 import { listAllHubDeviceRecords } from "../lib/device";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 
-function jsonNoStore(data: unknown, status = 200): Response {
+export function jsonNoStore(data: unknown, status = 200): Response {
   const res = new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json" },
@@ -37,7 +37,14 @@ function constantTimeEquals(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export async function handleInternalHubDevices(request: Request, env: Env): Promise<Response> {
+/**
+ * shared secret の検査 (`/internal/*` 共通)。通れば null、拒否なら返す Response。
+ * 未 bind → 503 `server_error`、header 無し / 不一致 → 401 `unauthorized`。
+ */
+export async function rejectUnlessSharedSecret(
+  request: Request,
+  env: Env,
+): Promise<Response | null> {
   const sharedSecrets = await resolveAllSharedSecrets(env);
   if (!sharedSecrets) {
     return jsonNoStore({ error: "server_error" }, 503);
@@ -47,6 +54,12 @@ export async function handleInternalHubDevices(request: Request, env: Env): Prom
   if (!authz || !sharedSecrets.some((s) => constantTimeEquals(authz, s))) {
     return jsonNoStore({ error: "unauthorized" }, 401);
   }
+  return null;
+}
+
+export async function handleInternalHubDevices(request: Request, env: Env): Promise<Response> {
+  const rejected = await rejectUnlessSharedSecret(request, env);
+  if (rejected) return rejected;
 
   const devices = await listAllHubDeviceRecords(env);
   return jsonNoStore({ devices });
