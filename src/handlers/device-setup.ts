@@ -944,7 +944,10 @@ th,td{border:1px solid #e2e5e9;padding:.35rem .6rem;text-align:left}
 th{background:#f6f8fa;color:#444;font-weight:600}
 button.small{font-size:.8rem;padding:.3rem .6rem;background:#1a56db}
 button.small.update{background:#b91c1c}
+button.small.dev-on{background:#b45309}
+button.small.dev-off{background:#fff;color:#374151;border:1px solid #9ca3af}
 button.small:disabled{background:#9ca3af}
+button.small.dev-off:disabled{color:#fff}
 .ota-cell{white-space:nowrap}
 .ota-note{font-size:.85rem;color:#666}
 .ota-note.latest{color:#166534;font-weight:600}
@@ -1630,9 +1633,8 @@ async function pollCommandResult(id, timeoutMs, ready) {
 // 「開発用」の印は全員に出す (テナントの管理者が「記録が出ない理由」を知れるように)。
 function devDeviceMark() {
   const mark = document.createElement("span");
+  mark.className = "tag new";
   mark.style.marginLeft = ".35rem";
-  mark.style.fontSize = ".8rem";
-  mark.style.color = "#92400e";
   mark.textContent = "開発用";
   return mark;
 }
@@ -1641,7 +1643,7 @@ function devDeviceMark() {
 function devDeviceButton(isDev, label, path, key, reload, msgEl) {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "small";
+  btn.className = isDev ? "small dev-on" : "small dev-off";
   btn.style.marginLeft = ".35rem";
   btn.textContent = isDev ? "開発用を外す" : "開発用にする";
   btn.addEventListener("click", () => setDevDevice(path, key, !isDev, label, reload, msgEl));
