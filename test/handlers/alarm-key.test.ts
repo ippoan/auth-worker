@@ -3,7 +3,6 @@ import {
   handleAlarmKeyRegister,
   handleAlarmKeyList,
   handleAlarmKeyRevoke,
-  handleAlarmKeyDevDevice,
 } from "../../src/handlers/alarm-key";
 import { DEVELOPER_EMAILS } from "../../src/lib/developer";
 import { createMockKV, type MockKV } from "../helpers/mock-env";
@@ -625,192 +624,241 @@ describe("body / KV の壊れたデータに対するフォールバック", () 
 });
 
 /**
- * 警告デバイスの鍵を開発用にする・外す口 (Refs ippoan/alc-app#387)。
- * 通すのは「開発者アカウントが Google でログインした session」だけ。
+ * 開発用かどうかは鍵を登録する時点 (`POST /device/setup/alarm-key` の `dev_device`) で決まる
+ * (Refs ippoan/alc-app#387)。明示できるのは「開発者アカウントが Google でログインした session」だけ。
+ * 作り直した鍵への差し替えは `replaces_pubkey`。
  * 開発者のメールアドレスの値はテストに書かない (登録簿の先頭を借りる)。
  */
-describe("handleAlarmKeyDevDevice (Refs ippoan/alc-app#387)", () => {
+describe("handleAlarmKeyRegister の dev_device と replaces_pubkey (Refs ippoan/alc-app#387)", () => {
   const DEV_EMAIL = DEVELOPER_EMAILS[0]!;
-  const PATH = "/device/setup/alarm-key/dev-device";
+  const PATH = "/device/setup/alarm-key";
 
-  /** 開発者が Google で入った session (この口を通れる唯一の形)。 */
+  /** 開発者が Google で入った session (dev_device を明示できる唯一の形)。 */
   async function devHeaders(claims: Record<string, unknown> = {}): Promise<Record<string, string>> {
     return withOpCookieAndOrigin({ email: DEV_EMAIL, idp: "google", ...claims });
   }
-
-  /** tenant-1 に鍵を 1 本登録した env。 */
-  async function envWithKey(seed: number) {
-    const { env, kv } = makeEnvWithKv();
-    const reg = await handleAlarmKeyRegister(
-      postJson(
-        "/device/setup/alarm-key",
-        { pubkey: fakePubkey(seed), label: "cab-1", usage: "kiosk" },
-        await withOpCookieAndOrigin(),
-      ),
-      env,
-    );
-    const { fingerprint } = (await reg.json()) as { fingerprint: string };
-    const read = () => JSON.parse(kv._data[`alarmkey:${fingerprint}`]!) as Record<string, unknown>;
-    return { env, fingerprint, read };
+  /** 開発者でない管理者の session。 */
+  async function opHeaders(claims: Record<string, unknown> = {}): Promise<Record<string, string>> {
+    return withOpCookieAndOrigin({ idp: "google", ...claims });
   }
 
-  it("cookie なしは 401、Origin 違いは 403 bad_origin", async () => {
-    const { env, fingerprint, read } = await envWithKey(40);
-    const body = { fingerprint, dev_device: true };
-    const noCookie = await handleAlarmKeyDevDevice(postJson(PATH, body, originHeaders), env);
-    expect(noCookie.status).toBe(401);
+  /** 登録して fingerprint を返す (失敗したら status で落とす)。 */
+  async function register(
+    env: Env,
+    body: Record<string, unknown>,
+    headers: Record<string, string>,
+  ): Promise<string> {
+    const res = await handleAlarmKeyRegister(postJson(PATH, body, headers), env);
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { fingerprint: string }).fingerprint;
+  }
+  const readRecord = (kv: MockKV, fingerprint: string) =>
+    JSON.parse(kv._data[`alarmkey:${fingerprint}`]!) as Record<string, unknown>;
+  /** KV の中身の写し (拒否された request が何も書かないことの確認用)。 */
+  const snapshot = (kv: MockKV) => JSON.stringify(kv._data);
 
-    const badOrigin = await handleAlarmKeyDevDevice(
-      postJson(PATH, body, { ...(await devHeaders()), Origin: "https://evil.example" }),
-      env,
-    );
-    expect(badOrigin.status).toBe(403);
-    expect(await badOrigin.json()).toEqual({ error: "bad_origin" });
-    expect(read()).not.toHaveProperty("dev_device");
+  it("開発者 + dev_device:true → record が dev / dev_device:false → 欄ごと無い", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const dev = await register(env, { pubkey: fakePubkey(40), label: "a", usage: "kiosk", dev_device: true }, await devHeaders());
+    expect(readRecord(kv, dev).dev_device).toBe(true);
+    const prod = await register(env, { pubkey: fakePubkey(41), label: "b", usage: "kiosk", dev_device: false }, await devHeaders());
+    expect(readRecord(kv, prod)).not.toHaveProperty("dev_device");
   });
 
-  it.each(["dev", "device-key"])(
-    "開発者の email + idp=google でも token_kind=%s は 403 dev_token_write_forbidden",
-    async (tokenKind) => {
-      const { env, fingerprint, read } = await envWithKey(41);
-      const res = await handleAlarmKeyDevDevice(
-        postJson(PATH, { fingerprint, dev_device: true }, await devHeaders({ token_kind: tokenKind })),
-        env,
-      );
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
-      expect(read()).not.toHaveProperty("dev_device");
-    },
-  );
+  it("明示なし + 新規 → 本番 (開発者の session でも)", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const a = await register(env, { pubkey: fakePubkey(42), label: "a", usage: "kiosk" }, await opHeaders());
+    const b = await register(env, { pubkey: fakePubkey(43), label: "b", usage: "kiosk" }, await devHeaders());
+    expect(readRecord(kv, a)).not.toHaveProperty("dev_device");
+    expect(readRecord(kv, b)).not.toHaveProperty("dev_device");
+  });
 
   it.each([
     ["開発者でない管理者 (Google ログイン)", { email: "op@example.com", idp: "google" }],
     ["開発者の email だが idp なし (LINE WORKS のログイン・古い cookie)", { email: DEV_EMAIL }],
     ["開発者の email だが idp が別の値", { email: DEV_EMAIL, idp: "lineworks" }],
     ["email の無い session", { email: "", idp: "google" }],
-  ])("%s は 403 developer_google_session_required (書き換えない)", async (_name, claims) => {
-    const { env, fingerprint, read } = await envWithKey(42);
-    const res = await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint, dev_device: true }, await withOpCookieAndOrigin(claims)),
-      env,
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: "developer_google_session_required" });
-    expect(read()).not.toHaveProperty("dev_device");
+  ])("%s が dev_device を送ると true でも false でも 403、何も書かれない", async (_name, claims) => {
+    const { env, kv } = makeEnvWithKv();
+    const old = await register(env, { pubkey: fakePubkey(44), label: "a", usage: "kiosk", dev_device: true }, await devHeaders());
+    const before = snapshot(kv);
+    for (const dev of [true, false]) {
+      for (const extra of [{ label: "b", usage: "kiosk" }, { replaces_pubkey: fakePubkey(44) }]) {
+        const res = await handleAlarmKeyRegister(
+          postJson(PATH, { pubkey: fakePubkey(45), dev_device: dev, ...extra }, await withOpCookieAndOrigin(claims)),
+          env,
+        );
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: "developer_google_session_required" });
+      }
+    }
+    expect(snapshot(kv)).toBe(before);
+    expect(readRecord(kv, old)).not.toHaveProperty("revoked_at");
   });
 
-  it("開発者でない者には、存在する鍵と存在しない鍵で応答が同じ (有無を漏らさない)", async () => {
-    const { env, fingerprint } = await envWithKey(43);
-    const headers = await withOpCookieAndOrigin({ idp: "google" });
-    const existing = await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint, dev_device: true }, headers),
-      env,
-    );
-    const missing = await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint: "fp-missing", dev_device: true }, headers),
-      env,
-    );
-    expect(existing.status).toBe(403);
-    expect(missing.status).toBe(existing.status);
-    expect(await missing.text()).toBe(await existing.text());
-  });
-
-  it("fingerprint が無ければ 400", async () => {
-    const { env } = await envWithKey(44);
-    const res = await handleAlarmKeyDevDevice(postJson(PATH, { dev_device: true }, await devHeaders()), env);
-    expect(res.status).toBe(400);
-  });
+  it.each(["dev", "device-key"])(
+    "開発者の email + idp=google でも token_kind=%s は 403 dev_token_write_forbidden (今までどおり)",
+    async (tokenKind) => {
+      const { env, kv } = makeEnvWithKv();
+      const res = await handleAlarmKeyRegister(
+        postJson(
+          PATH,
+          { pubkey: fakePubkey(46), label: "a", usage: "kiosk", dev_device: true },
+          await devHeaders({ token_kind: tokenKind }),
+        ),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+      expect(snapshot(kv)).toBe("{}");
+    },
+  );
 
   it.each([
-    ["文字列 \"true\"", { dev_device: "true" }],
-    ["数値 1", { dev_device: 1 }],
-    ["null", { dev_device: null }],
-    ["欠落", {}],
-  ])("dev_device が boolean でない (%s) は 400 (書き換えない)", async (_name, extra) => {
-    const { env, fingerprint, read } = await envWithKey(45);
-    const res = await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint, ...extra }, await devHeaders()),
+    ["文字列 \"true\"", "true"],
+    ["数値 1", 1],
+    ["null", null],
+  ])("dev_device が boolean でない (%s) は 400 (何も書かれない)", async (_name, value) => {
+    const { env, kv } = makeEnvWithKv();
+    const res = await handleAlarmKeyRegister(
+      postJson(PATH, { pubkey: fakePubkey(47), label: "a", usage: "kiosk", dev_device: value }, await devHeaders()),
       env,
     );
     expect(res.status).toBe(400);
-    expect(read()).not.toHaveProperty("dev_device");
+    expect(snapshot(kv)).toBe("{}");
   });
 
-  it("他 tenant の鍵と不在の鍵は同じ 403 not_found", async () => {
-    const { env, fingerprint, read } = await envWithKey(46);
-    const otherTenant = await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint, dev_device: true }, await devHeaders({ tenant_id: "tenant-2" })),
+  it("replaces_pubkey: 新 record が古い record の label / usage を写し (body の値は見ない)、古い record は失効する", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const old = await register(env, { pubkey: fakePubkey(50), label: "cab-1", usage: "tenko-manager" }, await opHeaders());
+    const oldBefore = readRecord(kv, old);
+    const next = await register(
       env,
+      { pubkey: fakePubkey(51), replaces_pubkey: fakePubkey(50), label: "ignored", usage: "kiosk" },
+      await opHeaders(),
     );
-    const missing = await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint: "fp-missing", dev_device: true }, await devHeaders()),
-      env,
-    );
-    for (const res of [otherTenant, missing]) {
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: "not_found" });
-    }
-    expect(read()).not.toHaveProperty("dev_device");
+    expect(next).not.toBe(old);
+    const rec = readRecord(kv, next);
+    expect(rec).toMatchObject({ pubkey: fakePubkey(51), tenant_id: "tenant-1", label: "cab-1", usage: "tenko-manager" });
+    expect(rec).not.toHaveProperty("revoked_at");
+    expect(rec).not.toHaveProperty("dev_device");
+    // 古い record は失効時刻が付くだけ (ほかの欄は不変)
+    const oldAfter = readRecord(kv, old);
+    expect(typeof oldAfter.revoked_at).toBe("number");
+    expect(oldAfter).toEqual({ ...oldBefore, revoked_at: oldAfter.revoked_at });
+    // 一覧には両方 (新 = 有効、旧 = 失効済み)
+    expect(JSON.parse(kv._data["alarmkeys:tenant-1"]!)).toEqual([old, next]);
   });
 
-  it("失効済みの鍵は 409 revoked (書き換えない)", async () => {
-    const { env, fingerprint, read } = await envWithKey(47);
+  it("replaces_pubkey: label / usage を送らなくても通る (画面の書き直しの body)", async () => {
+    const { env, kv } = makeEnvWithKv();
+    await register(env, { pubkey: fakePubkey(52), label: "cab-1", usage: "kiosk" }, await opHeaders());
+    const next = await register(
+      env,
+      { pubkey: fakePubkey(53), replaces_pubkey: fakePubkey(52), dev_device: true },
+      await devHeaders(),
+    );
+    expect(readRecord(kv, next)).toMatchObject({ label: "cab-1", usage: "kiosk", dev_device: true });
+  });
+
+  it("replaces_pubkey + 明示なし: 古い record が dev → 新も dev (引き継ぎ) / 本番 → 本番", async () => {
+    const { env, kv } = makeEnvWithKv();
+    await register(env, { pubkey: fakePubkey(54), label: "a", usage: "kiosk", dev_device: true }, await devHeaders());
+    const carried = await register(env, { pubkey: fakePubkey(55), replaces_pubkey: fakePubkey(54) }, await opHeaders());
+    expect(readRecord(kv, carried).dev_device).toBe(true);
+
+    await register(env, { pubkey: fakePubkey(56), label: "b", usage: "kiosk" }, await opHeaders());
+    const plain = await register(env, { pubkey: fakePubkey(57), replaces_pubkey: fakePubkey(56) }, await devHeaders());
+    expect(readRecord(kv, plain)).not.toHaveProperty("dev_device");
+  });
+
+  it("replaces_pubkey + 開発者 + dev_device:false: 古い record が dev → 新は本番 (欄ごと無い)", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const old = await register(env, { pubkey: fakePubkey(58), label: "a", usage: "kiosk", dev_device: true }, await devHeaders());
+    const next = await register(
+      env,
+      { pubkey: fakePubkey(59), replaces_pubkey: fakePubkey(58), dev_device: false },
+      await devHeaders(),
+    );
+    expect(readRecord(kv, next)).not.toHaveProperty("dev_device");
+    expect(readRecord(kv, old).dev_device).toBe(true);
+    expect(typeof readRecord(kv, old).revoked_at).toBe("number");
+  });
+
+  it("replaces_pubkey: 別テナント・失効済み・不在・形式不正・用途なしの旧 record は 409 replaced_key_not_found で何も書かれない", async () => {
+    const { env, kv } = makeEnvWithKv();
+    // 別テナントの鍵
+    await register(env, { pubkey: fakePubkey(60), label: "other", usage: "kiosk" }, await opHeaders({ tenant_id: "tenant-2" }));
+    // 失効済みの鍵
+    const revoked = await register(env, { pubkey: fakePubkey(61), label: "revoked", usage: "kiosk" }, await opHeaders());
     await handleAlarmKeyRevoke(
-      postJson("/device/setup/alarm-key/revoke", { fingerprint }, await withOpCookieAndOrigin()),
+      postJson("/device/setup/alarm-key/revoke", { fingerprint: revoked }, await opHeaders()),
       env,
     );
-    const before = read();
-    const res = await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint, dev_device: true }, await devHeaders()),
-      env,
-    );
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "revoked" });
-    expect(read()).toEqual(before);
-  });
+    // 用途を持たない旧形式の record (使用不可)
+    const legacy = await register(env, { pubkey: fakePubkey(62), label: "legacy", usage: "kiosk" }, await opHeaders());
+    const legacyRecord = readRecord(kv, legacy);
+    delete legacyRecord.usage;
+    kv._data[`alarmkey:${legacy}`] = JSON.stringify(legacyRecord);
 
-  it("開発者の Google session: true で record に dev_device: true (ほかの欄は不変)、2 回目も同じ", async () => {
-    const { env, fingerprint, read } = await envWithKey(48);
-    const before = read();
-    for (let i = 0; i < 2; i++) {
-      const res = await handleAlarmKeyDevDevice(
-        postJson(PATH, { fingerprint, dev_device: true }, await devHeaders()),
+    const before = snapshot(kv);
+    for (const replaces of [fakePubkey(60), fakePubkey(61), fakePubkey(62), fakePubkey(63), "not-a-pubkey", 1, null]) {
+      const res = await handleAlarmKeyRegister(
+        postJson(PATH, { pubkey: fakePubkey(64), replaces_pubkey: replaces, dev_device: true }, await devHeaders()),
         env,
       );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ fingerprint, dev_device: true });
-      expect(read()).toEqual({ ...before, dev_device: true });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "replaced_key_not_found" });
     }
+    expect(snapshot(kv)).toBe(before);
   });
 
-  it("開発者の Google session: false で欄ごと消える (ほかの欄は不変)、2 回目も同じ", async () => {
-    const { env, fingerprint, read } = await envWithKey(49);
-    const before = read();
-    await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint, dev_device: true }, await devHeaders()),
-      env,
-    );
-    for (let i = 0; i < 2; i++) {
-      const res = await handleAlarmKeyDevDevice(
-        postJson(PATH, { fingerprint, dev_device: false }, await devHeaders()),
+  it("replaces_pubkey: 新しい公開鍵が登録済み (古い鍵と同じ鍵を含む) なら 409 already registered で、古い record は失効しない", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const old = await register(env, { pubkey: fakePubkey(65), label: "a", usage: "kiosk" }, await opHeaders());
+    await register(env, { pubkey: fakePubkey(66), label: "b", usage: "kiosk" }, await opHeaders());
+    const before = snapshot(kv);
+    for (const pubkey of [fakePubkey(65), fakePubkey(66)]) {
+      const res = await handleAlarmKeyRegister(
+        postJson(PATH, { pubkey, replaces_pubkey: fakePubkey(65) }, await opHeaders()),
         env,
       );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ fingerprint, dev_device: false });
-      expect(read()).not.toHaveProperty("dev_device");
-      expect(read()).toEqual(before);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "already registered" });
     }
+    expect(snapshot(kv)).toBe(before);
+    expect(readRecord(kv, old)).not.toHaveProperty("revoked_at");
   });
 
-  it("書き換えのログは登録簿の種別と真偽だけ (fingerprint・tenant・メールアドレスを出さない)", async () => {
-    const { env, fingerprint } = await envWithKey(50);
+  it("replaces_pubkey: 新しい record を保存した後に古い record を失効させる (書き込みの順)", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const old = await register(env, { pubkey: fakePubkey(67), label: "a", usage: "kiosk" }, await opHeaders());
+    const puts: string[] = [];
+    const realPut = kv.put.bind(kv);
+    (kv as unknown as { put: typeof kv.put }).put = (async (key: string, value: string) => {
+      puts.push(key);
+      return realPut(key, value);
+    }) as typeof kv.put;
+    const next = await register(env, { pubkey: fakePubkey(68), replaces_pubkey: fakePubkey(67) }, await opHeaders());
+    expect(puts).toEqual([`alarmkey:${next}`, "alarmkeys:tenant-1", `alarmkey:${old}`]);
+  });
+
+  it("監査ログは明示したときだけ。登録簿の種別と真偽だけ (fingerprint・tenant・メールアドレスを出さない)", async () => {
+    const { env } = makeEnvWithKv();
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      await handleAlarmKeyDevDevice(
-        postJson(PATH, { fingerprint, dev_device: false }, await devHeaders()),
+      await register(env, { pubkey: fakePubkey(70), label: "a", usage: "kiosk" }, await devHeaders());
+      await handleAlarmKeyRegister(
+        postJson(PATH, { pubkey: fakePubkey(71), label: "a", usage: "kiosk", dev_device: true }, await opHeaders()),
         env,
       );
+      expect(spy.mock.calls).toEqual([]);
+      await register(env, { pubkey: fakePubkey(72), replaces_pubkey: fakePubkey(70), dev_device: true }, await devHeaders());
+      // 明示なしの引き継ぎ (dev のまま) では出ない
+      await register(env, { pubkey: fakePubkey(73), replaces_pubkey: fakePubkey(72) }, await opHeaders());
+      await register(env, { pubkey: fakePubkey(74), label: "b", usage: "kiosk", dev_device: false }, await devHeaders());
       expect(spy.mock.calls.map((c) => String(c[0]))).toEqual([
+        JSON.stringify({ event: "dev_device_set", registry: "alarm-key", dev_device: true }),
         JSON.stringify({ event: "dev_device_set", registry: "alarm-key", dev_device: false }),
       ]);
     } finally {
@@ -819,24 +867,13 @@ describe("handleAlarmKeyDevDevice (Refs ippoan/alc-app#387)", () => {
   });
 
   it("GET /device/setup/alarm-keys は各行に dev_device を boolean で返す", async () => {
-    const { env, fingerprint } = await envWithKey(51);
-    const second = await handleAlarmKeyRegister(
-      postJson(
-        "/device/setup/alarm-key",
-        { pubkey: fakePubkey(52), label: "cab-2", usage: "kiosk" },
-        await withOpCookieAndOrigin(),
-      ),
-      env,
-    );
-    const plainFp = ((await second.json()) as { fingerprint: string }).fingerprint;
-    await handleAlarmKeyDevDevice(
-      postJson(PATH, { fingerprint, dev_device: true }, await devHeaders()),
-      env,
-    );
+    const { env } = makeEnvWithKv();
+    const devFp = await register(env, { pubkey: fakePubkey(75), label: "cab-1", usage: "kiosk", dev_device: true }, await devHeaders());
+    const plainFp = await register(env, { pubkey: fakePubkey(76), label: "cab-2", usage: "kiosk" }, await opHeaders());
     const res = await handleAlarmKeyList(getReq("/device/setup/alarm-keys", await opCookie()), env);
     const data = (await res.json()) as { keys: Array<{ fingerprint: string; dev_device: unknown }> };
     const byFp = Object.fromEntries(data.keys.map((k) => [k.fingerprint, k.dev_device]));
-    expect(byFp[fingerprint]).toBe(true);
+    expect(byFp[devFp]).toBe(true);
     expect(byFp[plainFp]).toBe(false);
   });
 });

@@ -915,14 +915,40 @@ describe("Router (index.ts)", () => {
     expect(res.status).toBe(405);
   });
 
-  // 鍵を開発用にする口 2 本 (Refs ippoan/alc-app#387)。handler は mock していないので
-  // 実物まで届く: cookie の無い POST は 401、GET では route に当たらず 404 のまま。
+  // 登録簿の旗を後から倒す口 2 本は消した (Refs ippoan/alc-app#387。開発用かどうかは鍵の発行時に決まる)。
+  // route に当たらないので、ほかの未知の path と同じ応答になる。
   it.each(["/device/setup/dev-device", "/device/setup/alarm-key/dev-device"])(
+    "%s は消えた: POST も GET も、未知の path と同じ応答",
+    async (path) => {
+      for (const method of ["POST", "GET"]) {
+        const init = (): RequestInit =>
+          method === "POST"
+            ? { method, headers: { Origin: "https://auth.test.example" }, body: "{}" }
+            : { method };
+        const gone = await worker.fetch(new Request(`https://auth.test.example${path}`, init()), env);
+        const unknown = await worker.fetch(
+          new Request("https://auth.test.example/device/setup/no-such-route", init()),
+          env,
+        );
+        expect(gone.status).toBe(unknown.status);
+        expect(gone.status).toBeGreaterThanOrEqual(404);
+        expect(await gone.text()).toBe(await unknown.text());
+      }
+    },
+  );
+
+  // 開発用かどうかを決める口は、鍵を発行する 2 本だけ (body の dev_device)。handler は mock して
+  // いないので実物まで届く: cookie の無い POST は 401、GET では route に当たらず 404 のまま。
+  it.each(["/device/setup/pair", "/device/setup/alarm-key"])(
     "POST %s は handler に届き (cookie なし 401)、GET は 404",
     async (path) => {
       const url = `https://auth.test.example${path}`;
       const post = await worker.fetch(
-        new Request(url, { method: "POST", headers: { Origin: "https://auth.test.example" }, body: "{}" }),
+        new Request(url, {
+          method: "POST",
+          headers: { Origin: "https://auth.test.example" },
+          body: JSON.stringify({ dev_device: true }),
+        }),
         env,
       );
       expect(post.status).toBe(401);

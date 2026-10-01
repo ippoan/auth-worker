@@ -8,8 +8,9 @@ import {
   mintDeviceJwt,
   verifyDeviceJwt,
   mintHubToken,
+  mintCamRelayToken,
+  CAM_RELAY_TOKEN_TTL_SECONDS,
   setDeviceSiteId,
-  setDeviceDevFlag,
   normalizeDeviceRole,
   DEVICE_ROLE_DTAKO_RELAY,
   sha256Hex,
@@ -180,33 +181,6 @@ describe("setDeviceSiteId (Refs #406 backfill、この改訂前に発行され�
     const updated = await setDeviceSiteId(env, cred.device_id, "site-2");
     expect(updated?.site_id).toBe("site-2");
     expect(updated?.revoked).toBe(true);
-  });
-});
-
-describe("setDeviceDevFlag (開発用の鍵を立てる・外す、Refs ippoan/alc-app#387)", () => {
-  it("true で dev_device: true を書く。ほかの欄は変えない", async () => {
-    const env = { AUTH_CONFIG: createMockKV() };
-    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
-    const before = await getDeviceRecord(env, cred.device_id);
-    const updated = await setDeviceDevFlag(env, cred.device_id, true);
-    expect(updated).toEqual({ ...before, dev_device: true });
-    expect(await getDeviceRecord(env, cred.device_id)).toEqual({ ...before, dev_device: true });
-  });
-
-  it("false で欄ごと消す (false を書かない)", async () => {
-    const env = { AUTH_CONFIG: createMockKV() };
-    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
-    const before = await getDeviceRecord(env, cred.device_id);
-    await setDeviceDevFlag(env, cred.device_id, true);
-    const updated = await setDeviceDevFlag(env, cred.device_id, false);
-    expect(updated).not.toHaveProperty("dev_device");
-    expect(await getDeviceRecord(env, cred.device_id)).toEqual(before);
-  });
-
-  it("不在は null (KV に何も書かない)", async () => {
-    const kv = createMockKV();
-    expect(await setDeviceDevFlag({ AUTH_CONFIG: kv }, "missing", true)).toBeNull();
-    expect((await kv.list()).keys).toEqual([]);
   });
 });
 
@@ -518,6 +492,33 @@ describe("mintHubToken (Refs #406)", () => {
     expect(payload!.exp).toBe(NOW + 30);
   });
 
+describe("mintCamRelayToken", () => {
+  const gwRecord: DeviceRecord = {
+    device_id: "gw-1",
+    tenant_id: "tenant-9",
+    secret_hash: "x",
+    label: "l",
+    role: DEVICE_ROLE_GATEWAY,
+    site_id: "site-1",
+    created_at: NOW,
+    revoked: false,
+  };
+
+  it("device-gateway の credential に aud=cam-relay の token を既定 TTL で出す", async () => {
+    const token = await mintCamRelayToken({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, gwRecord, NOW);
+    const payload = await verifyJwt(token!, SECRET, "staging");
+    expect(payload!.sub).toBe("gw-1");
+    expect(payload!.site_id).toBe("site-1");
+    expect(payload!.aud).toBe("cam-relay");
+    expect(payload!.exp).toBe(NOW + CAM_RELAY_TOKEN_TTL_SECONDS);
+  });
+
+  it("対象外の role (device-hub) は null", async () => {
+    const hub: DeviceRecord = { ...gwRecord, role: DEVICE_ROLE_HUB };
+    expect(await mintCamRelayToken({ JWT_SECRET: SECRET, WORKER_ENV: "staging" }, hub, NOW, 60)).toBeNull();
+  });
+});
+
   it("throws when JWT_SECRET is not configured", async () => {
     await expect(
       mintHubToken({ JWT_SECRET: undefined, WORKER_ENV: "staging" }, hubRecord, "n", NOW),
@@ -586,10 +587,30 @@ describe("dev_device (開発用の鍵、Refs ippoan/alc-app#387)", () => {
     expect(await verifyJwt(token, SECRET, "staging")).not.toHaveProperty("dev_device");
   });
 
-  it("createDeviceCredential は dev_device を書かない (新規は常に非 dev)", async () => {
+  it("createDeviceCredential: devDevice 省略・false は dev_device を書かない / true は書く (KV にも)", async () => {
     const env = { AUTH_CONFIG: createMockKV() };
-    const cred = await createDeviceCredential(env, "t", "l", NOW);
-    expect(cred.record).not.toHaveProperty("dev_device");
+    for (const dev of [undefined, false]) {
+      const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB, undefined, dev);
+      expect(cred.record).not.toHaveProperty("dev_device");
+      expect(await getDeviceRecord(env, cred.device_id)).not.toHaveProperty("dev_device");
+    }
+    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB, undefined, true);
+    expect(cred.record.dev_device).toBe(true);
+    expect((await getDeviceRecord(env, cred.device_id))?.dev_device).toBe(true);
+  });
+
+  it("createDeviceCredentialReplacingLabel: 明示 (true / false) は置き換え前の値に勝つ", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const prod = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW);
+    expect(prod.record).not.toHaveProperty("dev_device");
+    // 本番 → 開発用
+    const dev = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW, DEVICE_ROLE_HUB, undefined, true);
+    expect((await getDeviceRecord(env, dev.device_id))?.dev_device).toBe(true);
+    expect((await getDeviceRecord(env, prod.device_id))?.revoked).toBe(true);
+    // 開発用 → 本番 (欄ごと無い)
+    const back = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW, DEVICE_ROLE_HUB, undefined, false);
+    expect(await getDeviceRecord(env, back.device_id)).not.toHaveProperty("dev_device");
+    expect((await getDeviceRecord(env, dev.device_id))?.revoked).toBe(true);
   });
 
   it("createDeviceCredentialReplacingLabel: 置き換え前が dev_device: true なら新 record も true (KV にも残る)", async () => {

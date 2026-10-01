@@ -3,12 +3,12 @@
  *
  * 使い道は 2 つで、強さが違う:
  *
- * - `isDeveloperEmail` — 画面の出し分け (dev ビルドの checkbox、鍵一覧の切替ボタン)。
- *   これだけでは何も守らない。
- * - `isDeveloperGoogleSession` — 端末の鍵を開発用にする口
- *   (`/device/setup/dev-device`、`/device/setup/alarm-key/dev-device`) のサーバ側の認可。
- *   開発用にするとその端末の記録が本番の記録簿から消え、webhook と通知も止まるため、
- *   テナントの管理者にも付けさせない。
+ * - `isDeveloperEmail` — 画面の出し分け (dev ビルドの checkbox、鍵一覧の「接続中の機体を
+ *   書き直す」ボタン)。これだけでは何も守らない。
+ * - `isDeveloperGoogleSession` — 鍵を発行する口 (`/device/setup/pair`、`/device/setup/alarm-key`) で
+ *   `dev_device` (開発用の鍵かどうか) を明示するときのサーバ側の認可
+ *   (`handlers/device-setup.ts::explicitDevDevice`)。開発用にするとその端末の記録が本番の
+ *   記録簿から消え、webhook と通知も止まるため、テナントの管理者にも決めさせない。
  *
  * `lib/admin-html.ts` の同名の定数はブラウザに埋め込む script 内の表示用で、別物。
  */

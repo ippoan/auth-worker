@@ -12,7 +12,9 @@
  *                              (role は body.kind → DEVICE_KINDS で決まる:
  *                              cores3 = device-hub / atoms3-print = device-print。
  *                              replace_label で同一 (tenant, label) の旧
- *                              credential を revoke → 再発行)
+ *                              credential を revoke → 再発行。
+ *                              dev_device で開発用の鍵として発行 — 明示できるのは
+ *                              開発者の Google session だけ。Refs ippoan/alc-app#387)
  *
  * 注入手順 (ページ JS が自動実行):
  *   1. POST /device/setup/pair → { device_id, device_secret, tenant_id }
@@ -34,7 +36,6 @@ import {
   createDeviceCredentialReplacingLabel,
   getDeviceRecord,
   listDeviceRecordsByTenant,
-  setDeviceDevFlag,
   setDeviceSiteId,
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
@@ -238,6 +239,34 @@ function readOnlyTokenForbidden(): Response {
   return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
 }
 
+/**
+ * 鍵を発行する口 (`/device/setup/pair`、`/device/setup/alarm-key`) の body の `dev_device` を読む
+ * (Refs ippoan/alc-app#387)。開発用かどうかは**鍵を書き込む時点**で決まり、後から倒す口は無い。
+ *
+ * - 欄が無い → `undefined` (明示なし。呼び出し側が「置き換え前の値を引き継ぐ / 新規は非 dev」に倒す)
+ * - 欄が在る → **開発者アカウントが Google でログインした session だけ**が書ける。それ以外は
+ *   値が true でも false でも 403 (開発用にするとその端末の記録が本番の記録簿から消え、
+ *   webhook と通知も止まるため、テナントの管理者にも決めさせない)
+ * - boolean そのものだけ受ける ("true" や 1、null は 400)
+ */
+export function explicitDevDevice(
+  body: Record<string, unknown>,
+  session: OperatorSession,
+): boolean | undefined | Response {
+  const dev = body.dev_device;
+  if (dev === undefined) return undefined;
+  if (!isDeveloperGoogleSession(session)) {
+    return jsonNoStore({ error: "developer_google_session_required" }, 403);
+  }
+  if (typeof dev !== "boolean") return jsonNoStore({ error: "dev_device は boolean で必要です" }, 400);
+  return dev;
+}
+
+/** `dev_device` を明示して鍵を発行した記録。値 (鍵の id・tenant・メールアドレス) は出さない。 */
+export function logDevDeviceSet(registry: "device" | "alarm-key", dev: boolean): void {
+  console.log(JSON.stringify({ event: "dev_device_set", registry, dev_device: dev }));
+}
+
 /** GET /device/setup — WebSerial provisioning ページ (要ログイン)。 */
 export async function handleDeviceSetupPage(request: Request, env: Env): Promise<Response> {
   const issuer = issuerOf(env);
@@ -305,6 +334,8 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   } catch {
     // 空 body は既定値で続行
   }
+  const devDevice = explicitDevDevice(body, session);
+  if (devDevice instanceof Response) return devDevice;
   const kindName = typeof body.kind === "string" && body.kind ? body.kind : "cores3";
   const kind = DEVICE_KINDS[kindName];
   if (!kind) return jsonNoStore({ error: "unknown kind" }, 400);
@@ -318,9 +349,11 @@ export async function handleDeviceSetupPair(request: Request, env: Env): Promise
   const replaceLabel = body.replace_label === true;
 
   const now = Math.floor(Date.now() / 1000);
+  // dev_device の明示が無ければ、置き換えは旧 record の値を引き継ぎ、新規は非 dev。
   const cred = replaceLabel
-    ? await createDeviceCredentialReplacingLabel(env, session.tenantId, label, now, kind.pairRole, siteId)
-    : await createDeviceCredential(env, session.tenantId, label, now, kind.pairRole, siteId);
+    ? await createDeviceCredentialReplacingLabel(env, session.tenantId, label, now, kind.pairRole, siteId, devDevice)
+    : await createDeviceCredential(env, session.tenantId, label, now, kind.pairRole, siteId, devDevice);
+  if (devDevice !== undefined) logDevDeviceSet("device", devDevice);
 
   return jsonNoStore(
     {
@@ -385,39 +418,6 @@ export async function handleDeviceSetupSite(request: Request, env: Env): Promise
   const record = await setDeviceSiteId(env, pre.deviceId, siteId);
   if (!record) return jsonNoStore({ error: "not_found" }, 404);
   return jsonNoStore({ device_id: record.device_id, site_id: record.site_id });
-}
-
-/**
- * POST /device/setup/dev-device — {device_id, dev_device} で登録済み端末の鍵を
- * 開発用にする・外す (Refs ippoan/alc-app#387)。
- *
- * **開発者アカウントが Google でログインした session だけ** (`isDeveloperGoogleSession`)。
- * 開発用にするとその端末の記録が本番の記録簿から消え、webhook と通知も止まるため、
- * テナントの管理者にも付けさせない。検査は対象を引く前に置く (開発者でない者に
- * 鍵の有無を漏らさない)。
- *
- * 発行済みの device JWT は claim に前の値を持ったまま期限 (最大 1 時間) まで生きる。
- * 反映は次の `/device/token` から。
- */
-export async function handleDeviceSetupDevDevice(request: Request, env: Env): Promise<Response> {
-  const pre = await deviceCommandRequest(request, env);
-  if (pre instanceof Response) return pre;
-  if (!isDeveloperGoogleSession(pre.session)) {
-    return jsonNoStore({ error: "developer_google_session_required" }, 403);
-  }
-  // boolean そのものだけ受ける ("true" や 1 を真に倒さない)。
-  const dev = pre.body.dev_device;
-  if (typeof dev !== "boolean") {
-    return jsonNoStore({ error: "dev_device は boolean で必要です" }, 400);
-  }
-  if (!(await managedDeviceKind(env, pre.session.tenantId, pre.deviceId))) {
-    return jsonNoStore({ error: "not_your_device" }, 403);
-  }
-  const record = await setDeviceDevFlag(env, pre.deviceId, dev);
-  if (!record) return jsonNoStore({ error: "not_found" }, 404);
-  // 値 (鍵の id・tenant・メールアドレス) は出さない。
-  console.log(JSON.stringify({ event: "dev_device_set", registry: "device", dev_device: dev }));
-  return jsonNoStore({ device_id: record.device_id, dev_device: record.dev_device === true });
 }
 
 /**
@@ -944,6 +944,23 @@ function setupPage(issuer: string, email: string): string {
     .filter(([, k]) => k.pairRole)
     .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
     .join("\n");
+  // developer のみ: 接続中の機体の鍵を、開発用 / 本番として書き直す (Refs ippoan/alc-app#387)。
+  // 開発用かどうかは鍵を書き込む時点で決まるので、切り替えの入口はここ 1 つ。機種は
+  // DEVICE_KINDS の全部 (credential を発行しない機種 = 署名鍵だけの機種も書き直せる)。
+  // 表示の出し分けだけで、権限の根拠はサーバ側 (explicitDevDevice)。
+  const rewriteHtml = isDeveloper
+    ? `<p><label for="rewrite-kind">書き直す機体の機種</label>
+<select id="rewrite-kind" style="font-size:1rem;padding:.4rem .6rem;border:1px solid #ccc;border-radius:.4rem">
+${Object.entries(DEVICE_KINDS)
+  .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
+  .join("\n")}
+</select></p>
+<p><button id="rewrite-dev" type="button" style="background:#b45309">接続中の機体を開発用として書き直す</button>
+<button id="rewrite-prod" type="button" style="background:#1a56db">接続中の機体を本番として書き直す</button></p>
+<p class="muted">開発用かどうかは、USB で鍵を書き込む時点で決まります。切り替えるときは、機体を USB で
+接続してから上のボタンで端末の鍵と署名鍵を作り直してください (古い鍵は失効します)。新しい機体は、先に
+「セットアップ実行」で登録してから書き直します。</p>`
+    : "";
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>デバイス登録</title>
@@ -964,10 +981,7 @@ th,td{border:1px solid #e2e5e9;padding:.35rem .6rem;text-align:left}
 th{background:#f6f8fa;color:#444;font-weight:600}
 button.small{font-size:.8rem;padding:.3rem .6rem;background:#1a56db}
 button.small.update{background:#b91c1c}
-button.small.dev-on{background:#b45309}
-button.small.dev-off{background:#fff;color:#374151;border:1px solid #9ca3af}
 button.small:disabled{background:#9ca3af}
-button.small.dev-off:disabled{color:#fff}
 .ota-cell{white-space:nowrap}
 .ota-note{font-size:.85rem;color:#666}
 .ota-note.latest{color:#166534;font-weight:600}
@@ -1013,6 +1027,7 @@ ${kindOptionsHtml}
 </select>
 </div>
 <p><button id="run">セットアップ実行</button></p>
+${rewriteHtml}
 <p id="result"></p>
 <pre id="log"></pre>
 <h2>登録済みデバイス</h2>
@@ -1065,9 +1080,15 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <script>
 "use strict";
 const ISSUER = ${JSON.stringify(issuer)};
-// 開発者アカウントか (鍵一覧の「開発用にする / 外す」ボタンの出し分けだけに使う。
-// 権限の根拠はサーバ側 — 開発者の Google session 以外は 403)
+// 開発者アカウントか (「接続中の機体を書き直す」ボタンの出し分けだけに使う。
+// 権限の根拠はサーバ側 — 開発者の Google session 以外が dev_device を送ると 403)
 const IS_DEVELOPER = ${JSON.stringify(isDeveloper)};
+// credential を発行する機種 (サーバ側 DEVICE_KINDS の pairRole 持ち)。それ以外は署名鍵だけの機種
+const PAIRABLE_KINDS = ${JSON.stringify(
+    Object.entries(DEVICE_KINDS)
+      .filter(([, k]) => k.pairRole)
+      .map(([name]) => name),
+  )};
 // 機種 → 表示名 (サーバ側 DEVICE_KINDS と対。list 応答の kind をキーに使う)
 const KIND_DISPLAY = ${JSON.stringify(
     Object.fromEntries(Object.entries(DEVICE_KINDS).map(([k, v]) => [k, v.display])),
@@ -1293,11 +1314,6 @@ async function loadDevices() {
       if (d.dev_device) labelTd.appendChild(devDeviceMark());
       labelTd.appendChild(pairWarnSlot("d:" + d.device_id));
       labelTd.appendChild(did);
-      if (IS_DEVELOPER) {
-        labelTd.appendChild(devDeviceButton(
-          d.dev_device, d.label, "/device/setup/dev-device", { device_id: d.device_id }, statusEl,
-          () => partnerOfDevice(d)));
-      }
       tr.appendChild(labelTd);
 
       // 種別 (list 応答の kind。DEVICE_KINDS 外の role は list 側で除外済み)
@@ -1673,8 +1689,8 @@ async function pollCommandResult(id, timeoutMs, ready) {
   return null;
 }
 
-// 鍵を開発用にする・外す (Refs ippoan/alc-app#387)。端末の一覧と警告デバイスの鍵の表で共用。
-// 「開発用」の印は全員に出す (テナントの管理者が「記録が出ない理由」を知れるように)。
+// 開発用の鍵の印 (Refs ippoan/alc-app#387)。端末の一覧と警告デバイスの鍵の表で共用。
+// 全員に出す (テナントの管理者が「記録が出ない理由」を知れるように)。
 function devDeviceMark() {
   const mark = document.createElement("span");
   mark.className = "tag new";
@@ -1683,7 +1699,6 @@ function devDeviceMark() {
   return mark;
 }
 
-const DEV_DEVICE_PATH = "/device/setup/dev-device";
 // 1 台の CoreS3 は 2 つの登録簿に別の行で出る: 上の「デバイス」(kind cores3、本体の測定・打刻の鍵) と
 // 下の「デバイスの署名鍵」(用途 kiosk、キオスクの画面の鍵)。結ぶ欄は無く、手掛かりはラベルの完全一致だけ。
 // 失効していない用途 kiosk の署名鍵のうち、端末のラベルと一致するもの。
@@ -1709,23 +1724,8 @@ function pairedDeviceOf(k) {
   if (devs.length !== 1) return null;
   return findKioskKeysFor(devs[0].label, LAST_ALARM_KEYS).length === 1 ? devs[0] : null;
 }
-// 連動の相手 (押した行の相方)。無ければ null。note は confirm に足す 1 行。
-function partnerOfDevice(d) {
-  const k = pairedKeyOf(d);
-  return k ? {
-    path: "/device/setup/alarm-key/dev-device", key: { fingerprint: k.fingerprint }, dev_device: !!k.dev_device,
-    note: "同じラベルの『デバイスの署名鍵 (用途 kiosk)』の行も一緒に切り替えます。",
-  } : null;
-}
-function partnerOfKey(k) {
-  const d = pairedDeviceOf(k);
-  return d ? {
-    path: "/device/setup/dev-device", key: { device_id: d.device_id }, dev_device: !!d.dev_device,
-    note: "同じラベルの『デバイス』の行も一緒に切り替えます。",
-  } : null;
-}
-
 // 食い違い (片方だけ開発用) の警告バッジの置き場。行を描くたびに作り、refreshPairWarnings が中身を入れる。
+// 書き直しが途中で失敗する (端末の鍵だけ替わり、署名鍵が古いまま) と食い違いが起きる。
 function pairWarnSlot(slotKey) {
   const slot = document.createElement("span");
   PAIR_SLOTS.set(slotKey, slot);
@@ -1764,69 +1764,23 @@ function refreshPairWarnings() {
   }
 }
 
-// 切替ボタン (開発者にだけ出す)。key は対象を指す body ({device_id} か {fingerprint})。
-// getPartner は押した時点の相方 (partnerOfDevice / partnerOfKey)。
-function devDeviceButton(isDev, label, path, key, msgEl, getPartner) {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = isDev ? "small dev-on" : "small dev-off";
-  btn.style.marginLeft = ".35rem";
-  btn.textContent = isDev ? "開発用を外す" : "開発用にする";
-  btn.addEventListener("click", () => setDevDevice(path, key, !isDev, label, msgEl, getPartner()));
-  return btn;
+// 書き直し (Refs ippoan/alc-app#387): 接続中の機体の行を一覧から引く。ラベル (と GW の拠点) は
+// 聞かずにその行の値を使う — フォームのラベルで発行すると、同じラベルの別の端末の鍵を失効させる。
+function rewriteRowOf(deviceId, kind) {
+  const row = LAST_DEVICES.find((d) => d.device_id === deviceId);
+  if (!row) throw new Error("この機体の端末の鍵は登録簿に見つかりません。先に「セットアップ実行」で登録してください");
+  if (row.kind !== kind) {
+    throw new Error("選んだ機種が、接続中の機体 (" + (KIND_DISPLAY[row.kind] || row.kind) + ") と違います");
+  }
+  return row;
 }
 
-async function postDevDevice(path, key, dev) {
-  const res = await fetch(ISSUER + path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(Object.assign({}, key, { dev_device: dev })),
-  });
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))).error;
-    throw new Error(err === "developer_google_session_required"
-      ? "Google でログインし直してください"
-      : "HTTP " + res.status + (err ? " " + err : ""));
-  }
-}
-
-// auth-worker の KV の欄を書き換えるだけなので、端末の接続状態に関わらず押せる。
-// 発行済みのトークンは前の値のまま期限まで生きる (反映は次のトークン更新から)。
-// 相方があり、その値が切替後と違うときは相方も続けて切り替える (押した行 → 相方の順に 2 回 POST。
-// 1 本目が失敗したら 2 本目は送らない)。読み直すのは POST が通った登録簿の表だけ — 端末の表を
-// 作り直すと進行中の OTA の進捗や照会の表示が消えるので、鍵の行だけの切替では loadDevices を呼ばない。
-// 作り直した側の load が、もう一方の表の警告バッジも (行を作らずに) 描き直す。
-async function setDevDevice(path, key, dev, label, msgEl, partner) {
-  const pair = partner && partner.dev_device !== dev ? partner : null;
-  let text = dev
-    ? "開発用にすると、この端末の点呼・測定・打刻は本番の記録簿に出なくなり、webhook と通知も止まります。反映は次のトークン更新から (最大 1 時間)。"
-    : "開発用を外します。反映は最大 1 時間後。それまでの記録は開発用のままです。";
-  if (pair) text += "\\n" + pair.note;
-  if (!confirm("「" + label + "」: " + text)) return;
-  let second = false;
-  let devicesChanged = false;
-  let keysChanged = false;
-  const markChanged = (p) => {
-    if (p === DEV_DEVICE_PATH) devicesChanged = true;
-    else keysChanged = true;
-  };
-  try {
-    await postDevDevice(path, key, dev);
-    markChanged(path);
-    if (pair) {
-      second = true;
-      await postDevDevice(pair.path, pair.key, dev);
-      markChanged(pair.path);
-    }
-  } catch (e) {
-    const m = e && e.message ? e.message : e;
-    msgEl.textContent = second
-      ? "相方の切り替えに失敗しました。もう一度押してください: " + m
-      : "開発用の切替に失敗: " + m;
-  }
-  if (devicesChanged) loadDevices();
-  if (keysChanged) loadAlarmKeys();
+// credential 発行 (POST /device/setup/pair) の失敗を Error にする。
+async function pairError(res) {
+  const err = (await res.json().catch(() => ({}))).error;
+  return new Error(err === "developer_google_session_required"
+    ? "Google でログインし直してください"
+    : "credential 発行に失敗: HTTP " + res.status);
 }
 
 // 拠点ID (site_id) の設定 (Refs #406)。この改訂前に登録済みで site_id が
@@ -2184,12 +2138,14 @@ async function pollOta(id, deviceId, kind, btn, barFill, msg, verSpan, otaNote) 
   }
 }
 
-async function run(siteIdOverride) {
+// rewrite = { devDevice, port } は「接続中の機体を書き直す」からの呼び出し (それ以外は undefined。
+// port は選択済みのもの)。成功したら true、失敗したら false を返す。
+async function run(siteIdOverride, rewrite) {
   runBtn.disabled = true;
   resultEl.textContent = "";
   try {
     if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
-    const port = await navigator.serial.requestPort();
+    const port = rewrite ? rewrite.port : await navigator.serial.requestPort();
     await port.open({ baudRate: 115200 });
     // ポート open で ESP32-S3 が DTR/RTS トグルによりリセットする実装があるため、
     // 信号を落としてリセットを抑止する (対応しないボードでは無害)。
@@ -2197,21 +2153,23 @@ async function run(siteIdOverride) {
     // 実際の起動完了を待つ
     try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
     if (kindSel.value === "p4-gw") {
-      await runP4Gateway(port, siteIdOverride);
+      await runP4Gateway(port, siteIdOverride, rewrite);
     } else {
-      await runCoreS3OrPrint(port);
+      await runCoreS3OrPrint(port, rewrite);
     }
     loadDevices();
+    return true;
   } catch (e) {
     resultEl.innerHTML = '<span class="ng">失敗: ' +
       String(e && e.message ? e.message : e).replace(/[<>&]/g, "") + "</span>";
+    return false;
   } finally {
     runBtn.disabled = false;
   }
 }
 
 // CoreS3 統合ハブ / AtomS3 印刷ブリッジ (alc-app-s3 の構造化行プロトコル) 向け。
-async function runCoreS3OrPrint(port) {
+async function runCoreS3OrPrint(port, rewrite) {
   const writer = port.writable.getWriter();
   const reader = port.readable.getReader();
   const decoder = new TextDecoder();
@@ -2277,8 +2235,13 @@ async function runCoreS3OrPrint(port) {
   // 現在の登録状態を先に表示する (既存登録の黙殺・黙って上書きをしない)
   await send("AUTH STATUS");
   const current = await waitLine(/^AUTH (PAIRED|UNPAIRED)/, 5000);
-  if (/^AUTH PAIRED/.test(current)) {
-    const parts = current.split(" ");
+  const kind = kindSel.value;
+  const parts = /^AUTH PAIRED/.test(current) ? current.split(" ") : [];
+  // 書き直しは登録済みの機体だけ (確認は押した時点で済んでいる)。ラベルは一覧の行から引く。
+  const row = rewrite ? rewriteRowOf(parts[3] || "", kind) : null;
+  if (row) {
+    log("登録済みの機体 (label=" + row.label + ") の鍵を書き直します");
+  } else if (parts.length) {
     const msg = "このデバイスは登録済みです:\\n  デバイスID: " + (parts[3] || "?") +
       "\\n  テナント: " + (parts[2] || "?") +
       "\\n\\n上書き登録しますか? (旧 credential は失効します)";
@@ -2287,16 +2250,16 @@ async function runCoreS3OrPrint(port) {
     log("未登録のデバイスです — 新規登録します");
   }
 
-  const kind = kindSel.value;
-  const label = labelInput.value || kind;
+  const label = row ? row.label : labelInput.value || kind;
   log("credential を発行中 (label=" + label + ") ...");
   const res = await fetch(ISSUER + "/device/setup/pair", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ label, replace_label: true, kind }),
+    body: JSON.stringify(Object.assign(
+      { label, replace_label: true, kind }, rewrite ? { dev_device: rewrite.devDevice } : {})),
   });
-  if (!res.ok) throw new Error("credential 発行に失敗: HTTP " + res.status);
+  if (!res.ok) throw await pairError(res);
   const cred = await res.json();
   log("credential 発行 OK (device_id=" + cred.device_id + ")");
 
@@ -2341,7 +2304,7 @@ async function runCoreS3OrPrint(port) {
 // 受動的に待つと既に表示済みで二度と出ない可能性がある — 代わりに
 // "cred show" を打ち続け、最初の応答が返った時点を readiness とする
 // (これが「起動確認」と「既存登録の確認」を兼ねる)。
-async function runP4Gateway(port, siteIdOverride) {
+async function runP4Gateway(port, siteIdOverride, rewrite) {
   const writer = port.writable.getWriter();
   const reader = port.readable.getReader();
   const decoder = new TextDecoder();
@@ -2394,8 +2357,9 @@ async function runP4Gateway(port, siteIdOverride) {
     }
   };
 
-  const siteId = (siteIdOverride || siteHubSel.value || "").trim();
-  if (!siteId) throw new Error("紐付ける拠点 (hub) を選択してください");
+  // 書き直しの拠点は一覧の行から引く (下)。それ以外はピッカー / 行の値。
+  const formSiteId = (siteIdOverride || siteHubSel.value || "").trim();
+  if (!rewrite && !formSiteId) throw new Error("紐付ける拠点 (hub) を選択してください");
 
   log("デバイスの起動を待機中 (cred show で確認) ...");
   const readyDeadline = Date.now() + 20000;
@@ -2408,8 +2372,12 @@ async function runP4Gateway(port, siteIdOverride) {
   if (!statusLine) throw new Error("デバイスが応答しません (USB 接続とファームウェアを確認してください)");
   log("デバイス応答 OK — 現在の登録状態を確認します");
 
-  if (/^device_id=/.test(statusLine)) {
-    const existing = statusLine.replace(/^device_id=/, "").split(" ")[0];
+  const existing = /^device_id=/.test(statusLine) ? statusLine.replace(/^device_id=/, "").split(" ")[0] : "";
+  // 書き直しは登録済みの機体だけ (確認は押した時点で済んでいる)。ラベルと拠点は一覧の行から引く。
+  const row = rewrite ? rewriteRowOf(existing, "p4-gw") : null;
+  if (row) {
+    log("登録済みの機体 (label=" + row.label + ") の鍵を書き直します");
+  } else if (existing) {
     const msg = "このデバイスは登録済みです:\\n  デバイスID: " + existing +
       "\\n\\n上書き登録しますか? (旧 credential は失効します)";
     if (!confirm(msg)) throw new Error("キャンセルしました (既存の登録を維持)");
@@ -2417,15 +2385,18 @@ async function runP4Gateway(port, siteIdOverride) {
     log("未登録のデバイスです — 新規登録します");
   }
 
-  const label = labelInput.value || "p4-gw";
+  const label = row ? row.label : labelInput.value || "p4-gw";
+  const siteId = row ? row.site_id : formSiteId;
   log("credential を発行中 (label=" + label + ", site_id=" + siteId + ") ...");
   const res = await fetch(ISSUER + "/device/setup/pair", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ label, replace_label: true, kind: "p4-gw", site_id: siteId }),
+    body: JSON.stringify(Object.assign(
+      { label, replace_label: true, kind: "p4-gw", site_id: siteId },
+      rewrite ? { dev_device: rewrite.devDevice } : {})),
   });
-  if (!res.ok) throw new Error("credential 発行に失敗: HTTP " + res.status);
+  if (!res.ok) throw await pairError(res);
   const cred = await res.json();
   log("credential 発行 OK (device_id=" + cred.device_id + ")");
 
@@ -2509,12 +2480,6 @@ async function loadAlarmKeys() {
         btn.textContent = "失効";
         btn.addEventListener("click", () => revokeAlarmKey(k.fingerprint, k.label));
         actionTd.appendChild(btn);
-        // 失効済みの鍵には出さない (サーバ側も 409 で断る)
-        if (IS_DEVELOPER) {
-          actionTd.appendChild(devDeviceButton(
-            k.dev_device, k.label, "/device/setup/alarm-key/dev-device", { fingerprint: k.fingerprint },
-            alarmKeyResultEl, () => partnerOfKey(k)));
-        }
       }
       tr.appendChild(actionTd);
 
@@ -2547,15 +2512,22 @@ async function revokeAlarmKey(fingerprint, label) {
 // 既存の公開鍵をそのまま使う)、その公開鍵を選んだ用途でテナントに登録する。既存の
 // CoreS3/AtomS3 登録 (runCoreS3OrPrint) と同じ構造化行プロトコルの上に立つが、
 // AUTH SET のような credential 注入は行わない (公開鍵の登録のみ)。
-async function registerAlarmKey() {
+//
+// rewrite = { devDevice, port, paired } は「接続中の機体を書き直す」からの呼び出し (それ以外は
+// undefined): 鍵を作り直し (AUTH KEYGEN FORCE)、作り直す前の公開鍵を replaces_pubkey に添えて
+// 差し替える。ラベルと用途は古い record からサーバが写すので聞かない。port は選択済みのもの、
+// paired は端末の鍵を書き直した後か。結果は #result に出し、済んだら true (端末の鍵を書き直した
+// 機体が署名鍵を持たなければ、何もせず true)、失敗は false を返す。
+async function registerAlarmKey(rewrite) {
+  const out = rewrite ? resultEl : alarmKeyResultEl;
   alarmKeyRegisterBtn.disabled = true;
-  alarmKeyResultEl.textContent = "";
+  out.textContent = "";
   let port;
   try {
     const usage = alarmKeyUsageEl.value;
-    if (!ALARM_KEY_USAGE_DISPLAY[usage]) throw new Error("用途を選んでから登録してください");
+    if (!rewrite && !ALARM_KEY_USAGE_DISPLAY[usage]) throw new Error("用途を選んでから登録してください");
     if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
-    port = await navigator.serial.requestPort();
+    port = rewrite ? rewrite.port : await navigator.serial.requestPort();
     await port.open({ baudRate: 115200 });
     try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
 
@@ -2610,20 +2582,58 @@ async function registerAlarmKey() {
     if (!ready) throw new Error("デバイスが応答しません (USB 接続とファームウェアを確認してください)");
     lines.length = 0;
 
-    await send("AUTH KEYGEN");
-    let pubkeyLine = await waitLine(/^(AUTH PUBKEY |ERR AUTH: key exists)/, 5000);
-    if (/^ERR AUTH: key exists/.test(pubkeyLine)) {
-      // 既に鍵がある機体 — 新規生成せず既存の公開鍵を取り直す
+    // 書き直し: 作り直す前の公開鍵を控える。鍵を持たない機体 (ERR 応答) は null。
+    let oldPubkey = null;
+    if (rewrite) {
       await send("AUTH PUBKEY");
-      pubkeyLine = await waitLine(/^AUTH PUBKEY /, 5000);
+      try {
+        oldPubkey = (await waitLine(/^AUTH PUBKEY /, 5000)).split(" ")[2] || null;
+      } catch (e) {
+        if (!/^ERR\\b/.test(e.message)) throw e;
+      }
+      lines.length = 0;
     }
-    const pubkey = pubkeyLine.split(" ")[2];
-    if (!pubkey) throw new Error("公開鍵を取得できませんでした: " + pubkeyLine);
+    let pubkey = "";
+    if (!rewrite || oldPubkey) {
+      await send(rewrite ? "AUTH KEYGEN FORCE" : "AUTH KEYGEN");
+      let pubkeyLine = await waitLine(/^(AUTH PUBKEY |ERR AUTH: key exists)/, 5000);
+      if (/^ERR AUTH: key exists/.test(pubkeyLine)) {
+        // 既に鍵がある機体 — 新規生成せず既存の公開鍵を取り直す
+        await send("AUTH PUBKEY");
+        pubkeyLine = await waitLine(/^AUTH PUBKEY /, 5000);
+      }
+      pubkey = pubkeyLine.split(" ")[2];
+      if (!pubkey) throw new Error("公開鍵を取得できませんでした: " + pubkeyLine);
+    }
 
     writer.releaseLock();
     await reader.cancel().catch(() => {});
     await port.close().catch(() => {});
     port = null;
+
+    if (rewrite) {
+      if (!oldPubkey) {
+        // 署名鍵を持たない機体。端末の鍵を書き直した後なら、それで全部。
+        if (!rewrite.paired) throw new Error("この機体には署名鍵がありません。下の「署名鍵の登録」から登録してください");
+        return true;
+      }
+      const res = await fetch(ISSUER + "/device/setup/alarm-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ pubkey, replaces_pubkey: oldPubkey, dev_device: rewrite.devDevice }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))).error;
+        throw new Error(err === "replaced_key_not_found"
+          ? "この機体の署名鍵は登録簿に見つかりませんでした。下の「署名鍵の登録」から登録してください"
+          : err === "developer_google_session_required"
+            ? "Google でログインし直してください"
+            : "署名鍵の登録に失敗しました。もう一度書き直してください");
+      }
+      loadAlarmKeys();
+      return true;
+    }
 
     const defaultLabel = usage === "kiosk" ? "cores3" : "voice-s3r";
     const label = (prompt("このデバイスのラベル (1〜64文字)", defaultLabel) || "").trim();
@@ -2641,15 +2651,58 @@ async function registerAlarmKey() {
     alarmKeyResultEl.innerHTML = '<span class="ok">登録完了</span>';
     loadAlarmKeys();
   } catch (e) {
-    alarmKeyResultEl.innerHTML = '<span class="ng">失敗: ' +
+    out.innerHTML = '<span class="ng">失敗: ' +
       String(e && e.message ? e.message : e).replace(/[<>&]/g, "") + "</span>";
     if (port) { await port.close().catch(() => {}); }
+    return false;
   } finally {
     alarmKeyRegisterBtn.disabled = false;
   }
 }
 alarmKeyRegisterBtn.addEventListener("click", () => registerAlarmKey());
 loadAlarmKeys();
+
+// --- 接続中の機体を開発用 / 本番として書き直す (開発者にだけボタンが在る。Refs ippoan/alc-app#387) ---
+// 開発用かどうかは鍵を書き込む時点で決まるので、切り替えは鍵の書き直し: 端末の鍵 (既存のペアリングの
+// 手順 run) → 署名鍵 (既存の登録の手順 registerAlarmKey) の順に、同じ機体へ続けて流す。
+// credential を発行しない機種 (署名鍵だけ) は署名鍵の手順だけ、P4 GW (署名鍵の口を持たない別の
+// console) は端末の鍵の手順だけ。途中で失敗したら止める (表示は各手順が #result に出す) —
+// 端末の鍵だけ替わった状態は、一覧の食い違いの警告 (refreshPairWarnings) で見える。
+const REWRITE_DONE = "書き直しました。キオスクの画面を再読み込みしてください。ファームが古い端末は、書き直した後に電源を入れ直してください";
+async function rewriteConnectedDevice(devDevice, buttons) {
+  for (const b of buttons) b.disabled = true;
+  resultEl.textContent = "";
+  try {
+    if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
+    // 機体の選択 (ブラウザの許可ダイアログ) は、押した操作が有効なうちに先に済ませる。書き込みは確認の後。
+    const port = await navigator.serial.requestPort();
+    if (!confirm("接続中の機体を" + (devDevice ? "開発用" : "本番") +
+      "として書き直しますか? (端末の鍵と署名鍵を作り直します。古い鍵は使えなくなります)")) return;
+    const kind = document.getElementById("rewrite-kind").value;
+    const rewrite = { devDevice, port, paired: PAIRABLE_KINDS.includes(kind) };
+    if (rewrite.paired) {
+      kindSel.value = kind;
+      syncPrinterRow();
+      syncSiteHubRow();
+      if (!(await run(undefined, rewrite))) return;
+    }
+    if (kind !== "p4-gw" && !(await registerAlarmKey(rewrite))) return;
+    resultEl.innerHTML = '<span class="ok">' + REWRITE_DONE + "</span>";
+    loadDevices();
+    loadAlarmKeys();
+  } catch (e) {
+    resultEl.innerHTML = '<span class="ng">失敗: ' +
+      String(e && e.message ? e.message : e).replace(/[<>&]/g, "") + "</span>";
+  } finally {
+    for (const b of buttons) b.disabled = false;
+  }
+}
+if (IS_DEVELOPER) {
+  const rewriteDevBtn = document.getElementById("rewrite-dev");
+  const rewriteProdBtn = document.getElementById("rewrite-prod");
+  rewriteDevBtn.addEventListener("click", () => rewriteConnectedDevice(true, [rewriteDevBtn, rewriteProdBtn]));
+  rewriteProdBtn.addEventListener("click", () => rewriteConnectedDevice(false, [rewriteDevBtn, rewriteProdBtn]));
+}
 </script>
 <p class="muted">${escapeHtml(issuer)}</p>
 </body></html>`;
