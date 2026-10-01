@@ -1949,4 +1949,37 @@ describe("dev_device の表示 (一覧の応答と画面、Refs ippoan/alc-app#3
     expect(opHtml).toContain("const IS_DEVELOPER = false;");
     expect(opHtml).not.toContain("const IS_DEVELOPER = true;");
   });
+
+  it("画面: 切替ボタンは状態で class が変わり、「開発用」の印は既存のバッジを使う", async () => {
+    const html = await (
+      await handleDeviceSetupPage(getReq("/device/setup", await opCookie({ email: DEV_EMAIL })), makeEnv())
+    ).text();
+    // 色の定義。disabled の灰色が勝つよう、dev-on / dev-off は button.small:disabled より前に置く
+    expect(html).toContain("button.small.dev-on{background:#b45309}");
+    expect(html).toContain("button.small.dev-off{background:#fff;color:#374151;border:1px solid #9ca3af}");
+    expect(html).toContain("button.small.dev-off:disabled{color:#fff}");
+    expect(html.indexOf("button.small.dev-on{")).toBeLessThan(html.indexOf("button.small:disabled{"));
+    expect(html.indexOf("button.small.dev-off{")).toBeLessThan(html.indexOf("button.small:disabled{"));
+    // 開発用の行 = 橙 (dev-on)、通常の行 = 白地 (dev-off)
+    expect(html).toContain('btn.className = isDev ? "small dev-on" : "small dev-off";');
+    // 印は .tag.new のバッジ (inline の fontSize / color は持たない)
+    const mark = html.slice(html.indexOf("function devDeviceMark()"), html.indexOf("function devDeviceButton("));
+    expect(mark).toContain('mark.className = "tag new";');
+    expect(mark).toContain('mark.textContent = "開発用";');
+    expect(mark).not.toContain("fontSize");
+    expect(mark).not.toContain("style.color");
+    expect(html).toContain(".tag.new{background:#fef3c7;color:#92400e}");
+  });
+
+  it("画面: client script が構文として通る", async () => {
+    const html = await (
+      await handleDeviceSetupPage(getReq("/device/setup", await opCookie({ email: DEV_EMAIL })), makeEnv())
+    ).text();
+    const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+      .map((m) => m[1] ?? "")
+      .filter((s) => s.trim() !== "");
+    expect(scripts.length).toBeGreaterThan(0);
+    // 本体は実行しない (関数に包んで parse だけさせる)
+    for (const s of scripts) expect(() => new Function(s)).not.toThrow();
+  });
 });
