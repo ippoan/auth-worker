@@ -434,3 +434,26 @@ describe("validatePreviewBase (pure)", () => {
     expect(validatePreviewBase(`https://v1---${SUFFIX}.evil.example`, SUFFIX)).toBeNull();
   });
 });
+
+describe("handleAlcProxy: X-Device-Dev / X-Device-Role は付けない (Refs ippoan/alc-app#387)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("client が X-Device-Dev: 1 / X-Device-Role を付けて送っても、backend への要求にどちらも無い", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/employees", {
+        headers: { "X-Device-Dev": "1", "X-Device-Role": "device-tenko-manager" },
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("x-device-dev");
+    expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("x-device-role");
+  });
+});

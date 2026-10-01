@@ -539,3 +539,48 @@ describe("listAllHubDeviceRecords", () => {
     expect(result).toEqual([{ tenant_id: "tenant-a", device_id: hub.device_id }]);
   });
 });
+
+describe("dev_device (開発用の鍵、Refs ippoan/alc-app#387)", () => {
+  const record = { device_id: "dev-1", tenant_id: "tenant-1", role: DEVICE_ROLE };
+  const jwtEnv = { JWT_SECRET: SECRET, WORKER_ENV: "staging" };
+
+  it("mintDeviceJwt: devDevice: true で claim dev_device === true", async () => {
+    const token = await mintDeviceJwt(jwtEnv, record, NOW, undefined, { devDevice: true });
+    expect((await verifyJwt(token, SECRET, "staging"))!.dev_device).toBe(true);
+  });
+
+  it.each<[string, { devDevice?: boolean } | undefined]>([
+    ["opts 未指定", undefined],
+    ["devDevice 未指定", {}],
+    ["devDevice: false", { devDevice: false }],
+  ])("mintDeviceJwt: %s では claim に dev_device が無い", async (_name, opts) => {
+    const token = await mintDeviceJwt(jwtEnv, record, NOW, undefined, opts);
+    expect(await verifyJwt(token, SECRET, "staging")).not.toHaveProperty("dev_device");
+  });
+
+  it("createDeviceCredential は dev_device を書かない (新規は常に非 dev)", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const cred = await createDeviceCredential(env, "t", "l", NOW);
+    expect(cred.record).not.toHaveProperty("dev_device");
+  });
+
+  it("createDeviceCredentialReplacingLabel: 置き換え前が dev_device: true なら新 record も true (KV にも残る)", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const first = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW);
+    first.record.dev_device = true;
+    await env.AUTH_CONFIG.put(`device:${first.device_id}`, JSON.stringify(first.record));
+
+    const second = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW);
+    expect(second.device_id).not.toBe(first.device_id);
+    expect(second.record.dev_device).toBe(true);
+    expect((await getDeviceRecord(env, second.device_id))?.dev_device).toBe(true);
+  });
+
+  it("createDeviceCredentialReplacingLabel: 置き換え前に dev_device が無ければ新 record にも無い", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW);
+    const second = await createDeviceCredentialReplacingLabel(env, "t", "kiosk-1", NOW);
+    expect(second.record).not.toHaveProperty("dev_device");
+    expect(await getDeviceRecord(env, second.device_id)).not.toHaveProperty("dev_device");
+  });
+});

@@ -751,3 +751,33 @@ describe("handleDeviceSiteBackfill (Refs #406)", () => {
     expect(tokBody.site_id).toBe("site-42");
   });
 });
+
+describe("POST /device/token の dev_device claim (Refs ippoan/alc-app#387)", () => {
+  async function tokenClaims(devDevice: boolean | undefined) {
+    const env = makeEnv();
+    const cred = await createDeviceCredential(env, "tenant-1", "kiosk-1", 1_700_000_000);
+    if (devDevice !== undefined) {
+      cred.record.dev_device = devDevice;
+      await env.AUTH_CONFIG.put(`device:${cred.device_id}`, JSON.stringify(cred.record));
+    }
+    const res = await handleDeviceToken(
+      post("/device/token", { device_id: cred.device_id, device_secret: cred.device_secret }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const { access_token } = (await res.json()) as { access_token: string };
+    return verifyJwt(access_token, SECRET, ENV);
+  }
+
+  it("登録簿の dev_device: true の record から出した JWT に claim dev_device === true が載る", async () => {
+    expect((await tokenClaims(true))!.dev_device).toBe(true);
+  });
+
+  it("欄の無い record では claim が載らない", async () => {
+    expect(await tokenClaims(undefined)).not.toHaveProperty("dev_device");
+  });
+
+  it("dev_device: false の record でも claim は載らない", async () => {
+    expect(await tokenClaims(false)).not.toHaveProperty("dev_device");
+  });
+});

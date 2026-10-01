@@ -896,3 +896,27 @@ describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-a
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("POST /device/alarm-token の dev_device claim (Refs ippoan/alc-app#387)", () => {
+  async function claimsFor(devDevice: boolean | undefined) {
+    const keypair = generateKeypair();
+    const { fp, kv } = alarmKeySeed(keypair.pubRaw);
+    if (devDevice !== undefined) {
+      const rec = JSON.parse(kv[`alarmkey:${fp}`]!) as Record<string, unknown>;
+      kv[`alarmkey:${fp}`] = JSON.stringify({ ...rec, dev_device: devDevice });
+    }
+    const env = makeEnv(kv);
+    const res = await handleDeviceAlarmToken(tokenRequest(await signedBody(env, keypair)), env);
+    expect(res.status).toBe(200);
+    const { access_token } = (await res.json()) as { access_token: string };
+    return decodeJwtPayload(access_token)!;
+  }
+
+  it("alarm-key の record が dev_device: true なら JWT に claim dev_device === true が載る", async () => {
+    expect((await claimsFor(true)).dev_device).toBe(true);
+  });
+
+  it("欄の無い record では claim が載らない", async () => {
+    expect(await claimsFor(undefined)).not.toHaveProperty("dev_device");
+  });
+});

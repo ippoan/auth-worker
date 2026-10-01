@@ -66,6 +66,8 @@ export interface AlarmKeyRecord {
   created_at: number;
   /** 失効時刻 (unix 秒)。未設定 = 有効。 */
   revoked_at?: number;
+  /** 開発用の鍵。この鍵で書いた記録は本番の記録簿に出ない。立てる口は #c387-13。 */
+  dev_device?: boolean;
 }
 
 const RECORD_PREFIX = "alarmkey:";

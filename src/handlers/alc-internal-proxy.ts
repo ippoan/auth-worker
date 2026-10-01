@@ -192,6 +192,9 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
     // rust の app 認証 (require_internal_shared_secret) + 明示 tenant。
     fwdHeaders["X-Internal-Shared-Secret"] = baseSecret;
     fwdHeaders["X-Tenant-ID"] = tenantId;
+    // 開発用の鍵の印。caller (cf-alc-recorder、shared secret 認証済み) の申告を X-Tenant-ID と
+    // 同じ信頼水準で通す。値がちょうど "1" のときだけ (true / 0 等は転送しない)。
+    if (request.headers.get("X-Device-Dev") === "1") fwdHeaders["X-Device-Dev"] = "1";
   } else if (pathClass === "internal-secret") {
     // rust が caller 由来の X-Internal-Secret (FCM_INTERNAL_SECRET) で自前認証する dev 経路。
     // caller (alc-app) が中継した値をそのまま pass-through する (無ければ rust 側で 401/403)。

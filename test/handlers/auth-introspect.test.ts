@@ -137,6 +137,31 @@ describe("POST /auth/introspect — token validation", () => {
     expect(body.sub).toBe("hub-dev-1"); // recorder は sub を device_id として注入する
   });
 
+  it("dev_device: claim が true なら true (Refs ippoan/alc-app#387)", async () => {
+    const token = await jwt({ tenant_id: PROD_TENANT, role: "device-kiosk", dev_device: true });
+    const res = await handleAuthIntrospect(
+      req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token, origin: APP_ORIGIN }) }),
+      makeEnv(),
+    );
+    const body = (await res.json()) as { active: boolean; dev_device: boolean };
+    expect(body.active).toBe(true);
+    expect(body.dev_device).toBe(true);
+  });
+
+  it.each([["claim なし", {}], ["claim false", { dev_device: false }], ["claim が文字列", { dev_device: "1" }]])(
+    "dev_device: %s なら false (Refs ippoan/alc-app#387)",
+    async (_name, extra) => {
+      const token = await jwt({ tenant_id: PROD_TENANT, ...extra });
+      const res = await handleAuthIntrospect(
+        req({ auth: TEST_INTERNAL_SECRET, body: JSON.stringify({ token, origin: APP_ORIGIN }) }),
+        makeEnv(),
+      );
+      const body = (await res.json()) as { active: boolean; dev_device: boolean };
+      expect(body.active).toBe(true);
+      expect(body.dev_device).toBe(false);
+    },
+  );
+
   it("includes token_kind when present on the payload (issue #522: alc-app が device-key を区別する)", async () => {
     const token = await jwt({ tenant_id: PROD_TENANT, token_kind: "device-key" });
     const res = await handleAuthIntrospect(
