@@ -180,10 +180,25 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * `device-tenko-manager` role (運行管理者席の VoiceS3R を挿した PC) 専用の
  * method + path 許可表 (Refs ippoan/alc-app#337)。
  *
- * **入れるのは点呼予定 (`/api/tenko/schedules*`) だけ。** 運行管理者タブの他のタブ
- * (乗務員 / 点呼 / 測定履歴 など) は今も `device-kiosk` の JWT で通っているので、
- * ここには足さない — この role は「予定管理が 403 になる」1 点のために足したもので、
- * 足りない口が出たらその都度ここに 1 行足す (既定拒否)。
+ * **入れるのは点呼予定の CRUD (`/api/tenko/schedules*`) と、遠隔点呼モニター
+ * (alc-app の `TenkoRemoteAdminView.vue`) が実際に呼ぶ口だけ** (Refs ippoan/alc-app#387):
+ * 読み取り 5 本 (`GET /api/employees`、`GET /api/employees/{id}`、
+ * `GET /api/employees/by-code/{code}`、`GET /api/tenko/sessions/{id}`、
+ * `GET /api/tenko/driver-info/{id}`) と、判定 1 本
+ * (`POST /api/tenko/sessions/{id}/judgment`)。足りない口が出たらその都度ここに 1 行足す (既定拒否)。
+ *
+ * **入れない口 (モニターが呼ばない、または席が行を持たない)**:
+ * - `GET /api/employees/face-data` — tenant 全員の生体情報。モニターからの呼び出しが 0 件。
+ * - `GET /api/tenko/sessions` (一覧) — モニターからの呼び出しが 0 件。
+ * - `GET /api/devices/settings/{id}` — 運行管理者席は devices に行を持たない。
+ *
+ * **判定の POST は運行管理者の鍵すべてに通す。** 「dev の鍵だけ」に絞るのは backend
+ * (rust-alc-api) の仕事で、`X-Device-Role` と `X-Device-Dev` を見て判断する。ここでは
+ * dev を条件にしない。
+ *
+ * `{id}` は UUID の形に限る (`UUID_SEGMENT`)。`KIOSK_ROUTES` の `GET /api/employees/{id}` は
+ * `[^/]+` で `face-data` にも当たるが (kiosk は face-data を別途許可している)、こちらで
+ * 真似すると上の「入れない口」を開けてしまうため。
  *
  * **`ROLE_PATH_ALLOWLIST` (method を見ない Set) ではなくこちらの方式にした理由**:
  * 予定の取得・更新・削除は `/api/tenko/schedules/{id}` で **path が可変**なので、
@@ -200,6 +215,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * 除外はしていない — 転送先は同じ予定リソースで、rust 側は `batch` に POST しか
  * 生やしていないので 405 になるだけ。許可の範囲は広がらない。
  */
+const UUID_SEGMENT = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/tenko\/schedules$/ },
   { method: "POST", pattern: /^\/api\/tenko\/schedules$/ },
@@ -207,6 +223,26 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/tenko\/schedules\/[^/]+$/ },
   { method: "PUT", pattern: /^\/api\/tenko\/schedules\/[^/]+$/ },
   { method: "DELETE", pattern: /^\/api\/tenko\/schedules\/[^/]+$/ },
+  { method: "GET", pattern: /^\/api\/employees$/ },
+  { method: "GET", pattern: new RegExp(`^/api/employees/${UUID_SEGMENT}$`) },
+  { method: "GET", pattern: /^\/api\/employees\/by-code\/[^/]+$/ },
+  { method: "GET", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}$`) },
+  { method: "GET", pattern: new RegExp(`^/api/tenko/driver-info/${UUID_SEGMENT}$`) },
+  { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/judgment$`) },
+];
+
+/**
+ * dev の鍵 (`dev_device === true` の `device-kiosk`) が、その鍵で書いた記録を見るための口。
+ * backend は `X-Device-Dev` で dev の行だけを返すので、本番の記録は見えない。
+ * `KIOSK_ROUTES` に入れないのは、本番のキオスクに記録簿を開けないため。
+ *
+ * role で引く表ではなく **claim を見る別次元の判定**なので、`METHOD_ROUTE_TABLES` には
+ * 入れず `handleDeviceDataProxy` 内で明示的に分岐する (GET のみ)。
+ */
+const DEV_KIOSK_RECORD_ROUTES: ReadonlyArray<RegExp> = [
+  /^\/api\/tenko\/records$/,
+  /^\/api\/tenko\/records\/csv$/,
+  /^\/api\/tenko\/records\/[^/]+$/,
 ];
 
 /**
@@ -290,7 +326,14 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
     const matched = methodRoutes.some(
       (r) => r.method === request.method && r.pattern.test(backendPath),
     );
-    if (!matched) return jsonError(403, "forbidden");
+    // dev キオスクの記録簿 GET は、KIOSK_ROUTES が false のときだけ見る (既存の判定順は不変)。
+    const devKioskRecord =
+      !matched &&
+      role === DEVICE_ROLE_KIOSK &&
+      payload.dev_device === true &&
+      request.method === "GET" &&
+      DEV_KIOSK_RECORD_ROUTES.some((p) => p.test(backendPath));
+    if (!matched && !devKioskRecord) return jsonError(403, "forbidden");
   } else {
     // 他 role は既存どおり method を見ない Set 完全一致 (ROLE_PATH_ALLOWLIST の
     // doc コメントが説明する意図を変えない)。
