@@ -9,6 +9,7 @@ vi.mock("../../src/lib/security", () => ({
 import { handleGoogleCallback } from "../../src/handlers/google-callback";
 import { verifyOAuthState, isAllowedRedirectUri } from "../../src/lib/security";
 import type { InternalUserWithSlug } from "../../src/lib/alc-internal";
+import { decodeJwtPayload } from "../../src/lib/jwt";
 
 const mockVerify = vi.mocked(verifyOAuthState);
 const mockIsAllowed = vi.mocked(isAllowedRedirectUri);
@@ -297,6 +298,16 @@ describe("handleGoogleCallback", () => {
     const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
     const res = await handleGoogleCallback(req, env);
     expect(res.headers.get("Set-Cookie")).toContain("logi_auth_token=eyJ");
+  });
+
+  it("発行する token に idp: \"google\" が載る (Refs ippoan/alc-app#387)", async () => {
+    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
+    mockIsAllowed.mockReturnValue(true);
+    stubLoginFetches(userResponse());
+    const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
+    const res = await handleGoogleCallback(req, env);
+    const token = res.headers.get("Set-Cookie")!.match(/logi_auth_token=([^;]+)/)![1]!;
+    expect(decodeJwtPayload(token)!.idp).toBe("google");
   });
 
   it("sets logi_auth_token cookie on join flow", async () => {

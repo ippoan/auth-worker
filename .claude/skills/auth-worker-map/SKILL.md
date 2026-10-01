@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:49b042de61e1e80069321114f8e525dfb570ad27
+generated-from: auth-worker:fb2a68aaf1eb892755988d4753c8e5191a170cff
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
@@ -114,6 +114,44 @@ Google ログイン直後の本番状態が再現でき、ページ側の門番 
 `authCookieReachesHost('auth.ippoan.org','auth.ippoan.org') === true` の unit test
 (`test/lib/cookies.test.ts`) が担保しているので、そこをローカルで踏み直す必要はない。
 
+
+## 端末の鍵を開発用にする (`dev_device`、Refs ippoan/alc-app#387)
+
+登録簿 2 種 (`DeviceRecord` = `src/lib/device.ts`、`AlarmKeyRecord` = `src/handlers/alarm-key.ts`)
+の `dev_device` を立てる・外す口。開発用の鍵で書いた記録は本番の記録簿に出ず、webhook と
+通知も止まる。
+
+| path | handler | body / 応答 |
+|---|---|---|
+| `POST /device/setup/dev-device` | `device-setup.ts::handleDeviceSetupDevDevice` (書き換えは `lib/device.ts::setDeviceDevFlag`) | `{device_id, dev_device}` → `{device_id, dev_device}` |
+| `POST /device/setup/alarm-key/dev-device` | `alarm-key.ts::handleAlarmKeyDevDevice` | `{fingerprint, dev_device}` → `{fingerprint, dev_device}`。失効済みは 409 `revoked` |
+
+- **認可は fail-closed で「開発者アカウントが Google でログインした session」だけ。**
+  順序は `adminRequest` (401 / 403 `bad_origin`) → 読み取り専用 token は 403
+  `dev_token_write_forbidden` → `isDeveloperGoogleSession` でなければ 403
+  `developer_google_session_required` → body → 対象の検査 → 書き換え。
+  テナントの管理者・LINE / LINE WORKS のログイン・dev ログイン・device-key の token は通らない。
+  開発者の検査は対象を引く前に置く (開発者でない者に鍵の有無を漏らさない)。
+- **開発者の判定は `src/lib/developer.ts` の 1 か所** (`DEVELOPER_EMAILS` / `isDeveloperEmail` /
+  `isDeveloperGoogleSession`。`coverage_100.toml` 登録済み)。`isDeveloperEmail` は画面の出し分け
+  だけ、サーバ側の認可は `isDeveloperGoogleSession`。`lib/admin-html.ts` の同名の定数は
+  ブラウザに埋め込む表示用で別物 (ここへ寄せていない)。
+- **`idp` claim**: `createAccessToken` の第 5 引数。**Google の callback (`google-callback.ts`) だけ**が
+  `idp: "google"` を載せ、ほかの経路の token には key ごと無い。**読むのは
+  `isDeveloperGoogleSession` だけ** — ほかの認可・振り分け・introspect の応答に使わない・出さない。
+  claim を足す前の cookie と、auth-worker 以外が発行し直した token (`/api/switch-org` が返す
+  rust-alc-api 発行の token 等) には無いので、その session では 403 になる (Google で入り直す)。
+- `dev_device` は boolean そのものだけ受ける。外すときは**欄ごと消す** (`false` を書かない)。
+- **発行済みの token は期限 (最大 1 時間) まで前の値のまま。** `dev_device` は token の発行時に
+  claim へ焼かれ (`mintDeviceJwt`)、`/device-data-proxy` と `/auth/introspect` は claim だけを見る。
+  反映は次の `/device/token` / `/device/alarm-token` から。
+- 一覧 (`GET /device/setup/list`、`GET /device/setup/alarm-keys`) の各行に `dev_device: boolean`。
+  `/device/setup` の画面は「開発用」の印を全員に出し、切替ボタンは `IS_DEVELOPER` のときだけ出す
+  (表示の出し分け。権限の根拠は上のサーバ側の検査)。
+- **既知の前提 (未対応)**: staging と本番は `AUTH_CONFIG` (KV) と JWT の署名の秘密を共有し、
+  ログインの JWT に環境を示す claim が無いので、staging で発行された cookie は本番でも通る。
+  既存の書き込み口 (登録・失効・拠点 ID) と同じ根で、この口の強さも署名の秘密の保持者と
+  staging を含む backend の利用者表に依存する。
 
 ## CCoW から見た auth-worker
 

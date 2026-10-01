@@ -34,12 +34,14 @@ import {
   createDeviceCredentialReplacingLabel,
   getDeviceRecord,
   listDeviceRecordsByTenant,
+  setDeviceDevFlag,
   setDeviceSiteId,
   DEVICE_ROLE_HUB,
   DEVICE_ROLE_PRINT,
   DEVICE_ROLE_GATEWAY,
   DEVICE_ROLE_TIMECARD,
 } from "../lib/device";
+import { isDeveloperEmail, isDeveloperGoogleSession } from "../lib/developer";
 
 function jsonNoStore(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -91,14 +93,6 @@ export interface DeviceKind {
   /** 表示名 */
   display: string;
 }
-
-/**
- * dev ビルド配信の選択 UI を表示する developer アカウント
- * (lib/admin-html.ts の DEVELOPER_EMAILS と同方式)。
- * OTA URL 欄自体は従来どおり誰でも自由編集できるため、これはあくまで
- * UI 上の出し分け — サーバ側の追加 enforcement は不要。
- */
-const DEVELOPER_EMAILS = ["m.tama.ramu@gmail.com"];
 
 /**
  * kind → 機種定義。**role と firmware はここで 1:1 に対応**させ、
@@ -196,6 +190,9 @@ export interface OperatorSession {
   /** JWT の `token_kind` claim (issue #433 と同じ claim)。通常の Google ログインは
    *  付けないため `""`。dev-login (`"dev"`) / device-key (`"device-key"`) はここに入る。 */
   tokenKind: string;
+  /** JWT の `idp` claim。Google の callback が発行した token だけ `"google"`、ほかは `""`。
+   *  読むのは `lib/developer.ts::isDeveloperGoogleSession` だけ (Refs ippoan/alc-app#387)。 */
+  idp: string;
 }
 
 /** cookie (logi_auth_token) の session JWT から operator の tenant/email/token_kind を返す。不正なら null。 */
@@ -213,6 +210,7 @@ async function cookieSession(request: Request, env: Env): Promise<OperatorSessio
     tenantId,
     email: (payload.email as string | undefined) || "",
     tokenKind: (payload.token_kind as string | undefined) || "",
+    idp: (payload.idp as string | undefined) || "",
   };
 }
 
@@ -360,6 +358,7 @@ export async function handleDeviceSetupList(request: Request, env: Env): Promise
       kind: kindNameForRole(r.role) ?? "",
       created_at: r.created_at,
       site_id: r.site_id ?? "",
+      dev_device: r.dev_device === true,
     }));
   return jsonNoStore({ devices });
 }
@@ -386,6 +385,39 @@ export async function handleDeviceSetupSite(request: Request, env: Env): Promise
   const record = await setDeviceSiteId(env, pre.deviceId, siteId);
   if (!record) return jsonNoStore({ error: "not_found" }, 404);
   return jsonNoStore({ device_id: record.device_id, site_id: record.site_id });
+}
+
+/**
+ * POST /device/setup/dev-device — {device_id, dev_device} で登録済み端末の鍵を
+ * 開発用にする・外す (Refs ippoan/alc-app#387)。
+ *
+ * **開発者アカウントが Google でログインした session だけ** (`isDeveloperGoogleSession`)。
+ * 開発用にするとその端末の記録が本番の記録簿から消え、webhook と通知も止まるため、
+ * テナントの管理者にも付けさせない。検査は対象を引く前に置く (開発者でない者に
+ * 鍵の有無を漏らさない)。
+ *
+ * 発行済みの device JWT は claim に前の値を持ったまま期限 (最大 1 時間) まで生きる。
+ * 反映は次の `/device/token` から。
+ */
+export async function handleDeviceSetupDevDevice(request: Request, env: Env): Promise<Response> {
+  const pre = await deviceCommandRequest(request, env);
+  if (pre instanceof Response) return pre;
+  if (!isDeveloperGoogleSession(pre.session)) {
+    return jsonNoStore({ error: "developer_google_session_required" }, 403);
+  }
+  // boolean そのものだけ受ける ("true" や 1 を真に倒さない)。
+  const dev = pre.body.dev_device;
+  if (typeof dev !== "boolean") {
+    return jsonNoStore({ error: "dev_device は boolean で必要です" }, 400);
+  }
+  if (!(await managedDeviceKind(env, pre.session.tenantId, pre.deviceId))) {
+    return jsonNoStore({ error: "not_your_device" }, 403);
+  }
+  const record = await setDeviceDevFlag(env, pre.deviceId, dev);
+  if (!record) return jsonNoStore({ error: "not_found" }, 404);
+  // 値 (鍵の id・tenant・メールアドレス) は出さない。
+  console.log(JSON.stringify({ event: "dev_device_set", registry: "device", dev_device: dev }));
+  return jsonNoStore({ device_id: record.device_id, dev_device: record.dev_device === true });
 }
 
 /**
@@ -860,7 +892,7 @@ function setupPage(issuer: string, email: string): string {
   // developer のみ: CoreS3 の OTA URL を dev ビルド (mem-hud 付き) に切り替える
   // チェックボックス。開発機を /device/setup から更新すると本番ビルドになり
   // メモリ使用率 HUD が消える問題への対処 (alc-app-s3#44)
-  const isDeveloper = DEVELOPER_EMAILS.includes(email.toLowerCase());
+  const isDeveloper = isDeveloperEmail(email);
   // checkbox はページ共通 CSS の input{width:14rem} を width:auto で打ち消し、
   // flex でラベル文と 1 行に並べる (崩れの実害あり 2026-07-14)
   const devToggleHtml = isDeveloper
@@ -1009,6 +1041,9 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <script>
 "use strict";
 const ISSUER = ${JSON.stringify(issuer)};
+// 開発者アカウントか (鍵一覧の「開発用にする / 外す」ボタンの出し分けだけに使う。
+// 権限の根拠はサーバ側 — 開発者の Google session 以外は 403)
+const IS_DEVELOPER = ${JSON.stringify(isDeveloper)};
 // 機種 → 表示名 (サーバ側 DEVICE_KINDS と対。list 応答の kind をキーに使う)
 const KIND_DISPLAY = ${JSON.stringify(
     Object.fromEntries(Object.entries(DEVICE_KINDS).map(([k, v]) => [k, v.display])),
@@ -1223,7 +1258,12 @@ async function loadDevices() {
       const did = document.createElement("div");
       did.className = "did";
       did.textContent = d.device_id;
+      if (d.dev_device) labelTd.appendChild(devDeviceMark());
       labelTd.appendChild(did);
+      if (IS_DEVELOPER) {
+        labelTd.appendChild(devDeviceButton(
+          d.dev_device, d.label, "/device/setup/dev-device", { device_id: d.device_id }, loadDevices, statusEl));
+      }
       tr.appendChild(labelTd);
 
       // 種別 (list 応答の kind。DEVICE_KINDS 外の role は list 側で除外済み)
@@ -1584,6 +1624,54 @@ async function pollCommandResult(id, timeoutMs, ready) {
     } catch { /* 次のポーリングへ */ }
   }
   return null;
+}
+
+// 鍵を開発用にする・外す (Refs ippoan/alc-app#387)。端末の一覧と警告デバイスの鍵の表で共用。
+// 「開発用」の印は全員に出す (テナントの管理者が「記録が出ない理由」を知れるように)。
+function devDeviceMark() {
+  const mark = document.createElement("span");
+  mark.style.marginLeft = ".35rem";
+  mark.style.fontSize = ".8rem";
+  mark.style.color = "#92400e";
+  mark.textContent = "開発用";
+  return mark;
+}
+
+// 切替ボタン (開発者にだけ出す)。key は対象を指す body ({device_id} か {fingerprint})。
+function devDeviceButton(isDev, label, path, key, reload, msgEl) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "small";
+  btn.style.marginLeft = ".35rem";
+  btn.textContent = isDev ? "開発用を外す" : "開発用にする";
+  btn.addEventListener("click", () => setDevDevice(path, key, !isDev, label, reload, msgEl));
+  return btn;
+}
+
+// auth-worker の KV の欄を書き換えるだけなので、端末の接続状態に関わらず押せる。
+// 発行済みのトークンは前の値のまま期限まで生きる (反映は次のトークン更新から)。
+async function setDevDevice(path, key, dev, label, reload, msgEl) {
+  const text = dev
+    ? "開発用にすると、この端末の点呼・測定・打刻は本番の記録簿に出なくなり、webhook と通知も止まります。反映は次のトークン更新から (最大 1 時間)。"
+    : "開発用を外します。反映は最大 1 時間後。それまでの記録は開発用のままです。";
+  if (!confirm("「" + label + "」: " + text)) return;
+  try {
+    const res = await fetch(ISSUER + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(Object.assign({}, key, { dev_device: dev })),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))).error;
+      throw new Error(err === "developer_google_session_required"
+        ? "Google でログインし直してください"
+        : "HTTP " + res.status);
+    }
+    reload();
+  } catch (e) {
+    msgEl.textContent = "開発用の切替に失敗: " + (e && e.message ? e.message : e);
+  }
 }
 
 // 拠点ID (site_id) の設定 (Refs #406)。この改訂前に登録済みで site_id が
@@ -2215,6 +2303,7 @@ async function loadAlarmKeys() {
 
       const labelTd = document.createElement("td");
       labelTd.textContent = k.label;
+      if (k.dev_device) labelTd.appendChild(devDeviceMark());
       tr.appendChild(labelTd);
 
       const usageTd = document.createElement("td");
@@ -2239,6 +2328,12 @@ async function loadAlarmKeys() {
         btn.textContent = "失効";
         btn.addEventListener("click", () => revokeAlarmKey(k.fingerprint, k.label));
         actionTd.appendChild(btn);
+        // 失効済みの鍵には出さない (サーバ側も 409 で断る)
+        if (IS_DEVELOPER) {
+          actionTd.appendChild(devDeviceButton(
+            k.dev_device, k.label, "/device/setup/alarm-key/dev-device", { fingerprint: k.fingerprint },
+            loadAlarmKeys, alarmKeyResultEl));
+        }
       }
       tr.appendChild(actionTd);
 

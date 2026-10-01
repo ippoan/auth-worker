@@ -9,6 +9,7 @@ import {
   verifyDeviceJwt,
   mintHubToken,
   setDeviceSiteId,
+  setDeviceDevFlag,
   normalizeDeviceRole,
   DEVICE_ROLE_DTAKO_RELAY,
   sha256Hex,
@@ -179,6 +180,33 @@ describe("setDeviceSiteId (Refs #406 backfill、この改訂前に発行され�
     const updated = await setDeviceSiteId(env, cred.device_id, "site-2");
     expect(updated?.site_id).toBe("site-2");
     expect(updated?.revoked).toBe(true);
+  });
+});
+
+describe("setDeviceDevFlag (開発用の鍵を立てる・外す、Refs ippoan/alc-app#387)", () => {
+  it("true で dev_device: true を書く。ほかの欄は変えない", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
+    const before = await getDeviceRecord(env, cred.device_id);
+    const updated = await setDeviceDevFlag(env, cred.device_id, true);
+    expect(updated).toEqual({ ...before, dev_device: true });
+    expect(await getDeviceRecord(env, cred.device_id)).toEqual({ ...before, dev_device: true });
+  });
+
+  it("false で欄ごと消す (false を書かない)", async () => {
+    const env = { AUTH_CONFIG: createMockKV() };
+    const cred = await createDeviceCredential(env, "t", "l", NOW, DEVICE_ROLE_HUB);
+    const before = await getDeviceRecord(env, cred.device_id);
+    await setDeviceDevFlag(env, cred.device_id, true);
+    const updated = await setDeviceDevFlag(env, cred.device_id, false);
+    expect(updated).not.toHaveProperty("dev_device");
+    expect(await getDeviceRecord(env, cred.device_id)).toEqual(before);
+  });
+
+  it("不在は null (KV に何も書かない)", async () => {
+    const kv = createMockKV();
+    expect(await setDeviceDevFlag({ AUTH_CONFIG: kv }, "missing", true)).toBeNull();
+    expect((await kv.list()).keys).toEqual([]);
   });
 });
 

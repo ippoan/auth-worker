@@ -915,6 +915,23 @@ describe("Router (index.ts)", () => {
     expect(res.status).toBe(405);
   });
 
+  // 鍵を開発用にする口 2 本 (Refs ippoan/alc-app#387)。handler は mock していないので
+  // 実物まで届く: cookie の無い POST は 401、GET では route に当たらず 404 のまま。
+  it.each(["/device/setup/dev-device", "/device/setup/alarm-key/dev-device"])(
+    "POST %s は handler に届き (cookie なし 401)、GET は 404",
+    async (path) => {
+      const url = `https://auth.test.example${path}`;
+      const post = await worker.fetch(
+        new Request(url, { method: "POST", headers: { Origin: "https://auth.test.example" }, body: "{}" }),
+        env,
+      );
+      expect(post.status).toBe(401);
+      expect(await post.json()).toEqual({ error: "unauthorized" });
+      const get = await worker.fetch(new Request(url), env);
+      expect(get.status).toBe(404);
+    },
+  );
+
   // --- Error handling ---
   it("catches handler errors and returns 500", async () => {
     const { handleHealthProxy } = await import("../../src/handlers/health");

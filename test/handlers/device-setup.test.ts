@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   handleDeviceSetupPage,
   handleDeviceSetupPair,
@@ -14,10 +14,16 @@ import {
   handleDeviceSetupBpStatus,
   handleDeviceSetupReboot,
   handleDeviceSetupSite,
+  handleDeviceSetupDevDevice,
   handleDeviceSetupBattery,
   DEVICE_KINDS,
 } from "../../src/handlers/device-setup";
-import { createDeviceCredential, getDeviceRecord } from "../../src/lib/device";
+import {
+  createDeviceCredential,
+  getDeviceRecord,
+  revokeDeviceCredential,
+} from "../../src/lib/device";
+import { DEVELOPER_EMAILS } from "../../src/lib/developer";
 import { createMockKV } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 import type { Env } from "../../src/index";
@@ -1695,5 +1701,252 @@ describe("dev / device-key token: /device/setup の書き込み口を弾く", ()
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: "ota-admin" });
     expect(calls.length).toBe(1);
+  });
+});
+
+/**
+ * 端末の鍵を開発用にする・外す口 (Refs ippoan/alc-app#387)。
+ * 通すのは「開発者アカウントが Google でログインした session」だけ。
+ * 開発者のメールアドレスの値はテストに書かない (登録簿の先頭を借りる)。
+ */
+describe("handleDeviceSetupDevDevice (Refs ippoan/alc-app#387)", () => {
+  const DEV_EMAIL = DEVELOPER_EMAILS[0]!;
+  const PATH = "/device/setup/dev-device";
+
+  /** 開発者が Google で入った session (この口を通れる唯一の形)。 */
+  async function devHeaders(claims: Record<string, unknown> = {}): Promise<Record<string, string>> {
+    return { ...(await opCookie({ email: DEV_EMAIL, idp: "google", ...claims })), Origin: ISSUER };
+  }
+
+  /** tenant-1 に管理対象の端末 (cores3) を 1 台登録した env。 */
+  async function envWithDevice() {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const cred = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "cores3" }, headers), env)
+    ).json()) as PairResponse;
+    return { env, deviceId: cred.device_id };
+  }
+
+  it("cookie なしは 401、Origin 違いは 403 bad_origin", async () => {
+    const { env, deviceId } = await envWithDevice();
+    const body = { device_id: deviceId, dev_device: true };
+    const noCookie = await handleDeviceSetupDevDevice(postJson(PATH, body, { Origin: ISSUER }), env);
+    expect(noCookie.status).toBe(401);
+
+    const badOrigin = await handleDeviceSetupDevDevice(
+      postJson(PATH, body, { ...(await devHeaders()), Origin: "https://evil.example" }),
+      env,
+    );
+    expect(badOrigin.status).toBe(403);
+    expect(await badOrigin.json()).toEqual({ error: "bad_origin" });
+    expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
+  });
+
+  it.each(["dev", "device-key"])(
+    "開発者の email + idp=google でも token_kind=%s は 403 dev_token_write_forbidden",
+    async (tokenKind) => {
+      const { env, deviceId } = await envWithDevice();
+      const res = await handleDeviceSetupDevDevice(
+        postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders({ token_kind: tokenKind })),
+        env,
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+      expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
+    },
+  );
+
+  it.each([
+    ["開発者でない管理者 (Google ログイン)", { email: "op@example.com", idp: "google" }],
+    ["開発者の email だが idp なし (LINE WORKS のログイン・古い cookie)", { email: DEV_EMAIL }],
+    ["開発者の email だが idp が別の値", { email: DEV_EMAIL, idp: "lineworks" }],
+    ["email の無い session", { email: "", idp: "google" }],
+  ])("%s は 403 developer_google_session_required (書き換えない)", async (_name, claims) => {
+    const { env, deviceId } = await envWithDevice();
+    const res = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: deviceId, dev_device: true }, { ...(await opCookie(claims)), Origin: ISSUER }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "developer_google_session_required" });
+    expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
+  });
+
+  it("開発者でない者には、存在する鍵と存在しない鍵で応答が同じ (有無を漏らさない)", async () => {
+    const { env, deviceId } = await envWithDevice();
+    const headers = { ...(await opCookie({ idp: "google" })), Origin: ISSUER };
+    const existing = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: deviceId, dev_device: true }, headers),
+      env,
+    );
+    const missing = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: "missing", dev_device: true }, headers),
+      env,
+    );
+    expect(existing.status).toBe(403);
+    expect(missing.status).toBe(existing.status);
+    expect(await missing.text()).toBe(await existing.text());
+  });
+
+  it("device_id が無ければ 400", async () => {
+    const { env } = await envWithDevice();
+    const res = await handleDeviceSetupDevDevice(postJson(PATH, { dev_device: true }, await devHeaders()), env);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ["文字列 \"true\"", { dev_device: "true" }],
+    ["数値 1", { dev_device: 1 }],
+    ["null", { dev_device: null }],
+    ["欠落", {}],
+  ])("dev_device が boolean でない (%s) は 400 (書き換えない)", async (_name, extra) => {
+    const { env, deviceId } = await envWithDevice();
+    const res = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: deviceId, ...extra }, await devHeaders()),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
+  });
+
+  it("他 tenant の鍵・不在・失効済み・管理対象外の role は全部 403 not_your_device", async () => {
+    const { env, deviceId } = await envWithDevice();
+    // 他 tenant の session から tenant-1 の鍵を指す
+    const otherTenant = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders({ tenant_id: "tenant-2" })),
+      env,
+    );
+    const missing = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: "missing", dev_device: true }, await devHeaders()),
+      env,
+    );
+    // DEVICE_KINDS 外の role (既定の uploader)
+    const uploader = await createDeviceCredential(env, "tenant-1", "uploader", 1_700_000_000);
+    const outOfKinds = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: uploader.device_id, dev_device: true }, await devHeaders()),
+      env,
+    );
+    await revokeDeviceCredential(env, deviceId);
+    const revoked = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
+      env,
+    );
+    for (const res of [otherTenant, missing, outOfKinds, revoked]) {
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "not_your_device" });
+    }
+    expect(await getDeviceRecord(env, deviceId)).not.toHaveProperty("dev_device");
+    expect(await getDeviceRecord(env, uploader.device_id)).not.toHaveProperty("dev_device");
+  });
+
+  it("開発者の Google session: true で record に dev_device: true (ほかの欄は不変)、2 回目も同じ", async () => {
+    const { env, deviceId } = await envWithDevice();
+    const before = await getDeviceRecord(env, deviceId);
+    for (let i = 0; i < 2; i++) {
+      const res = await handleDeviceSetupDevDevice(
+        postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ device_id: deviceId, dev_device: true });
+      expect(await getDeviceRecord(env, deviceId)).toEqual({ ...before, dev_device: true });
+    }
+  });
+
+  it("開発者の Google session: false で欄ごと消える (ほかの欄は不変)、2 回目も同じ", async () => {
+    const { env, deviceId } = await envWithDevice();
+    const before = await getDeviceRecord(env, deviceId);
+    await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
+      env,
+    );
+    for (let i = 0; i < 2; i++) {
+      const res = await handleDeviceSetupDevDevice(
+        postJson(PATH, { device_id: deviceId, dev_device: false }, await devHeaders()),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ device_id: deviceId, dev_device: false });
+      const after = await getDeviceRecord(env, deviceId);
+      expect(after).not.toHaveProperty("dev_device");
+      expect(after).toEqual(before);
+    }
+  });
+
+  it("検査と書き換えの間に record が消えたら 404", async () => {
+    const { env, deviceId } = await envWithDevice();
+    const kv = env.AUTH_CONFIG as unknown as { get: (k: string) => Promise<string | null> };
+    const realGet = kv.get;
+    let reads = 0;
+    // 1 回目 (managedDeviceKind の検査) は通し、2 回目 (書き換え前の読み直し) で不在にする
+    kv.get = async (key: string) => (key === `device:${deviceId}` && ++reads > 1 ? null : realGet(key));
+    const res = await handleDeviceSetupDevDevice(
+      postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("書き換えのログは登録簿の種別と真偽だけ (鍵の id・tenant・メールアドレスを出さない)", async () => {
+    const { env, deviceId } = await envWithDevice();
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await handleDeviceSetupDevDevice(
+        postJson(PATH, { device_id: deviceId, dev_device: true }, await devHeaders()),
+        env,
+      );
+      const lines = spy.mock.calls.map((c) => String(c[0]));
+      expect(lines).toEqual([
+        JSON.stringify({ event: "dev_device_set", registry: "device", dev_device: true }),
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("dev_device の表示 (一覧の応答と画面、Refs ippoan/alc-app#387)", () => {
+  const DEV_EMAIL = DEVELOPER_EMAILS[0]!;
+
+  it("GET /device/setup/list は各行に dev_device を boolean で返す", async () => {
+    const env = makeEnv();
+    const headers = { ...(await opCookie()), Origin: ISSUER };
+    const plain = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "plain" }, headers), env)
+    ).json()) as PairResponse;
+    const dev = (await (
+      await handleDeviceSetupPair(postJson("/device/setup/pair", { label: "dev" }, headers), env)
+    ).json()) as PairResponse;
+    await handleDeviceSetupDevDevice(
+      postJson(
+        "/device/setup/dev-device",
+        { device_id: dev.device_id, dev_device: true },
+        { ...(await opCookie({ email: DEV_EMAIL, idp: "google" })), Origin: ISSUER },
+      ),
+      env,
+    );
+    const res = await handleDeviceSetupList(getReq("/device/setup/list", await opCookie()), env);
+    const body = (await res.json()) as { devices: Array<{ device_id: string; dev_device: unknown }> };
+    const byId = Object.fromEntries(body.devices.map((d) => [d.device_id, d.dev_device]));
+    expect(byId[dev.device_id]).toBe(true);
+    expect(byId[plain.device_id]).toBe(false);
+  });
+
+  it("画面: 開発者の email なら IS_DEVELOPER = true、そうでなければ false", async () => {
+    const devHtml = await (
+      await handleDeviceSetupPage(getReq("/device/setup", await opCookie({ email: DEV_EMAIL })), makeEnv())
+    ).text();
+    expect(devHtml).toContain("const IS_DEVELOPER = true;");
+    // 切替の導線 (口 2 本と再ログインの案内) が script に入っている
+    expect(devHtml).toContain('"/device/setup/dev-device"');
+    expect(devHtml).toContain('"/device/setup/alarm-key/dev-device"');
+    expect(devHtml).toContain("Google でログインし直してください");
+
+    const opHtml = await (
+      await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv())
+    ).text();
+    expect(opHtml).toContain("const IS_DEVELOPER = false;");
+    expect(opHtml).not.toContain("const IS_DEVELOPER = true;");
   });
 });

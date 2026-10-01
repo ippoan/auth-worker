@@ -3,11 +3,17 @@
  *
  * 認証オーケストレーションを auth-worker に移管するため、従来 rust-alc-api
  * (`crates/alc-auth-jwt`) が発行していた token を auth-worker 側で発行する。
- * **claim / refresh フォーマットは rust と厳密に一致させる**こと
- * (rust `create_access_token` / `create_refresh_token` / `hash_refresh_token`):
+ * **claim / refresh フォーマットは rust と一致させる**こと
+ * (rust `create_access_token` / `create_refresh_token` / `hash_refresh_token`)。
+ * 例外は `idp` の 1 つだけ (下):
  *
  * - access JWT (`AppClaims`): `{ sub, email, name, tenant_id, role, org_slug?, iat, exp }`、
  *   HS256 / `JWT_SECRET`、`exp = iat + 3600`。`org_slug` は None のとき field 省略。
+ * - `idp` (rust には無い claim。Refs ippoan/alc-app#387): **Google の callback が発行する
+ *   token にだけ** `idp: "google"` を足す。ほかの経路 (LINE / LINE WORKS) の token には
+ *   key ごと載らない。読むのは `lib/developer.ts::isDeveloperGoogleSession` だけ
+ *   (端末の鍵を開発用にする口の認可)。ほかの認可・振り分け・introspect の応答には
+ *   使わない・出さない。
  * - refresh: raw = `rt_{uuid(no-hyphen)}`、保存する hash = `hex(sha256(raw))`、有効期限 = now + 30日。
  */
 import { signJwt } from "./jwt";
@@ -26,12 +32,16 @@ export interface AccessTokenUser {
   role: string;
 }
 
-/** rust `create_access_token` (AppClaims) と同形の access JWT を発行する。 */
+/**
+ * rust `create_access_token` (AppClaims) と同形の access JWT を発行する。
+ * `loginProvider` を渡したときだけ `idp` claim を足す (渡さなければ key ごと載せない)。
+ */
 export async function createAccessToken(
   user: AccessTokenUser,
   secret: string,
   orgSlug: string | null,
   nowSec: number = Math.floor(Date.now() / 1000),
+  loginProvider?: "google",
 ): Promise<string> {
   const payload: Record<string, unknown> = {
     sub: user.id,
@@ -44,6 +54,7 @@ export async function createAccessToken(
   };
   // rust 側は org_slug: Option<String> を serde で skip するので None は field ごと省略する。
   if (orgSlug) payload.org_slug = orgSlug;
+  if (loginProvider) payload.idp = loginProvider;
   return signJwt(payload, secret);
 }
 

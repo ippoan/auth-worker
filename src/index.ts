@@ -111,12 +111,14 @@ import {
   handleDeviceSetupBpStatus,
   handleDeviceSetupReboot,
   handleDeviceSetupSite,
+  handleDeviceSetupDevDevice,
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
 import {
   handleAlarmKeyRegister,
   handleAlarmKeyList,
   handleAlarmKeyRevoke,
+  handleAlarmKeyDevDevice,
 } from "./handlers/alarm-key";
 import { handleDeviceAlarmNonce, handleDeviceAlarmToken } from "./handlers/device-alarm-token";
 import { handlePrintTestPdf } from "./handlers/print-test";
@@ -968,6 +970,9 @@ export default {
             return await handleAlarmKeyRegister(request, env);
           case "/device/setup/alarm-key/revoke":
             return await handleAlarmKeyRevoke(request, env);
+          // 鍵を開発用にする・外す (開発者の Google session だけ。Refs ippoan/alc-app#387)。
+          case "/device/setup/alarm-key/dev-device":
+            return await handleAlarmKeyDevDevice(request, env);
           // OTA トリガ (cookie session → recorder の下り command)。POST。
           case "/device/setup/ota":
             return await handleDeviceSetupOta(request, env);
@@ -998,6 +1003,9 @@ export default {
           // 登録済み device-hub の site_id をブラウザから設定 (Refs #406)。
           case "/device/setup/site":
             return await handleDeviceSetupSite(request, env);
+          // 端末の鍵を開発用にする・外す (開発者の Google session だけ。Refs ippoan/alc-app#387)。
+          case "/device/setup/dev-device":
+            return await handleDeviceSetupDevDevice(request, env);
           // Phase 2.5 (ohishi-exp/smb-watch#1): headless pairing (box ↔ operator)。
           case "/device/pair/start":
             return await handleDevicePairStart(request, env);
