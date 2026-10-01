@@ -1392,3 +1392,25 @@ describe("X-Device-Dev / X-Device-Role ヘッダ転送 (Refs ippoan/alc-app#387)
     expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_KIOSK);
   });
 });
+
+describe("Service Binding へ振り分ける path の defense-in-depth (isUnsafeBackendPath)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  // `%2f` は pathname に残るので KIOSK_ROUTES の `[^/]+` には当たる。binding へ渡す前に 403 で止める。
+  it("kiosk の PUT /api/vein/templates/%2e%2e%2fadmin は 403 で、binding にも Cloud Run にも届かない", async () => {
+    const cloudRun = vi.fn(async (): Promise<Response> => new Response("ok", { status: 200 }));
+    globalThis.fetch = cloudRun as unknown as typeof fetch;
+    const binding = { fetch: vi.fn(async (): Promise<Response> => new Response("from-binding")) };
+    const token = await signTestJwt(
+      { sub: "device-kiosk-1", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK },
+      TEST_JWT_SECRET,
+    );
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/vein/templates/%2e%2e%2fadmin", { method: "PUT", token }),
+      env({ ALC_VEIN: binding as unknown as Fetcher }),
+    );
+    expect(res.status).toBe(403);
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
