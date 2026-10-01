@@ -958,6 +958,7 @@ button.small.dev-off:disabled{color:#fff}
 .dot.on{background:#1a7f37}.dot.off{background:#9ca3af}
 .tag{font-size:.75rem;padding:.1rem .4rem;border-radius:.25rem;margin-left:.3rem}
 .tag.new{background:#fef3c7;color:#92400e}.tag.cur{background:#dcfce7;color:#166534}
+.tag.warn{background:#fee2e2;color:#991b1b}
 .did{font-family:monospace;font-size:.75rem;color:#666}
 </style></head>
 <body>
@@ -1211,6 +1212,11 @@ if (devToggleP4Gw) {
 }
 
 const LATEST = {}; // kind → 公開中の最新 firmware バージョン
+// 2 つの一覧の最新の応答 (Refs ippoan/alc-app#387)。どちらかを読み込み直したら両方の表の
+// 「相方」の警告を描き直すために持つ。PAIR_SLOTS = 行の警告バッジの置き場 ("d:<device_id>" / "k:<fingerprint>")。
+let LAST_DEVICES = [];
+let LAST_ALARM_KEYS = [];
+const PAIR_SLOTS = new Map();
 // device_id → 行の DOM 参照 (SSE の接続/切断イベントで、一覧を読み直さず
 // その行だけ更新するために使う)。
 const ROWS = new Map();
@@ -1246,9 +1252,12 @@ async function loadDevices() {
 
     body.textContent = "";
     ROWS.clear();
+    clearPairSlots("d:");
+    LAST_DEVICES = data.devices || [];
     if (!data.devices || data.devices.length === 0) {
       table.style.display = "none";
       statusEl.textContent = "登録済みデバイスはありません";
+      refreshPairWarnings();
       return;
     }
     for (const d of data.devices) {
@@ -1262,10 +1271,12 @@ async function loadDevices() {
       did.className = "did";
       did.textContent = d.device_id;
       if (d.dev_device) labelTd.appendChild(devDeviceMark());
+      labelTd.appendChild(pairWarnSlot("d:" + d.device_id));
       labelTd.appendChild(did);
       if (IS_DEVELOPER) {
         labelTd.appendChild(devDeviceButton(
-          d.dev_device, d.label, "/device/setup/dev-device", { device_id: d.device_id }, loadDevices, statusEl));
+          d.dev_device, d.label, "/device/setup/dev-device", { device_id: d.device_id }, statusEl,
+          () => partnerOfDevice(d)));
       }
       tr.appendChild(labelTd);
 
@@ -1487,6 +1498,7 @@ async function loadDevices() {
       }
       if (hubs.some((h) => (h.site_id || h.device_id) === prevSiteHub)) siteHubSel.value = prevSiteHub;
     }
+    refreshPairWarnings();
   } catch (e) {
     table.style.display = "none";
     statusEl.textContent = "一覧の取得に失敗しました";
@@ -1639,41 +1651,137 @@ function devDeviceMark() {
   return mark;
 }
 
+// 1 台の CoreS3 は 2 つの登録簿に別の行で出る: 上の「デバイス」(kind cores3、本体の測定・打刻の鍵) と
+// 下の「デバイスの署名鍵」(用途 kiosk、キオスクの画面の鍵)。結ぶ欄は無く、手掛かりはラベルの完全一致だけ。
+// 失効していない用途 kiosk の署名鍵のうち、端末のラベルと一致するもの。
+function findKioskKeysFor(deviceLabel, alarmKeys) {
+  return (alarmKeys || []).filter((k) => k.usage === "kiosk" && !k.revoked_at && k.label === deviceLabel);
+}
+// kind cores3 の端末のうち、署名鍵のラベルと一致するもの。
+function findHubDevicesFor(keyLabel, devices) {
+  return (devices || []).filter((d) => d.kind === "cores3" && d.label === keyLabel);
+}
+// 相方は「ちょうど 1 つ」で、しかも相手から見ても自分が唯一のときだけ (0 個・2 個以上は取り違えを避けて対象外)。
+function pairedKeyOf(d) {
+  if (d.kind !== "cores3") return null;
+  const keys = findKioskKeysFor(d.label, LAST_ALARM_KEYS);
+  if (keys.length !== 1) return null;
+  return findHubDevicesFor(keys[0].label, LAST_DEVICES).length === 1 ? keys[0] : null;
+}
+function pairedDeviceOf(k) {
+  if (k.usage !== "kiosk" || k.revoked_at) return null;
+  const devs = findHubDevicesFor(k.label, LAST_DEVICES);
+  if (devs.length !== 1) return null;
+  return findKioskKeysFor(devs[0].label, LAST_ALARM_KEYS).length === 1 ? devs[0] : null;
+}
+// 連動の相手 (押した行の相方)。無ければ null。note は confirm に足す 1 行。
+function partnerOfDevice(d) {
+  const k = pairedKeyOf(d);
+  return k ? {
+    path: "/device/setup/alarm-key/dev-device", key: { fingerprint: k.fingerprint }, dev_device: !!k.dev_device,
+    note: "同じラベルの『デバイスの署名鍵 (用途 kiosk)』の行も一緒に切り替えます。",
+  } : null;
+}
+function partnerOfKey(k) {
+  const d = pairedDeviceOf(k);
+  return d ? {
+    path: "/device/setup/dev-device", key: { device_id: d.device_id }, dev_device: !!d.dev_device,
+    note: "同じラベルの『デバイス』の行も一緒に切り替えます。",
+  } : null;
+}
+
+// 食い違い (片方だけ開発用) の警告バッジの置き場。行を描くたびに作り、refreshPairWarnings が中身を入れる。
+function pairWarnSlot(slotKey) {
+  const slot = document.createElement("span");
+  PAIR_SLOTS.set(slotKey, slot);
+  return slot;
+}
+function clearPairSlots(prefix) {
+  for (const k of [...PAIR_SLOTS.keys()]) if (k.startsWith(prefix)) PAIR_SLOTS.delete(k);
+}
+function pairWarnTag(text) {
+  const tag = document.createElement("span");
+  tag.className = "tag warn";
+  tag.textContent = text;
+  return tag;
+}
+// 両方の表の警告を、最新の 2 つの応答から描き直す。相方が居ない行・食い違いが無い行には何も出さない。
+function refreshPairWarnings() {
+  for (const d of LAST_DEVICES) {
+    const slot = PAIR_SLOTS.get("d:" + d.device_id);
+    if (!slot) continue;
+    slot.textContent = "";
+    const k = pairedKeyOf(d);
+    if (!k || !!k.dev_device === !!d.dev_device) continue;
+    slot.appendChild(pairWarnTag(d.dev_device
+      ? "署名鍵が本番のまま — キオスクの画面の記録は本番に入ります"
+      : "署名鍵が開発用のまま — キオスクの画面の記録は開発用になり、本番に入りません"));
+  }
+  for (const k of LAST_ALARM_KEYS) {
+    const slot = PAIR_SLOTS.get("k:" + k.fingerprint);
+    if (!slot) continue;
+    slot.textContent = "";
+    const d = pairedDeviceOf(k);
+    if (!d || !!d.dev_device === !!k.dev_device) continue;
+    slot.appendChild(pairWarnTag(k.dev_device
+      ? "端末が本番のまま — 本体からの記録は本番に入ります"
+      : "鍵が本番のまま — キオスクの画面の記録は本番に入ります"));
+  }
+}
+
 // 切替ボタン (開発者にだけ出す)。key は対象を指す body ({device_id} か {fingerprint})。
-function devDeviceButton(isDev, label, path, key, reload, msgEl) {
+// getPartner は押した時点の相方 (partnerOfDevice / partnerOfKey)。
+function devDeviceButton(isDev, label, path, key, msgEl, getPartner) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = isDev ? "small dev-on" : "small dev-off";
   btn.style.marginLeft = ".35rem";
   btn.textContent = isDev ? "開発用を外す" : "開発用にする";
-  btn.addEventListener("click", () => setDevDevice(path, key, !isDev, label, reload, msgEl));
+  btn.addEventListener("click", () => setDevDevice(path, key, !isDev, label, msgEl, getPartner()));
   return btn;
+}
+
+async function postDevDevice(path, key, dev) {
+  const res = await fetch(ISSUER + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(Object.assign({}, key, { dev_device: dev })),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))).error;
+    throw new Error(err === "developer_google_session_required"
+      ? "Google でログインし直してください"
+      : "HTTP " + res.status + (err ? " " + err : ""));
+  }
 }
 
 // auth-worker の KV の欄を書き換えるだけなので、端末の接続状態に関わらず押せる。
 // 発行済みのトークンは前の値のまま期限まで生きる (反映は次のトークン更新から)。
-async function setDevDevice(path, key, dev, label, reload, msgEl) {
-  const text = dev
+// 相方があり、その値が切替後と違うときは相方も続けて切り替える (押した行 → 相方の順に 2 回 POST。
+// 1 本目が失敗したら 2 本目は送らない)。どちらの場合も最後に 2 つの表を読み込み直す。
+async function setDevDevice(path, key, dev, label, msgEl, partner) {
+  const pair = partner && partner.dev_device !== dev ? partner : null;
+  let text = dev
     ? "開発用にすると、この端末の点呼・測定・打刻は本番の記録簿に出なくなり、webhook と通知も止まります。反映は次のトークン更新から (最大 1 時間)。"
     : "開発用を外します。反映は最大 1 時間後。それまでの記録は開発用のままです。";
+  if (pair) text += "\\n" + pair.note;
   if (!confirm("「" + label + "」: " + text)) return;
+  let second = false;
   try {
-    const res = await fetch(ISSUER + path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(Object.assign({}, key, { dev_device: dev })),
-    });
-    if (!res.ok) {
-      const err = (await res.json().catch(() => ({}))).error;
-      throw new Error(err === "developer_google_session_required"
-        ? "Google でログインし直してください"
-        : "HTTP " + res.status);
+    await postDevDevice(path, key, dev);
+    if (pair) {
+      second = true;
+      await postDevDevice(pair.path, pair.key, dev);
     }
-    reload();
   } catch (e) {
-    msgEl.textContent = "開発用の切替に失敗: " + (e && e.message ? e.message : e);
+    const m = e && e.message ? e.message : e;
+    msgEl.textContent = second
+      ? "相方の切り替えに失敗しました。もう一度押してください: " + m
+      : "開発用の切替に失敗: " + m;
   }
+  loadDevices();
+  loadAlarmKeys();
 }
 
 // 拠点ID (site_id) の設定 (Refs #406)。この改訂前に登録済みで site_id が
@@ -2292,9 +2400,12 @@ async function loadAlarmKeys() {
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     body.textContent = "";
+    clearPairSlots("k:");
+    LAST_ALARM_KEYS = data.keys || [];
     if (!data.keys || data.keys.length === 0) {
       table.style.display = "none";
       statusEl.textContent = "登録済みの警告デバイス鍵はありません";
+      refreshPairWarnings();
       return;
     }
     statusEl.textContent = "";
@@ -2306,6 +2417,7 @@ async function loadAlarmKeys() {
       const labelTd = document.createElement("td");
       labelTd.textContent = k.label;
       if (k.dev_device) labelTd.appendChild(devDeviceMark());
+      labelTd.appendChild(pairWarnSlot("k:" + k.fingerprint));
       tr.appendChild(labelTd);
 
       const usageTd = document.createElement("td");
@@ -2334,13 +2446,14 @@ async function loadAlarmKeys() {
         if (IS_DEVELOPER) {
           actionTd.appendChild(devDeviceButton(
             k.dev_device, k.label, "/device/setup/alarm-key/dev-device", { fingerprint: k.fingerprint },
-            loadAlarmKeys, alarmKeyResultEl));
+            alarmKeyResultEl, () => partnerOfKey(k)));
         }
       }
       tr.appendChild(actionTd);
 
       body.appendChild(tr);
     }
+    refreshPairWarnings();
   } catch (e) {
     statusEl.textContent = "読み込みエラー: " + (e && e.message ? e.message : e);
   }
