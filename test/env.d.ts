@@ -7,6 +7,7 @@ declare module "cloudflare:test" {
     AUTH_WORKER_ORIGIN: string;
     ALC_API_ORIGIN: string;
     ALC_VEIN?: Fetcher;
+    ALC_DTAKO?: Fetcher;
     WORKER_ENV: string;
     AUTH_CONFIG: KVNamespace;
   }

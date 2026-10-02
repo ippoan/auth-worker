@@ -258,7 +258,7 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   // 認証・ACL・ヘッダ付け直しは上で完了済み。binding 未定義 / 表に無い path /
   // flip 前 preview override (Cloud Run の tagged revision 宛) は従来どおり Cloud Run。
   // binding 経路では OIDC mint しない (Cloud Run IAM 用。mint 失敗で 502 にしない)。
-  const binding = previewBase ? null : resolveAlcBinding(backendPath, env);
+  const binding = previewBase ? null : resolveAlcBinding(backendPath, env, "browser");
   if (binding) {
     if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
     return forwardViaAlcBinding(binding, backendPath, url.search, {
