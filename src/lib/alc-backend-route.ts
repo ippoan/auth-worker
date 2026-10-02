@@ -22,12 +22,18 @@ export interface AlcBindingRoute {
  * worker を足すときは、この表に行を足す (Env 型にも binding を足す)。
  *
  * `/api/upload` を完全一致にしているのは、下位の path (`/api/upload/…`) が別の口だから。
+ * `/api/uploads`・`/api/internal/pending`・`/api/internal/download/…`・`/api/internal/rerun/…` は、アップロード履歴の
+ * 読み取りと、やり直しの口。`alc-dtako` へ回すのは画面用の proxy だけ。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/upload", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "internal"] },
   { match: "prefix", path: "/api/split-csv/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/split-csv-all", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/uploads", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/internal/pending", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "prefix", path: "/api/internal/download/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "prefix", path: "/api/internal/rerun/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */
