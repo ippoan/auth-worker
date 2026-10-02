@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:f488275bb6942f120dfdb57e1c8d7b2323ab0c23
+generated-from: auth-worker:aa7985faacf715826f93d69e8bc2c6ffbfbbd320
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
@@ -217,6 +217,31 @@ command id を返す。結果は `/device/setup/ota/:id` で `{ok:true}` (受理
 テナントの**未失効の端末の `device_id` と `label` だけ**を返す (`{devices:[{device_id,label|null}]}`、`tenant_id` 無し 400)。
 alc-app のサーバが端末一覧の表示と、キオスクが報告した `device_id` の登録済み照合に使う。
 **`/internal/hub-devices` は label を返さないまま** (cron 用の最小参照。混ぜない)。
+
+## RLS の確認を MCP の tool 1 回で受け取る (`verify_rls`、Refs #605)
+
+`mcp-tools.ts` の tool `verify_rls`。本番 DB で RLS の不変条件・backend の実行用ロールの属性・いま繋いでいる
+ロール・migration の適用履歴を、backend (rust-alc-api) に固定された検査で確かめて返す。DB に繋ぐのは backend で、
+auth-worker は `lib/alc-internal.ts::fetchRlsCheck` で `GET /api/internal/rls-check` を **1 回**呼ぶだけ
+(body なし・テナントのヘッダなし・15 秒で打ち切り)。行のデータは返さない。
+
+- **引数を足さない** (`inputSchema.properties` は空)。SQL・表名・式・テナントを受ける入口を作らない。
+  `call` は `args` を読まない。
+- **テナントをまたぐ値 (ロール名・表名・件数) を返す唯一の tool。** gate は
+  `lib/dev-login.ts::checkDevLoginAllowlist` (許可リストの判定だけ。未設定・壊れた値は 403
+  `dev_login_not_configured`、リスト外は 403 `not_in_allowlist`)。**`resolveTenantId` / `mintDevToken` を
+  通さない** — 後段は `upsert-google` の POST (利用者登録) を伴い、「自テナントの操作」用の検査だから。
+  `resolveTenantId` は冒頭で同じ `checkDevLoginAllowlist` を呼ぶ (判定の複製は無い)。
+- **`fetchRlsCheck` は契約の key だけを名指しで写す** (`parseRlsCheck`。入れ子の中まで。スプレッドで写さない)。
+  backend が key を足しても tool からは出ない。fetch の例外・非 200・JSON 不正・型違い・key 欠けはすべて `null` →
+  tool は `dev-login error 502: rls_check_unavailable`。key を増やすときは型 `RlsCheckResult`・`parseRlsCheck`・
+  tool の `description` の 3 か所。
+- **`ok`** = 不変条件の違反 0 件 + backend が実行用ロールで繋いでいる + 適用履歴が backend の想定と一致
+  (`matches_binary`)。`owner_role_connected` は注意の表示で `ok` に入らない (migration の job の実行中は true になりうる)。
+- **`matches_binary` の窓**: migration の直後は、新しい backend への切り替えが終わるまで `matches_binary: false`
+  (= `ok: false`)。`binary_max_version` が古ければ切り替え前 — 壊れているのではない。
+- **staging では `ok: false` が正しい結果** (staging の backend は実行用ロールで繋いでいない)。
+- scope は `mcp.write` (許可リストで絞る他の tool と同じ)。新しい secret・binding・scope は無い。
 
 ## CCoW から見た auth-worker
 

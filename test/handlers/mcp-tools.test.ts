@@ -1893,3 +1893,182 @@ describe("POST /mcp/tools — lineworks_get", () => {
     expect(rustUrls).toEqual([]);
   });
 });
+
+describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
+  const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
+  const RLS_PATH = "/api/internal/rls-check";
+  const origFetch = globalThis.fetch;
+  let backendCalls: Array<{ url: string; init?: RequestInit }> = [];
+
+  function rlsBody(): Record<string, unknown> {
+    return {
+      ok: true,
+      migrations: {
+        applied: 159,
+        max_version: 160,
+        binary_count: 159,
+        binary_max_version: 160,
+        matches_binary: true,
+      },
+      runtime_role: {
+        current_user: "rt_role",
+        is_runtime_role: true,
+        rolsuper: false,
+        rolbypassrls: false,
+        rolinherit: false,
+        member_of_table_owner: false,
+      },
+      connections: [{ usename: "rt_role", count: 3 }],
+      owner_role_connected: false,
+      invariants: { violation_count: 0, violations: [] },
+    };
+  }
+
+  /** backend への要求を全部記録する (どの path でも同じ応答を返す)。 */
+  function routeFetch(body: unknown = rlsBody(), status = 200): void {
+    backendCalls = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      backendCalls.push({ url: String(input), init });
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+  }
+
+  /** 許可リストだけ入れる。`google_sub:<email>` の cache は入れない。 */
+  function allowedEnv(): Env {
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
+    return env;
+  }
+
+  type RpcBody = {
+    result?: { isError: boolean; content: Array<{ text: string }> };
+    error?: { code: number; message: string };
+  };
+
+  async function callVerifyRls(env: Env, args: unknown = {}, jwt?: string): Promise<RpcBody> {
+    const res = await handleMcpTools(
+      await authedReq(jwt ?? (await googleUserJwt()), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "verify_rls", arguments: args },
+      }),
+      env,
+    );
+    return (await res.json()) as RpcBody;
+  }
+
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+  });
+
+  it("tools/list に出て、inputSchema は引数を 1 つも持たない", async () => {
+    const { env } = envWithKv();
+    const res = await handleMcpTools(
+      await authedReq(await googleUserJwt(), { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      env,
+    );
+    const body = (await res.json()) as {
+      result: { tools: Array<{ name: string; inputSchema: Record<string, unknown> }> };
+    };
+    const tool = body.result.tools.find((t) => t.name === "verify_rls");
+    expect(tool).toBeDefined();
+    expect(tool!.inputSchema).toEqual({ type: "object", properties: {}, additionalProperties: false });
+  });
+
+  it("mcp.read だけの token には tools/list に出ず、呼んでも insufficient scope", async () => {
+    const env = allowedEnv();
+    routeFetch();
+    const jwt = await googleUserJwt({ scope: "mcp.read" });
+    const list = await handleMcpTools(
+      await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      env,
+    );
+    const listed = (await list.json()) as { result: { tools: Array<{ name: string }> } };
+    expect(listed.result.tools.map((t) => t.name)).not.toContain("verify_rls");
+
+    const body = await callVerifyRls(env, {}, jwt);
+    expect(body.error?.message).toBe("insufficient scope: mcp.write required");
+    expect(backendCalls).toEqual([]);
+  });
+
+  it.each<[string, string | undefined, string]>([
+    ["許可リスト未設定", undefined, "dev-login error 403: dev_login_not_configured"],
+    ["壊れた JSON", "not-json{", "dev-login error 403: dev_login_not_configured"],
+    ["空配列", "[]", "dev-login error 403: not_in_allowlist"],
+    ["リスト外", JSON.stringify(["google:other@example.com"]), "dev-login error 403: not_in_allowlist"],
+  ])("%s は拒否し、backend を 1 度も呼ばない", async (_label, raw, message) => {
+    const { env, kv } = envWithKv();
+    if (raw !== undefined) kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = raw;
+    routeFetch();
+    const body = await callVerifyRls(env);
+    expect(body.result?.isError).toBe(true);
+    expect(body.result!.content[0]!.text).toBe(message);
+    expect(backendCalls).toEqual([]);
+  });
+
+  it("リスト内は backend へ GET をちょうど 1 回だけ送り、契約の値を返す (google_sub の cache 不要・利用者登録なし)", async () => {
+    const env = allowedEnv();
+    routeFetch();
+    const body = await callVerifyRls(env);
+
+    expect(body.result?.isError).toBe(false);
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual(rlsBody());
+
+    expect(backendCalls).toHaveLength(1);
+    const { url, init } = backendCalls[0]!;
+    expect(url).toBe(`${env.ALC_API_ORIGIN}${RLS_PATH}`);
+    expect(init?.method).toBe("GET");
+    expect(init?.body).toBeUndefined();
+    expect((init?.headers as Headers).has("X-Tenant-ID")).toBe(false);
+    expect(backendCalls.some((c) => c.url.includes("upsert-google"))).toBe(false);
+  });
+
+  it("backend が契約に無い key を返しても tool の出力に出ない", async () => {
+    const env = allowedEnv();
+    routeFetch({ ...rlsBody(), tenants: ["leak-marker"], database_url: "leak-marker" });
+    const body = await callVerifyRls(env);
+    expect(body.result?.isError).toBe(false);
+    expect(body.result!.content[0]!.text).not.toContain("leak-marker");
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual(rlsBody());
+  });
+
+  it.each([401, 404, 500])("backend 非 200 (%i) は 502 rls_check_unavailable", async (status) => {
+    const env = allowedEnv();
+    routeFetch({ error: "x" }, status);
+    const body = await callVerifyRls(env);
+    expect(body.result?.isError).toBe(true);
+    expect(body.result!.content[0]!.text).toBe("dev-login error 502: rls_check_unavailable");
+    expect(backendCalls).toHaveLength(1);
+  });
+
+  it("backend の応答が契約の形でなければ 502 rls_check_unavailable", async () => {
+    const env = allowedEnv();
+    routeFetch({ ok: true });
+    const body = await callVerifyRls(env);
+    expect(body.result!.content[0]!.text).toBe("dev-login error 502: rls_check_unavailable");
+  });
+
+  it("arguments に何を渡しても backend への要求は変わらない", async () => {
+    const env = allowedEnv();
+    routeFetch();
+    const body = await callVerifyRls(env, {
+      sql: "select 1",
+      table: "users",
+      tenant_id: "tenant-uuid-1",
+      path: "/api/other",
+    });
+    expect(body.result?.isError).toBe(false);
+    expect(backendCalls).toHaveLength(1);
+    const { url, init } = backendCalls[0]!;
+    expect(url).toBe(`${env.ALC_API_ORIGIN}${RLS_PATH}`);
+    expect(init?.method).toBe("GET");
+    expect(init?.body).toBeUndefined();
+    const headers = init?.headers as Headers;
+    expect(headers.has("X-Tenant-ID")).toBe(false);
+    expect([...headers.keys()]).toEqual(["authorization"]);
+  });
+});

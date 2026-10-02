@@ -6,6 +6,7 @@ import { decodeJwtPayload, verifyJwt } from "../../src/lib/jwt";
 import {
   DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY,
   DEV_TOKEN_TTL_SEC,
+  checkDevLoginAllowlist,
   consumeDevLoginCode,
   issueDevLoginCode,
   mintDevToken,
@@ -196,6 +197,65 @@ describe("mintDevToken", () => {
       email: "dev@example.com",
       name: "dev@example.com",
     });
+  });
+});
+
+describe("checkDevLoginAllowlist (Refs #605)", () => {
+  const NOT_CONFIGURED = { kind: "error", error: "dev_login_not_configured", status: 403 };
+  const NOT_ALLOWED = { kind: "error", error: "not_in_allowlist", status: 403 };
+
+  it("MCP_OAUTH_KV 未 bind は 503", async () => {
+    const env = createMockEnv({ MCP_OAUTH_KV: undefined });
+    expect(await checkDevLoginAllowlist(env, payload())).toEqual({
+      kind: "error",
+      error: "server_error",
+      status: 503,
+    });
+  });
+
+  it("key 無しは 403 dev_login_not_configured", async () => {
+    const { env, kv } = envWithKv();
+    delete kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY];
+    expect(await checkDevLoginAllowlist(env, payload())).toEqual(NOT_CONFIGURED);
+  });
+
+  it.each([
+    ["空文字", ""],
+    ["壊れた JSON", "not-json"],
+    ["非配列", JSON.stringify({ a: 1 })],
+    ["非 string 要素", JSON.stringify([ALLOWED_SUB, 1])],
+  ])("%s は 403 dev_login_not_configured", async (_label, raw) => {
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = raw;
+    expect(await checkDevLoginAllowlist(env, payload())).toEqual(NOT_CONFIGURED);
+  });
+
+  it("空配列は 403 not_in_allowlist (未設定とは区別する)", async () => {
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = "[]";
+    expect(await checkDevLoginAllowlist(env, payload())).toEqual(NOT_ALLOWED);
+  });
+
+  it("リスト外は 403 not_in_allowlist", async () => {
+    const { env } = envWithKv();
+    expect(
+      await checkDevLoginAllowlist(env, payload({ sub: "google:someone-else@example.com" })),
+    ).toEqual(NOT_ALLOWED);
+  });
+
+  it("リスト内は ok で、検査済みの KV handle を返す", async () => {
+    const { env, kv } = envWithKv();
+    expect(await checkDevLoginAllowlist(env, payload())).toEqual({ kind: "ok", kv });
+  });
+
+  it("email の無い session でも、リスト内なら ok (後段の検査を通さない)", async () => {
+    const { env, kv } = envWithKv();
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = JSON.stringify(["github:alice"]);
+    const result = await checkDevLoginAllowlist(
+      env,
+      payload({ sub: "github:alice", email: undefined, github_login: "alice" }),
+    );
+    expect(result.kind).toBe("ok");
   });
 });
 

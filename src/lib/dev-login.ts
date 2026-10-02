@@ -56,6 +56,41 @@ function parseAllowedSubjects(raw: string | null): string[] | null {
   }
 }
 
+/** `checkDevLoginAllowlist` の結果。error 側は `MintDevTokenResult` と同形。
+ *  ok 側は検査済みの KV handle を返す (呼び出し側が bind を再検査しないで済むように)。 */
+export type DevLoginAllowlistResult =
+  | { kind: "ok"; kv: KVNamespace }
+  | { kind: "error"; error: string; status: number };
+
+/**
+ * 許可リストの判定だけ (Refs #605)。`payload.sub` が
+ * `MCP_OAUTH_KV["dev_login_allowed_subjects"]` に在るかを見る。
+ *
+ * `resolveTenantId` の前段であり、テナントを解決しない tool (`verify_rls`) の
+ * gate でもある — 後段 (google_sub の cache・利用者登録・テナント解決) を通さない。
+ *
+ *  - `MCP_OAUTH_KV` 未 bind → server_error (503)
+ *  - 許可リスト未設定/不正 → dev_login_not_configured (403、fail-closed)
+ *  - `payload.sub` がリストに無い (空配列を含む) → not_in_allowlist (403)
+ */
+export async function checkDevLoginAllowlist(
+  env: Env,
+  payload: McpJwtPayload,
+): Promise<DevLoginAllowlistResult> {
+  const kv = env.MCP_OAUTH_KV;
+  if (!kv) {
+    return { kind: "error", error: "server_error", status: 503 };
+  }
+  const allowlist = parseAllowedSubjects(await kv.get(DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY));
+  if (allowlist === null) {
+    return { kind: "error", error: "dev_login_not_configured", status: 403 };
+  }
+  if (!allowlist.includes(payload.sub)) {
+    return { kind: "error", error: "not_in_allowlist", status: 403 };
+  }
+  return { kind: "ok", kv };
+}
+
 /**
  * MCP 認可済み `payload` (`/mcp/tools` の Bearer JWT payload) から、その開発者の
  * user レコード (tenant_id を含む) を解決する。
@@ -75,23 +110,13 @@ export async function resolveTenantId(
   env: Env,
   payload: McpJwtPayload,
 ): Promise<ResolveTenantResult> {
-  if (!env.MCP_OAUTH_KV) {
-    return { kind: "error", error: "server_error", status: 503 };
-  }
-  const allowlist = parseAllowedSubjects(
-    await env.MCP_OAUTH_KV.get(DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY),
-  );
-  if (allowlist === null) {
-    return { kind: "error", error: "dev_login_not_configured", status: 403 };
-  }
-  if (!allowlist.includes(payload.sub)) {
-    return { kind: "error", error: "not_in_allowlist", status: 403 };
-  }
+  const allowed = await checkDevLoginAllowlist(env, payload);
+  if (allowed.kind === "error") return allowed;
   if (!payload.email) {
     return { kind: "error", error: "google_login_required", status: 403 };
   }
 
-  const googleSub = await env.MCP_OAUTH_KV.get(`google_sub:${payload.email}`);
+  const googleSub = await allowed.kv.get(`google_sub:${payload.email}`);
   if (!googleSub) {
     return { kind: "error", error: "google_sub_not_cached", status: 403 };
   }
