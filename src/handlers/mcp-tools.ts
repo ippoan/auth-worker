@@ -33,7 +33,7 @@
  */
 
 import type { Env } from "../index";
-import { fetchRlsCheck } from "../lib/alc-internal";
+import { buildVerifyRlsResult, fetchRlsCheck, fetchVeinDbRole } from "../lib/alc-internal";
 import {
   checkDevLoginAllowlist,
   issueDevLoginCode,
@@ -843,26 +843,38 @@ const TOOLS: ToolDef[] = [
     name: "verify_rls",
     description:
       "本番 DB で、テナントごとの行の出し分け (RLS) の不変条件・backend の実行用ロールの属性・" +
-      "いま繋いでいるロール・migration の適用履歴を、backend に固定された検査で確かめて返す。" +
+      "いま繋いでいるロール・migration の適用履歴・履歴との食い違いを、backend に固定された検査で" +
+      "確かめ、分割 worker (vein) の DB 接続のロールと合わせて返す。" +
       "読み取りだけ・引数なし (SQL も表名も受け取らない)。行のデータは返さない。" +
-      "返す値: `{ok, migrations: {applied, max_version, binary_count, binary_max_version, " +
-      "matches_binary}, runtime_role: {current_user, is_runtime_role, rolsuper, rolbypassrls, " +
-      "rolinherit, member_of_table_owner}, connections: [{usename, count}], " +
-      "owner_role_connected, invariants: {violation_count, checks: [{check_no, title, " +
-      "violations}], violations: [{check_no, object, detail}]}, state}`。" +
+      "返す値: `{ok, verdicts: {invariants, runtime_role, migrations, drift, vein}, drift, " +
+      "workers: {vein: {bound, current_user, is_runtime_role}}, migrations: {applied, max_version, " +
+      "binary_count, binary_max_version, matches_binary}, runtime_role: {current_user, " +
+      "is_runtime_role, rolsuper, rolbypassrls, rolinherit, member_of_table_owner}, " +
+      "connections: [{usename, count}], owner_role_connected, invariants: {violation_count, " +
+      "checks: [{check_no, title, violations}], violations: [{check_no, object, detail}]}, state}`。" +
+      "`ok` は `verdicts` の全部が合格のときだけ true。" +
+      "`ok` が false のときは `verdicts` でどれが原因かを読む: " +
+      "`invariants` = 不変条件の違反が 0 件、`runtime_role` = backend が実行用ロールで繋いでいる、" +
+      "`migrations` = 適用履歴が backend の想定と一致 (`matches_binary`)、" +
+      "`drift` = 本番の実物が migration の履歴どおり、`vein` = vein が実行用ロールで繋いでいる。" +
+      "`verdicts` の値が null の項目は、その backend・その環境では判定していない " +
+      "(内訳を返さない古い backend・vein が bind されていない環境) — null は `ok` を false にしない " +
+      "(古い backend では backend 自身の合否を使う)。" +
+      "`drift` は食い違った表・関数・view を期待 (履歴を 0 から当てた状態) と実物で並べたもの。" +
+      "null なら比べられなかった (古い backend、または状態を取れなかった)。" +
+      "`workers.vein` は vein の DB 接続: `bound` は vein がこの環境に bind されているか、" +
+      "`current_user` は繋いでいるロール名、`is_runtime_role` は実行用ロールか。" +
+      "`bound: true` なのに 2 つが null なら vein に聞けなかった (`verdicts.vein` は false)。" +
+      "vein は backend と別の接続を持ち、所有者ロールで繋いでいると RLS が掛からない。" +
       "`invariants.checks` は検査ごとの題と違反の件数で、違反が無くても毎回返る (何を確かめたかの一覧)。" +
       "`state` は観測したカタログの値 (表の組・policy の式・view・SECURITY DEFINER の関数・sequence)。" +
       "表は状態が同じものを組にまとめてあり、式が違う表・FORCE だけ違う表は別の組に出る。" +
-      "`ok` は `state` を見ていない — `state` に view・誰でも呼べる SECURITY DEFINER の関数・" +
-      "`USING (true)` の policy が出ていても `ok` は変わらない (読む人が確かめる材料)。" +
-      "`state` が null なら状態を取れなかっただけで、合否はそのまま有効。" +
-      "`ok` が true になるのは、不変条件の違反が 0 件、かつ backend が実行用ロールで" +
-      "繋いでいて、かつ適用履歴が backend の想定と一致する (`matches_binary`) とき。" +
+      "`state` が null なら状態を取れなかった。" +
       "`owner_role_connected` は注意の表示で `ok` には入らない (migration の job の実行中は " +
       "true になりうる)。migration の直後は、新しい backend への切り替えが終わるまで " +
       "`matches_binary: false` (= `ok: false`) になる — `binary_max_version` が古ければ切り替え前。" +
       "staging の backend は実行用ロールで繋いでいないので、staging では `ok: false` が正しい結果。" +
-      "backend から結果を取れないときは `rls_check_unavailable`。" +
+      "backend から結果を取れないときは `rls_check_unavailable` (vein に聞けないだけなら結果は返る)。" +
       "issue_dev_token と同じ許可リストで絞る。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     requiredScope: "mcp.write",
@@ -874,7 +886,9 @@ const TOOLS: ToolDef[] = [
       if (allowed.kind === "error") throw new DevLoginError(allowed.status, allowed.error);
       const result = await fetchRlsCheck(ctx.env);
       if (!result) throw new DevLoginError(502, "rls_check_unavailable");
-      return result;
+      // backend の結果が無ければ返すものが無いので、vein は backend の後にだけ聞く。
+      // vein に聞けなくても backend の結果は返す (verdicts.vein が false になるだけ)。
+      return buildVerifyRlsResult(result, await fetchVeinDbRole(ctx.env));
     },
   },
 ];
