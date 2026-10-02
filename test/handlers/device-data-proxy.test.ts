@@ -442,6 +442,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "POST", path: "/api/tenko/sessions/s-1/interrupt" },
     { method: "POST", path: "/api/tenko/sessions/s-1/self-resume" },
     { method: "POST", path: "/api/car-inspections/lookup" },
+    { method: "POST", path: "/api/timecard/cards/lookup" },
   ];
 
   for (const { method, path } of ALLOWED) {
@@ -1321,13 +1322,63 @@ describe("運行管理者の鍵のカード照会 POST /api/timecard/cards/looku
     expect(h["X-Tenant-ID"]).toBe(TENANT);
   });
 
-  it("★ キオスクの鍵・測定台の鍵には開かない (開発用でも 403)", async () => {
+  it("★ キオスクの鍵には開く: backend へ中継される (開発用でも。body・role・tenant が付く)", async () => {
     const fetchMock = okFetch();
-    for (const role of [DEVICE_ROLE_KIOSK, DEVICE_ROLE_BP_STATION]) {
-      for (const claims of [{}, { dev_device: true }]) {
-        const res = await handleDeviceDataProxy(post(LOOKUP, await tokenFor(role, claims)), env());
-        expect(res.status, `${role} ${JSON.stringify(claims)}`).toBe(403);
-      }
+    for (const claims of [{}, { dev_device: true }]) {
+      fetchMock.mockClear();
+      const res = await handleDeviceDataProxy(post(LOOKUP, await tokenFor(DEVICE_ROLE_KIOSK, claims)), env());
+      expect(res.status, JSON.stringify(claims)).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toBe(`https://alc-api.test.example${LOOKUP}`);
+      expect((init as RequestInit).method).toBe("POST");
+      expect(await new Response((init as RequestInit).body).text()).toBe(BODY);
+      const h = (init as RequestInit).headers as Record<string, string>;
+      expect(h["X-Tenant-ID"]).toBe(TENANT);
+      expect(h["X-Device-Role"]).toBe(DEVICE_ROLE_KIOSK);
+    }
+  });
+
+  it("★ キオスクの鍵: 要求の X-Tenant-ID を信じず、JWT の claim の tenant が backend へ渡る", async () => {
+    const fetchMock = okFetch();
+    const res = await handleDeviceDataProxy(
+      req(`/device-data-proxy${LOOKUP}`, {
+        method: "POST",
+        token: await tokenFor(DEVICE_ROLE_KIOSK),
+        headers: { "content-type": "application/json", "X-Tenant-ID": "99999999-9999-9999-9999-999999999999" },
+        body: BODY,
+      }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("★ キオスクの鍵でも、lookup の別 method (GET・PUT)・末尾スラッシュ・余分な segment は 403", async () => {
+    const fetchMock = okFetch();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "GET", path: LOOKUP },
+      { method: "PUT", path: LOOKUP },
+      { method: "POST", path: `${LOOKUP}/` },
+      { method: "POST", path: `${LOOKUP}/${CID}` },
+      { method: "POST", path: `/x${LOOKUP}` },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await tokenFor(DEVICE_ROLE_KIOSK) }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 測定台の鍵には開かない (開発用でも 403 のまま)", async () => {
+    const fetchMock = okFetch();
+    for (const claims of [{}, { dev_device: true }]) {
+      const res = await handleDeviceDataProxy(post(LOOKUP, await tokenFor(DEVICE_ROLE_BP_STATION, claims)), env());
+      expect(res.status, JSON.stringify(claims)).toBe(403);
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
