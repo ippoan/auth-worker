@@ -36,7 +36,11 @@ import type { Env } from "../index";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
 import { internalAuthToken } from "../lib/alc-internal";
-import { forwardViaAlcBinding, resolveAlcBinding } from "../lib/alc-backend-route";
+import {
+  forwardViaAlcBinding,
+  isUnsafeBackendPath,
+  resolveAlcBinding,
+} from "../lib/alc-backend-route";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 
 const ROUTE_PREFIX = "/alc-internal-proxy";
@@ -176,6 +180,7 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   if (pathClass === "shared-secret") {
     const binding = resolveAlcBinding(backendPath, env, "internal");
     if (binding) {
+      if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
       const bindingHeaders: Record<string, string> = { "X-Tenant-ID": tenantId };
       const bindingContentType = request.headers.get("content-type");
       if (bindingContentType) bindingHeaders["Content-Type"] = bindingContentType;

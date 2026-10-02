@@ -111,7 +111,7 @@ describe("resolveAlcBinding", () => {
     const { dtako, env } = setup();
     const target = { fetcher: dtako, host: "alc-dtako" };
     expect(resolveAlcBinding("/api/split-csv", env, "browser")).toEqual(target);
-    expect(resolveAlcBinding("/api/split-csv/3f2b0c1e-0000-4000-8000-000000000001", env, "browser")).toEqual(target);
+    expect(resolveAlcBinding("/api/split-csv/upload-1", env, "browser")).toEqual(target);
     expect(resolveAlcBinding("/api/split-csv-all", env, "browser")).toEqual(target);
     expect(resolveAlcBinding("/api/split-csv-allx", env, "browser")).toBeNull();
     expect(resolveAlcBinding("/api/split-csv-all/x", env, "browser")).toBeNull();
@@ -327,14 +327,14 @@ describe("alc-proxy → ALC_DTAKO binding", () => {
   it("(a) 分割の 2 口も binding に届く", async () => {
     const { dtako, cloudRun, env } = setup();
     const one = await handleAlcProxy(
-      alcReq("/alc-proxy/api/split-csv/3f2b0c1e-0000-4000-8000-000000000001", {}),
+      alcReq("/alc-proxy/api/split-csv/upload-1", {}),
       env,
     );
     expect(await one.text()).toBe("from-binding");
     const all = await handleAlcProxy(alcReq("/alc-proxy/api/split-csv-all", {}), env);
     expect(await all.text()).toBe("from-binding");
     expect(dtako.fetch.mock.calls.map((c) => c[0])).toEqual([
-      "https://alc-dtako/api/split-csv/3f2b0c1e-0000-4000-8000-000000000001",
+      "https://alc-dtako/api/split-csv/upload-1",
       "https://alc-dtako/api/split-csv-all",
     ]);
     expect(cloudRun).not.toHaveBeenCalled();
