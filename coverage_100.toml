@@ -19,6 +19,12 @@ branches = true
 path = "src/lib/device-pair.ts"
 branches = true
 
+# Refs ippoan/rust-alc-api#725: backend の口を Service Binding へ振り分ける表と判定。
+# 判定が緩むと、別の口や、引いてはいけない proxy の request まで worker へ流れるので 100% を維持する。
+[[files]]
+path = "src/lib/alc-backend-route.ts"
+branches = true
+
 # Refs ippoan/alc-app#387: 端末の鍵を開発用にする口の認可 (開発者の Google session だけ)。
 # 判定が緩むと、開発者でない者が端末の記録を本番の記録簿から消せるので 100% を維持する。
 [[files]]

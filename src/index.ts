@@ -239,6 +239,10 @@ export interface Env {
    *  `/api/vein/*` を alc-proxy / device-data-proxy が Cloud Run でなくここへ流す
    *  (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
   ALC_VEIN?: Fetcher;
+  /** rust-alc-api 移行先 dtako worker (`alc-dtako`) への service binding。定義されている時だけ
+   *  `lib/alc-backend-route.ts` の表の行 (zip のアップロードと CSV の分割の口) を Cloud Run でなく
+   *  ここへ流す。未定義なら従来どおり Cloud Run。 */
+  ALC_DTAKO?: Fetcher;
   /** cf-alc-recorder (CoreS3 測定データ WS 受口) への service binding。
    *  `/device/setup` の OTA トリガ/進捗ポーリングが recorder の内部 HTTP API
    *  (`Authorization: <INTERNAL_SHARED_SECRET>`) を叩く。未 bind なら OTA 系は

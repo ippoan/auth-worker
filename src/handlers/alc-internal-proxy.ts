@@ -36,6 +36,7 @@ import type { Env } from "../index";
 import { resolveSecret } from "../lib/secret";
 import { mintGoogleIdToken } from "../lib/oidc";
 import { internalAuthToken } from "../lib/alc-internal";
+import { forwardViaAlcBinding, resolveAlcBinding } from "../lib/alc-backend-route";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 
 const ROUTE_PREFIX = "/alc-internal-proxy";
@@ -166,6 +167,26 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   //     public-ingest は rust 側が X-Tenant-ID を honor しないため strip する。
   const tenantId = request.headers.get("X-Tenant-ID") ?? "";
   if (pathClass === "shared-secret" && !tenantId) return jsonError(400, "X-Tenant-ID required");
+
+  // ── domain worker (Service Binding) への振り分け ─────────────────────────
+  // ①〜③ を通った shared-secret クラスの path のうち、振り分け表がこの proxy に binding を返すものだけ。
+  // binding 未定義 / 表に無い path は、下の従来の流れ (④ 以降) をそのまま通る。
+  // binding 経路では token を mint しない (Cloud Run 用。mint 失敗で 502 にしない)。渡すヘッダは
+  // 明示された tenant と Content-Type だけで、呼び手のほかのヘッダと Cloud Run 用の認証は渡さない。
+  if (pathClass === "shared-secret") {
+    const binding = resolveAlcBinding(backendPath, env, "internal");
+    if (binding) {
+      const bindingHeaders: Record<string, string> = { "X-Tenant-ID": tenantId };
+      const bindingContentType = request.headers.get("content-type");
+      if (bindingContentType) bindingHeaders["Content-Type"] = bindingContentType;
+      const bindingHasBody = request.method !== "GET" && request.method !== "HEAD";
+      return forwardViaAlcBinding(binding, backendPath, url.search, {
+        method: request.method,
+        headers: bindingHeaders,
+        body: bindingHasBody ? await request.arrayBuffer() : undefined,
+      });
+    }
+  }
 
   // ── ④ auth token mint ──────────────────────────────────────────────────────
   //     - internal-jwt: rust の require_internal_jwt 用に aud=alc-api-internal。

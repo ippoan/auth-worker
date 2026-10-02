@@ -400,7 +400,7 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   // ── domain worker (Service Binding) への振り分け ─────────────────────────
   // role×path allowlist 通過後のみ。binding 未定義 / 表に無い path は従来どおり Cloud Run。
   // binding 経路では OIDC mint しない (Cloud Run IAM 用)。
-  const binding = resolveAlcBinding(backendPath, env);
+  const binding = resolveAlcBinding(backendPath, env, "device");
   if (binding) {
     if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
     return forwardViaAlcBinding(binding, backendPath, url.search, {
