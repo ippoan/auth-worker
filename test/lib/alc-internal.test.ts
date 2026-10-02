@@ -7,7 +7,12 @@ vi.mock("../../src/lib/oidc", () => ({
   mintGoogleIdToken: vi.fn(async (_saKey: unknown, aud: string) => `oidc-token:${aud}`),
 }));
 
-import { internalAuthToken, resolveActiveDeviceTenant } from "../../src/lib/alc-internal";
+import {
+  RLS_STATE_MAX_LENGTH,
+  fetchRlsCheck,
+  internalAuthToken,
+  resolveActiveDeviceTenant,
+} from "../../src/lib/alc-internal";
 import { signInternalJWT } from "../../src/lib/internal-jwt";
 import { mintGoogleIdToken } from "../../src/lib/oidc";
 import type { Env } from "../../src/index";
@@ -119,5 +124,197 @@ describe("resolveActiveDeviceTenant (Refs #544)", () => {
     );
     const res = await resolveActiveDeviceTenant(env(), "dev-1");
     expect(res).toEqual({ ok: false, reason: "unavailable" });
+  });
+});
+
+describe("fetchRlsCheck (Refs #605)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  /** 契約どおりの応答。テストごとに作り直す (書き換えても他へ漏れないように)。 */
+  function contract(): Record<string, any> {
+    return {
+      ok: true,
+      migrations: {
+        applied: 159,
+        max_version: 160,
+        binary_count: 159,
+        binary_max_version: 160,
+        matches_binary: true,
+      },
+      runtime_role: {
+        current_user: "rt_role",
+        is_runtime_role: true,
+        rolsuper: false,
+        rolbypassrls: false,
+        rolinherit: false,
+        member_of_table_owner: false,
+      },
+      connections: [{ usename: "rt_role", count: 3 }],
+      owner_role_connected: false,
+      invariants: {
+        violation_count: 1,
+        checks: [
+          { check_no: 0, title: "t0", violations: 0 },
+          { check_no: 1, title: "t1", violations: 1 },
+        ],
+        violations: [{ check_no: 1, object: "table x", detail: "d" }],
+      },
+      state: {
+        tables: [{ count: 2, rls_enabled: true, policies: [{ using: "(x)" }], names: ["a", "b"] }],
+        table_count: 2,
+        views: [],
+      },
+    };
+  }
+
+  function stubJson(body: unknown, status = 200): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status }));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("200 + 契約どおりは同じ値を返す", async () => {
+    stubJson(contract());
+    expect(await fetchRlsCheck(env())).toEqual(contract());
+  });
+
+  it("connections と violations は空配列でもよい", async () => {
+    const body = contract();
+    body.connections = [];
+    body.invariants = { violation_count: 0, checks: [], violations: [] };
+    stubJson(body);
+    expect(await fetchRlsCheck(env())).toEqual(body);
+  });
+
+  it("GET 1 回・path 固定・テナントのヘッダ無し・body 無しで呼ぶ", async () => {
+    const fetchMock = stubJson(contract());
+    await fetchRlsCheck(env());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://alc-api.test/api/internal/rls-check");
+    expect(init.method).toBe("GET");
+    expect(init.body).toBeUndefined();
+    const headers = init.headers as Headers;
+    expect(headers.get("Authorization")).toBe("Bearer hs256-internal-jwt");
+    expect(headers.has("X-Tenant-ID")).toBe(false);
+    expect(headers.has("Content-Type")).toBe(false);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("余分な key はどの深さでも出力に出ない", async () => {
+    const body = contract();
+    body.extra_top = "leak";
+    body.migrations.extra = "leak";
+    body.runtime_role.extra = "leak";
+    body.connections[0].extra = "leak";
+    body.invariants.extra = "leak";
+    body.invariants.checks[0].extra = "leak";
+    body.invariants.violations[0].extra = "leak";
+    stubJson(body);
+    const res = await fetchRlsCheck(env());
+    expect(res).toEqual(contract());
+    expect(JSON.stringify(res)).not.toContain("leak");
+  });
+
+  it.each<[string, (b: Record<string, any>) => void]>([
+    ["ok が文字列", (b) => (b.ok = "true")],
+    ["ok 欠け", (b) => delete b.ok],
+    ["owner_role_connected が数値", (b) => (b.owner_role_connected = 0)],
+    ["migrations 欠け", (b) => delete b.migrations],
+    ["migrations が配列", (b) => (b.migrations = [])],
+    ["migrations.applied が文字列", (b) => (b.migrations.applied = "159")],
+    ["migrations.max_version 欠け", (b) => delete b.migrations.max_version],
+    ["migrations.binary_count が null", (b) => (b.migrations.binary_count = null)],
+    ["migrations.binary_max_version が文字列", (b) => (b.migrations.binary_max_version = "160")],
+    ["migrations.matches_binary が文字列", (b) => (b.migrations.matches_binary = "true")],
+    ["runtime_role が null", (b) => (b.runtime_role = null)],
+    ["runtime_role.current_user が数値", (b) => (b.runtime_role.current_user = 1)],
+    ["runtime_role.is_runtime_role が文字列", (b) => (b.runtime_role.is_runtime_role = "t")],
+    ["runtime_role.rolsuper 欠け", (b) => delete b.runtime_role.rolsuper],
+    ["runtime_role.rolbypassrls が数値", (b) => (b.runtime_role.rolbypassrls = 0)],
+    ["runtime_role.rolinherit が文字列", (b) => (b.runtime_role.rolinherit = "f")],
+    ["runtime_role.member_of_table_owner が null", (b) => (b.runtime_role.member_of_table_owner = null)],
+    ["connections が object", (b) => (b.connections = {})],
+    ["connections[] が文字列", (b) => (b.connections = ["rt_role"])],
+    ["connections[].usename が数値", (b) => (b.connections[0].usename = 1)],
+    ["connections[].count が文字列", (b) => (b.connections[0].count = "3")],
+    ["invariants 欠け", (b) => delete b.invariants],
+    ["invariants.violation_count が文字列", (b) => (b.invariants.violation_count = "0")],
+    ["invariants.violations 欠け", (b) => delete b.invariants.violations],
+    ["invariants.checks 欠け", (b) => delete b.invariants.checks],
+    ["invariants.checks が object", (b) => (b.invariants.checks = {})],
+    ["checks[] が null", (b) => (b.invariants.checks = [null])],
+    ["checks[].check_no が文字列", (b) => (b.invariants.checks[0].check_no = "0")],
+    ["checks[].title 欠け", (b) => delete b.invariants.checks[0].title],
+    ["checks[].violations が文字列", (b) => (b.invariants.checks[1].violations = "1")],
+    ["violations[] が null", (b) => (b.invariants.violations = [null])],
+    ["violations[].check_no が文字列", (b) => (b.invariants.violations[0].check_no = "1")],
+    ["violations[].object が数値", (b) => (b.invariants.violations[0].object = 1)],
+    ["violations[].detail 欠け", (b) => delete b.invariants.violations[0].detail],
+  ])("契約の型に合わない応答は null: %s", async (_label, mutate) => {
+    const body = contract();
+    mutate(body);
+    stubJson(body);
+    expect(await fetchRlsCheck(env())).toBeNull();
+  });
+
+  it("state は object ならそのまま返す (入れ子の未知の key も残る)", async () => {
+    const body = contract();
+    body.state = { tables: [{ future_key: { deep: [1, "x", null] } }], another: true };
+    stubJson(body);
+    const res = await fetchRlsCheck(env());
+    expect(res?.state).toEqual({ tables: [{ future_key: { deep: [1, "x", null] } }], another: true });
+  });
+
+  it.each<[string, (b: Record<string, any>) => void]>([
+    ["null", (b) => (b.state = null)],
+    ["欠け", (b) => delete b.state],
+    ["配列", (b) => (b.state = [{ tables: [] }])],
+    ["文字列", (b) => (b.state = "{}")],
+    ["数値", (b) => (b.state = 1)],
+  ])("state が %s なら state: null にし、ほかの値は返す", async (_label, mutate) => {
+    const body = contract();
+    mutate(body);
+    stubJson(body);
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: null });
+  });
+
+  it("state は上限ちょうどまで通し、超えたら state: null (ほかの値は返す)", async () => {
+    // {"pad":"…"} の外枠は 10 文字。
+    const atLimit = { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 10) };
+    expect(JSON.stringify(atLimit)).toHaveLength(RLS_STATE_MAX_LENGTH);
+    stubJson({ ...contract(), state: atLimit });
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: atLimit });
+
+    stubJson({ ...contract(), state: { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 9) } });
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: null });
+  });
+
+  it.each([null, [], "text", 1])("最上位が object でない応答 (%j) は null", async (body) => {
+    stubJson(body);
+    expect(await fetchRlsCheck(env())).toBeNull();
+  });
+
+  it.each([201, 401, 403, 404, 500, 503])("非 200 (%i) は null", async (status) => {
+    stubJson(contract(), status);
+    expect(await fetchRlsCheck(env())).toBeNull();
+  });
+
+  it("200 だが JSON 不正は null", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{not json", { status: 200 })));
+    expect(await fetchRlsCheck(env())).toBeNull();
+  });
+
+  it("fetch の例外は null", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("network down");
+      }),
+    );
+    expect(await fetchRlsCheck(env())).toBeNull();
   });
 });
