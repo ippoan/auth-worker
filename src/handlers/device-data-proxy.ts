@@ -130,6 +130,16 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * `GET /api/employees/face-data` と同じ判断でここに入れる。**削除
  * (`DELETE /api/vein/templates/{employee_id}`) は入れない** — 顔にもキオスクの
  * 削除口は無く (管理者の browser JWT だけ)、指静脈もそれに揃える。
+ *
+ * カードの持ち主の照会 (`POST /api/timecard/cards/lookup`、body に `card_id`、
+ * Refs ippoan/alc-app#387)。運転者の端末 (ブラウザ) に USB で繋いだ機体が社員証を読んだとき、
+ * 画面が「このカードは誰のものか」をサーバーに引くのに使う。**読み取りだけの照会**で、
+ * `GET /api/timecard/cards` (台帳の全件)・`POST /api/employees/lookup` (NFC の id から
+ * 同じ社員の情報) が既に在るため、新しく見える情報・新しく出来る操作は無い。**この開け方は
+ * backend のこの口が打刻を書かないことに依存している** (rust-alc-api の
+ * `crates/alc-misc/src/timecard.rs` の doc「この口に書き込みを足すな」)。書き込みを足す
+ * 変更が入るなら、この行も見直すこと。`TENKO_MANAGER_ROUTES` の同じ行と pattern を揃えてある。
+ * 測定台の鍵 (`bp-station`) には開けない。
  */
 const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees$/ },
@@ -174,6 +184,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/interrupt$/ },
   { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/self-resume$/ },
   { method: "POST", pattern: /^\/api\/car-inspections\/lookup$/ },
+  { method: "POST", pattern: /^\/api\/timecard\/cards\/lookup$/ },
 ];
 
 /**
