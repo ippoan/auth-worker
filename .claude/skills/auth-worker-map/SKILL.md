@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:aa7985faacf715826f93d69e8bc2c6ffbfbbd320
+generated-from: auth-worker:f5c7e9469aabebe37a7e3e7a2ea99a1d29e51af3
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
@@ -236,6 +236,15 @@ auth-worker は `lib/alc-internal.ts::fetchRlsCheck` で `GET /api/internal/rls-
   backend が key を足しても tool からは出ない。fetch の例外・非 200・JSON 不正・型違い・key 欠けはすべて `null` →
   tool は `dev-login error 502: rls_check_unavailable`。key を増やすときは型 `RlsCheckResult`・`parseRlsCheck`・
   tool の `description` の 3 か所。
+- **`invariants.checks`** = 検査ごとの `{check_no, title, violations}`。違反が無くても毎回返る (何を確かめたかの
+  一覧)。名指しで写す (型違い・欠けは全体が `null`)。
+- **`state`** = 観測したカタログの値 (状態が同じ表の組・policy の式・view・SECURITY DEFINER の関数・sequence)。
+  **`state` だけは入れ子まで写さない** — object であることと大きさ (`RLS_STATE_MAX_LENGTH` = 256KB) だけ見て
+  そのまま返す。形の正本は alc-migrations の固定の SQL で、形が育つたびにここの写しを直す二重管理にしないため。
+  object でない・欠け・大きすぎるときは `state: null` にするだけで、**全体を `null` にしない** (表示用の値が
+  合否・ロール・適用履歴を道連れにしない)。
+- **`ok` は `state` を見ていない。** `state` に view・誰でも呼べる SECURITY DEFINER の関数・`USING (true)` の
+  policy が出ていても `ok` は変わらない (読む人が確かめる材料)。合否を足すなら alc-migrations の検査 SQL に足す。
 - **`ok`** = 不変条件の違反 0 件 + backend が実行用ロールで繋いでいる + 適用履歴が backend の想定と一致
   (`matches_binary`)。`owner_role_connected` は注意の表示で `ok` に入らない (migration の job の実行中は true になりうる)。
 - **`matches_binary` の窓**: migration の直後は、新しい backend への切り替えが終わるまで `matches_binary: false`

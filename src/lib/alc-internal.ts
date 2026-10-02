@@ -156,9 +156,17 @@ export interface RlsCheckResult {
   owner_role_connected: boolean;
   invariants: {
     violation_count: number;
+    /** 検査ごとの題と違反の件数。違反が無くても毎回返る。 */
+    checks: Array<{ check_no: number; title: string; violations: number }>;
     violations: Array<{ check_no: number; object: string; detail: string }>;
   };
+  /** 観測したカタログの値 (表示用。`ok` には入っていない)。backend が取れなかった時・
+   *  object でない時・大きすぎる時は null。中身は検査せずそのまま返す。 */
+  state: Record<string, unknown> | null;
 }
+
+/** `state` を JSON にした長さの上限 (想定は約 20KB)。超えたら `state: null`。 */
+export const RLS_STATE_MAX_LENGTH = 262144;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -167,6 +175,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /**
  * backend の応答から契約の key だけを名指しで写す。型が 1 つでも違えば null。
  * スプレッドで写さない — backend が key を足しても MCP の tool から出ないようにする。
+ *
+ * `state` だけは入れ子まで写さない (object であることと大きさだけ見る)。形の正本は
+ * alc-migrations の固定の SQL で、形が育つたびにここの写しを直す二重管理にしないため。
+ * 表示用の値なので、合わなくても `state: null` にするだけで全体は null にしない。
  */
 function parseRlsCheck(body: unknown): RlsCheckResult | null {
   if (!isRecord(body)) return null;
@@ -174,6 +186,7 @@ function parseRlsCheck(body: unknown): RlsCheckResult | null {
   if (typeof ok !== "boolean" || typeof owner_role_connected !== "boolean") return null;
   if (!isRecord(m) || !isRecord(r) || !isRecord(inv)) return null;
   if (!Array.isArray(connections) || !Array.isArray(inv.violations)) return null;
+  if (!Array.isArray(inv.checks)) return null;
 
   if (
     typeof m.applied !== "number" ||
@@ -213,6 +226,22 @@ function parseRlsCheck(body: unknown): RlsCheckResult | null {
     }
     violations.push({ check_no: v.check_no, object: v.object, detail: v.detail });
   }
+  const checks: RlsCheckResult["invariants"]["checks"] = [];
+  for (const c of inv.checks as unknown[]) {
+    if (
+      !isRecord(c) ||
+      typeof c.check_no !== "number" ||
+      typeof c.title !== "string" ||
+      typeof c.violations !== "number"
+    ) {
+      return null;
+    }
+    checks.push({ check_no: c.check_no, title: c.title, violations: c.violations });
+  }
+  const state =
+    isRecord(body.state) && JSON.stringify(body.state).length <= RLS_STATE_MAX_LENGTH
+      ? body.state
+      : null;
 
   return {
     ok,
@@ -233,7 +262,8 @@ function parseRlsCheck(body: unknown): RlsCheckResult | null {
     },
     connections: conns,
     owner_role_connected,
-    invariants: { violation_count: inv.violation_count, violations },
+    invariants: { violation_count: inv.violation_count, checks, violations },
+    state,
   };
 }
 
@@ -243,6 +273,7 @@ function parseRlsCheck(body: unknown): RlsCheckResult | null {
  *
  * 200 かつ契約どおりの形の時だけ値を返す。それ以外 (fetch の例外・timeout・非 200・
  * JSON 不正・型違い・key 欠け) はすべて null — 呼び出し元は fail-closed で扱う。
+ * 例外は表示用の `state` だけ (`parseRlsCheck` 参照)。
  */
 export async function fetchRlsCheck(env: Env): Promise<RlsCheckResult | null> {
   let res: Response;

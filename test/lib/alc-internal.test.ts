@@ -8,6 +8,7 @@ vi.mock("../../src/lib/oidc", () => ({
 }));
 
 import {
+  RLS_STATE_MAX_LENGTH,
   fetchRlsCheck,
   internalAuthToken,
   resolveActiveDeviceTenant,
@@ -155,7 +156,16 @@ describe("fetchRlsCheck (Refs #605)", () => {
       owner_role_connected: false,
       invariants: {
         violation_count: 1,
+        checks: [
+          { check_no: 0, title: "t0", violations: 0 },
+          { check_no: 1, title: "t1", violations: 1 },
+        ],
         violations: [{ check_no: 1, object: "table x", detail: "d" }],
+      },
+      state: {
+        tables: [{ count: 2, rls_enabled: true, policies: [{ using: "(x)" }], names: ["a", "b"] }],
+        table_count: 2,
+        views: [],
       },
     };
   }
@@ -174,7 +184,7 @@ describe("fetchRlsCheck (Refs #605)", () => {
   it("connections と violations は空配列でもよい", async () => {
     const body = contract();
     body.connections = [];
-    body.invariants = { violation_count: 0, violations: [] };
+    body.invariants = { violation_count: 0, checks: [], violations: [] };
     stubJson(body);
     expect(await fetchRlsCheck(env())).toEqual(body);
   });
@@ -201,6 +211,7 @@ describe("fetchRlsCheck (Refs #605)", () => {
     body.runtime_role.extra = "leak";
     body.connections[0].extra = "leak";
     body.invariants.extra = "leak";
+    body.invariants.checks[0].extra = "leak";
     body.invariants.violations[0].extra = "leak";
     stubJson(body);
     const res = await fetchRlsCheck(env());
@@ -233,6 +244,12 @@ describe("fetchRlsCheck (Refs #605)", () => {
     ["invariants 欠け", (b) => delete b.invariants],
     ["invariants.violation_count が文字列", (b) => (b.invariants.violation_count = "0")],
     ["invariants.violations 欠け", (b) => delete b.invariants.violations],
+    ["invariants.checks 欠け", (b) => delete b.invariants.checks],
+    ["invariants.checks が object", (b) => (b.invariants.checks = {})],
+    ["checks[] が null", (b) => (b.invariants.checks = [null])],
+    ["checks[].check_no が文字列", (b) => (b.invariants.checks[0].check_no = "0")],
+    ["checks[].title 欠け", (b) => delete b.invariants.checks[0].title],
+    ["checks[].violations が文字列", (b) => (b.invariants.checks[1].violations = "1")],
     ["violations[] が null", (b) => (b.invariants.violations = [null])],
     ["violations[].check_no が文字列", (b) => (b.invariants.violations[0].check_no = "1")],
     ["violations[].object が数値", (b) => (b.invariants.violations[0].object = 1)],
@@ -242,6 +259,38 @@ describe("fetchRlsCheck (Refs #605)", () => {
     mutate(body);
     stubJson(body);
     expect(await fetchRlsCheck(env())).toBeNull();
+  });
+
+  it("state は object ならそのまま返す (入れ子の未知の key も残る)", async () => {
+    const body = contract();
+    body.state = { tables: [{ future_key: { deep: [1, "x", null] } }], another: true };
+    stubJson(body);
+    const res = await fetchRlsCheck(env());
+    expect(res?.state).toEqual({ tables: [{ future_key: { deep: [1, "x", null] } }], another: true });
+  });
+
+  it.each<[string, (b: Record<string, any>) => void]>([
+    ["null", (b) => (b.state = null)],
+    ["欠け", (b) => delete b.state],
+    ["配列", (b) => (b.state = [{ tables: [] }])],
+    ["文字列", (b) => (b.state = "{}")],
+    ["数値", (b) => (b.state = 1)],
+  ])("state が %s なら state: null にし、ほかの値は返す", async (_label, mutate) => {
+    const body = contract();
+    mutate(body);
+    stubJson(body);
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: null });
+  });
+
+  it("state は上限ちょうどまで通し、超えたら state: null (ほかの値は返す)", async () => {
+    // {"pad":"…"} の外枠は 10 文字。
+    const atLimit = { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 10) };
+    expect(JSON.stringify(atLimit)).toHaveLength(RLS_STATE_MAX_LENGTH);
+    stubJson({ ...contract(), state: atLimit });
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: atLimit });
+
+    stubJson({ ...contract(), state: { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 9) } });
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: null });
   });
 
   it.each([null, [], "text", 1])("最上位が object でない応答 (%j) は null", async (body) => {

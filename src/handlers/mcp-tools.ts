@@ -848,8 +848,15 @@ const TOOLS: ToolDef[] = [
       "返す値: `{ok, migrations: {applied, max_version, binary_count, binary_max_version, " +
       "matches_binary}, runtime_role: {current_user, is_runtime_role, rolsuper, rolbypassrls, " +
       "rolinherit, member_of_table_owner}, connections: [{usename, count}], " +
-      "owner_role_connected, invariants: {violation_count, violations: [{check_no, object, " +
-      "detail}]}}`。`ok` が true になるのは、不変条件の違反が 0 件、かつ backend が実行用ロールで" +
+      "owner_role_connected, invariants: {violation_count, checks: [{check_no, title, " +
+      "violations}], violations: [{check_no, object, detail}]}, state}`。" +
+      "`invariants.checks` は検査ごとの題と違反の件数で、違反が無くても毎回返る (何を確かめたかの一覧)。" +
+      "`state` は観測したカタログの値 (表の組・policy の式・view・SECURITY DEFINER の関数・sequence)。" +
+      "表は状態が同じものを組にまとめてあり、式が違う表・FORCE だけ違う表は別の組に出る。" +
+      "`ok` は `state` を見ていない — `state` に view・誰でも呼べる SECURITY DEFINER の関数・" +
+      "`USING (true)` の policy が出ていても `ok` は変わらない (読む人が確かめる材料)。" +
+      "`state` が null なら状態を取れなかっただけで、合否はそのまま有効。" +
+      "`ok` が true になるのは、不変条件の違反が 0 件、かつ backend が実行用ロールで" +
       "繋いでいて、かつ適用履歴が backend の想定と一致する (`matches_binary`) とき。" +
       "`owner_role_connected` は注意の表示で `ok` には入らない (migration の job の実行中は " +
       "true になりうる)。migration の直後は、新しい backend への切り替えが終わるまで " +

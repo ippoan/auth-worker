@@ -1920,7 +1920,19 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
       },
       connections: [{ usename: "rt_role", count: 3 }],
       owner_role_connected: false,
-      invariants: { violation_count: 0, violations: [] },
+      invariants: {
+        violation_count: 0,
+        checks: [
+          { check_no: 0, title: "t0", violations: 0 },
+          { check_no: 1, title: "t1", violations: 0 },
+        ],
+        violations: [],
+      },
+      state: {
+        tables: [{ count: 2, rls_enabled: true, rls_forced: false, names: ["a", "b"] }],
+        table_count: 2,
+        views: [],
+      },
     };
   }
 
@@ -2025,6 +2037,29 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     expect(init?.body).toBeUndefined();
     expect((init?.headers as Headers).has("X-Tenant-ID")).toBe(false);
     expect(backendCalls.some((c) => c.url.includes("upsert-google"))).toBe(false);
+  });
+
+  it("結果に invariants.checks (検査の一覧) と state (観測した値) が出る", async () => {
+    const env = allowedEnv();
+    routeFetch();
+    const body = await callVerifyRls(env);
+    const parsed = JSON.parse(body.result!.content[0]!.text) as {
+      invariants: { checks: unknown[] };
+      state: unknown;
+    };
+    expect(parsed.invariants.checks).toEqual([
+      { check_no: 0, title: "t0", violations: 0 },
+      { check_no: 1, title: "t1", violations: 0 },
+    ]);
+    expect(parsed.state).toEqual(rlsBody().state);
+  });
+
+  it("backend が state を取れなかった (null) ときも、合否はそのまま返す", async () => {
+    const env = allowedEnv();
+    routeFetch({ ...rlsBody(), state: null });
+    const body = await callVerifyRls(env);
+    expect(body.result?.isError).toBe(false);
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual({ ...rlsBody(), state: null });
   });
 
   it("backend が契約に無い key を返しても tool の出力に出ない", async () => {
