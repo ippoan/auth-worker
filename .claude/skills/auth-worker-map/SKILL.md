@@ -1,6 +1,6 @@
 ---
 name: auth-worker-map
-generated-from: auth-worker:f5c7e9469aabebe37a7e3e7a2ea99a1d29e51af3
+generated-from: auth-worker:7b43c7d05e5358a33e1380a5e2946a7415455a3c
 paths: [src/, packages/]
 description: ippoan/auth-worker (Cloudflare Workers + Hono の認証サービス) の構造ナビゲーション。OAuth フロー / JWT 発行 / MCP OAuth Provider / 組織管理 / 各 SSO provider (Google/GitHub/LINE WORKS/e-Gov) のハンドラ配置と、wrangler の prod/staging 構成・既知の gotcha を 1 枚にまとめる。auth-worker を触る前に「どのハンドラを見るか」を即断するための地図。トリガー:「auth-worker」「MCP OAuth」「grant-via-oat」「binding_jwt」「device flow」「mcp.admin / elevate」「introspect」「INTERNAL_SHARED_SECRET」「auth-client」「SSO」「pairing」「auth.ippoan.org」「Cloudflare Access」「generic OIDC」「/oidc」「id_token」「ES256」「ACCESS_OIDC_SIGNING_KEY」「ACCESS_OIDC_CLIENTS」等。
 ---
@@ -221,9 +221,11 @@ alc-app のサーバが端末一覧の表示と、キオスクが報告した `d
 ## RLS の確認を MCP の tool 1 回で受け取る (`verify_rls`、Refs #605)
 
 `mcp-tools.ts` の tool `verify_rls`。本番 DB で RLS の不変条件・backend の実行用ロールの属性・いま繋いでいる
-ロール・migration の適用履歴を、backend (rust-alc-api) に固定された検査で確かめて返す。DB に繋ぐのは backend で、
-auth-worker は `lib/alc-internal.ts::fetchRlsCheck` で `GET /api/internal/rls-check` を **1 回**呼ぶだけ
-(body なし・テナントのヘッダなし・15 秒で打ち切り)。行のデータは返さない。
+ロール・migration の適用履歴・履歴との食い違いを、backend (rust-alc-api) に固定された検査で確かめ、分割 worker
+(vein) の DB 接続のロールと合わせて返す。DB に繋ぐのは backend と vein で、auth-worker が出す要求は 2 つだけ:
+`lib/alc-internal.ts::fetchRlsCheck` の `GET /api/internal/rls-check` **1 回** (body なし・テナントのヘッダなし・
+15 秒で打ち切り) と、`fetchVeinDbRole` の `GET /internal/db-role` **1 回** (Service Binding `ALC_VEIN`。
+ヘッダなし・body なし・10 秒で打ち切り)。行のデータは返さない (vein からはロール名と真偽だけ)。
 
 - **引数を足さない** (`inputSchema.properties` は空)。SQL・表名・式・テナントを受ける入口を作らない。
   `call` は `args` を読まない。
@@ -232,6 +234,9 @@ auth-worker は `lib/alc-internal.ts::fetchRlsCheck` で `GET /api/internal/rls-
   `dev_login_not_configured`、リスト外は 403 `not_in_allowlist`)。**`resolveTenantId` / `mintDevToken` を
   通さない** — 後段は `upsert-google` の POST (利用者登録) を伴い、「自テナントの操作」用の検査だから。
   `resolveTenantId` は冒頭で同じ `checkDevLoginAllowlist` を呼ぶ (判定の複製は無い)。
+  **gate より前に backend も vein も呼ばない。**
+- **呼ぶ順**: gate → `fetchRlsCheck` → (null なら 502 で終わり。**vein は呼ばない**) → `fetchVeinDbRole` →
+  `buildVerifyRlsResult` (純粋な関数。`ok` と `verdicts` を組み立てる)。
 - **`fetchRlsCheck` は契約の key だけを名指しで写す** (`parseRlsCheck`。入れ子の中まで。スプレッドで写さない)。
   backend が key を足しても tool からは出ない。fetch の例外・非 200・JSON 不正・型違い・key 欠けはすべて `null` →
   tool は `dev-login error 502: rls_check_unavailable`。key を増やすときは型 `RlsCheckResult`・`parseRlsCheck`・
@@ -239,18 +244,36 @@ auth-worker は `lib/alc-internal.ts::fetchRlsCheck` で `GET /api/internal/rls-
 - **`invariants.checks`** = 検査ごとの `{check_no, title, violations}`。違反が無くても毎回返る (何を確かめたかの
   一覧)。名指しで写す (型違い・欠けは全体が `null`)。
 - **`state`** = 観測したカタログの値 (状態が同じ表の組・policy の式・view・SECURITY DEFINER の関数・sequence)。
-  **`state` だけは入れ子まで写さない** — object であることと大きさ (`RLS_STATE_MAX_LENGTH` = 256KB) だけ見て
-  そのまま返す。形の正本は alc-migrations の固定の SQL で、形が育つたびにここの写しを直す二重管理にしないため。
-  object でない・欠け・大きすぎるときは `state: null` にするだけで、**全体を `null` にしない** (表示用の値が
-  合否・ロール・適用履歴を道連れにしない)。
-- **`ok` は `state` を見ていない。** `state` に view・誰でも呼べる SECURITY DEFINER の関数・`USING (true)` の
-  policy が出ていても `ok` は変わらない (読む人が確かめる材料)。合否を足すなら alc-migrations の検査 SQL に足す。
-- **`ok`** = 不変条件の違反 0 件 + backend が実行用ロールで繋いでいる + 適用履歴が backend の想定と一致
-  (`matches_binary`)。`owner_role_connected` は注意の表示で `ok` に入らない (migration の job の実行中は true になりうる)。
+  **`drift`** = 履歴との食い違い (食い違った表・関数・view を、期待 = 履歴を 0 から当てた状態 と実物で並べたもの)。
+  **この 2 つだけは入れ子まで写さない** — object であることと大きさ (`RLS_STATE_MAX_LENGTH` = 256KB を共用) だけ
+  見てそのまま返す。形の正本は alc-migrations の固定の SQL と backend の比較で、形が育つたびにここの写しを直す
+  二重管理にしないため。object でない・欠け・大きすぎるときはその key を `null` にするだけで、**全体を `null` に
+  しない**。`drift: null` は「比べられなかった」(古い backend、または backend が状態を取れなかった)。
+- **backend の `verdicts`** (合否の内訳 `{invariants, runtime_role, migrations, drift}`) は**無くてよい key**。
+  返さない backend (古い版) では `RlsCheckResult.verdicts` が `null`。在るなら 4 つとも boolean であること —
+  欠け・型違いは応答全体を不正として `null` (→ 502。内訳を読めないまま合否だけ返さない)。
+- **`workers.vein`** = `{bound, current_user, is_runtime_role}`。vein は backend と別の接続の secret を持ち、
+  所有者ロールで繋いでいると RLS が掛からないので、ここで確かめる。`ALC_VEIN` が無い (staging・テスト) →
+  `bound: false` で値は null。在るのに取れない (fetch の例外・非 200・JSON 不正・型違い) → `bound: true` で値は
+  null。**vein が失敗しても backend の結果は返す** (502 にしない)。
+- **`fetchVeinDbRole` は `/api/vein/` の proxy (`forwardViaAlcBinding`) を通らず、binding を直接呼ぶ。**
+  vein の口の path が `/api` の外に在るのは、proxy の振り分け (`ALC_BINDING_ROUTES` = `/api/vein/`) から
+  届かないようにするため — 届くのは auth-worker のコードが binding で直接呼んだときだけ。
+- **tool が返す `verdicts`** は 5 個ちょうど: backend の 4 つ + `vein`。**`ok` が false のときは `verdicts` で
+  どれが原因かを読む** (`invariants` = 不変条件の違反が 0 件 / `runtime_role` = backend が実行用ロールで繋いでいる /
+  `migrations` = 適用履歴が backend の想定と一致 / `drift` = 本番の実物が migration の履歴どおり / `vein` = vein が
+  実行用ロールで繋いでいる)。値が `null` の項目は「その backend・その環境では判定していない」(backend が内訳を
+  返さない → 4 つとも null、vein が bind されていない → `vein: null`)。`vein` は bind されていれば
+  `is_runtime_role === true` のときだけ true (呼べなかった・形が違う = false。fail-closed)。
+- **`ok`** = backend の `ok` かつ (backend が内訳を返したなら 4 つとも true) かつ (`vein` が null か true)。
+  **backend の `ok` が false なら tool の `ok` は true にならない** (テストで全組み合わせを固定)。合否を足すなら
+  alc-migrations の検査 SQL か backend の内訳に足す (auth-worker は vein 以外の判定を持たない)。
+  `owner_role_connected` は注意の表示で `ok` に入らない (migration の job の実行中は true になりうる)。
 - **`matches_binary` の窓**: migration の直後は、新しい backend への切り替えが終わるまで `matches_binary: false`
   (= `ok: false`)。`binary_max_version` が古ければ切り替え前 — 壊れているのではない。
-- **staging では `ok: false` が正しい結果** (staging の backend は実行用ロールで繋いでいない)。
-- scope は `mcp.write` (許可リストで絞る他の tool と同じ)。新しい secret・binding・scope は無い。
+- **staging では `ok: false` が正しい結果** (staging の backend は実行用ロールで繋いでいない。vein は bind されて
+  いないので `verdicts.vein` は null)。
+- scope は `mcp.write` (許可リストで絞る他の tool と同じ)。新しい secret・binding・scope は無い (`ALC_VEIN` は既存)。
 
 ## CCoW から見た auth-worker
 

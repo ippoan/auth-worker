@@ -160,25 +160,47 @@ export interface RlsCheckResult {
     checks: Array<{ check_no: number; title: string; violations: number }>;
     violations: Array<{ check_no: number; object: string; detail: string }>;
   };
-  /** 観測したカタログの値 (表示用。`ok` には入っていない)。backend が取れなかった時・
-   *  object でない時・大きすぎる時は null。中身は検査せずそのまま返す。 */
+  /** 観測したカタログの値 (表示用)。backend が取れなかった時・object でない時・
+   *  大きすぎる時は null。中身は検査せずそのまま返す。 */
   state: Record<string, unknown> | null;
+  /** backend の合否の内訳。`verdicts` を返さない backend (古い版) では null。 */
+  verdicts: RlsBackendVerdicts | null;
+  /** 履歴との食い違い (食い違った表・関数・view を期待と実物で並べたもの)。扱いは `state` と
+   *  同じ — 無い時・object でない時・大きすぎる時は null。中身は検査せずそのまま返す。 */
+  drift: Record<string, unknown> | null;
 }
 
-/** `state` を JSON にした長さの上限 (想定は約 20KB)。超えたら `state: null`。 */
+/** backend が返す合否の内訳。backend の `ok` はこの 4 つが全部 true のとき true。 */
+export interface RlsBackendVerdicts {
+  invariants: boolean;
+  runtime_role: boolean;
+  migrations: boolean;
+  drift: boolean;
+}
+
+/** `state` / `drift` を JSON にした長さの上限 (`state` の想定は約 20KB)。超えたら null。 */
 export const RLS_STATE_MAX_LENGTH = 262144;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** object で、JSON にした長さが上限以内ならそのまま返す。それ以外は null。 */
+function passThroughObject(v: unknown): Record<string, unknown> | null {
+  return isRecord(v) && JSON.stringify(v).length <= RLS_STATE_MAX_LENGTH ? v : null;
+}
+
 /**
  * backend の応答から契約の key だけを名指しで写す。型が 1 つでも違えば null。
  * スプレッドで写さない — backend が key を足しても MCP の tool から出ないようにする。
  *
- * `state` だけは入れ子まで写さない (object であることと大きさだけ見る)。形の正本は
- * alc-migrations の固定の SQL で、形が育つたびにここの写しを直す二重管理にしないため。
- * 表示用の値なので、合わなくても `state: null` にするだけで全体は null にしない。
+ * `state` と `drift` だけは入れ子まで写さない (object であることと大きさだけ見る)。形の
+ * 正本は alc-migrations の固定の SQL と backend の比較で、形が育つたびにここの写しを直す
+ * 二重管理にしないため。合わなくてもその key を null にするだけで全体は null にしない。
+ *
+ * `verdicts` は無くてよい (古い backend は返さない → `verdicts: null`)。在るなら 4 つとも
+ * boolean であること — 欠け・型違いは応答全体を不正として null (内訳を読めないまま
+ * 合否だけ返さない)。
  */
 function parseRlsCheck(body: unknown): RlsCheckResult | null {
   if (!isRecord(body)) return null;
@@ -238,10 +260,25 @@ function parseRlsCheck(body: unknown): RlsCheckResult | null {
     }
     checks.push({ check_no: c.check_no, title: c.title, violations: c.violations });
   }
-  const state =
-    isRecord(body.state) && JSON.stringify(body.state).length <= RLS_STATE_MAX_LENGTH
-      ? body.state
-      : null;
+  let verdicts: RlsBackendVerdicts | null = null;
+  if (body.verdicts !== undefined) {
+    const v = body.verdicts;
+    if (
+      !isRecord(v) ||
+      typeof v.invariants !== "boolean" ||
+      typeof v.runtime_role !== "boolean" ||
+      typeof v.migrations !== "boolean" ||
+      typeof v.drift !== "boolean"
+    ) {
+      return null;
+    }
+    verdicts = {
+      invariants: v.invariants,
+      runtime_role: v.runtime_role,
+      migrations: v.migrations,
+      drift: v.drift,
+    };
+  }
 
   return {
     ok,
@@ -263,7 +300,9 @@ function parseRlsCheck(body: unknown): RlsCheckResult | null {
     connections: conns,
     owner_role_connected,
     invariants: { violation_count: inv.violation_count, checks, violations },
-    state,
+    state: passThroughObject(body.state),
+    verdicts,
+    drift: passThroughObject(body.drift),
   };
 }
 
@@ -273,7 +312,7 @@ function parseRlsCheck(body: unknown): RlsCheckResult | null {
  *
  * 200 かつ契約どおりの形の時だけ値を返す。それ以外 (fetch の例外・timeout・非 200・
  * JSON 不正・型違い・key 欠け) はすべて null — 呼び出し元は fail-closed で扱う。
- * 例外は表示用の `state` だけ (`parseRlsCheck` 参照)。
+ * 例外は `state` と `drift`、それに無くてよい `verdicts` (`parseRlsCheck` 参照)。
  */
 export async function fetchRlsCheck(env: Env): Promise<RlsCheckResult | null> {
   let res: Response;
@@ -294,6 +333,94 @@ export async function fetchRlsCheck(env: Env): Promise<RlsCheckResult | null> {
     return null;
   }
   return parseRlsCheck(body);
+}
+
+/** vein (分割 worker) の DB 接続のロール (Refs #605)。 */
+export interface VeinDbRole {
+  /** `ALC_VEIN` が bind されているか (本番だけ bind)。 */
+  bound: boolean;
+  /** bind されていない時・呼べなかった時・形が違った時は null。 */
+  current_user: string | null;
+  is_runtime_role: boolean | null;
+}
+
+/** Service Binding 越しなのでホスト名は使われない。path は固定で、利用者由来の値を入れない。 */
+const VEIN_DB_ROLE_URL = "https://alc-vein/internal/db-role";
+
+/**
+ * vein がどのロールで DB に繋いでいるかを、Service Binding で 1 回聞く (Refs #605)。
+ * vein は backend と別の接続の secret を持ち、所有者ロールで繋いでいると RLS が掛からない。
+ *
+ * `/api/vein/` の proxy (`forwardViaAlcBinding`) は通さず、binding を直接呼ぶ — vein の口は
+ * `/api` の外に在り、proxy の振り分けからは届かない。引数なしの GET で、Authorization・
+ * テナントのヘッダ・body を付けない。契約の 2 key だけを名指しで写す。
+ *
+ * bind されていなければ `bound: false`。bind されているのに値を取れない (fetch の例外・
+ * timeout・非 200・JSON 不正・型違い) ときは `bound: true` で値は null — 呼び出し元は
+ * fail-closed で扱う。
+ */
+export async function fetchVeinDbRole(env: Env): Promise<VeinDbRole> {
+  const binding = env.ALC_VEIN;
+  if (!binding) return { bound: false, current_user: null, is_runtime_role: null };
+  try {
+    const res = await binding.fetch(VEIN_DB_ROLE_URL, {
+      method: "GET",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (res.status === 200) {
+      const body = (await res.json()) as unknown;
+      if (
+        isRecord(body) &&
+        typeof body.current_user === "string" &&
+        typeof body.is_runtime_role === "boolean"
+      ) {
+        return { bound: true, current_user: body.current_user, is_runtime_role: body.is_runtime_role };
+      }
+    }
+  } catch {
+    // 下の fail-closed の値を返す
+  }
+  return { bound: true, current_user: null, is_runtime_role: null };
+}
+
+/** tool `verify_rls` が返す形。backend の値に、tool が決めた合否と vein のロールを足す。 */
+export interface VerifyRlsResult extends Omit<RlsCheckResult, "verdicts"> {
+  /** null の項目は「その backend・その環境では判定していない」(古い backend・vein が未 bind)。 */
+  verdicts: {
+    invariants: boolean | null;
+    runtime_role: boolean | null;
+    migrations: boolean | null;
+    drift: boolean | null;
+    vein: boolean | null;
+  };
+  workers: { vein: VeinDbRole };
+}
+
+/**
+ * tool の `ok` と `verdicts` を組み立てる (Refs #605)。
+ *
+ * - `verdicts.vein`: bind されていなければ null (合否に入れない)。bind されていれば
+ *   `is_runtime_role === true` のときだけ true (呼べなかった・形が違う = false)。
+ * - `ok`: backend の `ok` かつ (backend が内訳を返したなら 4 つとも true) かつ
+ *   (`vein` が null か true)。backend の `ok` が false なら true にならない。
+ */
+export function buildVerifyRlsResult(backend: RlsCheckResult, vein: VeinDbRole): VerifyRlsResult {
+  const { ok: backendOk, verdicts: bv, ...rest } = backend;
+  const veinVerdict = vein.bound ? vein.is_runtime_role === true : null;
+  const backendVerdictsOk =
+    bv === null || (bv.invariants && bv.runtime_role && bv.migrations && bv.drift);
+  return {
+    ok: backendOk && backendVerdictsOk && veinVerdict !== false,
+    verdicts: {
+      invariants: bv?.invariants ?? null,
+      runtime_role: bv?.runtime_role ?? null,
+      migrations: bv?.migrations ?? null,
+      drift: bv?.drift ?? null,
+      vein: veinVerdict,
+    },
+    workers: { vein: { bound: vein.bound, current_user: vein.current_user, is_runtime_role: vein.is_runtime_role } },
+    ...rest,
+  };
 }
 
 /** lineworks_id で user を find-or-create する。 */

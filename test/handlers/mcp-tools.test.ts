@@ -1897,6 +1897,9 @@ describe("POST /mcp/tools — lineworks_get", () => {
 describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
   const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
   const RLS_PATH = "/api/internal/rls-check";
+  const VEIN_URL = "https://alc-vein/internal/db-role";
+  const VEIN_UNBOUND = { bound: false, current_user: null, is_runtime_role: null };
+  const VEIN_RT = { bound: true, current_user: "rt_role", is_runtime_role: true };
   const origFetch = globalThis.fetch;
   let backendCalls: Array<{ url: string; init?: RequestInit }> = [];
 
@@ -1933,6 +1936,30 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
         table_count: 2,
         views: [],
       },
+      verdicts: { invariants: true, runtime_role: true, migrations: true, drift: true },
+      drift: { matches_expected: true, tables: [] },
+    };
+  }
+
+  /** tool が返す形: backend の値に `verdicts.vein` と `workers.vein` を足したもの。 */
+  function toolOut(
+    body: Record<string, unknown> = rlsBody(),
+    vein: { bound: boolean; current_user: string | null; is_runtime_role: boolean | null } = VEIN_UNBOUND,
+    veinVerdict: boolean | null = null,
+  ): Record<string, unknown> {
+    return {
+      ...body,
+      verdicts: { ...(body.verdicts as Record<string, unknown>), vein: veinVerdict },
+      workers: { vein },
+    };
+  }
+
+  /** vein の Service Binding の mock (`alc-binding-route.test.ts` の makeBinding と同じ型)。 */
+  function makeVein(body: unknown = { current_user: "rt_role", is_runtime_role: true }, status = 200) {
+    return {
+      fetch: vi.fn(
+        async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(body), { status }),
+      ),
     };
   }
 
@@ -1949,8 +1976,8 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
   }
 
   /** 許可リストだけ入れる。`google_sub:<email>` の cache は入れない。 */
-  function allowedEnv(): Env {
-    const { env, kv } = envWithKv();
+  function allowedEnv(vein?: ReturnType<typeof makeVein>): Env {
+    const { env, kv } = envWithKv(vein ? { ALC_VEIN: vein as unknown as Fetcher } : {});
     kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
     return env;
   }
@@ -2012,14 +2039,16 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     ["壊れた JSON", "not-json{", "dev-login error 403: dev_login_not_configured"],
     ["空配列", "[]", "dev-login error 403: not_in_allowlist"],
     ["リスト外", JSON.stringify(["google:other@example.com"]), "dev-login error 403: not_in_allowlist"],
-  ])("%s は拒否し、backend を 1 度も呼ばない", async (_label, raw, message) => {
-    const { env, kv } = envWithKv();
+  ])("%s は拒否し、backend も vein も 1 度も呼ばない", async (_label, raw, message) => {
+    const vein = makeVein();
+    const { env, kv } = envWithKv({ ALC_VEIN: vein as unknown as Fetcher });
     if (raw !== undefined) kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = raw;
     routeFetch();
     const body = await callVerifyRls(env);
     expect(body.result?.isError).toBe(true);
     expect(body.result!.content[0]!.text).toBe(message);
     expect(backendCalls).toEqual([]);
+    expect(vein.fetch).not.toHaveBeenCalled();
   });
 
   it("リスト内は backend へ GET をちょうど 1 回だけ送り、契約の値を返す (google_sub の cache 不要・利用者登録なし)", async () => {
@@ -2028,7 +2057,7 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     const body = await callVerifyRls(env);
 
     expect(body.result?.isError).toBe(false);
-    expect(JSON.parse(body.result!.content[0]!.text)).toEqual(rlsBody());
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual(toolOut());
 
     expect(backendCalls).toHaveLength(1);
     const { url, init } = backendCalls[0]!;
@@ -2059,7 +2088,7 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     routeFetch({ ...rlsBody(), state: null });
     const body = await callVerifyRls(env);
     expect(body.result?.isError).toBe(false);
-    expect(JSON.parse(body.result!.content[0]!.text)).toEqual({ ...rlsBody(), state: null });
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual(toolOut({ ...rlsBody(), state: null }));
   });
 
   it("backend が契約に無い key を返しても tool の出力に出ない", async () => {
@@ -2068,27 +2097,153 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     const body = await callVerifyRls(env);
     expect(body.result?.isError).toBe(false);
     expect(body.result!.content[0]!.text).not.toContain("leak-marker");
-    expect(JSON.parse(body.result!.content[0]!.text)).toEqual(rlsBody());
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual(toolOut());
   });
 
-  it.each([401, 404, 500])("backend 非 200 (%i) は 502 rls_check_unavailable", async (status) => {
-    const env = allowedEnv();
-    routeFetch({ error: "x" }, status);
-    const body = await callVerifyRls(env);
-    expect(body.result?.isError).toBe(true);
-    expect(body.result!.content[0]!.text).toBe("dev-login error 502: rls_check_unavailable");
-    expect(backendCalls).toHaveLength(1);
-  });
+  it.each([401, 404, 500])(
+    "backend 非 200 (%i) は 502 rls_check_unavailable で、vein は呼ばない",
+    async (status) => {
+      const vein = makeVein();
+      const env = allowedEnv(vein);
+      routeFetch({ error: "x" }, status);
+      const body = await callVerifyRls(env);
+      expect(body.result?.isError).toBe(true);
+      expect(body.result!.content[0]!.text).toBe("dev-login error 502: rls_check_unavailable");
+      expect(backendCalls).toHaveLength(1);
+      expect(vein.fetch).not.toHaveBeenCalled();
+    },
+  );
 
-  it("backend の応答が契約の形でなければ 502 rls_check_unavailable", async () => {
-    const env = allowedEnv();
+  it("backend の応答が契約の形でなければ 502 rls_check_unavailable で、vein は呼ばない", async () => {
+    const vein = makeVein();
+    const env = allowedEnv(vein);
     routeFetch({ ok: true });
     const body = await callVerifyRls(env);
     expect(body.result!.content[0]!.text).toBe("dev-login error 502: rls_check_unavailable");
+    expect(vein.fetch).not.toHaveBeenCalled();
   });
 
-  it("arguments に何を渡しても backend への要求は変わらない", async () => {
+  it("backend の verdicts が欠け・型違いなら 502 rls_check_unavailable (内訳を読めないまま合否を返さない)", async () => {
     const env = allowedEnv();
+    routeFetch({ ...rlsBody(), verdicts: { invariants: true, runtime_role: true, migrations: true } });
+    const body = await callVerifyRls(env);
+    expect(body.result!.content[0]!.text).toBe("dev-login error 502: rls_check_unavailable");
+  });
+
+  it("vein が bind されていれば backend へ GET 1 回・vein へ GET 1 回で、workers.vein と verdicts.vein が出る", async () => {
+    const vein = makeVein();
+    const env = allowedEnv(vein);
+    routeFetch();
+    const body = await callVerifyRls(env);
+
+    expect(body.result?.isError).toBe(false);
+    const parsed = JSON.parse(body.result!.content[0]!.text) as Record<string, unknown>;
+    expect(parsed).toEqual(toolOut(rlsBody(), VEIN_RT, true));
+    expect(parsed.ok).toBe(true);
+
+    expect(backendCalls).toHaveLength(1);
+    expect(backendCalls[0]!.url).toBe(`${env.ALC_API_ORIGIN}${RLS_PATH}`);
+    expect(backendCalls[0]!.init?.method).toBe("GET");
+    expect(vein.fetch).toHaveBeenCalledTimes(1);
+    const [veinUrl, veinInit] = vein.fetch.mock.calls[0]!;
+    expect(veinUrl).toBe(VEIN_URL);
+    expect(veinInit?.method).toBe("GET");
+    expect(veinInit?.body).toBeUndefined();
+    expect([...new Headers(veinInit?.headers).keys()]).toEqual([]);
+  });
+
+  it("vein が余分な key を返しても tool の出力に出ない", async () => {
+    const env = allowedEnv(
+      makeVein({ current_user: "rt_role", is_runtime_role: true, database_url: "leak-marker" }),
+    );
+    routeFetch();
+    const body = await callVerifyRls(env);
+    expect(body.result!.content[0]!.text).not.toContain("leak-marker");
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual(toolOut(rlsBody(), VEIN_RT, true));
+  });
+
+  it("vein が実行用ロールで繋いでいなければ ok: false で、原因は verdicts.vein で読める", async () => {
+    const role = { current_user: "owner_role", is_runtime_role: false };
+    const env = allowedEnv(makeVein(role));
+    routeFetch();
+    const body = await callVerifyRls(env);
+    expect(body.result?.isError).toBe(false);
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual({
+      ...toolOut(rlsBody(), { bound: true, ...role }, false),
+      ok: false,
+    });
+  });
+
+  it.each<[string, () => ReturnType<typeof makeVein>]>([
+    ["非 200", () => makeVein({ error: "x" }, 500)],
+    ["形が違う", () => makeVein({ current_user: "rt_role" })],
+    [
+      "例外",
+      () => ({
+        fetch: vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
+          throw new Error("binding down");
+        }),
+      }),
+    ],
+  ])("vein が失敗 (%s) しても backend の値は返り、ok: false・verdicts.vein: false になる", async (_label, mk) => {
+    const vein = mk();
+    const env = allowedEnv(vein);
+    routeFetch();
+    const body = await callVerifyRls(env);
+    expect(body.result?.isError).toBe(false);
+    expect(JSON.parse(body.result!.content[0]!.text)).toEqual({
+      ...toolOut(rlsBody(), { bound: true, current_user: null, is_runtime_role: null }, false),
+      ok: false,
+    });
+    expect(backendCalls).toHaveLength(1);
+    expect(vein.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("backend の内訳のどれかが false なら ok: false で、drift と verdicts がそのまま出る", async () => {
+    const env = allowedEnv(makeVein());
+    const drift = { matches_expected: false, tables: [{ name: "table x", expected: {}, actual: {} }] };
+    const backend = {
+      ...rlsBody(),
+      ok: false,
+      verdicts: { invariants: true, runtime_role: true, migrations: true, drift: false },
+      drift,
+    };
+    routeFetch(backend);
+    const body = await callVerifyRls(env);
+    const parsed = JSON.parse(body.result!.content[0]!.text) as Record<string, unknown>;
+    expect(parsed).toEqual(toolOut(backend, VEIN_RT, true));
+    expect(parsed.ok).toBe(false);
+    expect(parsed.drift).toEqual(drift);
+  });
+
+  it.each([true, false])(
+    "verdicts と drift を返さない古い backend (ok: %s) でも結果を返し、4 つは null・ok は backend の値",
+    async (backendOk) => {
+      const env = allowedEnv(makeVein());
+      const { verdicts: _v, drift: _d, ...old } = rlsBody();
+      routeFetch({ ...old, ok: backendOk });
+      const body = await callVerifyRls(env);
+      expect(body.result?.isError).toBe(false);
+      expect(JSON.parse(body.result!.content[0]!.text)).toEqual({
+        ...old,
+        ok: backendOk,
+        verdicts: { invariants: null, runtime_role: null, migrations: null, drift: null, vein: true },
+        drift: null,
+        workers: { vein: VEIN_RT },
+      });
+    },
+  );
+
+  it("backend の ok が false なら、内訳が全部 true でも tool の ok は false", async () => {
+    const env = allowedEnv(makeVein());
+    routeFetch({ ...rlsBody(), ok: false });
+    const body = await callVerifyRls(env);
+    expect((JSON.parse(body.result!.content[0]!.text) as { ok: boolean }).ok).toBe(false);
+  });
+
+  it("arguments に何を渡しても backend と vein への要求は変わらない", async () => {
+    const vein = makeVein();
+    const env = allowedEnv(vein);
     routeFetch();
     const body = await callVerifyRls(env, {
       sql: "select 1",
@@ -2105,5 +2260,12 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     const headers = init?.headers as Headers;
     expect(headers.has("X-Tenant-ID")).toBe(false);
     expect([...headers.keys()]).toEqual(["authorization"]);
+
+    expect(vein.fetch).toHaveBeenCalledTimes(1);
+    const [veinUrl, veinInit] = vein.fetch.mock.calls[0]!;
+    expect(veinUrl).toBe(VEIN_URL);
+    expect(veinInit?.method).toBe("GET");
+    expect(veinInit?.body).toBeUndefined();
+    expect([...new Headers(veinInit?.headers).keys()]).toEqual([]);
   });
 });

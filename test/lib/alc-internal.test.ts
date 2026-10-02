@@ -9,12 +9,15 @@ vi.mock("../../src/lib/oidc", () => ({
 
 import {
   RLS_STATE_MAX_LENGTH,
+  buildVerifyRlsResult,
   fetchRlsCheck,
+  fetchVeinDbRole,
   internalAuthToken,
   resolveActiveDeviceTenant,
 } from "../../src/lib/alc-internal";
 import { signInternalJWT } from "../../src/lib/internal-jwt";
 import { mintGoogleIdToken } from "../../src/lib/oidc";
+import type { RlsCheckResult, VeinDbRole } from "../../src/lib/alc-internal";
 import type { Env } from "../../src/index";
 
 function env(overrides: Record<string, unknown> = {}): Env {
@@ -167,6 +170,8 @@ describe("fetchRlsCheck (Refs #605)", () => {
         table_count: 2,
         views: [],
       },
+      verdicts: { invariants: true, runtime_role: true, migrations: true, drift: true },
+      drift: { matches_expected: false, tables: [{ name: "table x", expected: {}, actual: {} }] },
     };
   }
 
@@ -213,6 +218,7 @@ describe("fetchRlsCheck (Refs #605)", () => {
     body.invariants.extra = "leak";
     body.invariants.checks[0].extra = "leak";
     body.invariants.violations[0].extra = "leak";
+    body.verdicts.extra = "leak";
     stubJson(body);
     const res = await fetchRlsCheck(env());
     expect(res).toEqual(contract());
@@ -254,6 +260,13 @@ describe("fetchRlsCheck (Refs #605)", () => {
     ["violations[].check_no が文字列", (b) => (b.invariants.violations[0].check_no = "1")],
     ["violations[].object が数値", (b) => (b.invariants.violations[0].object = 1)],
     ["violations[].detail 欠け", (b) => delete b.invariants.violations[0].detail],
+    ["verdicts が null", (b) => (b.verdicts = null)],
+    ["verdicts が配列", (b) => (b.verdicts = [true, true, true, true])],
+    ["verdicts が文字列", (b) => (b.verdicts = "ok")],
+    ["verdicts.invariants 欠け", (b) => delete b.verdicts.invariants],
+    ["verdicts.runtime_role が文字列", (b) => (b.verdicts.runtime_role = "true")],
+    ["verdicts.migrations が null", (b) => (b.verdicts.migrations = null)],
+    ["verdicts.drift が数値", (b) => (b.verdicts.drift = 1)],
   ])("契約の型に合わない応答は null: %s", async (_label, mutate) => {
     const body = contract();
     mutate(body);
@@ -293,6 +306,57 @@ describe("fetchRlsCheck (Refs #605)", () => {
     expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: null });
   });
 
+  it("verdicts は 4 つとも boolean なら、その値を写す", async () => {
+    const body = contract();
+    body.verdicts = { invariants: true, runtime_role: false, migrations: true, drift: false };
+    stubJson(body);
+    const res = await fetchRlsCheck(env());
+    expect(res?.verdicts).toEqual({
+      invariants: true,
+      runtime_role: false,
+      migrations: true,
+      drift: false,
+    });
+  });
+
+  it("verdicts と drift を返さない backend (古い版) でも、verdicts: null・drift: null でほかの値を返す", async () => {
+    const body = contract();
+    delete body.verdicts;
+    delete body.drift;
+    stubJson(body);
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), verdicts: null, drift: null });
+  });
+
+  it("drift は object ならそのまま返す (入れ子の未知の key も残る)", async () => {
+    const body = contract();
+    body.drift = { matches_expected: false, future_key: { deep: [1, "x", null] } };
+    stubJson(body);
+    const res = await fetchRlsCheck(env());
+    expect(res?.drift).toEqual({ matches_expected: false, future_key: { deep: [1, "x", null] } });
+  });
+
+  it.each<[string, (b: Record<string, any>) => void]>([
+    ["null", (b) => (b.drift = null)],
+    ["欠け", (b) => delete b.drift],
+    ["配列", (b) => (b.drift = [{ tables: [] }])],
+    ["文字列", (b) => (b.drift = "{}")],
+    ["数値", (b) => (b.drift = 1)],
+  ])("drift が %s なら drift: null にし、ほかの値は返す", async (_label, mutate) => {
+    const body = contract();
+    mutate(body);
+    stubJson(body);
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), drift: null });
+  });
+
+  it("drift は state と同じ上限ちょうどまで通し、超えたら drift: null (ほかの値は返す)", async () => {
+    const atLimit = { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 10) };
+    stubJson({ ...contract(), drift: atLimit });
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), drift: atLimit });
+
+    stubJson({ ...contract(), drift: { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 9) } });
+    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), drift: null });
+  });
+
   it.each([null, [], "text", 1])("最上位が object でない応答 (%j) は null", async (body) => {
     stubJson(body);
     expect(await fetchRlsCheck(env())).toBeNull();
@@ -316,5 +380,237 @@ describe("fetchRlsCheck (Refs #605)", () => {
       }),
     );
     expect(await fetchRlsCheck(env())).toBeNull();
+  });
+});
+
+describe("fetchVeinDbRole (Refs #605)", () => {
+  const FAILED: VeinDbRole = { bound: true, current_user: null, is_runtime_role: null };
+
+  function makeBinding(respond: () => Promise<Response> | Response) {
+    return { fetch: vi.fn(async (_url: string, _init?: RequestInit) => respond()) };
+  }
+
+  function veinEnv(binding: ReturnType<typeof makeBinding>): Env {
+    return env({ ALC_VEIN: binding as unknown as Fetcher });
+  }
+
+  function jsonBinding(body: unknown, status = 200) {
+    return makeBinding(() => new Response(JSON.stringify(body), { status }));
+  }
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("binding が無ければ bound: false (どこも呼ばない)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await fetchVeinDbRole(env())).toEqual({
+      bound: false,
+      current_user: null,
+      is_runtime_role: null,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("200 + 契約どおり (is_runtime_role: %s) は 2 値を返す", async (isRt) => {
+    const binding = jsonBinding({ current_user: "some_role", is_runtime_role: isRt });
+    expect(await fetchVeinDbRole(veinEnv(binding))).toEqual({
+      bound: true,
+      current_user: "some_role",
+      is_runtime_role: isRt,
+    });
+  });
+
+  it("余分な key は出力に出ない", async () => {
+    const binding = jsonBinding({ current_user: "rt_role", is_runtime_role: true, extra: "leak" });
+    const res = await fetchVeinDbRole(veinEnv(binding));
+    expect(res).toEqual({ bound: true, current_user: "rt_role", is_runtime_role: true });
+    expect(JSON.stringify(res)).not.toContain("leak");
+  });
+
+  it("binding へ GET 1 回・URL 固定・Authorization もテナントのヘッダも body も無しで呼ぶ", async () => {
+    const globalFetch = vi.fn();
+    vi.stubGlobal("fetch", globalFetch);
+    const binding = jsonBinding({ current_user: "rt_role", is_runtime_role: true });
+    await fetchVeinDbRole(veinEnv(binding));
+
+    expect(globalFetch).not.toHaveBeenCalled();
+    expect(binding.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = binding.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-vein/internal/db-role");
+    expect(init?.method).toBe("GET");
+    expect(init?.body).toBeUndefined();
+    const headers = new Headers(init?.headers);
+    expect(headers.has("Authorization")).toBe(false);
+    expect(headers.has("X-Tenant-ID")).toBe(false);
+    expect([...headers.keys()]).toEqual([]);
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it.each([201, 401, 403, 404, 500, 503])("非 200 (%i) は bound: true で値は null", async (status) => {
+    const binding = jsonBinding({ current_user: "rt_role", is_runtime_role: true }, status);
+    expect(await fetchVeinDbRole(veinEnv(binding))).toEqual(FAILED);
+  });
+
+  it("fetch の例外は bound: true で値は null", async () => {
+    const binding = makeBinding(() => {
+      throw new Error("binding down");
+    });
+    expect(await fetchVeinDbRole(veinEnv(binding))).toEqual(FAILED);
+  });
+
+  it("200 だが JSON 不正は bound: true で値は null", async () => {
+    const binding = makeBinding(() => new Response("{not json", { status: 200 }));
+    expect(await fetchVeinDbRole(veinEnv(binding))).toEqual(FAILED);
+  });
+
+  it.each<[string, unknown]>([
+    ["null", null],
+    ["配列", [{ current_user: "rt_role", is_runtime_role: true }]],
+    ["文字列", "rt_role"],
+    ["current_user 欠け", { is_runtime_role: true }],
+    ["current_user が数値", { current_user: 1, is_runtime_role: true }],
+    ["is_runtime_role 欠け", { current_user: "rt_role" }],
+    ["is_runtime_role が文字列", { current_user: "rt_role", is_runtime_role: "true" }],
+    ["is_runtime_role が null", { current_user: "rt_role", is_runtime_role: null }],
+  ])("契約の型に合わない応答 (%s) は bound: true で値は null (片方だけ返さない)", async (_label, body) => {
+    expect(await fetchVeinDbRole(veinEnv(jsonBinding(body)))).toEqual(FAILED);
+  });
+});
+
+describe("buildVerifyRlsResult (Refs #605)", () => {
+  type BackendVerdicts = NonNullable<RlsCheckResult["verdicts"]>;
+  const ALL_TRUE: BackendVerdicts = { invariants: true, runtime_role: true, migrations: true, drift: true };
+  const VEIN_UNBOUND: VeinDbRole = { bound: false, current_user: null, is_runtime_role: null };
+  const VEIN_RT: VeinDbRole = { bound: true, current_user: "rt_role", is_runtime_role: true };
+  const VEIN_OWNER: VeinDbRole = { bound: true, current_user: "owner_role", is_runtime_role: false };
+  const VEIN_FAILED: VeinDbRole = { bound: true, current_user: null, is_runtime_role: null };
+
+  function backend(ok: boolean, verdicts: BackendVerdicts | null): RlsCheckResult {
+    return {
+      ok,
+      migrations: {
+        applied: 159,
+        max_version: 160,
+        binary_count: 159,
+        binary_max_version: 160,
+        matches_binary: true,
+      },
+      runtime_role: {
+        current_user: "rt_role",
+        is_runtime_role: true,
+        rolsuper: false,
+        rolbypassrls: false,
+        rolinherit: false,
+        member_of_table_owner: false,
+      },
+      connections: [{ usename: "rt_role", count: 3 }],
+      owner_role_connected: false,
+      invariants: { violation_count: 0, checks: [], violations: [] },
+      state: { table_count: 2 },
+      verdicts,
+      drift: { matches_expected: true },
+    };
+  }
+
+  it("新しい backend で 5 つとも合格なら ok: true。backend の値はそのまま、workers.vein が足される", () => {
+    const b = backend(true, ALL_TRUE);
+    const { verdicts: _v, ...rest } = b;
+    expect(buildVerifyRlsResult(b, VEIN_RT)).toEqual({
+      ...rest,
+      ok: true,
+      verdicts: { ...ALL_TRUE, vein: true },
+      workers: { vein: VEIN_RT },
+    });
+  });
+
+  it("verdicts の key は 5 個ちょうど", () => {
+    const res = buildVerifyRlsResult(backend(true, ALL_TRUE), VEIN_RT);
+    expect(Object.keys(res.verdicts).sort()).toEqual(
+      ["drift", "invariants", "migrations", "runtime_role", "vein"],
+    );
+    expect(Object.keys(res.workers.vein).sort()).toEqual(["bound", "current_user", "is_runtime_role"]);
+  });
+
+  it.each<keyof BackendVerdicts>(["invariants", "runtime_role", "migrations", "drift"])(
+    "backend の %s だけ false なら ok: false で、verdicts のその項目だけが false",
+    (key) => {
+      const res = buildVerifyRlsResult(backend(false, { ...ALL_TRUE, [key]: false }), VEIN_RT);
+      expect(res.ok).toBe(false);
+      expect(res.verdicts).toEqual({ ...ALL_TRUE, [key]: false, vein: true });
+    },
+  );
+
+  it("vein が実行用ロールでなければ、backend が全部合格でも ok: false (verdicts.vein だけ false)", () => {
+    const res = buildVerifyRlsResult(backend(true, ALL_TRUE), VEIN_OWNER);
+    expect(res.ok).toBe(false);
+    expect(res.verdicts).toEqual({ ...ALL_TRUE, vein: false });
+    expect(res.workers.vein).toEqual(VEIN_OWNER);
+  });
+
+  it("vein が bind されていなければ verdicts.vein: null で、ok に影響しない", () => {
+    const res = buildVerifyRlsResult(backend(true, ALL_TRUE), VEIN_UNBOUND);
+    expect(res.ok).toBe(true);
+    expect(res.verdicts).toEqual({ ...ALL_TRUE, vein: null });
+    expect(res.workers.vein).toEqual(VEIN_UNBOUND);
+
+    const failing = buildVerifyRlsResult(backend(false, { ...ALL_TRUE, drift: false }), VEIN_UNBOUND);
+    expect(failing.ok).toBe(false);
+    expect(failing.verdicts.vein).toBeNull();
+  });
+
+  it("vein が bind されているのに呼べなければ verdicts.vein: false で ok: false (fail-closed)", () => {
+    const res = buildVerifyRlsResult(backend(true, ALL_TRUE), VEIN_FAILED);
+    expect(res.ok).toBe(false);
+    expect(res.verdicts).toEqual({ ...ALL_TRUE, vein: false });
+    expect(res.workers.vein).toEqual(VEIN_FAILED);
+  });
+
+  it("古い backend (verdicts 無し) で backend ok: true・vein 合格なら ok: true、4 つは null", () => {
+    const res = buildVerifyRlsResult(backend(true, null), VEIN_RT);
+    expect(res.ok).toBe(true);
+    expect(res.verdicts).toEqual({
+      invariants: null,
+      runtime_role: null,
+      migrations: null,
+      drift: null,
+      vein: true,
+    });
+  });
+
+  it("古い backend で vein が bind されていなければ、backend の ok がそのまま ok になる", () => {
+    expect(buildVerifyRlsResult(backend(true, null), VEIN_UNBOUND).ok).toBe(true);
+    expect(buildVerifyRlsResult(backend(false, null), VEIN_UNBOUND).ok).toBe(false);
+  });
+
+  it("古い backend で backend ok: false なら、vein が合格でも ok: false", () => {
+    expect(buildVerifyRlsResult(backend(false, null), VEIN_RT).ok).toBe(false);
+  });
+
+  it("古い backend で vein が不合格・呼べないなら ok: false", () => {
+    expect(buildVerifyRlsResult(backend(true, null), VEIN_OWNER).ok).toBe(false);
+    expect(buildVerifyRlsResult(backend(true, null), VEIN_FAILED).ok).toBe(false);
+  });
+
+  it("backend の ok が false なら、どの組み合わせでも tool の ok は true にならない", () => {
+    const bools = [true, false];
+    const verdictSets: Array<BackendVerdicts | null> = [null];
+    for (const invariants of bools)
+      for (const runtime_role of bools)
+        for (const migrations of bools)
+          for (const drift of bools) verdictSets.push({ invariants, runtime_role, migrations, drift });
+    const veins = [VEIN_UNBOUND, VEIN_RT, VEIN_OWNER, VEIN_FAILED];
+
+    let trueCount = 0;
+    for (const v of verdictSets) {
+      for (const vein of veins) {
+        // 内訳が全部 true なのに ok: false という食い違った応答も含めて、true にならない。
+        expect(buildVerifyRlsResult(backend(false, v), vein).ok).toBe(false);
+        if (buildVerifyRlsResult(backend(true, v), vein).ok) trueCount++;
+      }
+    }
+    // backend ok: true の側で true になるのは「内訳が無い or 全部 true」×「vein が未 bind or 合格」の 4 通りだけ。
+    expect(trueCount).toBe(4);
   });
 });
