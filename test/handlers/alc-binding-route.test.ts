@@ -97,7 +97,50 @@ describe("resolveAlcBinding", () => {
     expect(resolveAlcBinding("/api/upload", env, "browser")).toEqual({ fetcher: dtako, host: "alc-dtako" });
     expect(resolveAlcBinding("/api/upload/", env, "browser")).toBeNull();
     expect(resolveAlcBinding("/api/upload/face-photo", env, "browser")).toBeNull();
-    expect(resolveAlcBinding("/api/uploads", env, "browser")).toBeNull();
+    expect(resolveAlcBinding("/api/uploadsx", env, "browser")).toBeNull();
+  });
+
+  const READ_RERUN_PATHS = [
+    "/api/uploads",
+    "/api/internal/pending",
+    "/api/internal/download/upload-1",
+    "/api/internal/download",
+    "/api/internal/rerun/upload-1",
+    "/api/internal/rerun",
+  ];
+
+  it("履歴の読み取りとやり直しの口は画面用が引ける (一覧の 2 つは完全一致、id 付きの 2 つは prefix)", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    for (const path of READ_RERUN_PATHS) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+    }
+  });
+
+  it("履歴の読み取りとやり直しの口は、内部用と端末用からは引かない", () => {
+    const { env } = setup();
+    for (const path of READ_RERUN_PATHS) {
+      expect(resolveAlcBinding(path, env, "internal"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "device"), path).toBeNull();
+    }
+  });
+
+  it("近い名前の別の path は一致しない", () => {
+    const { env } = setup();
+    for (const path of [
+      "/api/internal/operations",
+      "/api/internal/rls-check",
+      "/api/internal/downloads",
+      "/api/internal/reruns",
+      "/api/internal",
+      "/api/uploads/x",
+      "/api/uploads/",
+      "/api/upload/",
+      "/api/internal/pending/x",
+      "/api/internal/pending/",
+    ]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
   });
 
   it("/api/upload は画面用と内部用が引ける (端末用は引かない)", () => {
@@ -132,6 +175,9 @@ describe("resolveAlcBinding", () => {
     for (const proxy of ["browser", "internal", "device"] as const) {
       for (const path of ["/api/vein/identify", "/api/upload", "/api/split-csv/x", "/api/split-csv-all"]) {
         expect(resolveAlcBinding(path, env, proxy)).toBeNull();
+      }
+      for (const path of READ_RERUN_PATHS) {
+        expect(resolveAlcBinding(path, env, proxy), path).toBeNull();
       }
     }
   });
@@ -388,6 +434,85 @@ describe("alc-proxy → ALC_DTAKO binding", () => {
     expect(res.status).toBe(403);
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
+
+  it("(a) 履歴の読み取りの GET は binding に届く (付くヘッダは既存の dtako の行と同じ。body は付かない)", async () => {
+    const { binding, dtako, cloudRun, env } = setup();
+    const paths = ["/api/uploads", "/api/internal/pending", "/api/internal/download/upload-1"];
+    for (const path of paths) {
+      const res = await handleAlcProxy(
+        alcReq(`/alc-proxy${path}`, { method: "GET", headers: { "X-Tenant-ID": "evil-tenant" } }),
+        env,
+      );
+      expect(await res.text()).toBe("from-binding");
+    }
+    expect(dtako.fetch.mock.calls.map((c) => c[0])).toEqual(paths.map((p) => `https://alc-dtako${p}`));
+    for (const [, init] of dtako.fetch.mock.calls) {
+      expect(init!.method).toBe("GET");
+      expect(init!.redirect).toBe("manual");
+      expect(init!.body).toBeUndefined();
+      const h = init!.headers as Record<string, string>;
+      expect(Object.keys(h).sort()).toEqual(["X-Tenant-ID", "X-User-Email", "X-User-ID", "X-User-Role"]);
+      expect(h["X-Tenant-ID"]).not.toBe("evil-tenant");
+    }
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+  });
+
+  it("(a) やり直しの POST は binding に届く", async () => {
+    const { dtako, cloudRun, env } = setup();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/internal/rerun/upload-1", {}), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/internal/rerun/upload-1");
+    expect(init!.method).toBe("POST");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(b) binding 未定義なら履歴の読み取りとやり直しの口も Cloud Run へ", async () => {
+    const { dtako, cloudRun, env } = setup({ ALC_DTAKO: undefined });
+    const paths = ["/api/uploads", "/api/internal/pending", "/api/internal/download/upload-1"];
+    for (const path of paths) {
+      const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { method: "GET" }), env);
+      expect(await res.text()).toBe("from-cloud-run");
+    }
+    const rerun = await handleAlcProxy(alcReq("/alc-proxy/api/internal/rerun/upload-1", {}), env);
+    expect(await rerun.text()).toBe("from-cloud-run");
+    expect(cloudRun.mock.calls.map((c) => String(c[0]))).toEqual(
+      [...paths, "/api/internal/rerun/upload-1"].map((p) => `https://alc-api.test.example${p}`),
+    );
+    expect(dtako.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(d) 未認証 / dev token のやり直しの POST (#433) は binding に届かない", async () => {
+    const { dtako, cloudRun, env } = setup();
+    const unauth = await handleAlcProxy(
+      new Request("https://auth.test.example/alc-proxy/api/uploads", {
+        method: "GET",
+        headers: { "X-Alc-Proxy-Origin": ORIGIN, "X-Alc-Proxy-Secret": PROXY_SECRET },
+      }),
+      env,
+    );
+    expect(unauth.status).toBe(401);
+    const ro = await handleAlcProxy(
+      alcReq("/alc-proxy/api/internal/rerun/upload-1", {
+        token: makeJwt(TEST_JWT_SECRET, { token_kind: "dev" }),
+      }),
+      env,
+    );
+    expect(ro.status).toBe(403);
+    expect(dtako.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(f) %2e%2e%2f を含むダウンロード・やり直しの path は 403 で binding に届かない", async () => {
+    const { dtako, env } = setup();
+    for (const path of ["/api/internal/download/%2e%2e%2fadmin", "/api/internal/rerun/%2e%2e%2fadmin"]) {
+      const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { method: "GET" }), env);
+      expect(res.status, path).toBe(403);
+    }
+    expect(dtako.fetch).not.toHaveBeenCalled();
+  });
 });
 
 function internalReq(path: string, headers: Record<string, string> = {}, body = "zip-bytes") {
@@ -487,9 +612,18 @@ describe("alc-internal-proxy → ALC_DTAKO binding", () => {
       env,
     );
     expect(noTenant.status).toBe(400);
-    for (const path of ["/api/upload/face-photo", "/api/split-csv/x", "/api/split-csv-all", "/api/vein/identify"]) {
+    for (const path of [
+      "/api/upload/face-photo",
+      "/api/split-csv/x",
+      "/api/split-csv-all",
+      "/api/vein/identify",
+      "/api/uploads",
+      "/api/internal/pending",
+      "/api/internal/download/upload-1",
+      "/api/internal/rerun/upload-1",
+    ]) {
       const res = await handleAlcInternalProxy(internalReq(`/alc-internal-proxy${path}`), env);
-      expect(res.status).toBe(403);
+      expect(res.status, path).toBe(403);
     }
     expect(dtako.fetch).not.toHaveBeenCalled();
     expect(binding.fetch).not.toHaveBeenCalled();
