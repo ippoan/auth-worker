@@ -122,8 +122,8 @@ service = "alc-vein"
 
 # rust-alc-api の dtako worker (ippoan/alc-dtako-worker、ippoan/rust-alc-api#725) への service binding。
 # デジタコの zip のアップロードと CSV の分割の口を、この binding に回す (どの口を・どの proxy から回すかは
-# 振り分けの表 src/lib/alc-backend-route.ts)。alc-dtako は workers_dev = false・route なしで、届く経路はこの binding だけ。
-# env.staging には bind しない。binding 未定義なら Cloud Run に流れるので、staging は従来どおり Cloud Run staging へ行く。
+# 振り分けの表 src/lib/alc-backend-route.ts)。本番の alc-dtako は workers_dev = false・route なしで、届く経路はこの binding だけ。
+# staging は alc-dtako-staging を bind (env.staging.services)。
 [[services]]
 binding = "ALC_DTAKO"
 service = "alc-dtako"
@@ -532,6 +532,14 @@ service = "cf-flickr-cam-worker"
 [[env.staging.services]]
 binding = "ALC_RECORDER"
 service = "alc-recorder-staging"
+
+# alc-dtako staging (ippoan/alc-dtako-worker、ippoan/rust-alc-api#725)。staging は alc-dtako-staging へ。
+# staging の DB は Cloud Run staging (起動ごとに消える sidecar) と alc-dtako-staging (運用者の機械上、vein staging と共用) で別物。
+# つなぐと、デジタコのアップロード・分割・再計算は worker の DB に書かれ、運行一覧など worker に表が無い読み取りの口は
+# Cloud Run の DB を読むので割れる (承知の上)。R2 は両方 ohishi-dtako-staging で同じ。
+[[env.staging.services]]
+binding = "ALC_DTAKO"
+service = "alc-dtako-staging"
 
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
