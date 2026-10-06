@@ -24,6 +24,7 @@ export interface AlcBindingRoute {
  * `/api/upload` を完全一致にしているのは、下位の path (`/api/upload/…`) が別の口だから。
  * `/api/uploads`・`/api/internal/pending`・`/api/internal/download/…`・`/api/internal/rerun/…` は、アップロード履歴の
  * 読み取りと、やり直しの口。`alc-dtako` へ回すのは画面用の proxy だけ。
+ * `/api/recalculate`・`/api/recalculate-driver`・`/api/recalculate-drivers` は再計算の 3 口 (完全一致)。`alc-dtako` へ回すのは画面用の proxy だけ。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -34,6 +35,9 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/internal/pending", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "prefix", path: "/api/internal/download/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "prefix", path: "/api/internal/rerun/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/recalculate", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/recalculate-driver", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/recalculate-drivers", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */
