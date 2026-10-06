@@ -533,6 +533,14 @@ service = "cf-flickr-cam-worker"
 binding = "ALC_RECORDER"
 service = "alc-recorder-staging"
 
+# alc-dtako staging (ippoan/alc-dtako-worker、ippoan/rust-alc-api#725)。staging は alc-dtako-staging へ。
+# staging の DB は Cloud Run staging (起動ごとに消える sidecar) と alc-dtako-staging (運用者の機械上、vein staging と共用) で別物。
+# つなぐと、デジタコのアップロード・分割・再計算は worker の DB に書かれ、運行一覧など worker に表が無い読み取りの口は
+# Cloud Run の DB を読むので割れる (承知の上)。R2 は両方 ohishi-dtako-staging で同じ。
+[[env.staging.services]]
+binding = "ALC_DTAKO"
+service = "alc-dtako-staging"
+
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"
