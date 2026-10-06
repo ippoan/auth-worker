@@ -143,6 +143,38 @@ describe("resolveAlcBinding", () => {
     }
   });
 
+  const RECALC_PATHS = ["/api/recalculate", "/api/recalculate-driver", "/api/recalculate-drivers"];
+
+  it("再計算の 3 口は画面用が引ける (完全一致)", () => {
+    const { dtako, env } = setup();
+    for (const path of RECALC_PATHS) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual({ fetcher: dtako, host: "alc-dtako" });
+    }
+  });
+
+  it("再計算の 3 口は、内部用と端末用からは引かない", () => {
+    const { env } = setup();
+    for (const path of RECALC_PATHS) {
+      expect(resolveAlcBinding(path, env, "internal"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "device"), path).toBeNull();
+    }
+  });
+
+  it("再計算の口に近い名前の別の path は一致しない", () => {
+    const { env } = setup();
+    for (const path of [
+      "/api/recalculatex",
+      "/api/recalculate/x",
+      "/api/recalculate/",
+      "/api/recalculate-driverx",
+      "/api/recalculate-driver/",
+      "/api/recalculate-driversx",
+      "/api/recalculate-drivers/x",
+    ]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
+  });
+
   it("/api/upload は画面用と内部用が引ける (端末用は引かない)", () => {
     const { env } = setup();
     expect(resolveAlcBinding("/api/upload", env, "browser")).not.toBeNull();
@@ -176,7 +208,7 @@ describe("resolveAlcBinding", () => {
       for (const path of ["/api/vein/identify", "/api/upload", "/api/split-csv/x", "/api/split-csv-all"]) {
         expect(resolveAlcBinding(path, env, proxy)).toBeNull();
       }
-      for (const path of READ_RERUN_PATHS) {
+      for (const path of [...READ_RERUN_PATHS, ...RECALC_PATHS]) {
         expect(resolveAlcBinding(path, env, proxy), path).toBeNull();
       }
     }
@@ -513,6 +545,80 @@ describe("alc-proxy → ALC_DTAKO binding", () => {
     }
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
+
+  it("(a) 再計算の 3 つの POST は binding に届く (URL・method・body がそのまま。付くヘッダは既存の dtako の行と同じ)", async () => {
+    const { binding, dtako, cloudRun, env } = setup();
+    const bodies: Record<string, string> = {
+      "/api/recalculate": "",
+      "/api/recalculate-driver": "",
+      "/api/recalculate-drivers": JSON.stringify({ driver_ids: ["driver-1", "driver-2"] }),
+    };
+    const search: Record<string, string> = {
+      "/api/recalculate": "?year=2026&month=9",
+      "/api/recalculate-driver": "?year=2026&month=9&driver_id=driver-1",
+      "/api/recalculate-drivers": "?year=2026&month=9",
+    };
+    for (const [path, body] of Object.entries(bodies)) {
+      const res = await handleAlcProxy(
+        alcReq(`/alc-proxy${path}${search[path]}`, {
+          body: body || undefined,
+          headers: { "content-type": "application/json", "X-Tenant-ID": "evil-tenant" },
+        }),
+        env,
+      );
+      expect(await res.text(), path).toBe("from-binding");
+    }
+    expect(dtako.fetch.mock.calls.map((c) => c[0])).toEqual(
+      Object.keys(bodies).map((p) => `https://alc-dtako${p}${search[p]}`),
+    );
+    for (const [i, [, init]] of dtako.fetch.mock.calls.entries()) {
+      expect(init!.method).toBe("POST");
+      expect(init!.redirect).toBe("manual");
+      const h = init!.headers as Record<string, string>;
+      expect(Object.keys(h).sort()).toEqual(["Content-Type", "X-Tenant-ID", "X-User-Email", "X-User-ID", "X-User-Role"]);
+      expect(h["Content-Type"]).toBe("application/json");
+      expect(h["X-Tenant-ID"]).not.toBe("evil-tenant");
+      const sent = init!.body ? new TextDecoder().decode(init!.body as ArrayBuffer) : "";
+      expect(sent).toBe(Object.values(bodies)[i]);
+    }
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+  });
+
+  it("(b) binding 未定義なら再計算の 3 口も Cloud Run へ", async () => {
+    const { dtako, cloudRun, env } = setup({ ALC_DTAKO: undefined });
+    const paths = ["/api/recalculate", "/api/recalculate-driver", "/api/recalculate-drivers"];
+    for (const path of paths) {
+      const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { body: "{}" }), env);
+      expect(await res.text()).toBe("from-cloud-run");
+    }
+    expect(cloudRun.mock.calls.map((c) => String(c[0]))).toEqual(
+      paths.map((p) => `https://alc-api.test.example${p}`),
+    );
+    expect(dtako.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(c) 再計算の口の下位の path は binding があっても Cloud Run", async () => {
+    const { dtako, cloudRun, env } = setup();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/recalculate/x", { body: "{}" }), env);
+    expect(await res.text()).toBe("from-cloud-run");
+    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/recalculate/x");
+    expect(dtako.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(d) 閲覧専用の token (dev) の再計算の POST (#433) は 403 で binding に届かない", async () => {
+    const { dtako, cloudRun, env } = setup();
+    for (const path of ["/api/recalculate", "/api/recalculate-driver", "/api/recalculate-drivers"]) {
+      const ro = await handleAlcProxy(
+        alcReq(`/alc-proxy${path}`, { token: makeJwt(TEST_JWT_SECRET, { token_kind: "dev" }), body: "{}" }),
+        env,
+      );
+      expect(ro.status, path).toBe(403);
+    }
+    expect(dtako.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
 });
 
 function internalReq(path: string, headers: Record<string, string> = {}, body = "zip-bytes") {
@@ -621,6 +727,9 @@ describe("alc-internal-proxy → ALC_DTAKO binding", () => {
       "/api/internal/pending",
       "/api/internal/download/upload-1",
       "/api/internal/rerun/upload-1",
+      "/api/recalculate",
+      "/api/recalculate-driver",
+      "/api/recalculate-drivers",
     ]) {
       const res = await handleAlcInternalProxy(internalReq(`/alc-internal-proxy${path}`), env);
       expect(res.status, path).toBe(403);
