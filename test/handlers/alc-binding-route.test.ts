@@ -175,11 +175,11 @@ describe("resolveAlcBinding", () => {
     }
   });
 
-  it("/api/upload は画面用と内部用が引ける (端末用は引かない)", () => {
+  it("/api/upload は画面用・内部用・端末用のどれも引ける", () => {
     const { env } = setup();
     expect(resolveAlcBinding("/api/upload", env, "browser")).not.toBeNull();
     expect(resolveAlcBinding("/api/upload", env, "internal")).not.toBeNull();
-    expect(resolveAlcBinding("/api/upload", env, "device")).toBeNull();
+    expect(resolveAlcBinding("/api/upload", env, "device")).not.toBeNull();
   });
 
   it("/api/split-csv は末尾 / を外した完全一致と /api/split-csv/ 始まりが一致。/api/split-csv-all は完全一致だけ", () => {
@@ -746,7 +746,7 @@ describe("device-data-proxy と ALC_DTAKO binding", () => {
     vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
   });
 
-  it("端末用の /api/upload は binding があっても Cloud Run へ", async () => {
+  it("端末用の /api/upload は ALC_DTAKO の binding へ (Cloud Run には行かない)", async () => {
     const { binding, dtako, cloudRun, env } = setup();
     const token = await signTestJwt(
       { sub: "device-ingest-1", tenant_id: TENANT, role: DEVICE_ROLE_DTAKO_INGEST },
@@ -760,11 +760,14 @@ describe("device-data-proxy と ALC_DTAKO binding", () => {
       }),
       env,
     );
-    expect(await res.text()).toBe("from-cloud-run");
-    const [url, init] = cloudRun.mock.calls[0]!;
-    expect(String(url)).toBe("https://alc-api.test.example/api/upload");
-    expect(((init as RequestInit).headers as Record<string, string>).Authorization).toBe("Bearer fake-oidc-token");
-    expect(dtako.fetch).not.toHaveBeenCalled();
+    expect(await res.text()).toBe("from-binding");
+    expect(dtako.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/upload");
+    expect(init!.method).toBe("POST");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
     expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 });
