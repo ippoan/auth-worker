@@ -122,8 +122,8 @@ service = "alc-vein"
 
 # rust-alc-api の dtako worker (ippoan/alc-dtako-worker、ippoan/rust-alc-api#725) への service binding。
 # デジタコの zip のアップロードと CSV の分割の口を、この binding に回す (どの口を・どの proxy から回すかは
-# 振り分けの表 src/lib/alc-backend-route.ts)。alc-dtako は workers_dev = false・route なしで、届く経路はこの binding だけ。
-# env.staging には bind しない。binding 未定義なら Cloud Run に流れるので、staging は従来どおり Cloud Run staging へ行く。
+# 振り分けの表 src/lib/alc-backend-route.ts)。本番の alc-dtako は workers_dev = false・route なしで、届く経路はこの binding だけ。
+# staging は alc-dtako-staging を bind (env.staging.services)。
 [[services]]
 binding = "ALC_DTAKO"
 service = "alc-dtako"
