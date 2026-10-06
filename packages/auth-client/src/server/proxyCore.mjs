@@ -102,11 +102,13 @@ export function isJsonContentType(contentType) {
 
 /**
  * backend レスポンスの転送方法を分類する。
+ * - text/event-stream → stream (溜めずにそのまま流す。`/download` 判定より前)
  * - `/download` を含む path / 非 JSON content-type → binary パススルー
  * - 204 → empty
  * - それ以外 → JSON (parse 失敗時は `{ error: <text> }` に包む)
  */
 export function classifyProxyResponse(status, contentType, path) {
+  if (contentType && contentType.includes('text/event-stream')) return 'stream'
   if (path.includes('/download')) return 'binary'
   if (contentType && !contentType.includes('application/json')) return 'binary'
   if (status === 204) return 'empty'

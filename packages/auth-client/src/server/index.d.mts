@@ -245,7 +245,7 @@ export interface ProxyHeaderInput {
   xTenantId?: string
 }
 
-export type ProxyResponseKind = 'binary' | 'empty' | 'json'
+export type ProxyResponseKind = 'binary' | 'empty' | 'json' | 'stream'
 
 export declare function buildProxyHeaders(input: ProxyHeaderInput): Record<string, string>
 
