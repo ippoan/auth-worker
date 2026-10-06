@@ -92,6 +92,11 @@ async function streamBackendResponse(event, response, path) {
   if (contentDisposition) setHeader(event, 'content-disposition', contentDisposition)
   setResponseStatus(event, response.status)
   switch (classifyProxyResponse(response.status, responseContentType, path)) {
+    case 'stream':
+      // SSE は溜めずに ReadableStream のまま返す (進みを逐次に届ける)
+      setHeader(event, 'cache-control', response.headers.get('cache-control') || 'no-cache')
+      setHeader(event, 'x-accel-buffering', 'no')
+      return response.body
     case 'binary':
       // Workers 互換のため Node Buffer ではなく Uint8Array で返す
       return new Uint8Array(await response.arrayBuffer())

@@ -177,6 +177,15 @@ describe('buildTargetUrl', () => {
 })
 
 describe('classifyProxyResponse', () => {
+  it('text/event-stream は stream (charset 付きも)', () => {
+    expect(classifyProxyResponse(200, 'text/event-stream', 'recalc')).toBe('stream')
+    expect(classifyProxyResponse(200, 'text/event-stream; charset=utf-8', 'recalc')).toBe('stream')
+  })
+
+  it('/download を含む path でも event-stream なら stream', () => {
+    expect(classifyProxyResponse(200, 'text/event-stream', 'files/1/download')).toBe('stream')
+  })
+
   it('/download を含む path は常に binary', () => {
     expect(classifyProxyResponse(200, 'application/json', 'files/1/download')).toBe('binary')
   })
