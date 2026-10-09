@@ -155,8 +155,8 @@ export { InternalEntrypoint } from "./internal-entrypoint";
 // ohishi-exp/smb-watch#14: smb Worker 専用の RPC の口 (`ingestFile` / `notify`)。
 // InternalEntrypoint と別 class にして、binding ごとに呼べるメソッドを分ける。
 export { SmbIngestEntrypoint } from "./smb-ingest-entrypoint";
-// ohishi-exp/rust-ichibanboshi#322: 給与大臣 Worker (ichibanboshi-kyuyo) 専用の
-// 認可の口 (`authorize`)。これも binding ごとに呼べるメソッドを閉じるため別 class。
+// ohishi-exp/rust-ichibanboshi#322: 給与大臣 Worker (ichibanboshi-kyuyo) と
+// relay (dtako-scraper-relay) が呼ぶ認可の口 (`authorize`)。これも binding ごとに呼べるメソッドを閉じるため別 class。
 export { KyuyoAuthEntrypoint } from "./kyuyo-auth-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
