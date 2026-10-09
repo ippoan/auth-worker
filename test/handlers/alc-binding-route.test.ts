@@ -175,6 +175,18 @@ describe("resolveAlcBinding", () => {
     }
   });
 
+  it("/api/recalculate-pending は画面用・内部用が引ける (完全一致)。端末用は引かない", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    expect(resolveAlcBinding("/api/recalculate-pending", env, "browser")).toEqual(target);
+    expect(resolveAlcBinding("/api/recalculate-pending", env, "internal")).toEqual(target);
+    expect(resolveAlcBinding("/api/recalculate-pending", env, "device")).toBeNull();
+    for (const path of ["/api/recalculate-pending/", "/api/recalculate-pending/x", "/api/recalculate-pendingx"]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "internal"), path).toBeNull();
+    }
+  });
+
   it("/api/upload は画面用・内部用・端末用のどれも引ける", () => {
     const { env } = setup();
     expect(resolveAlcBinding("/api/upload", env, "browser")).not.toBeNull();
@@ -208,7 +220,7 @@ describe("resolveAlcBinding", () => {
       for (const path of ["/api/vein/identify", "/api/upload", "/api/split-csv/x", "/api/split-csv-all"]) {
         expect(resolveAlcBinding(path, env, proxy)).toBeNull();
       }
-      for (const path of [...READ_RERUN_PATHS, ...RECALC_PATHS]) {
+      for (const path of [...READ_RERUN_PATHS, ...RECALC_PATHS, "/api/recalculate-pending"]) {
         expect(resolveAlcBinding(path, env, proxy), path).toBeNull();
       }
     }
@@ -586,6 +598,22 @@ describe("alc-proxy → ALC_DTAKO binding", () => {
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 
+  it("(a) /api/recalculate-pending の POST は binding に届く (画面の JWT。X-Tenant-ID は JWT 由来に付け直す)", async () => {
+    const { binding, dtako, cloudRun, env } = setup();
+    const res = await handleAlcProxy(
+      alcReq("/alc-proxy/api/recalculate-pending", { headers: { "X-Tenant-ID": "evil-tenant" } }),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    expect(dtako.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/recalculate-pending");
+    expect(init!.method).toBe("POST");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).not.toBe("evil-tenant");
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
   it("(b) binding 未定義なら再計算の 3 口も Cloud Run へ", async () => {
     const { dtako, cloudRun, env } = setup({ ALC_DTAKO: undefined });
     const paths = ["/api/recalculate", "/api/recalculate-driver", "/api/recalculate-drivers"];
@@ -733,6 +761,52 @@ describe("alc-internal-proxy → ALC_DTAKO binding", () => {
     ]) {
       const res = await handleAlcInternalProxy(internalReq(`/alc-internal-proxy${path}`), env);
       expect(res.status, path).toBe(403);
+    }
+    expect(dtako.fetch).not.toHaveBeenCalled();
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(e) /api/recalculate-pending は shared-secret + X-Tenant-ID で binding に届く。token は作らない", async () => {
+    const { binding, dtako, cloudRun, env } = setup();
+    vi.mocked(mintGoogleIdToken).mockRejectedValue(new Error("boom"));
+    const res = await handleAlcInternalProxy(
+      internalReq("/alc-internal-proxy/api/recalculate-pending", { "content-type": "application/json" }, "{}"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/recalculate-pending");
+    expect(init!.method).toBe("POST");
+    expect(init!.headers).toEqual({ "X-Tenant-ID": TENANT, "Content-Type": "application/json" });
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(binding.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(f) /api/recalculate-pending も secret 無し・不一致は 401、X-Tenant-ID 無しは 400、近い path は 403 で binding に届かない", async () => {
+    const { binding, dtako, cloudRun, env } = setup();
+    const path = "/alc-internal-proxy/api/recalculate-pending";
+    const noSecret = await handleAlcInternalProxy(
+      new Request(`https://auth.test.example${path}`, { method: "POST", headers: { "X-Tenant-ID": TENANT }, body: "{}" }),
+      env,
+    );
+    expect(noSecret.status).toBe(401);
+    const badSecret = await handleAlcInternalProxy(internalReq(path, { "X-Alc-Proxy-Secret": "wrong" }), env);
+    expect(badSecret.status).toBe(401);
+    const noTenant = await handleAlcInternalProxy(
+      new Request(`https://auth.test.example${path}`, {
+        method: "POST",
+        headers: { "X-Alc-Proxy-Secret": PROXY_SECRET },
+        body: "{}",
+      }),
+      env,
+    );
+    expect(noTenant.status).toBe(400);
+    for (const p of ["/api/recalculate-pending/", "/api/recalculate-pending/x", "/api/recalculate-pendingx"]) {
+      const res = await handleAlcInternalProxy(internalReq(`/alc-internal-proxy${p}`), env);
+      expect(res.status, p).toBe(403);
     }
     expect(dtako.fetch).not.toHaveBeenCalled();
     expect(binding.fetch).not.toHaveBeenCalled();
