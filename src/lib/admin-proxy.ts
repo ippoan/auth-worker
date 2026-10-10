@@ -21,6 +21,11 @@
  */
 import type { Env } from "../index";
 import { alcOidcToken } from "./alc-data-fetch";
+import {
+  forwardViaAlcBinding,
+  isUnsafeBackendPath,
+  resolveAlcBinding,
+} from "./alc-backend-route";
 import { verifyJwt } from "./jwt";
 import { resolveSecret } from "./secret";
 
@@ -92,4 +97,35 @@ export function debugRustResponse(
       }),
     );
   }
+}
+
+/**
+ * admin proxy から rust の `backendPath` (`/api/...`) を叩く。振り分け表に管理画面用 (`admin`) の行があり、
+ * binding が定義されていれば Service Binding へ流す (Cloud Run 用の OIDC の Authorization は外し、
+ * X-Tenant-ID / X-User-* だけを渡す。alc-proxy の binding 経路と同じ)。無ければ今までどおり Cloud Run。
+ */
+export function fetchAdminBackend(
+  env: Env,
+  backendPath: string,
+  search: string,
+  init: { method: string; headers: Record<string, string>; body?: string },
+): Promise<Response> {
+  const binding = resolveAlcBinding(backendPath, env, "admin");
+  if (binding) {
+    if (isUnsafeBackendPath(backendPath)) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ error: "forbidden" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+    const { Authorization: _oidc, ...headers } = init.headers;
+    return forwardViaAlcBinding(binding, backendPath, search, {
+      method: init.method,
+      headers,
+      body: init.body,
+    });
+  }
+  return fetch(`${env.ALC_API_ORIGIN}${backendPath}${search}`, init);
 }

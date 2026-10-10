@@ -1,19 +1,28 @@
 import type { Env } from "../index";
 
-/** 表を引く proxy の種別 (画面用 = alc-proxy / 内部用 = alc-internal-proxy / 端末用 = device-data-proxy)。 */
-export type AlcProxyKind = "browser" | "internal" | "device";
+/**
+ * 表を引く proxy の種別 (画面用 = alc-proxy / 内部用 = alc-internal-proxy / 端末用 = device-data-proxy /
+ * 管理画面用 = admin-notify-api・api-line-users)。
+ */
+export type AlcProxyKind = "browser" | "internal" | "device" | "admin";
+
+/** 振り分け表の 1 行の一致のさせ方。 */
+export type AlcRouteMatch =
+  /** `path` (末尾 `/` 付き) で始まる、または末尾 `/` を外した値と完全一致。 */
+  | { match: "prefix"; path: string }
+  /** 完全一致だけ。 */
+  | { match: "exact"; path: string }
+  /** 正規表現 (先頭 `^`・末尾 `$` で固定する)。id を挟む口を、id の形まで含めて拾うときに使う。 */
+  | { match: "pattern"; pattern: RegExp };
 
 /** 振り分け表の 1 行。 */
-export interface AlcBindingRoute {
-  /** `prefix` = `path` (末尾 `/` 付き) で始まる、または末尾 `/` を外した値と完全一致。`exact` = 完全一致だけ。 */
-  match: "prefix" | "exact";
-  path: string;
+export type AlcBindingRoute = AlcRouteMatch & {
   binding: keyof Env;
   /** 転送先 URL の host (ダミー。binding は URL の host で経路が決まらない)。 */
   host: string;
   /** この行を引いてよい proxy。ここに無い proxy から引いたときは、従来どおり Cloud Run。 */
   proxies: ReadonlyArray<AlcProxyKind>;
-}
+};
 
 /**
  * rust-alc-api (Cloud Run monolith) を domain 別 Worker へ段階移行する (strangler) ための
@@ -30,6 +39,10 @@ export interface AlcBindingRoute {
  * (端末用・内部用は入れない。メール受信の取り込みは、この表を通らず email-receiver から直接 Service Binding で呼ぶ)。
  * `/api/internal/lineworks/send` は LINE WORKS への通知の送信 (完全一致)。内部用の proxy (internal-jwt クラス) と端末通知
  * (`device-notify-send.ts`、同じく `internal` として引く) から `alc-lineworks` へ回す。
+ * `/api/notify/` の宛先・グループ・LINE の設定・LINE WORKS のトークルームとメンバー・試し配信は `alc-notify` へ回す
+ * (画面用と、Cloud Run を直に叩いていた管理画面用の 2 つ)。文書の配信は id を UUID に固定した pattern で、画面用だけ。
+ * `/api/notify/documents/` と `/api/notify/lineworks/` の prefix は足さない (文書の他の口・ingest・viewer・LINE の webhook・
+ * 既読の記録は Cloud Run に残る)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -46,6 +59,20 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/recalculate-pending", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "internal"] },
   { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },
+  { match: "prefix", path: "/api/notify/recipients/", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  { match: "prefix", path: "/api/notify/groups/", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  { match: "prefix", path: "/api/notify/lineworks/channels/", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  { match: "exact", path: "/api/notify/line-config", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  { match: "exact", path: "/api/notify/lineworks/users", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  { match: "exact", path: "/api/notify/lineworks/login-activity", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  { match: "exact", path: "/api/notify/test-distribute", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/notify\/documents\/[0-9a-f-]{36}\/distribute$/,
+    binding: "ALC_NOTIFY",
+    host: "alc-notify",
+    proxies: ["browser"],
+  },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */
@@ -56,6 +83,7 @@ export interface AlcBindingTarget {
 
 function matchesRoute(route: AlcBindingRoute, backendPath: string): boolean {
   if (route.match === "exact") return backendPath === route.path;
+  if (route.match === "pattern") return route.pattern.test(backendPath);
   return backendPath === route.path.replace(/\/$/, "") || backendPath.startsWith(route.path);
 }
 

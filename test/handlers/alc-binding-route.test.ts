@@ -22,6 +22,8 @@ import { resolveAlcBinding } from "../../src/lib/alc-backend-route";
 import { DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_KIOSK } from "../../src/lib/device";
 import { internalAuthToken } from "../../src/lib/alc-internal";
 import { sendDeviceNotify } from "../../src/lib/device-notify-send";
+import { handleAdminNotifyApi } from "../../src/handlers/admin-notify-api";
+import { handleLineUserDelete, handleLineUsersList } from "../../src/handlers/api-line-users";
 
 const ORIGIN = "https://alc.ippoan.org";
 const PROXY_SECRET = "test-internal-shared-secret-32!!";
@@ -42,6 +44,7 @@ function setup(overrides: Record<string, unknown> = {}) {
   const dtako = makeBinding();
   const leave = makeBinding();
   const lineworks = makeBinding();
+  const notify = makeBinding();
   const cloudRun = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("from-cloud-run", { status: 200 }));
   globalThis.fetch = cloudRun as unknown as typeof fetch;
   const env = createMockEnv({
@@ -51,9 +54,10 @@ function setup(overrides: Record<string, unknown> = {}) {
     ALC_DTAKO: dtako as unknown as Fetcher,
     ALC_LEAVE: leave as unknown as Fetcher,
     ALC_LINEWORKS: lineworks as unknown as Fetcher,
+    ALC_NOTIFY: notify as unknown as Fetcher,
     ...overrides,
   });
-  return { binding, dtako, leave, lineworks, cloudRun, env };
+  return { binding, dtako, leave, lineworks, notify, cloudRun, env };
 }
 
 function alcReq(path: string, init: RequestInit & { token?: string } = {}) {
@@ -988,5 +992,268 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
     const res = await sendDeviceNotify(env, "https://alc-api.test.example", "r1", "hello", { event: "t" });
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "upstream error" });
+  });
+});
+
+describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", () => {
+  const DOC = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+  const DISTRIBUTE = `/api/notify/documents/${DOC}/distribute`;
+  const RID = "22222222-3333-4444-5555-666666666666";
+  /** worker (ippoan/alc-notify-worker の crates/notify) に在る口のうち、画面用と管理画面用の両方が引くもの。 */
+  const SHARED_PATHS = [
+    "/api/notify/recipients",
+    "/api/notify/recipients/bulk",
+    `/api/notify/recipients/${RID}`,
+    "/api/notify/groups",
+    `/api/notify/groups/${RID}`,
+    `/api/notify/groups/${RID}/members`,
+    `/api/notify/groups/${RID}/members/${RID}`,
+    "/api/notify/lineworks/channels",
+    `/api/notify/lineworks/channels/${RID}`,
+    `/api/notify/lineworks/channels/${RID}/test-send`,
+    "/api/notify/line-config",
+    "/api/notify/lineworks/users",
+    "/api/notify/lineworks/login-activity",
+    "/api/notify/test-distribute",
+  ];
+  /** Cloud Run に残る notify の口と、近い名前の path (表が拾ってはいけない)。 */
+  const CLOUD_RUN_PATHS = [
+    "/api/notify/documents",
+    "/api/notify/documents/search",
+    "/api/notify/documents/upload",
+    `/api/notify/documents/${DOC}`,
+    `/api/notify/documents/${DOC}/preview`,
+    `/api/notify/documents/${DOC}/download`,
+    `/api/notify/documents/${DOC}/redact-recompute`,
+    `/api/notify/documents/${DOC}/extract-recompute`,
+    "/api/notify/ingest",
+    "/api/notify/emails",
+    "/api/notify/line/webhook",
+    "/api/notify/read/tok",
+    "/api/notify/v/tok",
+    "/api/notify/v/tok/file",
+    "/api/notify/register-view",
+    "/api/notify/test/redact-pdf",
+    "/api/notify/lineworks",
+    "/api/notify/lineworks/",
+    "/api/notify/lineworks/users/x",
+    "/api/notify/lineworks/login-activity/x",
+    "/api/notify/line-config/x",
+    "/api/notify/test-distribute/x",
+    "/api/notify/recipientsx",
+    "/api/notify/groupsx",
+    "/api/notify/lineworks/channelsx",
+    "/api/internal/lineworks/bot-secret",
+    "/api/internal/lineworks/event",
+  ];
+
+  beforeEach(() => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
+  });
+
+  it("worker に在る口は、画面用と管理画面用が ALC_NOTIFY へ解決される。内部用・端末用は null", () => {
+    const { notify, env } = setup();
+    const target = { fetcher: notify, host: "alc-notify" };
+    for (const path of SHARED_PATHS) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "admin"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "internal"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "device"), path).toBeNull();
+    }
+  });
+
+  it("文書の配信 (pattern) は画面用だけ。管理画面用・内部用・端末用は null", () => {
+    const { notify, env } = setup();
+    expect(resolveAlcBinding(DISTRIBUTE, env, "browser")).toEqual({ fetcher: notify, host: "alc-notify" });
+    expect(resolveAlcBinding(DISTRIBUTE, env, "admin")).toBeNull();
+    expect(resolveAlcBinding(DISTRIBUTE, env, "internal")).toBeNull();
+    expect(resolveAlcBinding(DISTRIBUTE, env, "device")).toBeNull();
+  });
+
+  it("文書の配信の pattern は、UUID でない id・末尾の余り・頭の余り・.. を拾わない", () => {
+    const { env } = setup();
+    for (const path of [
+      "/api/notify/documents/not-a-uuid/distribute",
+      `/api/notify/documents/${DOC}x/distribute`,
+      `/api/notify/documents/${DOC.toUpperCase()}/distribute`,
+      `/api/notify/documents/${DOC}/distribute/`,
+      `/api/notify/documents/${DOC}/distributex`,
+      `/api/notify/documents/${DOC}/distribute/x`,
+      `/x/api/notify/documents/${DOC}/distribute`,
+      `/api/notify/documents/../${DOC.slice(3)}/distribute`,
+      `/api/notify/documents/${DOC}/../distribute`,
+      "/api/notify/documents//distribute",
+    ]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
+  });
+
+  it("Cloud Run に残る notify の口 (文書の他の口・ingest・viewer・webhook・既読・内部の LINE WORKS) は回らない", () => {
+    const { env } = setup();
+    for (const path of CLOUD_RUN_PATHS) {
+      for (const proxy of ["browser", "admin", "internal", "device"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら、どの行も null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_NOTIFY: undefined });
+    for (const path of [...SHARED_PATHS, DISTRIBUTE]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "admin"), path).toBeNull();
+    }
+  });
+
+  it("(a) alc-proxy の文書の配信は binding に届く (付け直したヘッダだけ。Authorization は渡さない)", async () => {
+    const { notify, cloudRun, env } = setup();
+    const res = await handleAlcProxy(alcReq(`/alc-proxy${DISTRIBUTE}`, { body: "{}" }), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = notify.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-notify${DISTRIBUTE}`);
+    const h = init!.headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBeTruthy();
+    expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("authorization");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(b) alc-proxy の Cloud Run に残る口 (文書の一覧) は binding があっても Cloud Run", async () => {
+    const { notify, cloudRun, env } = setup();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/notify/documents", { method: "GET" }), env);
+    expect(await res.text()).toBe("from-cloud-run");
+    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(notify.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(c) alc-proxy の %2e%2e%2f を含む notify の path は 403 で binding に届かない", async () => {
+    const { notify, env } = setup();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/notify/recipients/%2e%2e%2fx", { method: "GET" }), env);
+    expect(res.status).toBe(403);
+    expect(notify.fetch).not.toHaveBeenCalled();
+  });
+
+  function adminReq(path: string, init: RequestInit = {}) {
+    return new Request(`https://auth.test.example${path}`, {
+      method: init.method ?? "GET",
+      headers: { Authorization: `Bearer ${makeJwt(TEST_JWT_SECRET)}`, ...(init.headers as Record<string, string>) },
+      body: init.body,
+    });
+  }
+
+  it("(d) admin-notify-api は binding へ。X-Tenant-ID / X-User-* を付け、Cloud Run 用の Authorization は付けない", async () => {
+    const { notify, cloudRun, env } = setup();
+    const body = JSON.stringify({ name: "g" });
+    const res = await handleAdminNotifyApi(
+      adminReq("/admin/notify/api/notify/groups?x=1", {
+        method: "POST",
+        body,
+        headers: { "Content-Type": "application/json" },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = notify.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-notify/api/notify/groups?x=1");
+    expect(init!.method).toBe("POST");
+    expect(init!.redirect).toBe("manual");
+    expect(init!.body).toBe(body);
+    const h = init!.headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect(h["X-User-Role"]).toBe("admin");
+    expect(h["X-User-ID"]).toBeTruthy();
+    expect(h["Content-Type"]).toBe("application/json");
+    expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("authorization");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(e) admin-notify-api の表に無い口・文書の配信 (画面用だけの行) は binding があっても Cloud Run (OIDC 付き)", async () => {
+    const { notify, cloudRun, env } = setup();
+    for (const path of ["/api/notify/documents", DISTRIBUTE]) {
+      await handleAdminNotifyApi(adminReq(`/admin/notify${path}`, { method: "POST", body: "{}" }), env);
+    }
+    expect(notify.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).toHaveBeenCalledTimes(2);
+    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/notify/documents");
+    expect(String(cloudRun.mock.calls[1]![0])).toBe(`https://alc-api.test.example${DISTRIBUTE}`);
+    const h = (cloudRun.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("(f) admin-notify-api は binding 未定義なら今までどおり Cloud Run", async () => {
+    const { notify, cloudRun, env } = setup({ ALC_NOTIFY: undefined });
+    const res = await handleAdminNotifyApi(adminReq("/admin/notify/api/notify/lineworks/users"), env);
+    expect(await res.text()).toBe("from-cloud-run");
+    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/notify/lineworks/users");
+    expect(notify.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(g) admin-notify-api の %2e%2e%2f を含む path は 403 で binding に届かない", async () => {
+    const { notify, cloudRun, env } = setup();
+    const res = await handleAdminNotifyApi(adminReq("/admin/notify/api/notify/recipients/%2e%2e%2fx"), env);
+    expect(res.status).toBe(403);
+    expect(notify.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(h) api-line-users の一覧と削除は binding へ (X-Tenant-ID 付き・Authorization なし)", async () => {
+    const { notify, cloudRun, env } = setup();
+    notify.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify([
+          { id: "r1", name: "a", line_user_id: "U1", enabled: true },
+          { id: "r2", name: "b", line_user_id: null, enabled: true },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const list = await handleLineUsersList(adminReq("/api/line-users/list", { method: "POST" }), env);
+    expect(await list.json()).toEqual({ recipients: [{ id: "r1", name: "a", lineUserId: "U1", enabled: true }] });
+    const del = await handleLineUserDelete(
+      adminReq("/api/line-users/delete", { method: "POST", body: JSON.stringify({ id: RID }) }),
+      env,
+    );
+    expect(await del.json()).toEqual({ success: true });
+
+    expect(notify.fetch).toHaveBeenCalledTimes(2);
+    const [listUrl, listInit] = notify.fetch.mock.calls[0]!;
+    expect(listUrl).toBe("https://alc-notify/api/notify/recipients");
+    expect(listInit!.method).toBe("GET");
+    const [delUrl, delInit] = notify.fetch.mock.calls[1]!;
+    expect(delUrl).toBe(`https://alc-notify/api/notify/recipients/${RID}`);
+    expect(delInit!.method).toBe("DELETE");
+    for (const init of [listInit, delInit]) {
+      const h = init!.headers as Record<string, string>;
+      expect(h["X-Tenant-ID"]).toBe(TENANT);
+      expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("authorization");
+    }
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(i) api-line-users は binding 未定義なら今までどおり Cloud Run (OIDC 付き)", async () => {
+    const { cloudRun, env } = setup({ ALC_NOTIFY: undefined });
+    cloudRun.mockResolvedValueOnce(new Response("[]", { status: 200 }));
+    await handleLineUsersList(adminReq("/api/line-users/list", { method: "POST" }), env);
+    await handleLineUserDelete(
+      adminReq("/api/line-users/delete", { method: "POST", body: JSON.stringify({ id: RID }) }),
+      env,
+    );
+    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/notify/recipients");
+    expect(String(cloudRun.mock.calls[1]![0])).toBe(`https://alc-api.test.example/api/notify/recipients/${RID}`);
+    expect((cloudRun.mock.calls[1]![1] as RequestInit).method).toBe("DELETE");
+    const h = (cloudRun.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+  });
+
+  it("(j) api-line-users の削除で id が encode されて % を含む path は 403 で binding に届かない", async () => {
+    const { notify, env } = setup();
+    const res = await handleLineUserDelete(
+      adminReq("/api/line-users/delete", { method: "POST", body: JSON.stringify({ id: "../x" }) }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(notify.fetch).not.toHaveBeenCalled();
   });
 });

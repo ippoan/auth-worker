@@ -13,7 +13,11 @@
  * 使う `/notify/*` 配下のみ (least privilege)。
  */
 import type { Env } from "../index";
-import { buildAdminForwardHeaders, debugRustResponse } from "../lib/admin-proxy";
+import {
+  buildAdminForwardHeaders,
+  debugRustResponse,
+  fetchAdminBackend,
+} from "../lib/admin-proxy";
 
 const PREFIX = "/admin/notify/api";
 
@@ -57,8 +61,12 @@ export async function handleAdminNotifyApi(
     if (ct) headers["Content-Type"] = ct;
   }
 
-  const target = `${env.ALC_API_ORIGIN}/api${sub}${url.search}`;
-  const resp = await fetch(target, { method, headers, body });
+  // 振り分け表 (管理画面用) に行があれば alc-notify 等の binding へ、無ければ Cloud Run。
+  const resp = await fetchAdminBackend(env, `/api${sub}`, url.search, {
+    method,
+    headers,
+    body,
+  });
 
   const text = await resp.text();
   if (!resp.ok) debugRustResponse(env, "admin_notify_api", resp.status, text);
