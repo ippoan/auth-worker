@@ -933,7 +933,7 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
     expect(lineworks.fetch).not.toHaveBeenCalled();
   });
 
-  it("(c) GET・secret 不一致は binding に届かない。表に無い internal-jwt の口 (fire) は binding があっても Cloud Run", async () => {
+  it("(c) GET・secret 不一致は binding に届かない。internal-jwt の別の口 (fire) は ALC_LINEWORKS へ行かない (ALC_TROUBLE 未定義なら Cloud Run)", async () => {
     const { lineworks, cloudRun, env } = setup();
     const get = await handleAlcInternalProxy(
       new Request(`https://auth.test.example/alc-internal-proxy${SEND}`, {
@@ -1257,5 +1257,169 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     );
     expect(res.status).toBe(403);
     expect(notify.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("trouble の口 → ALC_TROUBLE binding (Refs ippoan/rust-alc-api#747)", () => {
+  /** UUID の形 (8-4-4-4-12) を 1 文字の繰り返しで組み立てる。 */
+  const uuidOf = (c: string) => [8, 4, 4, 4, 12].map((n) => c.repeat(n)).join("-");
+  const ID = uuidOf("b");
+  const FIRE = `/api/internal/trouble/schedules/${ID}/fire`;
+  /** worker (ippoan/alc-trouble-worker の crates/trouble) の router に在る口 (rust の trouble の口と同じ集合)。 */
+  const TROUBLE_PATHS = [
+    "/api/trouble",
+    "/api/trouble/categories",
+    `/api/trouble/categories/${ID}`,
+    "/api/trouble/offices",
+    `/api/trouble/offices/${ID}`,
+    "/api/trouble/progress-statuses",
+    `/api/trouble/progress-statuses/${ID}`,
+    "/api/trouble/task-types",
+    `/api/trouble/task-types/${ID}`,
+    "/api/trouble/task-statuses",
+    `/api/trouble/task-statuses/${ID}`,
+    "/api/trouble/field-layout",
+    "/api/trouble/notification-prefs",
+    `/api/trouble/notification-prefs/${ID}`,
+    "/api/trouble/tickets",
+    "/api/trouble/tickets/csv",
+    `/api/trouble/tickets/${ID}`,
+    `/api/trouble/tickets/${ID}/transition`,
+    `/api/trouble/tickets/${ID}/history`,
+    `/api/trouble/tickets/${ID}/tasks`,
+    `/api/trouble/tickets/${ID}/tasks/reorder`,
+    `/api/trouble/tickets/${ID}/files`,
+    `/api/trouble/tickets/${ID}/files/trash`,
+    `/api/trouble/tickets/${ID}/schedules`,
+    "/api/trouble/workflow/setup",
+    "/api/trouble/workflow/states",
+    `/api/trouble/workflow/states/${ID}`,
+    "/api/trouble/workflow/transitions",
+    `/api/trouble/workflow/transitions/${ID}`,
+    "/api/trouble/tasks",
+    `/api/trouble/tasks/${ID}`,
+    `/api/trouble/tasks/${ID}/files`,
+    `/api/trouble/files/${ID}`,
+    `/api/trouble/files/${ID}/download`,
+    `/api/trouble/files/${ID}/restore`,
+    `/api/trouble/task-files/${ID}`,
+    `/api/trouble/task-files/${ID}/download`,
+    "/api/trouble/schedules",
+    `/api/trouble/schedules/${ID}`,
+    "/api/trouble/lineworks/members",
+  ];
+
+  beforeEach(() => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
+    vi.mocked(internalAuthToken).mockReset();
+    vi.mocked(internalAuthToken).mockResolvedValue("fake-internal-jwt");
+  });
+
+  function setupTrouble(overrides: Record<string, unknown> = {}) {
+    const trouble = makeBinding();
+    return { trouble, ...setup({ ALC_TROUBLE: trouble as unknown as Fetcher, ...overrides }) };
+  }
+
+  it("/api/trouble/ の口は画面用だけ ALC_TROUBLE へ。内部用・端末用・管理画面用は null", () => {
+    const { trouble, env } = setupTrouble();
+    const target = { fetcher: trouble, host: "alc-trouble" };
+    for (const path of TROUBLE_PATHS) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "internal"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "device"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "admin"), path).toBeNull();
+    }
+  });
+
+  it("/api/trouble の近い名前 (/api/troublex・/api/trouble-x) は回らない", () => {
+    const { env } = setupTrouble();
+    for (const path of ["/api/troublex", "/api/trouble-x", "/api/troubles/tickets"]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
+  });
+
+  it("予約の発火 (pattern) は内部用だけ ALC_TROUBLE へ。大文字の UUID も内部用の分類と同じく拾う。画面用・端末用・管理画面用は null", () => {
+    const { trouble, env } = setupTrouble();
+    const target = { fetcher: trouble, host: "alc-trouble" };
+    expect(resolveAlcBinding(FIRE, env, "internal")).toEqual(target);
+    expect(resolveAlcBinding(FIRE.replace(ID, ID.toUpperCase()), env, "internal")).toEqual(target);
+    expect(resolveAlcBinding(FIRE, env, "browser")).toBeNull();
+    expect(resolveAlcBinding(FIRE, env, "device")).toBeNull();
+    expect(resolveAlcBinding(FIRE, env, "admin")).toBeNull();
+  });
+
+  it("発火の pattern は、UUID でない id・末尾の余り・頭の余り・.. を拾わない", () => {
+    const { env } = setupTrouble();
+    for (const path of [
+      "/api/internal/trouble/schedules/not-a-uuid/fire",
+      `/api/internal/trouble/schedules/${ID}x/fire`,
+      `/api/internal/trouble/schedules/${ID}/fire/`,
+      `/api/internal/trouble/schedules/${ID}/firex`,
+      `/api/internal/trouble/schedules/${ID}/fire/x`,
+      `/x/api/internal/trouble/schedules/${ID}/fire`,
+      `/api/internal/trouble/schedules/../${ID.slice(3)}/fire`,
+      `/api/internal/trouble/schedules/${ID}/../fire`,
+      "/api/internal/trouble/schedules//fire",
+      `/api/internal/trouble/schedules/${ID}`,
+      "/api/internal/trouble/schedules",
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら、どの行も null (= Cloud Run)", () => {
+    const { env } = setup();
+    for (const path of TROUBLE_PATHS) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
+    expect(resolveAlcBinding(FIRE, env, "internal")).toBeNull();
+  });
+
+  it("(a) alc-proxy の trouble の口は binding に届く (付け直したヘッダだけ。Authorization は渡さない)", async () => {
+    const { trouble, cloudRun, env } = setupTrouble();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/trouble/tickets?status=open", { method: "GET" }), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = trouble.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-trouble/api/trouble/tickets?status=open");
+    const h = init!.headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBeTruthy();
+    expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("authorization");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(b) alc-proxy の %2e%2e%2f を含む trouble の path は 403 で binding に届かない", async () => {
+    const { trouble, env } = setupTrouble();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/trouble/tickets/%2e%2e%2fx", { method: "GET" }), env);
+    expect(res.status).toBe(403);
+    expect(trouble.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(c) alc-internal-proxy の発火は binding に届く。ALC_LINEWORKS へは行かず、token は作らない", async () => {
+    const { trouble, lineworks, cloudRun, env } = setupTrouble();
+    vi.mocked(internalAuthToken).mockRejectedValue(new Error("boom"));
+    const res = await handleAlcInternalProxy(
+      internalReq(`/alc-internal-proxy${FIRE}`, { "content-type": "application/json" }, "{}"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = trouble.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-trouble${FIRE}`);
+    expect(init!.method).toBe("POST");
+    expect(init!.redirect).toBe("manual");
+    expect(init!.headers).toEqual({ "Content-Type": "application/json" });
+    expect(internalAuthToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(lineworks.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(d) alc-internal-proxy の発火は binding 未定義なら今までどおり Cloud Run (internal JWT 付き)", async () => {
+    const { cloudRun, env } = setup();
+    const res = await handleAlcInternalProxy(internalReq(`/alc-internal-proxy${FIRE}`, {}, "{}"), env);
+    expect(await res.text()).toBe("from-cloud-run");
+    expect(String(cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example${FIRE}`);
   });
 });
