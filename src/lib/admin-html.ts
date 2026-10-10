@@ -221,7 +221,7 @@ export function renderAdminSsoPage(
     <h1>Bot \u8a2d\u5b9a</h1>
     <p class="desc">
       LINE WORKS Bot \u306e\u8a8d\u8a3c\u60c5\u5831\u3092\u7ba1\u7406\u3057\u307e\u3059\u3002Developer Console \u3067 Bot \u3092\u4f5c\u6210\u3057\u3001<br>
-      Client ID / Secret\u3001Service Account\u3001Private Key\u3001Bot ID \u3092\u767b\u9332\u3057\u3066\u304f\u3060\u3055\u3044\u3002
+      Client ID / Secret\u3001Service Account\u3001Bot ID \u3092\u767b\u9332\u3057\u3066\u304f\u3060\u3055\u3044\u3002
     </p>
 
     <div id="bot-msg"></div>
@@ -283,11 +283,6 @@ export function renderAdminSsoPage(
       <label for="bot-serviceAccount">Service Account</label>
       <div class="field-desc">Developer Console \u3067\u767a\u884c\u3055\u308c\u305f Service Account ID</div>
       <input type="text" id="bot-serviceAccount" placeholder="xxxxx.serviceaccount@xxx">
-
-      <label for="bot-privateKey">Private Key (PEM)</label>
-      <div class="field-desc">Developer Console \u3067\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u3057\u305f\u79d8\u5bc6\u9375\uff08\u6697\u53f7\u5316\u3057\u3066\u4fdd\u5b58\uff09</div>
-      <textarea id="bot-privateKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"></textarea>
-      <div id="bot-pk-hint" class="hint hidden">\u8a2d\u5b9a\u6e08\u307f \u2014 \u7a7a\u6b04\u306e\u307e\u307e\u306a\u3089\u5909\u66f4\u3057\u307e\u305b\u3093</div>
 
       <label for="bot-botId">Bot ID</label>
       <div class="field-desc">LINE WORKS Bot \u306e\u56fa\u6709 ID</div>
@@ -744,10 +739,6 @@ ${renderAdminAuthScript()}
         config.hasClientSecret ? '\u8a2d\u5b9a\u6e08\u307f\uff08\u5909\u66f4\u3059\u308b\u5834\u5408\u306e\u307f\u5165\u529b\uff09' : 'Client Secret';
       document.getElementById('bot-secret-hint').classList.toggle('hidden', !config.hasClientSecret);
       document.getElementById('bot-serviceAccount').value = config.serviceAccount;
-      document.getElementById('bot-privateKey').value = '';
-      document.getElementById('bot-privateKey').placeholder =
-        config.hasPrivateKey ? '\u8a2d\u5b9a\u6e08\u307f\uff08\u5909\u66f4\u3059\u308b\u5834\u5408\u306e\u307f\u5165\u529b\uff09' : '-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----';
-      document.getElementById('bot-pk-hint').classList.toggle('hidden', !config.hasPrivateKey);
       document.getElementById('bot-botId').value = config.botId;
       botEnabled = config.enabled;
       updateBotToggle();
@@ -766,9 +757,6 @@ ${renderAdminAuthScript()}
       document.getElementById('bot-clientSecret').placeholder = 'Client Secret';
       document.getElementById('bot-secret-hint').classList.add('hidden');
       document.getElementById('bot-serviceAccount').value = '';
-      document.getElementById('bot-privateKey').value = '';
-      document.getElementById('bot-privateKey').placeholder = '-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----';
-      document.getElementById('bot-pk-hint').classList.add('hidden');
       document.getElementById('bot-botId').value = '';
       botEnabled = true;
       updateBotToggle();
@@ -792,10 +780,9 @@ ${renderAdminAuthScript()}
       const clientId = document.getElementById('bot-clientId').value;
       const clientSecret = document.getElementById('bot-clientSecret').value;
       const serviceAccount = document.getElementById('bot-serviceAccount').value;
-      const privateKey = document.getElementById('bot-privateKey').value;
       const botId = document.getElementById('bot-botId').value;
       const valid = name && clientId && serviceAccount && botId &&
-        (botEditing || (clientSecret && privateKey));
+        (botEditing || clientSecret);
       document.getElementById('bot-save-btn').disabled = !valid;
     }
 
@@ -827,7 +814,6 @@ ${renderAdminAuthScript()}
           clientId: document.getElementById('bot-clientId').value,
           clientSecret: document.getElementById('bot-clientSecret').value,
           serviceAccount: document.getElementById('bot-serviceAccount').value,
-          privateKey: document.getElementById('bot-privateKey').value,
           botId: document.getElementById('bot-botId').value,
           enabled: botEnabled,
         });
@@ -878,7 +864,6 @@ ${renderAdminAuthScript()}
     document.getElementById('bot-clientId').addEventListener('input', validateBotForm);
     document.getElementById('bot-clientSecret').addEventListener('input', validateBotForm);
     document.getElementById('bot-serviceAccount').addEventListener('input', validateBotForm);
-    document.getElementById('bot-privateKey').addEventListener('input', validateBotForm);
     document.getElementById('bot-botId').addEventListener('input', validateBotForm);
 
     initAuth();
