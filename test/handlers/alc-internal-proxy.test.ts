@@ -605,3 +605,88 @@ describe("handleAlcInternalProxy: X-Device-Dev の転送 (Refs ippoan/alc-app#38
     expect(h).not.toHaveProperty("X-Device-Role");
   });
 });
+
+describe("handleAlcInternalProxy: カメラ停止の自動チケット (Refs ippoan/rust-alc-api#747)", () => {
+  const CAMERA_DOWN = "/alc-internal-proxy/api/internal/trouble/camera-down-tickets";
+
+  beforeEach(() => vi.restoreAllMocks());
+
+  function binding() {
+    return {
+      fetch: vi.fn(async (_url: string, _init?: RequestInit) => new Response("from-binding", { status: 200 })),
+    };
+  }
+
+  it("shared-secret クラス: binding 未定義なら Cloud Run へ X-Internal-Shared-Secret + X-Tenant-ID 付きで forward", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcInternalProxy(req(CAMERA_DOWN, { method: "POST", body: "{}" }), env());
+    expect(res.status).toBe(200);
+    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  it("X-Tenant-ID 欠落は 400 で binding に届かない", async () => {
+    const trouble = binding();
+    const res = await handleAlcInternalProxy(
+      req(CAMERA_DOWN, { method: "POST", tenant: null, body: "{}" }),
+      env({ ALC_TROUBLE: trouble as unknown as Fetcher }),
+    );
+    expect(res.status).toBe(400);
+    expect(trouble.fetch).not.toHaveBeenCalled();
+  });
+
+  it("POST 以外は 403 で binding にも Cloud Run にも届かない", async () => {
+    const trouble = binding();
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    for (const method of ["GET", "PUT", "PATCH", "DELETE"]) {
+      const res = await handleAlcInternalProxy(
+        req(CAMERA_DOWN, { method, body: method === "GET" ? undefined : "{}" }),
+        env({ ALC_TROUBLE: trouble as unknown as Fetcher }),
+      );
+      expect(res.status, method).toBe(403);
+    }
+    expect(trouble.fetch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("完全一致だけ: 末尾スラッシュ・余り・前方一致は 403", async () => {
+    for (const p of [
+      `${CAMERA_DOWN}/`,
+      `${CAMERA_DOWN}x`,
+      `${CAMERA_DOWN}/x`,
+      "/alc-internal-proxy/api/internal/trouble/camera-down",
+    ]) {
+      const res = await handleAlcInternalProxy(req(p, { method: "POST", body: "{}" }), env());
+      expect(res.status, p).toBe(403);
+    }
+  });
+
+  it("binding 経路: X-Tenant-ID と Content-Type だけを渡し、token は作らない", async () => {
+    const { mintGoogleIdToken } = await import("../../src/lib/oidc");
+    vi.mocked(mintGoogleIdToken).mockClear();
+    const trouble = binding();
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcInternalProxy(
+      req(CAMERA_DOWN, {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Device-Dev": "1", Authorization: "Bearer caller" },
+        body: "{}",
+      }),
+      env({ ALC_TROUBLE: trouble as unknown as Fetcher }),
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = trouble.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-trouble/api/internal/trouble/camera-down-tickets");
+    expect(init!.method).toBe("POST");
+    expect(init!.headers).toEqual({ "X-Tenant-ID": TENANT, "Content-Type": "application/json" });
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

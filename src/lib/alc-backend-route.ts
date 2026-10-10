@@ -46,6 +46,7 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * `/api/trouble/` は trouble の全部の口 (prefix)。worker が rust の口を全部持つので丸ごと `alc-trouble` へ回す。画面用の proxy だけ
  * (nuxt-trouble は /alc-proxy 経由)。予約の発火 (`/api/internal/trouble/schedules/{id}/fire`) は id を UUID に固定した pattern で、
  * 内部用の proxy (internal-jwt クラス。大小文字は alc-internal-proxy の分類と揃える) だけ。
+ * カメラ停止の自動チケット (`/api/internal/trouble/camera-down-tickets`) は完全一致で、内部用の proxy (shared-secret クラス) だけ。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -84,6 +85,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-trouble",
     proxies: ["internal"],
   },
+  { match: "exact", path: "/api/internal/trouble/camera-down-tickets", binding: "ALC_TROUBLE", host: "alc-trouble", proxies: ["internal"] },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */

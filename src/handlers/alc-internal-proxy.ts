@@ -74,6 +74,9 @@ type InternalPathClass =
  *   RLS バイパスの id 引き — schedule fire なら schedule id、LINE WORKS 送信なら channel id —
  *   で tenant を自分で解決するため)。POST のみ許可。
  */
+/** shared-secret クラスのうち POST だけを通す path (完全一致)。 */
+const POST_ONLY_PATHS: ReadonlySet<string> = new Set(["/api/internal/trouble/camera-down-tickets"]);
+
 function classifyInternalPath(path: string): InternalPathClass | null {
   // ── shared-secret: rust の require_internal_shared_secret ingest ──
   if (path === "/api/dtako/tickets") return "shared-secret"; // POST 起票
@@ -93,6 +96,9 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   ) {
     return "shared-secret"; // POST .vdf 本体のストリーム保存
   }
+  // カメラ停止の自動チケット作成 (Refs ippoan/rust-alc-api#747)。alc-trouble の内部口で、
+  // X-Tenant-ID 必須の shared-secret クラス。POST のみ (`POST_ONLY_PATHS`)。
+  if (path === "/api/internal/trouble/camera-down-tickets") return "shared-secret"; // POST 起票
 
   // ── public-ingest: rust の public_router (caller #5 Android、tenant は body/lookup 解決) ──
   if (path === "/api/tenko-call/register") return "public-ingest"; // TenkoCall 端末登録
@@ -163,8 +169,8 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   const backendPath = url.pathname.slice(ROUTE_PREFIX.length) || "/";
   const pathClass = classifyInternalPath(backendPath);
   if (!pathClass) return jsonError(403, "forbidden");
-  // internal-jwt は POST のみ許可 (発火 / 送信以外の操作を通さない)。
-  if (pathClass === "internal-jwt" && request.method !== "POST") {
+  // internal-jwt と POST_ONLY_PATHS は POST のみ許可 (発火 / 送信 / 起票以外の操作を通さない)。
+  if ((pathClass === "internal-jwt" || POST_ONLY_PATHS.has(backendPath)) && request.method !== "POST") {
     return jsonError(403, "forbidden");
   }
 
