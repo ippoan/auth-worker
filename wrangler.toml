@@ -136,6 +136,18 @@ service = "alc-dtako"
 binding = "ALC_LEAVE"
 service = "rust-leave-worker"
 
+# LINE WORKS の worker (ippoan/alc-lineworks-worker、ohishi-exp/rust-leave-worker#1) への service binding。
+# LINE WORKS の App の Private Key と Client Secret を扱うのは alc-lineworks だけにする。
+# - 送信の口 /api/internal/lineworks/send を、内部用の proxy (/alc-internal-proxy) と端末通知 (device-notify) からこの binding に回す
+#   (src/lib/alc-backend-route.ts)
+# - リッチメニューと MCP の lineworks_get は、access token をこの binding の /api/internal/lineworks/token から取る
+#   (src/lib/lineworks-bot-creds.ts)
+# alc-lineworks は workers_dev = false・route なしで、届く経路はこの binding だけ。
+# staging は alc-lineworks-staging を bind (env.staging.services)。
+[[services]]
+binding = "ALC_LINEWORKS"
+service = "alc-lineworks"
+
 # ─── MCP_OAUTH_KV (issue #432: prod で MCP OAuth Provider を有効化) ──────────
 #
 # 経緯: 2026-07-24 以前は top-level (prod) に **意図的に bind しない**運用
@@ -553,6 +565,11 @@ service = "alc-dtako-staging"
 [[env.staging.services]]
 binding = "ALC_LEAVE"
 service = "rust-leave-worker-staging"
+
+# alc-lineworks staging (ippoan/alc-lineworks-worker、ohishi-exp/rust-leave-worker#1)。
+[[env.staging.services]]
+binding = "ALC_LINEWORKS"
+service = "alc-lineworks-staging"
 
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"

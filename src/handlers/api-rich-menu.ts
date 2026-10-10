@@ -1,6 +1,6 @@
 /**
  * Rich Menu API endpoints
- * Client JS → auth-worker API → REST GetConfigSecrets → lineworks-bot-api → LINE WORKS API
+ * Client JS → auth-worker API → alc-lineworks の token の口 (getBotAccess) → lineworks-bot-api → LINE WORKS API
  */
 
 import type { Env } from "../index";
@@ -15,8 +15,8 @@ import {
   getDefaultRichMenu,
   deleteDefaultRichMenu,
 } from "../lib/lineworks-bot-api";
-// 認証情報の取得は MCP tool `lineworks_get` と共有 (#434 後の tenant header 付き転送)。
-import { getCredsFromConfig } from "../lib/lineworks-bot-creds";
+// access token の取得は MCP tool `lineworks_get` と共有 (alc-lineworks の token の口、scope = bot)。
+import { getBotAccess } from "../lib/lineworks-bot-creds";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -48,14 +48,14 @@ export async function handleRichMenuList(
   console.log(JSON.stringify({ event: "richmenu_list", botConfigId: body.botConfigId }));
 
   try {
-    const creds = await getCredsFromConfig(env, token, body.botConfigId);
+    const bot = await getBotAccess(env, token, body.botConfigId);
     const [richmenus, defaultMenu] = await Promise.all([
-      listRichMenus(creds),
-      getDefaultRichMenu(creds),
+      listRichMenus(bot),
+      getDefaultRichMenu(bot),
     ]);
     // Check image status for each menu in parallel
     const imageChecks = await Promise.all(
-      richmenus.map((m) => checkRichMenuImage(creds, m.richmenuId)),
+      richmenus.map((m) => checkRichMenuImage(bot, m.richmenuId)),
     );
     const imageStatus: Record<string, boolean> = {};
     richmenus.forEach((m, i) => {
@@ -104,8 +104,8 @@ export async function handleRichMenuCreate(
   );
 
   try {
-    const creds = await getCredsFromConfig(env, token, body.botConfigId);
-    const menu = await createRichMenu(creds, {
+    const bot = await getBotAccess(env, token, body.botConfigId);
+    const menu = await createRichMenu(bot, {
       richmenuName: body.richmenuName,
       size: body.size,
       areas: body.areas,
@@ -147,8 +147,8 @@ export async function handleRichMenuDelete(
   );
 
   try {
-    const creds = await getCredsFromConfig(env, token, body.botConfigId);
-    await deleteRichMenu(creds, body.richmenuId);
+    const bot = await getBotAccess(env, token, body.botConfigId);
+    await deleteRichMenu(bot, body.richmenuId);
     return jsonResponse({ success: true });
   } catch (err) {
     if (err instanceof Error) {
@@ -204,9 +204,9 @@ export async function handleRichMenuImageUpload(
   );
 
   try {
-    const creds = await getCredsFromConfig(env, token, botConfigId);
+    const bot = await getBotAccess(env, token, botConfigId);
     const imageData = await imageFile.arrayBuffer();
-    await uploadImage(creds, richmenuId, imageData, fileName);
+    await uploadImage(bot, richmenuId, imageData, fileName);
     return jsonResponse({ success: true });
   } catch (err) {
     if (err instanceof Error) {
@@ -244,8 +244,8 @@ export async function handleRichMenuDefaultSet(
   );
 
   try {
-    const creds = await getCredsFromConfig(env, token, body.botConfigId);
-    await setDefaultRichMenu(creds, body.richmenuId);
+    const bot = await getBotAccess(env, token, body.botConfigId);
+    await setDefaultRichMenu(bot, body.richmenuId);
     return jsonResponse({ success: true });
   } catch (err) {
     if (err instanceof Error) {
@@ -275,8 +275,8 @@ export async function handleRichMenuDefaultDelete(
   );
 
   try {
-    const creds = await getCredsFromConfig(env, token, body.botConfigId);
-    await deleteDefaultRichMenu(creds);
+    const bot = await getBotAccess(env, token, body.botConfigId);
+    await deleteDefaultRichMenu(bot);
     return jsonResponse({ success: true });
   } catch (err) {
     if (err instanceof Error) {

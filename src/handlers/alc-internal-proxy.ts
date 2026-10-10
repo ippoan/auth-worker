@@ -174,15 +174,17 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   if (pathClass === "shared-secret" && !tenantId) return jsonError(400, "X-Tenant-ID required");
 
   // ── domain worker (Service Binding) への振り分け ─────────────────────────
-  // ①〜③ を通った shared-secret クラスの path のうち、振り分け表がこの proxy に binding を返すものだけ。
-  // binding 未定義 / 表に無い path は、下の従来の流れ (④ 以降) をそのまま通る。
+  // ①〜③ を通った shared-secret / internal-jwt クラスの path のうち、振り分け表がこの proxy に binding を
+  // 返すものだけ。binding 未定義 / 表に無い path は、下の従来の流れ (④ 以降) をそのまま通る。
   // binding 経路では token を mint しない (Cloud Run 用。mint 失敗で 502 にしない)。渡すヘッダは
-  // 明示された tenant と Content-Type だけで、呼び手のほかのヘッダと Cloud Run 用の認証は渡さない。
-  if (pathClass === "shared-secret") {
+  // 明示された tenant (shared-secret だけ。internal-jwt は Cloud Run 経路と同じく tenant を渡さない) と
+  // Content-Type だけで、呼び手のほかのヘッダと Cloud Run 用の認証は渡さない。
+  if (pathClass === "shared-secret" || pathClass === "internal-jwt") {
     const binding = resolveAlcBinding(backendPath, env, "internal");
     if (binding) {
       if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
-      const bindingHeaders: Record<string, string> = { "X-Tenant-ID": tenantId };
+      const bindingHeaders: Record<string, string> = {};
+      if (pathClass === "shared-secret") bindingHeaders["X-Tenant-ID"] = tenantId;
       const bindingContentType = request.headers.get("content-type");
       if (bindingContentType) bindingHeaders["Content-Type"] = bindingContentType;
       const bindingHasBody = request.method !== "GET" && request.method !== "HEAD";

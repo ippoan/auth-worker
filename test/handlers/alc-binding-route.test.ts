@@ -20,6 +20,8 @@ import { handleAlcInternalProxy } from "../../src/handlers/alc-internal-proxy";
 import { mintGoogleIdToken } from "../../src/lib/oidc";
 import { resolveAlcBinding } from "../../src/lib/alc-backend-route";
 import { DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_KIOSK } from "../../src/lib/device";
+import { internalAuthToken } from "../../src/lib/alc-internal";
+import { sendDeviceNotify } from "../../src/lib/device-notify-send";
 
 const ORIGIN = "https://alc.ippoan.org";
 const PROXY_SECRET = "test-internal-shared-secret-32!!";
@@ -39,6 +41,7 @@ function setup(overrides: Record<string, unknown> = {}) {
   const binding = makeBinding();
   const dtako = makeBinding();
   const leave = makeBinding();
+  const lineworks = makeBinding();
   const cloudRun = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("from-cloud-run", { status: 200 }));
   globalThis.fetch = cloudRun as unknown as typeof fetch;
   const env = createMockEnv({
@@ -47,9 +50,10 @@ function setup(overrides: Record<string, unknown> = {}) {
     ALC_VEIN: binding as unknown as Fetcher,
     ALC_DTAKO: dtako as unknown as Fetcher,
     ALC_LEAVE: leave as unknown as Fetcher,
+    ALC_LINEWORKS: lineworks as unknown as Fetcher,
     ...overrides,
   });
-  return { binding, dtako, leave, cloudRun, env };
+  return { binding, dtako, leave, lineworks, cloudRun, env };
 }
 
 function alcReq(path: string, init: RequestInit & { token?: string } = {}) {
@@ -858,5 +862,131 @@ describe("device-data-proxy と ALC_DTAKO binding", () => {
     expect(binding.fetch).not.toHaveBeenCalled();
     expect(cloudRun).not.toHaveBeenCalled();
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/rust-leave-worker#1)", () => {
+  const SEND = "/api/internal/lineworks/send";
+  const FIRE = "/api/internal/trouble/schedules/11111111-2222-3333-4444-555555555555/fire";
+
+  beforeEach(() => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
+    vi.mocked(internalAuthToken).mockReset();
+    vi.mocked(internalAuthToken).mockResolvedValue("fake-internal-jwt");
+  });
+
+  it("表の行は内部用だけ ALC_LINEWORKS へ (完全一致)。画面用・端末用・近い path は null", () => {
+    const { lineworks, env } = setup();
+    expect(resolveAlcBinding(SEND, env, "internal")).toEqual({ fetcher: lineworks, host: "alc-lineworks" });
+    expect(resolveAlcBinding(SEND, env, "browser")).toBeNull();
+    expect(resolveAlcBinding(SEND, env, "device")).toBeNull();
+    expect(resolveAlcBinding(`${SEND}/`, env, "internal")).toBeNull();
+    expect(resolveAlcBinding("/api/internal/lineworks/token", env, "internal")).toBeNull();
+    expect(resolveAlcBinding(SEND, setup({ ALC_LINEWORKS: undefined }).env, "internal")).toBeNull();
+  });
+
+  it("(a) alc-internal-proxy の internal-jwt の口は binding に届く。ヘッダは Content-Type だけ (X-Tenant-ID も渡さない)。token は作らない", async () => {
+    const { lineworks, dtako, cloudRun, env } = setup();
+    vi.mocked(internalAuthToken).mockRejectedValue(new Error("boom"));
+    const body = JSON.stringify({ channel_id: "c1", text: "hi" });
+    const res = await handleAlcInternalProxy(
+      internalReq(
+        `/alc-internal-proxy${SEND}`,
+        { "content-type": "application/json", Authorization: "Bearer caller-token", "X-User-Role": "admin" },
+        body,
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("from-binding");
+    expect(lineworks.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = lineworks.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-lineworks${SEND}`);
+    expect(init!.method).toBe("POST");
+    expect(init!.redirect).toBe("manual");
+    expect(new TextDecoder().decode(init!.body as ArrayBuffer)).toBe(body);
+    expect(init!.headers).toEqual({ "Content-Type": "application/json" });
+    expect(internalAuthToken).not.toHaveBeenCalled();
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(dtako.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(b) binding 未定義なら今までどおり Cloud Run (internal JWT 付き・X-Tenant-ID なし)", async () => {
+    const { lineworks, cloudRun, env } = setup({ ALC_LINEWORKS: undefined });
+    const res = await handleAlcInternalProxy(
+      internalReq(`/alc-internal-proxy${SEND}`, { "content-type": "application/json" }, "{}"),
+      env,
+    );
+    expect(await res.text()).toBe("from-cloud-run");
+    const [url, init] = cloudRun.mock.calls[0]!;
+    expect(String(url)).toBe(`https://alc-api.test.example${SEND}`);
+    expect((init as RequestInit).headers).toEqual({
+      Authorization: "Bearer fake-internal-jwt",
+      "Content-Type": "application/json",
+    });
+    expect(lineworks.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(c) GET・secret 不一致は binding に届かない。表に無い internal-jwt の口 (fire) は binding があっても Cloud Run", async () => {
+    const { lineworks, cloudRun, env } = setup();
+    const get = await handleAlcInternalProxy(
+      new Request(`https://auth.test.example/alc-internal-proxy${SEND}`, {
+        method: "GET",
+        headers: { "X-Alc-Proxy-Secret": PROXY_SECRET },
+      }),
+      env,
+    );
+    expect(get.status).toBe(403);
+    const bad = await handleAlcInternalProxy(
+      internalReq(`/alc-internal-proxy${SEND}`, { "X-Alc-Proxy-Secret": "wrong" }, "{}"),
+      env,
+    );
+    expect(bad.status).toBe(401);
+    expect(lineworks.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+
+    const fire = await handleAlcInternalProxy(internalReq(`/alc-internal-proxy${FIRE}`, {}, "{}"), env);
+    expect(await fire.text()).toBe("from-cloud-run");
+    expect(String(cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example${FIRE}`);
+    expect(lineworks.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(d) 端末通知 (sendDeviceNotify) も binding へ。{recipient_id, text} を Content-Type だけで送り、token は作らない", async () => {
+    const { lineworks, cloudRun, env } = setup();
+    vi.mocked(internalAuthToken).mockRejectedValue(new Error("boom"));
+    const res = await sendDeviceNotify(env, "https://alc-api.test.example", "r1", "hello", { event: "t" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = lineworks.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-lineworks${SEND}`);
+    expect(init!.method).toBe("POST");
+    expect(init!.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(String(init!.body))).toEqual({ recipient_id: "r1", text: "hello" });
+    expect(internalAuthToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(e) 端末通知は binding 未定義なら今までどおり rust へ (internal JWT 付き)", async () => {
+    const { cloudRun, env } = setup({ ALC_LINEWORKS: undefined });
+    const res = await sendDeviceNotify(env, "https://alc-api.test.example/", "r1", "hello", { event: "t" });
+    expect(await res.text()).toBe("from-cloud-run");
+    const [url, init] = cloudRun.mock.calls[0]!;
+    expect(String(url)).toBe(`https://alc-api.test.example${SEND}`);
+    expect((init as RequestInit).headers).toEqual({
+      Authorization: "Bearer fake-internal-jwt",
+      "Content-Type": "application/json",
+    });
+  });
+
+  it("(f) 端末通知の binding の失敗は今までどおり 502 (本文は返さない)", async () => {
+    const { lineworks, env } = setup();
+    lineworks.fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "recipient_not_found" }), { status: 404 }),
+    );
+    const res = await sendDeviceNotify(env, "https://alc-api.test.example", "r1", "hello", { event: "t" });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "upstream error" });
   });
 });

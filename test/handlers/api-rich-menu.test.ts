@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import {
-  stubOrReal,
   testEnv,
   authJsonRequest,
   authRequest,
@@ -10,8 +9,9 @@ import {
   waitIfLive,
   isLive,
 } from "../helpers/stub-or-real";
-import { makeJwt } from "../helpers/live-env";
+import { makeJwt, TEST_TENANT_ID } from "../helpers/live-env";
 import { TEST_JWT_SECRET } from "../helpers/mock-env";
+import type { Env } from "../../src/index";
 
 // 認証情報の取得は buildAdminForwardHeaders で JWT を検証してから rust へ転送する
 // (#434 の tenant header 対応)。creds まで届くテストは JWT_SECRET で署名した token を使う。
@@ -51,21 +51,31 @@ import {
 afterAll(() => restoreFetch());
 waitIfLive();
 
-// Helper: mock getCredsFromConfig (it calls fetch internally)
-function stubGetCreds(): void {
-  stubOrReal(
-    new Response(
-      JSON.stringify({
-        client_id: "cid",
-        client_secret: "csec",
-        service_account: "sa",
-        private_key: "pk",
-        bot_id: "bid",
-      }),
-      { status: 200 },
-    ),
-  );
+/** ALC_LINEWORKS の binding の偽物 (token の口)。呼ばれた要求を記録する。 */
+function lineworksBinding(respond: () => Response): { fetcher: Fetcher; calls: Request[] } {
+  const calls: Request[] = [];
+  const fetcher = {
+    fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(new Request(input, init));
+      return respond();
+    }),
+  } as unknown as Fetcher;
+  return { fetcher, calls };
 }
+
+// Helper: getBotAccess が alc-lineworks の token の口から token を取れるようにする
+function stubGetCreds(env: Env): Request[] {
+  const lw = lineworksBinding(
+    () =>
+      new Response(JSON.stringify({ access_token: "at-1", expires_at: 1, bot_id: "bid" }), {
+        status: 200,
+      }),
+  );
+  env.ALC_LINEWORKS = lw.fetcher;
+  return lw.calls;
+}
+
+const BOT = { accessToken: "at-1", botId: "bid" };
 
 // ---------- handleRichMenuList ----------
 
@@ -89,7 +99,7 @@ describe("handleRichMenuList", () => {
   });
 
   it("returns richmenus with image status and default on success", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(listRichMenus).mockResolvedValueOnce([
       {
         richmenuId: "rm1",
@@ -120,7 +130,7 @@ describe("handleRichMenuList", () => {
   });
 
   it("returns null defaultRichmenuId when no default set", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(listRichMenus).mockResolvedValueOnce([]);
     vi.mocked(getDefaultRichMenu).mockResolvedValueOnce(null);
 
@@ -133,8 +143,32 @@ describe("handleRichMenuList", () => {
     expect(data.defaultRichmenuId).toBe(null);
   });
 
-  it("returns 500 when getCredsFromConfig fails", async () => {
-    stubOrReal(new Response("Forbidden", { status: 403 }));
+  it("asks the token endpoint with the caller's tenant and scope=bot, then uses that token", async () => {
+    const calls = stubGetCreds(env);
+    vi.mocked(listRichMenus).mockResolvedValueOnce([]);
+    vi.mocked(getDefaultRichMenu).mockResolvedValueOnce(null);
+
+    const res = await handleRichMenuList(
+      authJsonRequest("/x", { botConfigId: "bc1" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0]!.url).pathname).toBe("/api/internal/lineworks/token");
+    expect(calls[0]!.headers.get("X-Tenant-ID")).toBe(TEST_TENANT_ID);
+    expect(await calls[0]!.json()).toEqual({ bot_config_id: "bc1", scope: "bot" });
+    expect(vi.mocked(listRichMenus)).toHaveBeenCalledWith(BOT);
+    expect(vi.mocked(getDefaultRichMenu)).toHaveBeenCalledWith(BOT);
+  });
+
+  it("returns 500 when the token endpoint fails", async () => {
+    const lw = lineworksBinding(
+      () =>
+        new Response(JSON.stringify({ error: "bot_config_not_found", message: "x" }), {
+          status: 404,
+        }),
+    );
+    env.ALC_LINEWORKS = lw.fetcher;
 
     const res = await handleRichMenuList(
       authJsonRequest("/x", { botConfigId: "bc1" }),
@@ -142,11 +176,27 @@ describe("handleRichMenuList", () => {
     );
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
-    expect(data.error).toContain("Failed to get bot config");
+    expect(data.error).toBe("Failed to get LINE WORKS token: 404 bot_config_not_found");
+  });
+
+  it("returns 500 Forbidden for a non-admin caller without asking for a token", async () => {
+    const calls = stubGetCreds(env);
+    const req = new Request("https://auth.test.example/x", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${makeJwt(TEST_JWT_SECRET, { role: "user" })}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ botConfigId: "bc1" }),
+    });
+    const res = await handleRichMenuList(req, env);
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toBe("Forbidden");
+    expect(calls).toHaveLength(0);
   });
 
   it("returns 500 when listRichMenus throws", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(listRichMenus).mockRejectedValueOnce(new Error("API error"));
     vi.mocked(getDefaultRichMenu).mockResolvedValueOnce(null);
 
@@ -198,7 +248,7 @@ describe("handleRichMenuCreate", () => {
   });
 
   it("returns created menu on success", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     const mockMenu = {
       richmenuId: "rm-new",
       richmenuName: "NewMenu",
@@ -232,7 +282,7 @@ describe("handleRichMenuCreate", () => {
   });
 
   it("returns 500 when createRichMenu throws", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(createRichMenu).mockRejectedValueOnce(new Error("create failed"));
 
     const res = await handleRichMenuCreate(
@@ -286,7 +336,7 @@ describe("handleRichMenuDelete", () => {
   });
 
   it("returns success on delete", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(deleteRichMenu).mockResolvedValueOnce(undefined);
 
     const res = await handleRichMenuDelete(
@@ -299,7 +349,7 @@ describe("handleRichMenuDelete", () => {
   });
 
   it("returns 500 when deleteRichMenu throws", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(deleteRichMenu).mockRejectedValueOnce(new Error("delete failed"));
 
     const res = await handleRichMenuDelete(
@@ -395,7 +445,7 @@ describe("handleRichMenuImageUpload", () => {
   });
 
   it("returns success on valid PNG upload", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(uploadImage).mockResolvedValueOnce(undefined);
 
     const formData = new FormData();
@@ -414,7 +464,7 @@ describe("handleRichMenuImageUpload", () => {
   });
 
   it("returns success on valid JPEG upload", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(uploadImage).mockResolvedValueOnce(undefined);
 
     const formData = new FormData();
@@ -431,7 +481,7 @@ describe("handleRichMenuImageUpload", () => {
   });
 
   it("accepts .jpeg extension", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(uploadImage).mockResolvedValueOnce(undefined);
 
     const formData = new FormData();
@@ -448,7 +498,7 @@ describe("handleRichMenuImageUpload", () => {
   });
 
   it("returns 500 when uploadImage throws", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(uploadImage).mockRejectedValueOnce(new Error("upload failed"));
 
     const formData = new FormData();
@@ -498,7 +548,7 @@ describe("handleRichMenuDefaultSet", () => {
   });
 
   it("returns success on set default", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(setDefaultRichMenu).mockResolvedValueOnce(undefined);
 
     const res = await handleRichMenuDefaultSet(
@@ -511,7 +561,7 @@ describe("handleRichMenuDefaultSet", () => {
   });
 
   it("returns 500 when setDefaultRichMenu throws", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(setDefaultRichMenu).mockRejectedValueOnce(new Error("set failed"));
 
     const res = await handleRichMenuDefaultSet(
@@ -547,7 +597,7 @@ describe("handleRichMenuDefaultDelete", () => {
   });
 
   it("returns success on delete default", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(deleteDefaultRichMenu).mockResolvedValueOnce(undefined);
 
     const res = await handleRichMenuDefaultDelete(
@@ -560,7 +610,7 @@ describe("handleRichMenuDefaultDelete", () => {
   });
 
   it("returns 500 when deleteDefaultRichMenu throws", async () => {
-    stubGetCreds();
+    stubGetCreds(env);
     vi.mocked(deleteDefaultRichMenu).mockRejectedValueOnce(
       new Error("delete default failed"),
     );
