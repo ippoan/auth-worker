@@ -65,7 +65,6 @@ describe("handleBotConfigList", () => {
         clientId: "list-cid",
         clientSecret: "list-secret",
         serviceAccount: "list-sa",
-        privateKey: "list-pk",
         botId: "list-bid",
         enabled: true,
       }),
@@ -113,7 +112,7 @@ describe("handleBotConfigList", () => {
     expect(c.clientId).toBe("list-cid");
     expect(c.hasClientSecret).toBe(true);
     expect(c.serviceAccount).toBe("list-sa");
-    expect(c.hasPrivateKey).toBe(true);
+    expect(c).not.toHaveProperty("hasPrivateKey");
     expect(c.botId).toBe("list-bid");
     expect(c.enabled).toBe(true);
     expect(typeof c.createdAt).toBe("string");
@@ -235,7 +234,6 @@ describe("handleBotConfigUpsert", () => {
         clientId: "upsert-bot-cid",
         clientSecret: "upsert-bot-secret",
         serviceAccount: "upsert-sa",
-        privateKey: "upsert-pk",
         botId: "upsert-bid",
         enabled: true,
       }),
@@ -248,7 +246,7 @@ describe("handleBotConfigUpsert", () => {
     expect(data.clientId).toBe("upsert-bot-cid");
     expect(data.hasClientSecret).toBe(true);
     expect(data.serviceAccount).toBe("upsert-sa");
-    expect(data.hasPrivateKey).toBe(true);
+    expect(data).not.toHaveProperty("hasPrivateKey");
     expect(data.botId).toBe("upsert-bid");
     expect(data.enabled).toBe(true);
 
@@ -300,8 +298,59 @@ describe("handleBotConfigUpsert", () => {
       expect(sentBody.id).toBeNull();
       expect(sentBody.provider).toBe("lineworks");
       expect(sentBody.client_secret).toBeNull();
-      expect(sentBody.private_key).toBeNull();
+      expect(sentBody).not.toHaveProperty("private_key");
       expect(sentBody.enabled).toBe(true);
+    }
+
+    // Cleanup
+    stubOrReal(new Response("ok", { status: 200 }));
+    await handleBotConfigDelete(
+      authJsonRequest("/x", { id: data.id || "id1" }),
+      env,
+    );
+  });
+
+  it("does not forward privateKey even if an old client still sends it", async () => {
+    // Private Key は alc-lineworks が Secrets Store から読む。管理画面から受け取って rust へ転送しない
+    const mockFetchFn = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "id1",
+          provider: "lineworks",
+          name: "StaleClientBot",
+          client_id: "stale-cid",
+          service_account: "stale-sa",
+          bot_id: "stale-bid",
+          enabled: true,
+        }),
+        { status: 200 },
+      ),
+    );
+    if (!isLive) vi.stubGlobal("fetch", mockFetchFn);
+
+    const res = await handleBotConfigUpsert(
+      authJsonRequest("/x", {
+        name: "StaleClientBot",
+        clientId: "stale-cid",
+        clientSecret: "stale-secret",
+        serviceAccount: "stale-sa",
+        privateKey: "stale-pk",
+        botId: "stale-bid",
+        enabled: true,
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as Record<string, unknown>;
+    expect(data).not.toHaveProperty("hasPrivateKey");
+
+    if (!isLive) {
+      const sentBody = JSON.parse(
+        mockFetchFn.mock.calls[0]![1].body as string,
+      );
+      expect(sentBody).not.toHaveProperty("private_key");
+      expect(sentBody.client_secret).toBe("stale-secret");
+      expect(sentBody.service_account).toBe("stale-sa");
     }
 
     // Cleanup

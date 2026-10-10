@@ -61,7 +61,6 @@ export async function handleBotConfigList(
       clientId: c.client_id,
       hasClientSecret: true,
       serviceAccount: c.service_account,
-      hasPrivateKey: true,
       botId: c.bot_id,
       enabled: c.enabled,
       createdAt: c.created_at,
@@ -84,7 +83,6 @@ export async function handleBotConfigUpsert(
     clientId: string;
     clientSecret?: string;
     serviceAccount: string;
-    privateKey?: string;
     botId: string;
     enabled: boolean;
   };
@@ -124,7 +122,6 @@ export async function handleBotConfigUpsert(
       client_id: body.clientId,
       client_secret: body.clientSecret || null,
       service_account: body.serviceAccount,
-      private_key: body.privateKey || null,
       bot_id: body.botId,
       enabled: body.enabled ?? true,
     }),
@@ -145,7 +142,6 @@ export async function handleBotConfigUpsert(
     clientId: c.client_id,
     hasClientSecret: true,
     serviceAccount: c.service_account,
-    hasPrivateKey: true,
     botId: c.bot_id,
     enabled: c.enabled,
   });
