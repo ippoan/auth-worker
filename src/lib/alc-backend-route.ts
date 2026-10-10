@@ -43,6 +43,9 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * (画面用と、Cloud Run を直に叩いていた管理画面用の 2 つ)。文書の配信は id を UUID に固定した pattern で、画面用だけ。
  * `/api/notify/documents/` と `/api/notify/lineworks/` の prefix は足さない (文書の他の口・ingest・viewer・LINE の webhook・
  * 既読の記録は Cloud Run に残る)。
+ * `/api/trouble/` は trouble の全部の口 (prefix)。worker が rust の口を全部持つので丸ごと `alc-trouble` へ回す。画面用の proxy だけ
+ * (nuxt-trouble は /alc-proxy 経由)。予約の発火 (`/api/internal/trouble/schedules/{id}/fire`) は id を UUID に固定した pattern で、
+ * 内部用の proxy (internal-jwt クラス。大小文字は alc-internal-proxy の分類と揃える) だけ。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -72,6 +75,14 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     binding: "ALC_NOTIFY",
     host: "alc-notify",
     proxies: ["browser"],
+  },
+  { match: "prefix", path: "/api/trouble/", binding: "ALC_TROUBLE", host: "alc-trouble", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/internal\/trouble\/schedules\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/fire$/i,
+    binding: "ALC_TROUBLE",
+    host: "alc-trouble",
+    proxies: ["internal"],
   },
 ];
 
