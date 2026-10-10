@@ -26,6 +26,8 @@ export interface AlcBindingRoute {
  * 読み取りと、やり直しの口。`alc-dtako` へ回すのは画面用の proxy だけ。
  * `/api/recalculate`・`/api/recalculate-driver`・`/api/recalculate-drivers` は再計算の 3 口 (完全一致)。`alc-dtako` へ回すのは画面用の proxy だけ。
  * `/api/recalculate-pending` は「要再計算」の印が付いた 乗務員 × 月 をまとめて計算し直す口 (完全一致)。画面のアップロード後と、取り込みの一区切りの relay (内部用) の両方から呼ぶ。
+ * `/api/leave/` は勤怠申請 (休暇・遅刻などの申請) の管理 API (prefix)。管理画面からだけ呼ぶので `alc-leave` へ回すのは画面用の proxy だけ
+ * (端末用・内部用は入れない。メール受信の取り込みは、この表を通らず email-receiver から直接 Service Binding で呼ぶ)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -40,6 +42,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/recalculate-driver", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/recalculate-drivers", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/recalculate-pending", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "internal"] },
+  { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */

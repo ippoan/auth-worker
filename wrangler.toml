@@ -128,6 +128,14 @@ service = "alc-vein"
 binding = "ALC_DTAKO"
 service = "alc-dtako"
 
+# 勤怠申請の worker (ohishi-exp/rust-leave-worker、ohishi-exp/rust-leave-worker#1) への service binding。
+# 勤怠申請の管理 API /api/leave/* を、画面用の proxy (/alc-proxy) からこの binding に回す (src/lib/alc-backend-route.ts)。
+# rust-leave-worker は workers_dev = false・route なしで、届く経路はこの binding だけ。
+# staging は rust-leave-worker-staging を bind (env.staging.services)。
+[[services]]
+binding = "ALC_LEAVE"
+service = "rust-leave-worker"
+
 # ─── MCP_OAUTH_KV (issue #432: prod で MCP OAuth Provider を有効化) ──────────
 #
 # 経緯: 2026-07-24 以前は top-level (prod) に **意図的に bind しない**運用
@@ -540,6 +548,11 @@ service = "alc-recorder-staging"
 [[env.staging.services]]
 binding = "ALC_DTAKO"
 service = "alc-dtako-staging"
+
+# rust-leave-worker staging (ohishi-exp/rust-leave-worker#1)。staging の front から staging の worker を試すため bind する。
+[[env.staging.services]]
+binding = "ALC_LEAVE"
+service = "rust-leave-worker-staging"
 
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
