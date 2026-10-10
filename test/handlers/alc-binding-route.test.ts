@@ -38,6 +38,7 @@ function makeBinding() {
 function setup(overrides: Record<string, unknown> = {}) {
   const binding = makeBinding();
   const dtako = makeBinding();
+  const leave = makeBinding();
   const cloudRun = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("from-cloud-run", { status: 200 }));
   globalThis.fetch = cloudRun as unknown as typeof fetch;
   const env = createMockEnv({
@@ -45,9 +46,10 @@ function setup(overrides: Record<string, unknown> = {}) {
     INTERNAL_SHARED_SECRET: PROXY_SECRET,
     ALC_VEIN: binding as unknown as Fetcher,
     ALC_DTAKO: dtako as unknown as Fetcher,
+    ALC_LEAVE: leave as unknown as Fetcher,
     ...overrides,
   });
-  return { binding, dtako, cloudRun, env };
+  return { binding, dtako, leave, cloudRun, env };
 }
 
 function alcReq(path: string, init: RequestInit & { token?: string } = {}) {
@@ -90,6 +92,19 @@ describe("resolveAlcBinding", () => {
     expect(resolveAlcBinding("/api/vein/identify", env, "browser")).toEqual(target);
     expect(resolveAlcBinding("/api/vein/identify", env, "device")).toEqual(target);
     expect(resolveAlcBinding("/api/vein/identify", env, "internal")).toBeNull();
+  });
+
+  it("/api/leave/ は画面用だけ ALC_LEAVE へ解決され、端末用・内部用は null (Cloud Run のまま)", () => {
+    const { leave, env } = setup();
+    expect(resolveAlcBinding("/api/leave/settings", env, "browser")).toEqual({ fetcher: leave, host: "rust-leave" });
+    expect(resolveAlcBinding("/api/leave/settings", env, "device")).toBeNull();
+    expect(resolveAlcBinding("/api/leave/settings", env, "internal")).toBeNull();
+    expect(resolveAlcBinding("/api/leave-x/settings", env, "browser")).toBeNull();
+  });
+
+  it("/api/leave/ は binding 未定義なら null (従来どおり Cloud Run)", () => {
+    const { env } = setup({ ALC_LEAVE: undefined });
+    expect(resolveAlcBinding("/api/leave/settings", env, "browser")).toBeNull();
   });
 
   it("/api/upload は完全一致だけ。下位の path・末尾 / 付きは一致しない", () => {
