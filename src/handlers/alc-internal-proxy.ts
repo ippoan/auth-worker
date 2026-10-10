@@ -55,6 +55,9 @@ type InternalPathClass =
   | "internal-secret"
   | "internal-jwt";
 
+/** shared-secret クラスのうち POST だけを通す path (完全一致)。 */
+const POST_ONLY_PATHS: ReadonlySet<string> = new Set(["/api/internal/trouble/camera-down-tickets"]);
+
 /**
  * forward 可能な ingest 経路だけを許可し、そのクラスを返す。
  * data 経路 (`require_tenant_header`) を許すと shared secret だけで X-Tenant-ID 詐称が
@@ -74,9 +77,6 @@ type InternalPathClass =
  *   RLS バイパスの id 引き — schedule fire なら schedule id、LINE WORKS 送信なら channel id —
  *   で tenant を自分で解決するため)。POST のみ許可。
  */
-/** shared-secret クラスのうち POST だけを通す path (完全一致)。 */
-const POST_ONLY_PATHS: ReadonlySet<string> = new Set(["/api/internal/trouble/camera-down-tickets"]);
-
 function classifyInternalPath(path: string): InternalPathClass | null {
   // ── shared-secret: rust の require_internal_shared_secret ingest ──
   if (path === "/api/dtako/tickets") return "shared-secret"; // POST 起票

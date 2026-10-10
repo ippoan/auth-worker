@@ -667,6 +667,30 @@ describe("handleAlcInternalProxy: カメラ停止の自動チケット (Refs ipp
     }
   });
 
+  it("大文字違いの path は 403 で binding に届かない", async () => {
+    const trouble = binding();
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/internal/trouble/Camera-Down-Tickets", { method: "POST", body: "{}" }),
+      env({ ALC_TROUBLE: trouble as unknown as Fetcher }),
+    );
+    expect(res.status).toBe(403);
+    expect(trouble.fetch).not.toHaveBeenCalled();
+  });
+
+  it("相対要素 (..) は上流の URL 正規化で畳まれてから分類され、新 path から外れれば 403", async () => {
+    const trouble = binding();
+    const raw = `${CAMERA_DOWN}/../x`;
+    expect(new URL(`https://auth.test.example${raw}`).pathname).toBe(
+      "/alc-internal-proxy/api/internal/trouble/x",
+    );
+    const res = await handleAlcInternalProxy(
+      req(raw, { method: "POST", body: "{}" }),
+      env({ ALC_TROUBLE: trouble as unknown as Fetcher }),
+    );
+    expect(res.status).toBe(403);
+    expect(trouble.fetch).not.toHaveBeenCalled();
+  });
+
   it("binding 経路: X-Tenant-ID と Content-Type だけを渡し、token は作らない", async () => {
     const { mintGoogleIdToken } = await import("../../src/lib/oidc");
     vi.mocked(mintGoogleIdToken).mockClear();
