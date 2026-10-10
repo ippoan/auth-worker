@@ -996,9 +996,11 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
 });
 
 describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", () => {
-  const DOC = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
+  /** UUID の形 (8-4-4-4-12) を 1 文字の繰り返しで組み立てる。 */
+  const uuidOf = (c: string) => [8, 4, 4, 4, 12].map((n) => c.repeat(n)).join("-");
+  const DOC = uuidOf("a");
   const DISTRIBUTE = `/api/notify/documents/${DOC}/distribute`;
-  const RID = "22222222-3333-4444-5555-666666666666";
+  const RID = uuidOf("2");
   /** worker (ippoan/alc-notify-worker の crates/notify) に在る口のうち、画面用と管理画面用の両方が引くもの。 */
   const SHARED_PATHS = [
     "/api/notify/recipients",
