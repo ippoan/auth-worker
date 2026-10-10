@@ -1,146 +1,42 @@
 /**
- * LINE WORKS Bot API client
- * JWT generation (Web Crypto API) + OAuth2 token + Rich Menu API
+ * LINE WORKS Bot API client (Rich Menu API + MCP `lineworks_get` の素通し GET)。
  *
- * Credentials are fetched from DB via gRPC (BotConfigService.GetConfigWithSecrets)
+ * access token は alc-lineworks worker の `POST /api/internal/lineworks/token` が出す
+ * (`lineworks-bot-creds.ts::getBotAccess`)。Client Secret と Private Key は auth-worker に
+ * 来ない — JWT の署名も OAuth2 の token 交換も auth-worker では行わない
+ * (Refs ohishi-exp/rust-leave-worker#1)。
  */
 
-const AUTH_TOKEN_ENDPOINT = "https://auth.worksmobile.com/oauth2/v2.0/token";
-
-/** Bot credentials from DB (decrypted by rust-logi) */
-export interface BotCredentials {
-  clientId: string;
-  clientSecret: string;
-  serviceAccount: string;
-  privateKey: string;
+/** alc-lineworks が出した access token と、その token の Bot の id。token は応答・ログに出さない。 */
+export interface BotAccess {
+  accessToken: string;
   botId: string;
 }
 
-// --- Base64url helpers ---
-
-function base64urlEncode(data: ArrayBuffer | Uint8Array): string {
-  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]!);
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function base64urlEncodeString(str: string): string {
-  return base64urlEncode(new TextEncoder().encode(str));
-}
-
-// --- PEM parsing ---
-
-function pemToArrayBuffer(pem: string): ArrayBuffer {
-  const normalized = pem.replace(/\\n/g, "\n");
-  const lines = normalized
-    .split("\n")
-    .filter((line) => !line.startsWith("-----") && line.trim().length > 0);
-  const base64 = lines.join("");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
-}
-
-// --- JWT generation (Web Crypto API, RS256) ---
-
-async function createJwt(creds: BotCredentials): Promise<string> {
-  const header = base64urlEncodeString(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-
-  const now = Math.floor(Date.now() / 1000);
-  const payload = base64urlEncodeString(
-    JSON.stringify({
-      iss: creds.clientId,
-      sub: creds.serviceAccount,
-      iat: now,
-      exp: now + 60,
-    }),
-  );
-
-  const signingInput = `${header}.${payload}`;
-
-  const keyData = pemToArrayBuffer(creds.privateKey);
-  const cryptoKey = await crypto.subtle.importKey(
-    "pkcs8",
-    keyData,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    cryptoKey,
-    new TextEncoder().encode(signingInput),
-  );
-
-  return `${signingInput}.${base64urlEncode(signature)}`;
-}
-
-// --- OAuth2 token ---
-
-/** `scope` は既定 `bot` (Rich Menu 系)。掲示板は `board.read`、ユーザーは `directory.read`。 */
-async function getAccessToken(creds: BotCredentials, scope = "bot"): Promise<string> {
-  const jwt = await createJwt(creds);
-
-  const params = new URLSearchParams({
-    assertion: jwt,
-    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-    client_id: creds.clientId,
-    client_secret: creds.clientSecret,
-    scope,
-  });
-
-  const res = await fetch(AUTH_TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Token issue failed: ${res.status} ${body}`);
-  }
-
-  const data = (await res.json()) as { access_token: string };
-  return data.access_token;
-}
-
 /**
- * `https://www.worksapis.com` 配下への GET を `scope` の token で行う (MCP tool
+ * `https://www.worksapis.com` 配下への GET を、呼び手が取った token で行う (MCP tool
  * `lineworks_get` 用)。`url` は `resolveLineworksGetTarget` で検証済みのものだけを渡すこと。
  */
-export async function worksApiGet(
-  creds: BotCredentials,
-  scope: string,
-  url: string,
-): Promise<Response> {
-  const token = await getAccessToken(creds, scope);
-  return fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+export async function worksApiGet(accessToken: string, url: string): Promise<Response> {
+  return fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
 }
 
 // --- Rich Menu API helpers ---
 
-function botBaseUrl(creds: BotCredentials): string {
-  return `https://www.worksapis.com/v1.0/bots/${creds.botId}`;
+function botBaseUrl(bot: BotAccess): string {
+  return `https://www.worksapis.com/v1.0/bots/${bot.botId}`;
 }
 
 async function botFetch(
-  creds: BotCredentials,
+  bot: BotAccess,
   path: string,
   init: RequestInit = {},
 ): Promise<Response> {
-  const token = await getAccessToken(creds);
-  const url = `${botBaseUrl(creds)}${path}`;
+  const url = `${botBaseUrl(bot)}${path}`;
   const res = await fetch(url, {
     ...init,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${bot.accessToken}`,
       ...init.headers,
     },
   });
@@ -186,8 +82,8 @@ export interface RichMenuCreate {
 
 // --- Rich Menu API functions ---
 
-export async function listRichMenus(creds: BotCredentials): Promise<RichMenu[]> {
-  const res = await botFetch(creds, "/richmenus?count=100");
+export async function listRichMenus(bot: BotAccess): Promise<RichMenu[]> {
+  const res = await botFetch(bot, "/richmenus?count=100");
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`listRichMenus failed: ${res.status} ${body}`);
@@ -197,10 +93,10 @@ export async function listRichMenus(creds: BotCredentials): Promise<RichMenu[]> 
 }
 
 export async function createRichMenu(
-  creds: BotCredentials,
+  bot: BotAccess,
   menu: RichMenuCreate,
 ): Promise<RichMenu> {
-  const res = await botFetch(creds, "/richmenus", {
+  const res = await botFetch(bot, "/richmenus", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(menu),
@@ -213,10 +109,10 @@ export async function createRichMenu(
 }
 
 export async function deleteRichMenu(
-  creds: BotCredentials,
+  bot: BotAccess,
   richmenuId: string,
 ): Promise<void> {
-  const res = await botFetch(creds, `/richmenus/${richmenuId}`, {
+  const res = await botFetch(bot, `/richmenus/${richmenuId}`, {
     method: "DELETE",
   });
   if (!res.ok) {
@@ -226,14 +122,14 @@ export async function deleteRichMenu(
 }
 
 export async function uploadImage(
-  creds: BotCredentials,
+  bot: BotAccess,
   richmenuId: string,
   imageData: ArrayBuffer,
   fileName: string,
 ): Promise<void> {
-  // Get a single access token and reuse for all 3 steps
-  const accessToken = await getAccessToken(creds);
-  const base = botBaseUrl(creds);
+  // 3 段とも同じ token を使う
+  const accessToken = bot.accessToken;
+  const base = botBaseUrl(bot);
 
   // Step 1: Get upload URL
   const attachRes = await fetch(`${base}/attachments`, {
@@ -306,11 +202,11 @@ export async function uploadImage(
 
 /** Check if a rich menu has an image by trying to GET the image endpoint */
 export async function checkRichMenuImage(
-  creds: BotCredentials,
+  bot: BotAccess,
   richmenuId: string,
 ): Promise<boolean> {
   try {
-    const res = await botFetch(creds, `/richmenus/${richmenuId}/image`);
+    const res = await botFetch(bot, `/richmenus/${richmenuId}/image`);
     console.log(JSON.stringify({ event: "check_image", richmenuId, status: res.status, contentType: res.headers.get("content-type"), contentLength: res.headers.get("content-length") }));
     return res.ok;
   } catch {
@@ -319,10 +215,10 @@ export async function checkRichMenuImage(
 }
 
 export async function setDefaultRichMenu(
-  creds: BotCredentials,
+  bot: BotAccess,
   richmenuId: string,
 ): Promise<void> {
-  const res = await botFetch(creds, `/richmenus/${richmenuId}/set-default`, {
+  const res = await botFetch(bot, `/richmenus/${richmenuId}/set-default`, {
     method: "POST",
   });
   if (!res.ok) {
@@ -332,9 +228,9 @@ export async function setDefaultRichMenu(
 }
 
 export async function getDefaultRichMenu(
-  creds: BotCredentials,
+  bot: BotAccess,
 ): Promise<{ defaultRichmenuId: string } | null> {
-  const res = await botFetch(creds, "/richmenus/default");
+  const res = await botFetch(bot, "/richmenus/default");
   if (res.status === 404) return null;
   if (!res.ok) {
     const body = await res.text();
@@ -343,8 +239,8 @@ export async function getDefaultRichMenu(
   return (await res.json()) as { defaultRichmenuId: string };
 }
 
-export async function deleteDefaultRichMenu(creds: BotCredentials): Promise<void> {
-  const res = await botFetch(creds, "/richmenus/default", {
+export async function deleteDefaultRichMenu(bot: BotAccess): Promise<void> {
+  const res = await botFetch(bot, "/richmenus/default", {
     method: "DELETE",
   });
   if (!res.ok && res.status !== 404) {

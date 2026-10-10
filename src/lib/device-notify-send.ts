@@ -4,8 +4,10 @@
  *
  *   - 宛先の解決: AUTH_CONFIG KV の `device-notify-targets` (`key → recipient_id`)。
  *     fail-closed (未設定 / 壊れた JSON / key 未登録 → `null`)
- *   - 送信: `internalAuthToken` (aud=alc-api-internal) を付けて rust-alc-api の
- *     `POST /api/internal/lineworks/send` へ `{recipient_id, text}`
+ *   - 送信: `POST /api/internal/lineworks/send` へ `{recipient_id, text}`。振り分け表
+ *     (`alc-backend-route.ts`、`internal` として引く) が binding (`ALC_LINEWORKS`) を返せばそこへ
+ *     (token は付けない)、返さなければ従来どおり `internalAuthToken` (aud=alc-api-internal) を
+ *     付けて rust-alc-api へ
  *
  * ★ **宛先を呼び手に選ばせない** — 呼び手が渡せるのは map の key (role 等) と
  * `text` だけで、`recipient_id` は KV で固定する (`device-notify.ts` の ★ 参照)。
@@ -14,8 +16,9 @@
  */
 import type { Env } from "../index";
 import { internalAuthToken } from "./alc-internal";
+import { forwardViaAlcBinding, resolveAlcBinding } from "./alc-backend-route";
 
-/** rust-alc-api の `require_internal_jwt` 経路 (`/alc-internal-proxy` と同じ path)。 */
+/** rust-alc-api の `require_internal_jwt` 経路 / alc-lineworks の送信の口 (`/alc-internal-proxy` と同じ path)。 */
 const SEND_PATH = "/api/internal/lineworks/send";
 
 /**
@@ -59,8 +62,8 @@ export async function resolveNotifyRecipient(env: Env, key: string): Promise<str
 }
 
 /**
- * internal JWT を mint して `{recipient_id, text}` を rust へ送る
- * (mint は auth-worker が代行する)。
+ * `{recipient_id, text}` を送る。binding (`ALC_LINEWORKS`) があればそこへ、無ければ internal JWT を
+ * mint して rust へ (mint は auth-worker が代行する)。
  *
  * 戻り値は上流の `Response` そのもの (成功時) か、502 の JSON error。
  * 上流の失敗本文は返さず log にだけ出す (内部情報)。`logFields` は失敗 log に
@@ -73,22 +76,9 @@ export async function sendDeviceNotify(
   text: string,
   logFields: Record<string, unknown>,
 ): Promise<Response> {
-  let internalToken: string;
-  try {
-    internalToken = await internalAuthToken(env);
-  } catch {
-    return notifyJsonError(502, "upstream auth error"); // 詳細は log のみ
-  }
-
-  const target = `${apiOrigin.replace(/\/$/, "")}${SEND_PATH}`;
-  const upstream = await fetch(target, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${internalToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ recipient_id: recipientId, text }),
-  });
+  const body = JSON.stringify({ recipient_id: recipientId, text });
+  const upstream = await sendUpstream(env, apiOrigin, body);
+  if (!upstream) return notifyJsonError(502, "upstream auth error"); // 詳細は log のみ
 
   if (!upstream.ok) {
     // 上流の本文はそのまま返さない (内部情報)。原因追跡は log 側で。
@@ -104,4 +94,31 @@ export async function sendDeviceNotify(
   }
 
   return upstream;
+}
+
+/** binding があれば binding へ、無ければ token を mint して rust へ。mint に失敗したら null。 */
+async function sendUpstream(env: Env, apiOrigin: string, body: string): Promise<Response | null> {
+  const binding = resolveAlcBinding(SEND_PATH, env, "internal");
+  if (binding) {
+    return forwardViaAlcBinding(binding, SEND_PATH, "", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  }
+
+  let internalToken: string;
+  try {
+    internalToken = await internalAuthToken(env);
+  } catch {
+    return null;
+  }
+  return fetch(`${apiOrigin.replace(/\/$/, "")}${SEND_PATH}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${internalToken}`,
+      "Content-Type": "application/json",
+    },
+    body,
+  });
 }

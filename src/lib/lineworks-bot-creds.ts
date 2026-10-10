@@ -1,19 +1,28 @@
 /**
- * LINE WORKS Bot の認証情報 (Service Account の秘密鍵を含む) を rust-alc-api から取る。
+ * LINE WORKS Bot の access token を alc-lineworks worker (Service Binding `ALC_LINEWORKS`) から取る。
  *
- * rust の `/api/admin/bot/configs*` は #434 lockdown 後 `require_tenant_header` 配下で、
- * `X-Tenant-ID` 等の identity header と OIDC transport が要る。token (browser JWT か
- * dev JWT) を `buildAdminForwardHeaders` で検証して転送する (api-bot-config.ts と同じ作法)。
- * 以前 api-rich-menu.ts が raw Bearer で直 fetch していた版は、tenant header が無く 401 に
- * なっていた。Rich Menu と MCP tool `lineworks_get` がここを共有する。
+ * Client Secret と Private Key を扱うのは alc-lineworks だけで、auth-worker は受け取らない
+ * (以前は rust-alc-api の bot config の秘密の取り出し口から 4 値を取り、JWT を自分で署名
+ * していた。Refs ohishi-exp/rust-leave-worker#1)。Rich Menu と MCP tool `lineworks_get` が
+ * ここを共有する。
  *
- * 戻り値の `BotCredentials` は秘密鍵を含む。**応答やログに出さないこと。**
+ * token の口 (`POST /api/internal/lineworks/token`) は認証も role の検査も持たない
+ * (届くのはこの binding だけ)。tenant は呼び手の JWT を検証して auth-worker が付ける
+ * `X-Tenant-ID` で決まり、**tenant の管理者だけに限る検査はここで行う** (rust の秘密の取り出し口が
+ * `role == "admin"` を課していたのと同じ線)。
+ *
+ * 戻り値の `BotAccess` は access token を含む。**応答やログに出さないこと。**
  */
 
 import type { Env } from "../index";
 import type { BotConfigListResponse } from "../types/alc-api";
-import type { BotCredentials } from "./lineworks-bot-api";
+import type { BotAccess } from "./lineworks-bot-api";
 import { buildAdminForwardHeaders } from "./admin-proxy";
+import { verifyJwt } from "./jwt";
+import { resolveSecret } from "./secret";
+
+/** alc-lineworks の token の口 (host はダミー。binding は URL の host で経路が決まらない)。 */
+const TOKEN_URL = "https://alc-lineworks/api/internal/lineworks/token";
 
 async function adminHeaders(env: Env, token: string, event: string): Promise<Record<string, string>> {
   const headers = await buildAdminForwardHeaders(token, env, event);
@@ -21,35 +30,48 @@ async function adminHeaders(env: Env, token: string, event: string): Promise<Rec
   return headers;
 }
 
-/** `botConfigId` の復号済み認証情報を返す (rust 側で caller の tenant に絞られる)。 */
-export async function getCredsFromConfig(
+/**
+ * caller の tenant の `botConfigId` の Bot で、`scope` の access token を取る
+ * (`scope` は今の呼び手の値をそのまま: Rich Menu = `bot`、`lineworks_get` = `board.read` /
+ * `directory.read`。許可リストは alc-lineworks の側に在る)。
+ *
+ * 失敗はすべて throw: JWT が検証できない → `Unauthorized` / 管理者でない → `Forbidden` /
+ * binding 未定義 → `LINE WORKS worker not bound` / token の口が非 200 →
+ * `Failed to get LINE WORKS token: <status> <error の語>` (上流の本文はそのまま載せない)。
+ */
+export async function getBotAccess(
   env: Env,
   token: string,
   botConfigId: string,
-): Promise<BotCredentials> {
-  const headers = await adminHeaders(env, token, "bot_config_secrets");
-  const resp = await fetch(
-    `${env.ALC_API_ORIGIN}/api/admin/bot/configs/${encodeURIComponent(botConfigId)}/secrets`,
-    { headers },
-  );
+  scope = "bot",
+): Promise<BotAccess> {
+  const secret = await resolveSecret(env.JWT_SECRET);
+  const claims = secret ? await verifyJwt(token, secret, env.WORKER_ENV) : null;
+  if (!claims) throw new Error("Unauthorized");
+  if (claims.role !== "admin") throw new Error("Forbidden");
+  const binding = env.ALC_LINEWORKS;
+  if (!binding) throw new Error("LINE WORKS worker not bound");
+
+  const resp = await binding.fetch(TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "X-Tenant-ID": String(claims.tenant_id ?? ""),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ bot_config_id: botConfigId, scope }),
+    redirect: "manual",
+  });
   if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Failed to get bot config: ${resp.status} ${text}`);
+    // alc-lineworks の失敗は `{error, message}`。載せるのは固定の語 (`error`) だけにする。
+    const body = (await resp.json().catch(() => null)) as { error?: unknown } | null;
+    const code = typeof body?.error === "string" ? body.error : "";
+    throw new Error(`Failed to get LINE WORKS token: ${resp.status} ${code}`.trimEnd());
   }
-  const c = (await resp.json()) as {
-    client_id: string;
-    client_secret: string;
-    service_account: string;
-    private_key: string;
-    bot_id: string;
-  };
-  return {
-    clientId: c.client_id,
-    clientSecret: c.client_secret,
-    serviceAccount: c.service_account,
-    privateKey: c.private_key,
-    botId: c.bot_id,
-  };
+  const data = (await resp.json()) as { access_token?: unknown; bot_id?: unknown };
+  if (typeof data.access_token !== "string" || typeof data.bot_id !== "string") {
+    throw new Error("Failed to get LINE WORKS token: malformed response");
+  }
+  return { accessToken: data.access_token, botId: data.bot_id };
 }
 
 /**

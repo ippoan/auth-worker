@@ -1684,8 +1684,9 @@ describe("POST /mcp/tools — get_device_log", () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────
-// lineworks_get (#540 の掲示板調査用)。LINE WORKS 側 (token 発行 + GET) だけを
-// 差し替え、rust の bot config 取得は URL で振り分けた fetch mock で受ける。
+// lineworks_get (#540 の掲示板調査用)。LINE WORKS 側の GET (worksApiGet) だけを差し替え、
+// rust の bot config 一覧は URL で振り分けた fetch mock、access token は ALC_LINEWORKS の
+// binding の偽物 (alc-lineworks の token の口) で受ける。
 // vi.hoisted / vi.mock はファイル先頭へ巻き上げられるので、この位置でも全体に効く
 // (他の describe は worksApiGet を使わない)。
 // ────────────────────────────────────────────────────────────────────────
@@ -1697,18 +1698,13 @@ vi.mock("../../src/lib/lineworks-bot-api", async (importOriginal) => ({
 
 describe("POST /mcp/tools — lineworks_get", () => {
   const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
-  const SECRETS = {
-    client_id: "cid",
-    client_secret: "CLIENT-SECRET-XYZ",
-    service_account: "sa@example",
-    private_key: "PRIVATE-KEY-XYZ",
-    bot_id: "bid",
-    bot_secret: "BOT-SECRET-XYZ",
-  };
-  const LEAK_MARKERS = ["CLIENT-SECRET-XYZ", "PRIVATE-KEY-XYZ", "BOT-SECRET-XYZ"];
+  const ACCESS_TOKEN = "ACCESS-TOKEN-XYZ";
   const origFetch = globalThis.fetch;
   let rustUrls: string[] = [];
-  let secretsHeaders: Record<string, string> | undefined;
+  /** ALC_LINEWORKS の token の口に届いた要求 */
+  let tokenCalls: Request[] = [];
+  /** token の口の応答 (既定は 200) */
+  let tokenResponse: () => Response;
 
   function jsonRes(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {
@@ -1719,17 +1715,16 @@ describe("POST /mcp/tools — lineworks_get", () => {
 
   function routeFetch(configs: unknown[]): void {
     rustUrls = [];
-    secretsHeaders = undefined;
-    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/api/admin/bot/configs")) {
         rustUrls.push(url);
         return jsonRes({ configs });
       }
-      if (url.includes("/api/admin/bot/configs/") && url.endsWith("/secrets")) {
+      if (url.includes("/api/admin/bot/configs/")) {
+        // /secrets 等、一覧以外の bot config の口は叩かない (叩いたら記録して失敗させる)
         rustUrls.push(url);
-        secretsHeaders = init?.headers as Record<string, string>;
-        return jsonRes(SECRETS);
+        return jsonRes({ error: "unexpected" }, 599);
       }
       // mintDevToken の tenant 解決 (internal user lookup)
       return jsonRes({
@@ -1750,6 +1745,15 @@ describe("POST /mcp/tools — lineworks_get", () => {
     const { env, kv } = envWithKv();
     kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
     kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
+    tokenCalls = [];
+    tokenResponse = () =>
+      jsonRes({ access_token: ACCESS_TOKEN, expires_at: 1700000000, bot_id: "bid" });
+    env.ALC_LINEWORKS = {
+      fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        tokenCalls.push(new Request(input, init));
+        return tokenResponse();
+      }),
+    } as unknown as Fetcher;
     return env;
   }
 
@@ -1811,16 +1815,25 @@ describe("POST /mcp/tools — lineworks_get", () => {
       scope: "board.read",
       body: '{"readers":[{"userId":"u1","isRead":true}]}',
     });
-    const [creds, scope, url] = worksApiGetMock.mock.calls[0]!;
-    expect(creds).toMatchObject({ clientId: "cid", privateKey: "PRIVATE-KEY-XYZ", botId: "bid" });
-    expect(scope).toBe("board.read");
+    const [accessToken, url] = worksApiGetMock.mock.calls[0]!;
+    expect(accessToken).toBe(ACCESS_TOKEN);
     expect(url).toBe("https://www.worksapis.com/v1.0/boards/1/posts/2/readers?count=100");
-    expect(rustUrls).toEqual([
-      `${env.ALC_API_ORIGIN}/api/admin/bot/configs`,
-      `${env.ALC_API_ORIGIN}/api/admin/bot/configs/c-on/secrets`,
-    ]);
-    expect(secretsHeaders).toMatchObject({ "X-Tenant-ID": "tenant-uuid-1" });
-    for (const s of LEAK_MARKERS) expect(text).not.toContain(s);
+    // rust は bot config の一覧だけ (/secrets は叩かない)
+    expect(rustUrls).toEqual([`${env.ALC_API_ORIGIN}/api/admin/bot/configs`]);
+    // token は alc-lineworks から、caller の tenant・選んだ bot config・path の scope で取る
+    expect(tokenCalls).toHaveLength(1);
+    expect(new URL(tokenCalls[0]!.url).pathname).toBe("/api/internal/lineworks/token");
+    expect(tokenCalls[0]!.headers.get("X-Tenant-ID")).toBe("tenant-uuid-1");
+    expect(await tokenCalls[0]!.json()).toEqual({ bot_config_id: "c-on", scope: "board.read" });
+    expect(text).not.toContain(ACCESS_TOKEN);
+  });
+
+  it("asks for scope=directory.read on /v1.0/users", async () => {
+    const env = allowedEnv();
+    routeFetch([{ id: "c-on", provider: "lineworks", enabled: true, name: "c" }]);
+    worksApiGetMock.mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    await callLineworksGet(env, { path: "/v1.0/users" });
+    expect(((await tokenCalls[0]!.json()) as { scope: string }).scope).toBe("directory.read");
   });
 
   it("returns non-JSON bodies as text and truncates oversized bodies", async () => {
@@ -1861,6 +1874,7 @@ describe("POST /mcp/tools — lineworks_get", () => {
     const body = await callLineworksGet(env, { path: "/v1.0/bots/1/messages" });
     expect(body.error?.message).toContain("path not allowed");
     expect(rustUrls).toEqual([]);
+    expect(tokenCalls).toEqual([]);
     expect(worksApiGetMock).not.toHaveBeenCalled();
   });
 
@@ -1869,19 +1883,19 @@ describe("POST /mcp/tools — lineworks_get", () => {
     routeFetch([]);
     const body = await callLineworksGet(env, { path: "/v1.0/boards" });
     expect(body.error?.message).toBe("no enabled LINE WORKS bot config for this tenant");
+    expect(tokenCalls).toEqual([]);
     expect(worksApiGetMock).not.toHaveBeenCalled();
   });
 
-  it("does not leak secrets when the LINE WORKS token request fails", async () => {
+  it("reports the token endpoint's status and code, not its message, when it fails", async () => {
     const env = allowedEnv();
     routeFetch([{ id: "c-on", provider: "lineworks", enabled: true, name: "c" }]);
-    worksApiGetMock.mockRejectedValueOnce(
-      new Error('Token issue failed: 400 {"error":"invalid_scope"}'),
-    );
+    tokenResponse = () =>
+      jsonRes({ error: "upstream_error", message: "token: 400 (code invalid_scope)" }, 502);
     const body = await callLineworksGet(env, { path: "/v1.0/boards" });
-    expect(body.error?.message).toContain("Token issue failed: 400");
-    const raw = JSON.stringify(body);
-    for (const s of LEAK_MARKERS) expect(raw).not.toContain(s);
+    expect(body.error?.message).toContain("Failed to get LINE WORKS token: 502 upstream_error");
+    expect(JSON.stringify(body)).not.toContain("invalid_scope");
+    expect(worksApiGetMock).not.toHaveBeenCalled();
   });
 
   it("refuses a subject that is not on the dev-login allowlist", async () => {

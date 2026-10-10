@@ -41,7 +41,7 @@ import {
   resolveTenantId,
 } from "../lib/dev-login";
 import { worksApiGet } from "../lib/lineworks-bot-api";
-import { getCredsFromConfig, pickLineworksBotConfigId } from "../lib/lineworks-bot-creds";
+import { getBotAccess, pickLineworksBotConfigId } from "../lib/lineworks-bot-creds";
 import { LINEWORKS_GET_BODY_MAX, resolveLineworksGetTarget } from "../lib/lineworks-get-path";
 import { getCommandResult, managedDeviceKind, sendDeviceCommand } from "./device-setup";
 import { DEVICE_ROLE_HUB, DEVICE_ROLE_PRINT, DEVICE_ROLE_TIMECARD } from "../lib/device";
@@ -601,9 +601,9 @@ const TOOLS: ToolDef[] = [
       if (minted.kind === "error") throw new DevLoginError(minted.status, minted.error);
       const botConfigId = await pickLineworksBotConfigId(ctx.env, minted.token);
       if (!botConfigId) throw new Error("no enabled LINE WORKS bot config for this tenant");
-      // creds (秘密鍵を含む) は worksApiGet に渡すだけ。応答にもログにも出さない。
-      const creds = await getCredsFromConfig(ctx.env, minted.token, botConfigId);
-      const res = await worksApiGet(creds, target.scope, target.url);
+      // access token (alc-lineworks が出す) は worksApiGet に渡すだけ。応答にもログにも出さない。
+      const bot = await getBotAccess(ctx.env, minted.token, botConfigId, target.scope);
+      const res = await worksApiGet(bot.accessToken, target.url);
       const text = await res.text();
       if (text.length > LINEWORKS_GET_BODY_MAX) {
         return {
