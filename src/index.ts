@@ -252,6 +252,11 @@ export interface Env {
    *  ここへ流し (`lib/alc-backend-route.ts`)、Rich Menu と MCP の `lineworks_get` は access token を
    *  ここから取る (`lib/lineworks-bot-creds.ts`)。未定義なら送信は従来どおり Cloud Run、token は取れない。 */
   ALC_LINEWORKS?: Fetcher;
+  /** notify の worker (`alc-notify`) への service binding。定義されている時だけ、`/api/notify/` の宛先・グループ・
+   *  LINE の設定・LINE WORKS のトークルームとメンバー・配信の口を、alc-proxy (画面用) と admin-notify-api・
+   *  api-line-users (管理画面用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。
+   *  いまは staging だけ bind。未定義なら従来どおり Cloud Run。 */
+  ALC_NOTIFY?: Fetcher;
   /** cf-alc-recorder (CoreS3 測定データ WS 受口) への service binding。
    *  `/device/setup` の OTA トリガ/進捗ポーリングが recorder の内部 HTTP API
    *  (`Authorization: <INTERNAL_SHARED_SECRET>`) を叩く。未 bind なら OTA 系は

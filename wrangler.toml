@@ -571,6 +571,14 @@ service = "rust-leave-worker-staging"
 binding = "ALC_LINEWORKS"
 service = "alc-lineworks-staging"
 
+# alc-notify staging (ippoan/alc-notify-worker、ippoan/rust-alc-api#747)。notify の宛先・グループ・LINE の設定・
+# LINE WORKS のトークルームとメンバー・配信の口を回す (src/lib/alc-backend-route.ts)。
+# 本番 (トップレベルの [[services]]) にはまだ bind しない — 本番の alc-notify は worker の本番 tag の後に別 PR で足す。
+# 本番の env に binding が無い間は、表の行は効かず今までどおり Cloud Run。
+[[env.staging.services]]
+binding = "ALC_NOTIFY"
+service = "alc-notify-staging"
+
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"

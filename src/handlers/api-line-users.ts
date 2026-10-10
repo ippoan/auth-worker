@@ -11,6 +11,7 @@ import type { Env } from "../index";
 import {
   buildAdminForwardHeaders,
   debugRustResponse,
+  fetchAdminBackend,
 } from "../lib/admin-proxy";
 
 interface NotifyRecipient {
@@ -49,7 +50,8 @@ export async function handleLineUsersList(
   const headers = await buildAdminForwardHeaders(token, env, "line_users_list");
   if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/notify/recipients`, {
+  const resp = await fetchAdminBackend(env, "/api/notify/recipients", "", {
+    method: "GET",
     headers,
   });
   if (!resp.ok) {
@@ -88,8 +90,10 @@ export async function handleLineUserDelete(
   const headers = await buildAdminForwardHeaders(token, env, "line_user_delete");
   if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
 
-  const resp = await fetch(
-    `${env.ALC_API_ORIGIN}/api/notify/recipients/${encodeURIComponent(id)}`,
+  const resp = await fetchAdminBackend(
+    env,
+    `/api/notify/recipients/${encodeURIComponent(id)}`,
+    "",
     { method: "DELETE", headers },
   );
   if (!resp.ok) {
