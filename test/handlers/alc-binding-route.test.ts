@@ -1422,4 +1422,78 @@ describe("trouble の口 → ALC_TROUBLE binding (Refs ippoan/rust-alc-api#747)"
     expect(await res.text()).toBe("from-cloud-run");
     expect(String(cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example${FIRE}`);
   });
+
+  const CAMERA_DOWN = "/api/internal/trouble/camera-down-tickets";
+
+  it("カメラ停止の自動チケット (exact) は内部用だけ ALC_TROUBLE へ。画面用・端末用・管理画面用は null", () => {
+    const { trouble, env } = setupTrouble();
+    expect(resolveAlcBinding(CAMERA_DOWN, env, "internal")).toEqual({ fetcher: trouble, host: "alc-trouble" });
+    expect(resolveAlcBinding(CAMERA_DOWN, env, "browser")).toBeNull();
+    expect(resolveAlcBinding(CAMERA_DOWN, env, "device")).toBeNull();
+    expect(resolveAlcBinding(CAMERA_DOWN, env, "admin")).toBeNull();
+  });
+
+  it("カメラ停止の自動チケットは、末尾の余り・頭の余り・.. を拾わない", () => {
+    const { env } = setupTrouble();
+    for (const path of [
+      `${CAMERA_DOWN}/`,
+      `${CAMERA_DOWN}x`,
+      `${CAMERA_DOWN}/x`,
+      `/x${CAMERA_DOWN}`,
+      "/api/internal/trouble/camera-down",
+      "/api/internal/trouble/x/../camera-down-tickets",
+      `${CAMERA_DOWN}/..`,
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("カメラ停止の自動チケットは binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding(CAMERA_DOWN, env, "internal")).toBeNull();
+  });
+
+  it("(e) alc-internal-proxy のカメラ停止の自動チケットは binding に届く (X-Tenant-ID と Content-Type だけ。token は作らない)", async () => {
+    const { trouble, cloudRun, env } = setupTrouble();
+    const res = await handleAlcInternalProxy(
+      internalReq(
+        `/alc-internal-proxy${CAMERA_DOWN}`,
+        { "content-type": "application/json", Authorization: "Bearer caller" },
+        "{}",
+      ),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = trouble.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-trouble${CAMERA_DOWN}`);
+    expect(init!.method).toBe("POST");
+    expect(init!.redirect).toBe("manual");
+    expect(init!.headers).toEqual({ "X-Tenant-ID": TENANT, "Content-Type": "application/json" });
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("(f) alc-internal-proxy のカメラ停止の自動チケットは X-Tenant-ID 無しで 400・GET で 403。どちらも binding に届かない", async () => {
+    const { trouble, env } = setupTrouble();
+    const noTenant = await handleAlcInternalProxy(
+      new Request(`https://auth.test.example/alc-internal-proxy${CAMERA_DOWN}`, {
+        method: "POST",
+        headers: { "X-Alc-Proxy-Secret": PROXY_SECRET },
+        body: "{}",
+      }),
+      env,
+    );
+    expect(noTenant.status).toBe(400);
+    const get = await handleAlcInternalProxy(
+      new Request(`https://auth.test.example/alc-internal-proxy${CAMERA_DOWN}`, {
+        method: "GET",
+        headers: { "X-Alc-Proxy-Secret": PROXY_SECRET, "X-Tenant-ID": TENANT },
+      }),
+      env,
+    );
+    expect(get.status).toBe(403);
+    expect(trouble.fetch).not.toHaveBeenCalled();
+  });
 });
