@@ -158,6 +158,9 @@ export { SmbIngestEntrypoint } from "./smb-ingest-entrypoint";
 // ohishi-exp/rust-ichibanboshi#322: 給与大臣 Worker (ichibanboshi-kyuyo) と
 // relay (dtako-scraper-relay) が呼ぶ認可の口 (`authorize`)。これも binding ごとに呼べるメソッドを閉じるため別 class。
 export { KyuyoAuthEntrypoint } from "./kyuyo-auth-entrypoint";
+// ohishi-exp/rust-ichibanboshi#322: 勤怠 Worker (ichibanboshi-kintai) 専用の alc 読みの口
+// (`dtakoEtags` / `dtakoEvents`)。InternalEntrypoint の FORWARDABLE_PATHS を広げないため別 class。
+export { KintaiAlcEntrypoint } from "./kintai-alc-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
 import type { BrowserWorker } from "@cloudflare/puppeteer";

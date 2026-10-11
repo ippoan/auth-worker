@@ -27,6 +27,7 @@ import type { Env } from "./index";
 import {
   alcRpcError,
   forwardAlcTenantRequest,
+  resolveKvTenant,
   type AlcRpcResult,
 } from "./lib/alc-tenant-forward";
 import {
@@ -46,8 +47,6 @@ const INGEST_PATH = "/api/files";
 
 /** `contentBase64.length` の上限 (16 MiB)。超えたら Cloud Run を呼ばず 413。 */
 const MAX_CONTENT_BASE64_LEN = 16 * 1024 * 1024;
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** `ingestFile` の引数。RPC 越しに渡るので serializable な素の値だけ。 */
 export interface SmbIngestFileInput {
@@ -75,8 +74,8 @@ export class SmbIngestEntrypoint extends WorkerEntrypoint<Env> {
     }
 
     // ★ tenant は KV からだけ。無い・空・UUID でない → Cloud Run を呼ばない。
-    const tenantId = ((await this.env.AUTH_CONFIG.get(TENANT_KEY)) ?? "").trim();
-    if (!UUID_RE.test(tenantId)) return alcRpcError(503, "smb_ingest_tenant_unset");
+    const tenantId = await resolveKvTenant(this.env, TENANT_KEY);
+    if (!tenantId) return alcRpcError(503, "smb_ingest_tenant_unset");
 
     return forwardAlcTenantRequest(this.env, {
       tenantId,

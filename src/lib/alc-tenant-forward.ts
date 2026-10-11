@@ -1,5 +1,5 @@
 /**
- * Service binding RPC (`InternalEntrypoint` / `SmbIngestEntrypoint`) から
+ * Service binding RPC (`InternalEntrypoint` / `SmbIngestEntrypoint` / `KintaiAlcEntrypoint`) から
  * rust-alc-api の tenant data 経路 (`require_tenant_header`) を叩く共通部分。
  *
  *   ① env guard (`ALC_API_PROXY_SA_KEY` / `ALC_API_ORIGIN`)
@@ -32,6 +32,18 @@ export interface AlcRpcResult {
 
 export function alcRpcError(status: number, error: string): AlcRpcResult {
   return { status, body: JSON.stringify({ error }), contentType: "application/json" };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * AUTH_CONFIG KV の `key` に置いた固定 tenant (UUID 文字列) を引く。
+ * 無い・空・UUID でない → `null` (呼び手は Cloud Run を呼ばずに 503 で返す = fail-closed)。
+ * 値はこの repo に入れない。
+ */
+export async function resolveKvTenant(env: Env, key: string): Promise<string | null> {
+  const tenantId = ((await env.AUTH_CONFIG.get(key)) ?? "").trim();
+  return UUID_RE.test(tenantId) ? tenantId : null;
 }
 
 export interface AlcTenantForwardInput {
