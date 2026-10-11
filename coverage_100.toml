@@ -381,7 +381,14 @@ branches = true
 path = "src/kyuyo-auth-entrypoint.ts"
 branches = true
 
-# InternalEntrypoint と SmbIngestEntrypoint が共有する OIDC mint → forward。
+# Refs ohishi-exp/rust-ichibanboshi#322: 勤怠 Worker 専用の alc 読みの口。tenant を KV 固定・
+# path / method を GET 固定にし、query の鍵 allowlist と fail-closed の分岐を含めて 100% を維持する。
+[[files]]
+path = "src/kintai-alc-entrypoint.ts"
+branches = true
+
+# InternalEntrypoint / SmbIngestEntrypoint / KintaiAlcEntrypoint が共有する KV 固定 tenant の解決と
+# OIDC mint → forward。
 [[files]]
 path = "src/lib/alc-tenant-forward.ts"
 branches = true
