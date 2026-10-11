@@ -957,6 +957,76 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
     expect(lineworks.fetch).not.toHaveBeenCalled();
   });
 
+  const DEPLOY_CHECK = "/api/lineworks/deploy-check";
+
+  it("デプロイ確認の口 (exact) は画面用だけ ALC_LINEWORKS へ。内部用・端末用・管理画面用は null", () => {
+    const { lineworks, env } = setup();
+    expect(resolveAlcBinding(DEPLOY_CHECK, env, "browser")).toEqual({ fetcher: lineworks, host: "alc-lineworks" });
+    expect(resolveAlcBinding(DEPLOY_CHECK, env, "internal")).toBeNull();
+    expect(resolveAlcBinding(DEPLOY_CHECK, env, "device")).toBeNull();
+    expect(resolveAlcBinding(DEPLOY_CHECK, env, "admin")).toBeNull();
+  });
+
+  it("デプロイ確認の口は、末尾の余り・頭の余り・.. ・前方一致を拾わない", () => {
+    const { env } = setup();
+    for (const path of [
+      `${DEPLOY_CHECK}/`,
+      `${DEPLOY_CHECK}x`,
+      `${DEPLOY_CHECK}/x`,
+      `${DEPLOY_CHECK}/..`,
+      `/x${DEPLOY_CHECK}`,
+      "/api/lineworks/x/../deploy-check",
+      "/api/lineworks/deploy",
+      "/api/lineworks",
+      "/api/lineworks/",
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("デプロイ確認の口は binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_LINEWORKS: undefined });
+    expect(resolveAlcBinding(DEPLOY_CHECK, env, "browser")).toBeNull();
+  });
+
+  it("(g) alc-proxy の GET /api/lineworks/deploy-check は binding に届く (付け直したヘッダだけ。Cloud Run / OIDC mint は呼ばれない)", async () => {
+    const { lineworks, binding, cloudRun, env } = setup();
+    const res = await handleAlcProxy(
+      alcReq(`/alc-proxy${DEPLOY_CHECK}`, { method: "GET", headers: { "X-Tenant-ID": "evil-tenant" } }),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    expect(lineworks.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = lineworks.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-lineworks${DEPLOY_CHECK}`);
+    expect(init!.method).toBe("GET");
+    expect(init!.redirect).toBe("manual");
+    expect(init!.body).toBeUndefined();
+    const h = init!.headers as Record<string, string>;
+    expect(h.Authorization).toBeUndefined();
+    expect(h["X-Tenant-ID"]).not.toBe("evil-tenant");
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+  });
+
+  it("(h) alc-proxy のデプロイ確認は binding 未定義なら Cloud Run。%2f%2e%2e を含む path は exact に一致せず binding に届かない", async () => {
+    const off = setup({ ALC_LINEWORKS: undefined });
+    const res = await handleAlcProxy(alcReq(`/alc-proxy${DEPLOY_CHECK}`, { method: "GET" }), off.env);
+    expect(await res.text()).toBe("from-cloud-run");
+    expect(String(off.cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example${DEPLOY_CHECK}`);
+
+    const { lineworks, env } = setup();
+    const unsafe = await handleAlcProxy(
+      alcReq("/alc-proxy/api/lineworks/x%2f%2e%2e%2fdeploy-check", { method: "GET" }),
+      env,
+    );
+    expect(await unsafe.text()).not.toBe("from-binding");
+    expect(lineworks.fetch).not.toHaveBeenCalled();
+  });
+
   it("(d) 端末通知 (sendDeviceNotify) も binding へ。{recipient_id, text} を Content-Type だけで送り、token は作らない", async () => {
     const { lineworks, cloudRun, env } = setup();
     vi.mocked(internalAuthToken).mockRejectedValue(new Error("boom"));
