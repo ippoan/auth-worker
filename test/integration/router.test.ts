@@ -429,6 +429,13 @@ describe("Router (index.ts)", () => {
     expect(res.status).toBe(404);
   });
 
+  // ohishi-exp/rust-ichibanboshi#322: 中継口を撤去した。広い prefix や catch-all に拾われず 404 で終わる
+  it.each(["GET", "POST"])("%s /ichibanboshi-proxy/* は撤去済みで 404", async (method) => {
+    const req = new Request("https://auth.test.example/ichibanboshi-proxy/api/kintai/events", { method });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+
   // --- POST routes ---
   const postRoutes: [string, string][] = [
     ["/api/sso/list", "sso-list"],
