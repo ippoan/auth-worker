@@ -89,8 +89,6 @@ declare namespace Cloudflare {
 		MCP_SESSION_DO: DurableObjectNamespace<import("./src/index").McpSession>;
 		CF_FLICKR_CAM_WORKER: Fetcher /* cf-flickr-cam-worker */;
 		ALC_RECORDER: Fetcher /* alc-recorder-staging */ | Fetcher /* alc-recorder */;
-		ICHIBANBOSHI_PROXY_SA_KEY?: SecretsStoreSecret;
-		ICHIBANBOSHI_ORIGIN?: "https://rust-ichibanboshi-747065218280.asia-northeast1.run.app";
 		ALC_API_PREVIEW_HOST_SUFFIX?: "rust-alc-api-747065218280.asia-northeast1.run.app";
 		ALC_PROXY_DEV_WRITE_ALLOWLIST?: "";
 	}
