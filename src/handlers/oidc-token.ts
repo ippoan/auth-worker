@@ -16,7 +16,7 @@
  * 既存 `/mcp/token` は未変更。
  */
 import type { Env } from "../index";
-import { corsJsonResponse } from "../lib/errors";
+import { corsJsonResponse, parseBasicAuth } from "../lib/errors";
 import {
   OIDC_ACCESS_TOKEN_TTL_SEC,
   generateOidcOpaqueToken,
@@ -49,18 +49,14 @@ function extractClientCredentials(
   request: Request,
   form: URLSearchParams,
 ): { clientId: string; clientSecret: string } {
-  const auth = request.headers.get("Authorization") || "";
-  if (auth.startsWith("Basic ")) {
+  const basic = parseBasicAuth(request.headers.get("Authorization"));
+  if (basic) {
     try {
-      const decoded = atob(auth.slice("Basic ".length));
-      const sep = decoded.indexOf(":");
-      if (sep !== -1) {
-        return {
-          // RFC 6749 §2.3.1 は client_id / secret を form-urlencoded せよと定める。
-          clientId: decodeURIComponent(decoded.slice(0, sep)),
-          clientSecret: decodeURIComponent(decoded.slice(sep + 1)),
-        };
-      }
+      return {
+        // RFC 6749 §2.3.1 は client_id / secret を form-urlencoded せよと定める。
+        clientId: decodeURIComponent(basic.username),
+        clientSecret: decodeURIComponent(basic.password),
+      };
     } catch {
       // 壊れた Basic ヘッダは「認証情報なし」として下の body 側にフォールバックさせる。
     }
