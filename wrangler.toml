@@ -600,6 +600,13 @@ service = "alc-notify-staging"
 binding = "ALC_TROUBLE"
 service = "alc-trouble-staging"
 
+# alc-auth-worker staging (ippoan/alc-auth-worker、ohishi-exp/rust-leave-worker#1)。機械用資格情報の表を読み書きする
+# 内部口 (src/lib/machine-credential.ts)。本番 (トップレベル) は本番の alc-auth-worker が出てから別 PR で足す。
+# それまで本番の資格情報の口は fail-closed (発行・照合とも失敗側)。
+[[env.staging.services]]
+binding = "ALC_AUTH"
+service = "alc-auth-worker-staging"
+
 [[env.staging.kv_namespaces]]
 binding = "AUTH_CONFIG"
 id = "f13ecae4b69043819c09f606abb84797"

@@ -12,10 +12,10 @@
  *   (info = `machine-ticket-v1:<MACHINE_CRED_ENV>`)。
  *   - ドメイン分離: 派生鍵なので、ブラウザの JWT・device JWT とは互いに検証が通らない
  *   - 環境の分離: `JWT_SECRET` は prod と staging で**同じ値** (wrangler.toml で同じ entry を指す) なので、
- *     info に環境名を入れて鍵そのものを分ける。さらに payload の `env` の照合と、資格情報の KV
- *     (`mcred:<env>:`) の引き直しでも分かれる
+ *     info に環境名を入れて鍵そのものを分ける。さらに payload の `env` の照合と、資格情報の引き直し
+ *     (`ALC_AUTH` の行き先が環境ごとに別の alc-auth-worker・別の DB) でも分かれる
  *
- * ★ **検証は署名と期限だけで済ませず、資格情報が今も有効かを KV で確かめる** —
+ * ★ **検証は署名と期限だけで済ませず、資格情報が今も有効かを alc-auth-worker で確かめる** —
  *   資格情報を失効させたら、まだ取り込まれていないファイルのチケットも通らなくなる (ユーザー要件)。
  */
 import type { SecretBinding } from "./secret";

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { createMockEnv, createMockKV } from "../helpers/mock-env";
+import { createMockEnv } from "../helpers/mock-env";
+import { createFakeAlcAuth, type FakeAlcAuth } from "../helpers/fake-alc-auth";
 import type { Env } from "../../src/index";
 import { MACHINE_RELAY_ROUTES, handleMachineRelay } from "../../src/handlers/machine-relay";
 import { createMachineCredential, revokeMachineCredential } from "../../src/lib/machine-credential";
@@ -32,18 +33,18 @@ function fakeBinding(res: () => Response = () => new Response("ok", { status: 20
   return { fetcher, calls };
 }
 
-async function setup(overrides: Partial<Env> = {}) {
+/**
+ * ★ 中継先 (LEAVE_APP) へ付ける `X-Internal-Shared-Secret` と alc-auth-worker の内部口の secret は、
+ * どちらも同じ binding `INTERNAL_SHARED_SECRET` から引く。そのため fake の受ける secret を SHARED に揃える。
+ * 資格情報の作成は overrides に関わらず通るよう、overrides を当てる前の env で先に済ませる。
+ */
+async function setup(overrides: Partial<Env> = {}, alcAuth: FakeAlcAuth = createFakeAlcAuth({ secret: SHARED })) {
   const binding = fakeBinding();
-  const e = createMockEnv({
-    AUTH_CONFIG: createMockKV(),
-    MACHINE_CRED_ENV: "prod",
-    INTERNAL_SHARED_SECRET: SHARED,
-    LEAVE_APP: binding.fetcher,
-    ...overrides,
-  });
-  const c = (await createMachineCredential(e, TENANT, "leave-scan", "複合機"))!;
+  const base = { ALC_AUTH: alcAuth.fetcher, MACHINE_CRED_ENV: "prod", INTERNAL_SHARED_SECRET: SHARED, LEAVE_APP: binding.fetcher };
+  const c = (await createMachineCredential(createMockEnv(base), TENANT, "leave-scan", "複合機"))!;
+  const e = createMockEnv({ ...base, ...overrides });
   const auth = `Basic ${btoa(`${c.username}:${c.password}`)}`;
-  return { e, c, auth, calls: binding.calls };
+  return { e, c, auth, calls: binding.calls, alcAuth };
 }
 
 function put(path: string, headers: Record<string, string> = {}, body: string | null = "PDFDATA"): Request {
@@ -118,10 +119,9 @@ describe("handleMachineRelay (/m/<purpose>/*、Refs ohishi-exp/rust-leave-worker
   });
 
   it("★ 401 は理由を区別しない (無し / 不一致 / 失効 / 用途違い) + WWW-Authenticate: Basic。中継しない", async () => {
-    const { e, c, auth, calls } = await setup();
-    const kv = e.AUTH_CONFIG as unknown as { _data: Record<string, string> };
+    const { e, c, auth, calls, alcAuth } = await setup();
     const other = "mc_0123456789abcdef";
-    kv._data[`mcred:prod:${other}`] = JSON.stringify({
+    alcAuth.rows.set(other, {
       username: other, tenant_id: TENANT, purpose: "other", label: "x",
       secret_hash: "0".repeat(64), created_at: new Date().toISOString(), revoked: false,
     });
@@ -153,21 +153,34 @@ describe("handleMachineRelay (/m/<purpose>/*、Refs ohishi-exp/rust-leave-worker
     expect(calls).toHaveLength(0);
   });
 
-  it("binding 未定義・INTERNAL_SHARED_SECRET 未設定 → 503 (Basic が通った後)", async () => {
+  it("LEAVE_APP binding 未定義 → 503 (Basic が通った後)", async () => {
     const a = await setup({ LEAVE_APP: undefined });
     expect((await handleMachineRelay(put("/m/leave-scan/a.pdf", { Authorization: a.auth }), a.e)).status).toBe(503);
-    const b = await setup({ INTERNAL_SHARED_SECRET: undefined });
-    expect((await handleMachineRelay(put("/m/leave-scan/a.pdf", { Authorization: b.auth }), b.e)).status).toBe(503);
-    expect(b.calls).toHaveLength(0);
     // Basic が通らなければ 503 より先に 401
     expect((await handleMachineRelay(put("/m/leave-scan/a.pdf", {}), a.e)).status).toBe(401);
   });
 
-  it("staging の資格情報は MACHINE_CRED_ENV=prod の口では 401", async () => {
-    const kv = createMockKV();
-    const staging = await setup({ AUTH_CONFIG: kv, MACHINE_CRED_ENV: "staging" });
+  it("★ INTERNAL_SHARED_SECRET 未設定・ALC_AUTH 未定義・alc-auth-worker の 5xx → Basic が照合できず 401 (fail-closed)。中継しない", async () => {
+    const b = await setup({ INTERNAL_SHARED_SECRET: undefined });
+    expect((await handleMachineRelay(put("/m/leave-scan/a.pdf", { Authorization: b.auth }), b.e)).status).toBe(401);
+    expect(b.calls).toHaveLength(0);
+    const c = await setup({ ALC_AUTH: undefined });
+    expect((await handleMachineRelay(put("/m/leave-scan/a.pdf", { Authorization: c.auth }), c.e)).status).toBe(401);
+    expect(c.calls).toHaveLength(0);
+    const d = await setup({
+      ALC_AUTH: createFakeAlcAuth({ secret: SHARED, override: () => new Response("", { status: 500 }) }).fetcher,
+    });
+    expect((await handleMachineRelay(put("/m/leave-scan/a.pdf", { Authorization: d.auth }), d.e)).status).toBe(401);
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("staging の資格情報は prod の alc-auth-worker (別の DB) では 401", async () => {
+    const staging = await setup({ MACHINE_CRED_ENV: "staging" });
     const prod = createMockEnv({
-      AUTH_CONFIG: kv, MACHINE_CRED_ENV: "prod", INTERNAL_SHARED_SECRET: SHARED, LEAVE_APP: fakeBinding().fetcher,
+      ALC_AUTH: createFakeAlcAuth({ secret: SHARED }).fetcher,
+      MACHINE_CRED_ENV: "prod",
+      INTERNAL_SHARED_SECRET: SHARED,
+      LEAVE_APP: fakeBinding().fetcher,
     });
     expect((await handleMachineRelay(put("/m/leave-scan/a.pdf", { Authorization: staging.auth }), prod)).status).toBe(401);
   });

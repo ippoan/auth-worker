@@ -5,13 +5,9 @@ import {
   verifyTicket,
   type MachineTicketEnv,
 } from "../../src/lib/machine-ticket";
-import {
-  createMachineCredential,
-  revokeMachineCredential,
-  type MachineCredentialRecord,
-} from "../../src/lib/machine-credential";
+import { createMachineCredential, revokeMachineCredential } from "../../src/lib/machine-credential";
 import { decodeJwtPayload, signJwt, verifyJwt } from "../../src/lib/jwt";
-import { createMockKV, type MockKV } from "../helpers/mock-env";
+import { FAKE_ALC_AUTH_SECRET, createFakeAlcAuth, type FakeAlcAuth } from "../helpers/fake-alc-auth";
 
 /** テスト固有のダミー値 (本番の値ではない)。 */
 const SECRET = "test-jwt-secret-for-machine-ticket";
@@ -21,15 +17,21 @@ const PURPOSE = "leave-scan";
 const SHA = "a".repeat(64);
 const SHA2 = "b".repeat(64);
 
-function env(name: string | null = "prod", kv: KVNamespace = createMockKV()): MachineTicketEnv {
-  return { AUTH_CONFIG: kv, MACHINE_CRED_ENV: name ?? undefined, JWT_SECRET: SECRET };
+function env(name: string | null = "prod", fake: FakeAlcAuth = createFakeAlcAuth()): MachineTicketEnv & { fake: FakeAlcAuth } {
+  return {
+    ALC_AUTH: fake.fetcher,
+    INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET,
+    MACHINE_CRED_ENV: name ?? undefined,
+    JWT_SECRET: SECRET,
+    fake,
+  };
 }
 
 function basic(username: string, password: string): string {
   return `Basic ${btoa(`${username}:${password}`)}`;
 }
 
-async function setup(e: MachineTicketEnv = env(), tenant = TENANT_A) {
+async function setup(e: MachineTicketEnv & { fake: FakeAlcAuth } = env(), tenant = TENANT_A) {
   const c = await createMachineCredential(e, tenant, PURPOSE, "複合機");
   if (!c) throw new Error("create failed");
   return { e, c, auth: basic(c.username, c.password) };
@@ -133,10 +135,9 @@ describe("verifyTicket", () => {
     expect(await verifyTicket(e, r!.ticket, PURPOSE)).toBeNull();
   });
 
-  it("★ staging の鍵で作ったチケットは prod で null (同じ JWT_SECRET・同じ KV namespace でも)", async () => {
-    const kv = createMockKV();
-    const staging = env("staging", kv);
-    const prod = env("prod", kv);
+  it("★ staging の鍵で作ったチケットは prod で null (同じ JWT_SECRET・同じ資格情報が prod に在っても)", async () => {
+    const staging = env("staging");
+    const prod = env("prod");
     const { c, auth } = await setup(staging);
     const r = await issueTicket(staging, auth, PURPOSE, SHA);
     expect(await verifyTicket(staging, r!.ticket, PURPOSE)).not.toBeNull();
@@ -144,8 +145,7 @@ describe("verifyTicket", () => {
 
     // 鍵の違いだけでも落ちる: prod 側に同じ username の有効な資格情報を置き、
     // payload の env を prod に書き換えても、staging の鍵の署名は prod では通らない。
-    const rec = JSON.parse((kv as MockKV)._data[`mcred:staging:${c.username}`]!) as MachineCredentialRecord;
-    (kv as MockKV)._data[`mcred:prod:${c.username}`] = JSON.stringify(rec);
+    prod.fake.rows.set(c.username, { ...staging.fake.rows.get(c.username)! });
     const envSwapped = await resign(staging, r!.ticket, { env: "prod" });
     expect(await verifyTicket(prod, envSwapped, PURPOSE)).toBeNull();
     // 対照: prod の鍵で署名し直せば通る (= 上の null は鍵の違いによる)
@@ -189,11 +189,21 @@ describe("verifyTicket", () => {
   });
 
   it("資格情報の purpose が後から食い違っていたら null", async () => {
-    const kv = createMockKV() as MockKV;
-    const { e, c, auth } = await setup(env("prod", kv));
+    const { e, c, auth } = await setup();
     const r = await issueTicket(e, auth, PURPOSE, SHA);
-    const key = `mcred:prod:${c.username}`;
-    kv._data[key] = JSON.stringify({ ...(JSON.parse(kv._data[key]!) as object), purpose: "other" });
+    e.fake.rows.get(c.username)!.purpose = "other";
     expect(await verifyTicket(e, r!.ticket, PURPOSE)).toBeNull();
+  });
+
+  it("★ alc-auth-worker に届かない (binding なし・5xx) → 発行も検証も null (fail-closed)", async () => {
+    const { e, auth } = await setup();
+    const r = await issueTicket(e, auth, PURPOSE, SHA);
+    expect(r).not.toBeNull();
+    const noBinding = { ...e, ALC_AUTH: undefined };
+    expect(await issueTicket(noBinding, auth, PURPOSE, SHA)).toBeNull();
+    expect(await verifyTicket(noBinding, r!.ticket, PURPOSE)).toBeNull();
+    const down = { ...e, ALC_AUTH: createFakeAlcAuth({ override: () => new Response("", { status: 503 }) }).fetcher };
+    expect(await issueTicket(down, auth, PURPOSE, SHA)).toBeNull();
+    expect(await verifyTicket(down, r!.ticket, PURPOSE)).toBeNull();
   });
 });
