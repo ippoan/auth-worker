@@ -169,6 +169,13 @@ service = "alc-notify"
 binding = "ALC_TROUBLE"
 service = "alc-trouble"
 
+# alc-auth-worker (ippoan/alc-auth-worker、ohishi-exp/rust-leave-worker#1)。機械用資格情報の表
+# alc_api.machine_credentials を内部口 (X-Internal-Shared-Secret 付き) で読み書きする (src/lib/machine-credential.ts)。
+# alc-auth-worker は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-auth-worker-staging。
+[[services]]
+binding = "ALC_AUTH"
+service = "alc-auth-worker"
+
 # ─── MCP_OAUTH_KV (issue #432: prod で MCP OAuth Provider を有効化) ──────────
 #
 # 経緯: 2026-07-24 以前は top-level (prod) に **意図的に bind しない**運用
@@ -600,9 +607,7 @@ service = "alc-notify-staging"
 binding = "ALC_TROUBLE"
 service = "alc-trouble-staging"
 
-# alc-auth-worker staging (ippoan/alc-auth-worker、ohishi-exp/rust-leave-worker#1)。機械用資格情報の表を読み書きする
-# 内部口 (src/lib/machine-credential.ts)。本番 (トップレベル) は本番の alc-auth-worker が出てから別 PR で足す。
-# それまで本番の資格情報の口は fail-closed (発行・照合とも失敗側)。
+# alc-auth-worker staging (ippoan/alc-auth-worker、ohishi-exp/rust-leave-worker#1)。トップレベル (ALC_AUTH) のコメント参照。
 [[env.staging.services]]
 binding = "ALC_AUTH"
 service = "alc-auth-worker-staging"
