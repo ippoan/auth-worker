@@ -209,6 +209,46 @@ describe("POST /api/machine-credentials/<username>/revoke", () => {
   });
 });
 
+describe("POST /api/machine-credentials/<username>/rotate", () => {
+  const U = "mc_0123456789abcdef";
+  const rotateOk = (r: Request) => (r.url.endsWith("/rotate") ? Response.json({ rotated: true }) : undefined);
+  const envWith = (override: (r: Request) => Response | undefined, credEnv = "prod") =>
+    env(credEnv, { ALC_AUTH: createFakeAlcAuth({ override }).fetcher });
+
+  it("成功: 200 {username, password(24 文字)} で no-store", async () => {
+    const { status, body, res } = await call(
+      envWith(rotateOk),
+      req(`/${U}/rotate`, { method: "POST", token: await jwt() }),
+    );
+    expect(status).toBe(200);
+    expect(Object.keys(body).sort()).toEqual(["password", "username"]);
+    expect(body.username).toBe(U);
+    expect(String(body.password)).toHaveLength(24);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("内部口が 404 / 本文の形違い / username の形の不正 → 404", async () => {
+    const token = await jwt();
+    expect((await call(env(), req(`/${U}/rotate`, { method: "POST", token }))).status).toBe(404);
+    const bad = envWith(() => Response.json({ rotated: "yes" }));
+    expect((await call(bad, req(`/${U}/rotate`, { method: "POST", token }))).status).toBe(404);
+    expect((await call(envWith(rotateOk), req("/x/rotate", { method: "POST", token }))).status).toBe(404);
+  });
+
+  it("未認証 401 / admin でない 403 / dev token は prod で 403", async () => {
+    const e = envWith(rotateOk);
+    expect((await call(e, req(`/${U}/rotate`, { method: "POST" }))).status).toBe(401);
+    const member = await jwt({ role: "member" });
+    expect((await call(e, req(`/${U}/rotate`, { method: "POST", token: member }))).status).toBe(403);
+    const dev = await jwt({ token_kind: "dev" });
+    expect((await call(e, req(`/${U}/rotate`, { method: "POST", token: dev }))).status).toBe(403);
+  });
+
+  it("GET は 405", async () => {
+    expect((await call(env(), req(`/${U}/rotate`, { token: await jwt() }))).status).toBe(405);
+  });
+});
+
 describe("path / method", () => {
   it("知らない下位 path → 404、許されない method → 405", async () => {
     const e = env();

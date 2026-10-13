@@ -8,6 +8,7 @@ import {
   listMachineCredentials,
   machineCredEnvName,
   revokeMachineCredential,
+  rotateMachineCredential,
   verifyBasic,
   type MachineCredEnv,
 } from "../../src/lib/machine-credential";
@@ -207,6 +208,40 @@ describe("verifyBasic", () => {
     const c = await create(staging);
     expect(await verifyBasic(staging, basic(c.username, c.password), PURPOSE)).not.toBeNull();
     expect(await verifyBasic(prod, basic(c.username, c.password), PURPOSE)).toBeNull();
+  });
+});
+
+describe("rotateMachineCredential", () => {
+  // fake の内部口には rotate が無い (404) ので、応答は override で与え、送った本文は calls で見る。
+  const rotateOk = (req: Request) =>
+    req.url.endsWith("/rotate") ? Response.json({ rotated: true }) : undefined;
+
+  it("成功: 同じ username と 24 文字の新しい password。本文は {tenant_id, secret_hash}", async () => {
+    const e = env("prod", createFakeAlcAuth({ override: rotateOk }));
+    const r = await rotateMachineCredential(e, TENANT_A, "mc_0123456789abcdef");
+    expect(r?.username).toBe("mc_0123456789abcdef");
+    expect(r?.password).toHaveLength(24);
+    const call = e.fake.calls.at(-1)!;
+    expect(call.method).toBe("POST");
+    expect(call.url).toMatch(/\/internal\/machine-credentials\/mc_0123456789abcdef\/rotate$/);
+    expect(JSON.parse(call.body)).toEqual({ tenant_id: TENANT_A, secret_hash: await sha256Hex(r!.password) });
+  });
+
+  it("内部口が 404 → null (不在・失効済み・他社は区別しない)", async () => {
+    const e = env();
+    expect(await rotateMachineCredential(e, TENANT_A, "mc_0123456789abcdef")).toBeNull();
+  });
+
+  it("200 でも rotated:true でなければ null", async () => {
+    const e = env("prod", createFakeAlcAuth({ override: () => Response.json({ rotated: false }) }));
+    expect(await rotateMachineCredential(e, TENANT_A, "mc_0123456789abcdef")).toBeNull();
+  });
+
+  it("tenant が空 / username の形が違う → null (内部口を引かない)", async () => {
+    const e = env("prod", createFakeAlcAuth({ override: rotateOk }));
+    expect(await rotateMachineCredential(e, "", "mc_0123456789abcdef")).toBeNull();
+    expect(await rotateMachineCredential(e, TENANT_A, "../x")).toBeNull();
+    expect(e.fake.calls).toHaveLength(0);
   });
 });
 

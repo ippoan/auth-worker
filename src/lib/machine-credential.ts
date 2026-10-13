@@ -24,6 +24,7 @@
  *   - `POST /internal/machine-credentials` {username, tenant_id, purpose, label, secret_hash} → 201
  *   - `GET  /internal/machine-credentials?tenant_id=<uuid>[&purpose=<p>]` → 200 {credentials: [...]}
  *   - `POST /internal/machine-credentials/<username>/revoke` {tenant_id} → 200 {revoked: true} / 404
+ *   - `POST /internal/machine-credentials/<username>/rotate` {tenant_id, secret_hash} → 200 {rotated: true} / 404
  *   - `GET  /internal/machine-credentials/<username>` → 200 {tenant_id, purpose, secret_hash, revoked} / 404
  */
 import { constantTimeEqual, sha256Hex } from "./device";
@@ -305,6 +306,28 @@ export async function revokeMachineCredential(
     body: { tenant_id: tenantId },
   });
   return r?.status === 200 && r.body.revoked === true;
+}
+
+/**
+ * 資格情報の password だけを新しくする (username はそのまま。旧 password は即失効、猶予なし)。
+ * **他 tenant のもの・存在しないもの・失効済みはどれも null** (区別しない。alc-auth-worker が 404)。
+ * rotate の日時は記録しない。
+ * ★ rotate 前に発行済みの inbox のチケット (TTL 7 日) は username が有効かだけを見るので rotate 後も通る
+ *   (過去の PUT への印なので仕様)。
+ */
+export async function rotateMachineCredential(
+  env: MachineCredEnv,
+  tenantId: string,
+  username: string,
+): Promise<{ username: string; password: string } | null> {
+  if (typeof tenantId !== "string" || !tenantId) return null;
+  if (typeof username !== "string" || !USERNAME_RE.test(username)) return null;
+  const password = randomBase64Url(MACHINE_CRED_PASSWORD_BYTES);
+  const r = await callAlcAuth(env, `/${username}/rotate`, {
+    method: "POST",
+    body: { tenant_id: tenantId, secret_hash: await sha256Hex(password) },
+  });
+  return r?.status === 200 && r.body.rotated === true ? { username, password } : null;
 }
 
 /**
