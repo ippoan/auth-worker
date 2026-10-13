@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { createMockEnv, createMockKV } from "./helpers/mock-env";
+import { createMockEnv } from "./helpers/mock-env";
+import { FAKE_ALC_AUTH_SECRET, createFakeAlcAuth } from "./helpers/fake-alc-auth";
 import type { Env } from "../src/index";
 import { MachineCredentialEntrypoint } from "../src/machine-credential-entrypoint";
 import { createMachineCredential, revokeMachineCredential } from "../src/lib/machine-credential";
@@ -10,7 +11,12 @@ const PURPOSE = "leave-scan";
 const SHA = "c".repeat(64);
 
 function env(overrides: Partial<Env> = {}): Env {
-  return createMockEnv({ AUTH_CONFIG: createMockKV(), MACHINE_CRED_ENV: "staging", ...overrides });
+  return createMockEnv({
+    ALC_AUTH: createFakeAlcAuth().fetcher,
+    INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET,
+    MACHINE_CRED_ENV: "staging",
+    ...overrides,
+  });
 }
 
 /** `[[services]] entrypoint = "MachineCredentialEntrypoint"` 越しの呼び出しを再現する。 */
@@ -63,9 +69,9 @@ describe("MachineCredentialEntrypoint (ohishi-exp/rust-leave-worker#1)", () => {
     expect(await rpc(e).verifyTicket(issued!.ticket, PURPOSE)).toBeNull();
   });
 
-  it("引数が文字列でなければ KV を引かずに null", async () => {
+  it("引数が文字列でなければ alc-auth-worker を引かずに null", async () => {
     const e = env();
-    const get = vi.spyOn(e.AUTH_CONFIG, "get");
+    const get = vi.spyOn(e.ALC_AUTH!, "fetch");
     const x = rpc(e) as unknown as {
       issueTicket: (...a: unknown[]) => Promise<unknown>;
       verifyTicket: (...a: unknown[]) => Promise<unknown>;
@@ -77,11 +83,22 @@ describe("MachineCredentialEntrypoint (ohishi-exp/rust-leave-worker#1)", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it("KV が throw しても throw せず null (例外の種類だけ log、資格情報は出さない)", async () => {
+  it("alc-auth-worker が throw しても throw せず null (資格情報の層で失敗側に倒れ、log は出ない)", async () => {
     const { e, auth } = await setup();
     const issued = await rpc(e).issueTicket(auth, PURPOSE, SHA);
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(e.AUTH_CONFIG, "get").mockRejectedValue(new TypeError("kv down"));
+    vi.spyOn(e.ALC_AUTH!, "fetch").mockRejectedValue(new TypeError("network"));
+    expect(await rpc(e).issueTicket(auth, PURPOSE, SHA)).toBeNull();
+    expect(await rpc(e).verifyTicket(issued!.ticket, PURPOSE)).toBeNull();
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it("下の層が throw しても throw せず null (例外の種類だけ log、資格情報は出さない)", async () => {
+    const { e, auth } = await setup();
+    const issued = await rpc(e).issueTicket(auth, PURPOSE, SHA);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // チケットの鍵の派生 (HKDF) は資格情報の層の外なので、ここで throw させて entrypoint の catch を通す。
+    vi.spyOn(crypto.subtle, "importKey").mockRejectedValue(new TypeError("crypto down"));
     expect(await rpc(e).issueTicket(auth, PURPOSE, SHA)).toBeNull();
     expect(await rpc(e).verifyTicket(issued!.ticket, PURPOSE)).toBeNull();
     const logged = errSpy.mock.calls.map((a) => String(a[0]));
@@ -98,7 +115,7 @@ describe("MachineCredentialEntrypoint (ohishi-exp/rust-leave-worker#1)", () => {
   it("Error でない throw も unknown として log して null", async () => {
     const { e, auth } = await setup();
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(e.AUTH_CONFIG, "get").mockImplementation(() => {
+    vi.spyOn(crypto.subtle, "importKey").mockImplementation(() => {
       throw "boom";
     });
     expect(await rpc(e).issueTicket(auth, PURPOSE, SHA)).toBeNull();

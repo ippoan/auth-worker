@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { createMockEnv, createMockKV, TEST_JWT_SECRET } from "../helpers/mock-env";
+import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
+import { FAKE_ALC_AUTH_SECRET, createFakeAlcAuth } from "../helpers/fake-alc-auth";
 import { signTestJwt } from "../helpers/test-jwt";
 import type { Env } from "../../src/index";
 import {
@@ -17,7 +18,8 @@ const LEAVE = "https://leave.ippoan.org";
 
 function env(credEnv: string | null = "prod", overrides: Partial<Env> = {}): Env {
   return createMockEnv({
-    AUTH_CONFIG: createMockKV(),
+    ALC_AUTH: createFakeAlcAuth().fetcher,
+    INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET,
     MACHINE_CRED_ENV: credEnv ?? undefined,
     WORKER_ENV: credEnv ?? "prod",
     ...overrides,

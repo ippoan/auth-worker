@@ -11,16 +11,24 @@
  *   - device 一覧 (`device:` の全走査) に混ざる
  * ここの資格情報は JWT を一切出さない。出すのは用途を固定したチケット (`lib/machine-ticket.ts`) だけ。
  *
- * ★ **`AUTH_CONFIG` は prod と staging で同じ namespace** なので、key に環境名 (`MACHINE_CRED_ENV`) を入れて
- * 分ける。staging で発行した資格情報は prod では照合できない。`MACHINE_CRED_ENV` が無い・不正なら
- * 全関数が失敗側の値 (null / false / 空配列) を返す (throw しない)。
+ * ★ **資格情報は DB の表 `alc_api.machine_credentials` (tenants へ FK + ON DELETE CASCADE) に在り、
+ * 読み書きは alc-auth-worker (Service Binding `ALC_AUTH`) の内部口だけで行う** — 会社が消えれば資格情報も消える。
+ * 環境の分離は binding の行き先 (prod / staging で別の worker・別の DB) で決まる。
+ * username / password の生成と password の sha256 hex はここ (TS 側) で行い、alc-auth-worker には hash だけ送る。
  *
- * KV:
- *   - `mcred:<env>:<username>` → `MachineCredentialRecord` (JSON)。password は sha256 hex だけ
- *   - `mcred-tenant:<env>:<tenant_id>:<username>` → `"1"` (tenant ごとの一覧の索引)
+ * ★ **fail-closed**: `ALC_AUTH` か `INTERNAL_SHARED_SECRET` が無い・`MACHINE_CRED_ENV` が無い/不正・
+ * 応答が 2xx と 404 以外・JSON が壊れている・通信が失敗した → 全関数が失敗側の値 (null / false / 空配列) を返す
+ * (throw しない)。404 は本文に関係なく「無い」として扱う。
+ *
+ * alc-auth-worker の内部口 (全部 `X-Internal-Shared-Secret` が要る。不一致は 404):
+ *   - `POST /internal/machine-credentials` {username, tenant_id, purpose, label, secret_hash} → 201
+ *   - `GET  /internal/machine-credentials?tenant_id=<uuid>[&purpose=<p>]` → 200 {credentials: [...]}
+ *   - `POST /internal/machine-credentials/<username>/revoke` {tenant_id} → 200 {revoked: true} / 404
+ *   - `GET  /internal/machine-credentials/<username>` → 200 {tenant_id, purpose, secret_hash, revoked} / 404
  */
 import { constantTimeEqual, sha256Hex } from "./device";
 import { parseBasicAuth } from "./errors";
+import { resolveSecret, type SecretBinding } from "./secret";
 
 /** 資格情報の用途の allowlist (ここ 1 か所に定義する)。用途を足すときはここに足す。 */
 export const MACHINE_CRED_PURPOSES = ["leave-scan"] as const;
@@ -29,15 +37,18 @@ export type MachineCredPurpose = (typeof MACHINE_CRED_PURPOSES)[number];
 /** label の最大長 (管理画面の表示用の名前)。 */
 export const MACHINE_CRED_LABEL_MAX = 64;
 
-const KV_PREFIX = "mcred:";
-const TENANT_INDEX_PREFIX = "mcred-tenant:";
-/** username = `mc_` + 16 hex。照合の前にこの形でなければ KV を引かない。 */
+/** alc-auth-worker の内部口の URL (host は名目。Service Binding では行き先を決めない)。 */
+const ALC_AUTH_BASE = "https://alc-auth/internal/machine-credentials";
+/** username = `mc_` + 16 hex。照合の前にこの形でなければ alc-auth-worker を引かない。 */
 const USERNAME_RE = /^mc_[0-9a-f]{16}$/;
-/** key に埋めるので `:` などを含む値は受けない。 */
+/** 環境名の形 (チケットの HKDF の info と payload の `env` に使う)。 */
 const ENV_RE = /^[a-z0-9-]+$/;
 
 export interface MachineCredEnv {
-  AUTH_CONFIG: KVNamespace;
+  /** alc-auth-worker への service binding。未定義なら全関数が失敗側の値を返す。 */
+  ALC_AUTH?: Fetcher;
+  /** alc-auth-worker の内部口に付ける共有 secret。未設定なら全関数が失敗側の値を返す。 */
+  INTERNAL_SHARED_SECRET?: SecretBinding;
   /** 環境名 (top-level `"prod"` / `[env.staging.vars]` `"staging"`)。 */
   MACHINE_CRED_ENV?: string;
 }
@@ -67,18 +78,10 @@ export function isMachineCredPurpose(value: unknown): value is MachineCredPurpos
   return (MACHINE_CRED_PURPOSES as readonly unknown[]).includes(value);
 }
 
-/** `MACHINE_CRED_ENV` を key に使える形で返す。未設定・不正は null (= 呼び手は失敗側へ倒す)。 */
+/** `MACHINE_CRED_ENV` を使える形で返す。未設定・不正は null (= 呼び手は失敗側へ倒す)。 */
 export function machineCredEnvName(env: { MACHINE_CRED_ENV?: string }): string | null {
   const v = env.MACHINE_CRED_ENV;
   return typeof v === "string" && ENV_RE.test(v) ? v : null;
-}
-
-function recordKey(envName: string, username: string): string {
-  return `${KV_PREFIX}${envName}:${username}`;
-}
-
-function tenantIndexPrefix(envName: string, tenantId: string): string {
-  return `${TENANT_INDEX_PREFIX}${envName}:${tenantId}:`;
 }
 
 function randomHex(bytes: number): string {
@@ -95,38 +98,93 @@ function randomBase64Url(bytes: number): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function getRecord(
+type AlcAuthResult = { status: 404 } | { status: 200; body: Record<string, unknown> };
+
+/**
+ * alc-auth-worker の内部口を 1 回叩く。2xx は JSON object の本文と共に `status: 200`、404 は本文を見ずに
+ * `status: 404`、それ以外 (binding / secret / 環境名が無い・通信失敗・他の status・壊れた JSON) は null。
+ */
+async function callAlcAuth(
   env: MachineCredEnv,
-  envName: string,
-  username: string,
-): Promise<MachineCredentialRecord | null> {
-  if (!USERNAME_RE.test(username)) return null;
-  const raw = await env.AUTH_CONFIG.get(recordKey(envName, username));
-  if (!raw) return null;
+  path: string,
+  init: { method: "GET" | "POST"; body?: Record<string, unknown> } = { method: "GET" },
+): Promise<AlcAuthResult | null> {
+  if (!machineCredEnvName(env) || !env.ALC_AUTH) return null;
+  const secret = await resolveSecret(env.INTERNAL_SHARED_SECRET);
+  if (!secret) return null;
+  const headers = new Headers({ "X-Internal-Shared-Secret": secret });
+  if (init.body) headers.set("Content-Type", "application/json");
+  let res: Response;
   try {
-    return JSON.parse(raw) as MachineCredentialRecord;
+    res = await env.ALC_AUTH.fetch(
+      new Request(`${ALC_AUTH_BASE}${path}`, {
+        method: init.method,
+        headers,
+        body: init.body ? JSON.stringify(init.body) : undefined,
+      }),
+    );
+  } catch {
+    return null;
+  }
+  if (res.status === 404) return { status: 404 };
+  if (res.status < 200 || res.status > 299) return null;
+  try {
+    const body = (await res.json()) as unknown;
+    return body && typeof body === "object" && !Array.isArray(body)
+      ? { status: 200, body: body as Record<string, unknown> }
+      : null;
   } catch {
     return null;
   }
 }
 
+/** 口 4 (`GET /internal/machine-credentials/<username>`) で 1 件引く。不在・形の不正・失敗は null。 */
+async function lookup(
+  env: MachineCredEnv,
+  username: string,
+): Promise<{ tenant_id: string; purpose: string; secret_hash: string; revoked: boolean } | null> {
+  if (typeof username !== "string" || !USERNAME_RE.test(username)) return null;
+  const r = await callAlcAuth(env, `/${username}`);
+  if (r?.status !== 200) return null;
+  const { tenant_id, purpose, secret_hash, revoked } = r.body;
+  if (
+    typeof tenant_id !== "string" ||
+    typeof purpose !== "string" ||
+    typeof secret_hash !== "string" ||
+    typeof revoked !== "boolean"
+  ) {
+    return null;
+  }
+  return { tenant_id, purpose, secret_hash, revoked };
+}
+
 /**
  * 今も有効な (失効していない) 資格情報を返す。チケットの検証 (`lib/machine-ticket.ts`) が
  * 「発行後に失効させた資格情報のチケットを通さない」ために引く。
+ * ★ 口 4 は label / created_at を返さず、hash もここでは使わないので、その 3 つは空文字で返す。
  */
 export async function getActiveMachineCredential(
   env: MachineCredEnv,
   username: string,
 ): Promise<MachineCredentialRecord | null> {
-  const envName = machineCredEnvName(env);
-  if (!envName) return null;
-  const record = await getRecord(env, envName, username);
-  return record && !record.revoked ? record : null;
+  const record = await lookup(env, username);
+  if (!record || record.revoked) return null;
+  return {
+    username,
+    tenant_id: record.tenant_id,
+    purpose: record.purpose as MachineCredPurpose,
+    label: "",
+    secret_hash: "",
+    created_at: "",
+    revoked: false,
+  };
 }
 
 /**
- * 新しい資格情報を発行する。返す password は平文で、**この戻り値の 1 回だけ**取れる (KV には hash だけ)。
- * 環境名が無い・tenant が空・用途が allowlist に無い・label が空か長すぎる → null。
+ * 新しい資格情報を発行する。返す password は平文で、**この戻り値の 1 回だけ**取れる
+ * (alc-auth-worker には hash だけ送る)。
+ * 環境名が無い・tenant が空・用途が allowlist に無い・label が空か長すぎる・会社が無い・
+ * username の重複・alc-auth-worker に届かない → null。
  */
 export async function createMachineCredential(
   env: MachineCredEnv,
@@ -134,65 +192,67 @@ export async function createMachineCredential(
   purpose: string,
   label: string,
 ): Promise<{ username: string; password: string } | null> {
-  const envName = machineCredEnvName(env);
-  if (!envName) return null;
-  if (typeof tenantId !== "string" || !tenantId || tenantId.includes(":")) return null;
+  if (typeof tenantId !== "string" || !tenantId) return null;
   if (!isMachineCredPurpose(purpose)) return null;
   const trimmed = typeof label === "string" ? label.trim() : "";
   if (!trimmed || trimmed.length > MACHINE_CRED_LABEL_MAX) return null;
 
   const username = `mc_${randomHex(8)}`;
   const password = randomBase64Url(32);
-  const record: MachineCredentialRecord = {
-    username,
-    tenant_id: tenantId,
-    purpose,
-    label: trimmed,
-    secret_hash: await sha256Hex(password),
-    created_at: new Date().toISOString(),
-    revoked: false,
-  };
-  await env.AUTH_CONFIG.put(recordKey(envName, username), JSON.stringify(record));
-  await env.AUTH_CONFIG.put(tenantIndexPrefix(envName, tenantId) + username, "1");
-  return { username, password };
+  const r = await callAlcAuth(env, "", {
+    method: "POST",
+    body: {
+      username,
+      tenant_id: tenantId,
+      purpose,
+      label: trimmed,
+      secret_hash: await sha256Hex(password),
+    },
+  });
+  return r?.status === 200 ? { username, password } : null;
 }
 
 /**
  * tenant の資格情報の一覧 (失効済みも `revoked: true` で含める)。`purpose` を渡すとその用途だけ。
- * 環境名が無い・tenant が空 → 空配列。
+ * 環境名が無い・tenant が空・alc-auth-worker に届かない → 空配列。形の合わない行は出さない。
  */
 export async function listMachineCredentials(
   env: MachineCredEnv,
   tenantId: string,
   purpose?: string,
 ): Promise<MachineCredentialSummary[]> {
-  const envName = machineCredEnvName(env);
-  if (!envName || !tenantId || tenantId.includes(":")) return [];
-  const prefix = tenantIndexPrefix(envName, tenantId);
+  if (typeof tenantId !== "string" || !tenantId) return [];
+  const q = new URLSearchParams({ tenant_id: tenantId });
+  if (purpose !== undefined) q.set("purpose", purpose);
+  const r = await callAlcAuth(env, `?${q.toString()}`);
+  if (r?.status !== 200 || !Array.isArray(r.body.credentials)) return [];
   const out: MachineCredentialSummary[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await env.AUTH_CONFIG.list({ prefix, cursor });
-    for (const { name } of page.keys) {
-      const record = await getRecord(env, envName, name.slice(prefix.length));
-      // 索引と本体の tenant が食い違うものは出さない (索引だけを信じない)。
-      if (!record || record.tenant_id !== tenantId) continue;
-      if (purpose !== undefined && record.purpose !== purpose) continue;
-      out.push({
-        username: record.username,
-        purpose: record.purpose,
-        label: record.label,
-        created_at: record.created_at,
-        revoked: record.revoked,
-      });
+  for (const item of r.body.credentials as unknown[]) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    if (
+      typeof c.username !== "string" ||
+      !isMachineCredPurpose(c.purpose) ||
+      typeof c.label !== "string" ||
+      typeof c.created_at !== "string" ||
+      typeof c.revoked !== "boolean"
+    ) {
+      continue;
     }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+    if (purpose !== undefined && c.purpose !== purpose) continue;
+    out.push({
+      username: c.username,
+      purpose: c.purpose,
+      label: c.label,
+      created_at: c.created_at,
+      revoked: c.revoked,
+    });
+  }
   return out;
 }
 
 /**
- * 資格情報を失効させる。**他 tenant のもの・存在しないものは false** (区別しない)。
+ * 資格情報を失効させる。**他 tenant のもの・存在しないものは false** (区別しない。alc-auth-worker が 404)。
  * 既に失効済みなら true (冪等)。失効後は `verifyBasic` もチケットの検証も通らない。
  */
 export async function revokeMachineCredential(
@@ -200,34 +260,32 @@ export async function revokeMachineCredential(
   tenantId: string,
   username: string,
 ): Promise<boolean> {
-  const envName = machineCredEnvName(env);
-  if (!envName) return false;
-  const record = await getRecord(env, envName, username);
-  if (!record || record.tenant_id !== tenantId) return false;
-  if (!record.revoked) {
-    record.revoked = true;
-    await env.AUTH_CONFIG.put(recordKey(envName, username), JSON.stringify(record));
-  }
-  return true;
+  if (typeof tenantId !== "string" || !tenantId) return false;
+  if (typeof username !== "string" || !USERNAME_RE.test(username)) return false;
+  const r = await callAlcAuth(env, `/${username}/revoke`, {
+    method: "POST",
+    body: { tenant_id: tenantId },
+  });
+  return r?.status === 200 && r.body.revoked === true;
 }
 
 /**
  * `Authorization: Basic ...` を照合する。通れば tenant と username を返す。
- * 不在 / 失効 / 用途の不一致 / password の不一致 / ヘッダの形の不正は**区別せず** null。
+ * 不在 / 失効 / 用途の不一致 / password の不一致 / ヘッダの形の不正 / alc-auth-worker に届かないは
+ * **区別せず** null。
  */
 export async function verifyBasic(
   env: MachineCredEnv,
   authorization: string,
   purpose: string,
 ): Promise<{ tenantId: string; username: string } | null> {
-  const envName = machineCredEnvName(env);
-  if (!envName || !isMachineCredPurpose(purpose)) return null;
+  if (!machineCredEnvName(env) || !isMachineCredPurpose(purpose)) return null;
   const basic = parseBasicAuth(authorization);
   if (!basic) return null;
   // 不在でも hash は計算する (不在と不一致で処理量を変えない)。
   const hash = await sha256Hex(basic.password);
-  const record = await getRecord(env, envName, basic.username);
+  const record = await lookup(env, basic.username);
   if (!record || record.revoked || record.purpose !== purpose) return null;
   if (!constantTimeEqual(hash, record.secret_hash)) return null;
-  return { tenantId: record.tenant_id, username: record.username };
+  return { tenantId: record.tenant_id, username: basic.username };
 }

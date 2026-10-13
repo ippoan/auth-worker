@@ -10,18 +10,22 @@ import {
   revokeMachineCredential,
   verifyBasic,
   type MachineCredEnv,
-  type MachineCredentialRecord,
 } from "../../src/lib/machine-credential";
 import { sha256Hex } from "../../src/lib/device";
-import { createMockKV, type MockKV } from "../helpers/mock-env";
+import { FAKE_ALC_AUTH_SECRET, createFakeAlcAuth, type FakeAlcAuth } from "../helpers/fake-alc-auth";
 
 /** テスト固有のダミー UUID (本番の値ではない)。 */
 const TENANT_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const TENANT_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const PURPOSE = "leave-scan";
 
-function env(name: string | null = "prod", kv: KVNamespace = createMockKV()): MachineCredEnv {
-  return { AUTH_CONFIG: kv, MACHINE_CRED_ENV: name ?? undefined };
+function env(name: string | null = "prod", fake: FakeAlcAuth = createFakeAlcAuth()): MachineCredEnv & { fake: FakeAlcAuth } {
+  return {
+    ALC_AUTH: fake.fetcher,
+    INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET,
+    MACHINE_CRED_ENV: name ?? undefined,
+    fake,
+  };
 }
 
 function basic(username: string, password: string): string {
@@ -34,23 +38,6 @@ async function create(e: MachineCredEnv, tenant = TENANT_A, label = "複合機 1
   return c;
 }
 
-/** list を 1 件ずつの頁に分けて返す KV (cursor の続きを辿るかの確認用)。 */
-function pagedKV(base: KVNamespace): KVNamespace {
-  return {
-    ...base,
-    get: base.get.bind(base),
-    put: base.put.bind(base),
-    list: async (opts?: { prefix?: string; cursor?: string }) => {
-      const all = await base.list({ prefix: opts?.prefix });
-      const i = opts?.cursor ? Number(opts.cursor) : 0;
-      const last = i + 1 >= all.keys.length;
-      return last
-        ? { keys: all.keys.slice(i, i + 1), list_complete: true, cacheStatus: null }
-        : { keys: all.keys.slice(i, i + 1), list_complete: false, cursor: String(i + 1), cacheStatus: null };
-    },
-  } as unknown as KVNamespace;
-}
-
 describe("purpose allowlist / env name", () => {
   it("allowlist は leave-scan だけ", () => {
     expect(MACHINE_CRED_PURPOSES).toEqual(["leave-scan"]);
@@ -59,7 +46,7 @@ describe("purpose allowlist / env name", () => {
     expect(isMachineCredPurpose(undefined)).toBe(false);
   });
 
-  it("MACHINE_CRED_ENV は key に使える形だけ受ける", () => {
+  it("MACHINE_CRED_ENV は決まった形だけ受ける", () => {
     expect(machineCredEnvName({ MACHINE_CRED_ENV: "prod" })).toBe("prod");
     expect(machineCredEnvName({ MACHINE_CRED_ENV: "staging" })).toBe("staging");
     expect(machineCredEnvName({})).toBeNull();
@@ -69,54 +56,85 @@ describe("purpose allowlist / env name", () => {
 });
 
 describe("createMachineCredential", () => {
-  it("username = mc_ + 16 hex、password = 32 byte の base64url。KV には hash だけ", async () => {
-    const kv = createMockKV() as MockKV;
-    const e = env("prod", kv);
+  it("username = mc_ + 16 hex、password = 32 byte の base64url。alc-auth-worker には hash だけ", async () => {
+    const e = env();
     const c = await create(e);
     expect(c.username).toMatch(/^mc_[0-9a-f]{16}$/);
     expect(c.password).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
-    const raw = kv._data[`mcred:prod:${c.username}`];
-    expect(raw).toBeDefined();
-    const rec = JSON.parse(raw!) as MachineCredentialRecord;
-    expect(rec).toMatchObject({
+    const row = e.fake.rows.get(c.username);
+    expect(row).toMatchObject({
       username: c.username,
       tenant_id: TENANT_A,
       purpose: PURPOSE,
       label: "複合機 1F",
       revoked: false,
     });
-    expect(rec.secret_hash).toBe(await sha256Hex(c.password));
-    expect(raw).not.toContain(c.password);
-    expect(new Date(rec.created_at).toISOString()).toBe(rec.created_at);
-    expect(kv._data[`mcred-tenant:prod:${TENANT_A}:${c.username}`]).toBe("1");
-    // device credential の置き場には書かない
-    expect(Object.keys(kv._data).some((k) => k.startsWith("device:"))).toBe(false);
+    expect(row!.secret_hash).toBe(await sha256Hex(c.password));
   });
 
-  it("label は前後の空白を落として保存する", async () => {
-    const kv = createMockKV() as MockKV;
-    const c = await create(env("prod", kv), TENANT_A, "  2F  ");
-    expect((JSON.parse(kv._data[`mcred:prod:${c.username}`]!) as MachineCredentialRecord).label).toBe("2F");
+  it("★ 送る本文は {username, tenant_id, purpose, label, secret_hash} だけで、password を含まない", async () => {
+    const e = env();
+    const c = await create(e);
+    expect(e.fake.calls).toHaveLength(1);
+    const call = e.fake.calls[0]!;
+    expect(call.method).toBe("POST");
+    expect(new URL(call.url).pathname).toBe("/internal/machine-credentials");
+    expect(call.headers.get("Content-Type")).toBe("application/json");
+    const body = JSON.parse(call.body) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["label", "purpose", "secret_hash", "tenant_id", "username"]);
+    expect(body.secret_hash).toBe(await sha256Hex(c.password));
+    expect(call.body).not.toContain(c.password);
   });
 
-  it.each<[string, MachineCredEnv, unknown, unknown, unknown]>([
+  it("★ 全部の口に X-Internal-Shared-Secret を付ける", async () => {
+    const e = env();
+    const c = await create(e);
+    await verifyBasic(e, basic(c.username, c.password), PURPOSE);
+    await getActiveMachineCredential(e, c.username);
+    await listMachineCredentials(e, TENANT_A);
+    await revokeMachineCredential(e, TENANT_A, c.username);
+    expect(e.fake.calls.map((x) => `${x.method} ${new URL(x.url).pathname}`)).toEqual([
+      "POST /internal/machine-credentials",
+      `GET /internal/machine-credentials/${c.username}`,
+      `GET /internal/machine-credentials/${c.username}`,
+      "GET /internal/machine-credentials",
+      `POST /internal/machine-credentials/${c.username}/revoke`,
+    ]);
+    for (const x of e.fake.calls) expect(x.headers.get("X-Internal-Shared-Secret")).toBe(FAKE_ALC_AUTH_SECRET);
+  });
+
+  it("label は前後の空白を落として送る", async () => {
+    const e = env();
+    const c = await create(e, TENANT_A, "  2F  ");
+    expect(e.fake.rows.get(c.username)!.label).toBe("2F");
+  });
+
+  it.each<[string, MachineCredEnv & { fake: FakeAlcAuth }, unknown, unknown, unknown]>([
     ["環境名なし", env(null), TENANT_A, PURPOSE, "x"],
     ["tenant が空", env(), "", PURPOSE, "x"],
     ["tenant が文字列でない", env(), 1, PURPOSE, "x"],
-    ["tenant に : を含む", env(), "a:b", PURPOSE, "x"],
     ["purpose が allowlist に無い", env(), TENANT_A, "other", "x"],
     ["label が文字列でない", env(), TENANT_A, PURPOSE, 1],
     ["label が空白だけ", env(), TENANT_A, PURPOSE, "   "],
     ["label が長すぎる", env(), TENANT_A, PURPOSE, "x".repeat(MACHINE_CRED_LABEL_MAX + 1)],
-  ])("%s → null (何も書かない)", async (_name, e, tenant, purpose, label) => {
+  ])("%s → null (alc-auth-worker を呼ばない)", async (_name, e, tenant, purpose, label) => {
     const c = await createMachineCredential(e, tenant as string, purpose as string, label as string);
     expect(c).toBeNull();
-    expect(Object.keys((e.AUTH_CONFIG as MockKV)._data)).toEqual([]);
+    expect(e.fake.calls).toEqual([]);
   });
 
   it("label の上限ちょうどは通る", async () => {
     expect(await createMachineCredential(env(), TENANT_A, PURPOSE, "x".repeat(MACHINE_CRED_LABEL_MAX))).not.toBeNull();
+  });
+
+  it("会社が無い (404 tenant_not_found)・username の重複 (409) → null", async () => {
+    const noTenant = env("prod", createFakeAlcAuth({ tenants: [TENANT_B] }));
+    expect(await createMachineCredential(noTenant, TENANT_A, PURPOSE, "x")).toBeNull();
+    expect(noTenant.fake.rows.size).toBe(0);
+
+    const taken = env("prod", createFakeAlcAuth({ override: () => new Response('{"error":"username_taken"}', { status: 409 }) }));
+    expect(await createMachineCredential(taken, TENANT_A, PURPOSE, "x")).toBeNull();
   });
 });
 
@@ -131,11 +149,10 @@ describe("verifyBasic", () => {
   });
 
   it("不在 / 失効 / 用途違い / password 違い / 形の不正はすべて null (区別しない)", async () => {
-    const kv = createMockKV() as MockKV;
-    const e = env("prod", kv);
+    const e = env();
     const c = await create(e);
     const wrongPurposeUser = "mc_0123456789abcdef";
-    kv._data[`mcred:prod:${wrongPurposeUser}`] = JSON.stringify({
+    e.fake.rows.set(wrongPurposeUser, {
       username: wrongPurposeUser,
       tenant_id: TENANT_A,
       purpose: "other",
@@ -144,74 +161,105 @@ describe("verifyBasic", () => {
       created_at: new Date().toISOString(),
       revoked: false,
     });
-    kv._data["mcred:prod:mc_ffffffffffffffff"] = "{not json";
 
     const cases = [
       basic("mc_aaaaaaaaaaaaaaaa", c.password), // 不在
       basic(c.username, `${c.password}x`), // password 違い
       basic(wrongPurposeUser, "pw"), // 用途違い
-      basic("mc_ffffffffffffffff", "pw"), // record が壊れている
-      basic("device:abc", "pw"), // username の形が違う (KV を引かない)
+      basic("device:abc", "pw"), // username の形が違う (alc-auth-worker を引かない)
       "Bearer abc", // Basic でない
       "", // 空
     ];
     for (const a of cases) expect(await verifyBasic(e, a, PURPOSE)).toBeNull();
+    expect(e.fake.calls.some((x) => x.url.includes("device"))).toBe(false);
 
     await revokeMachineCredential(e, TENANT_A, c.username);
     expect(await verifyBasic(e, basic(c.username, c.password), PURPOSE)).toBeNull();
   });
 
-  it("purpose が allowlist に無い / 環境名なし → null", async () => {
+  it("口 4 の応答の形が違う (欄が欠ける・型が違う) → null", async () => {
     const e = env();
     const c = await create(e);
+    const good = { tenant_id: TENANT_A, purpose: PURPOSE, secret_hash: await sha256Hex(c.password), revoked: false };
+    for (const patch of [{ tenant_id: 1 }, { purpose: null }, { secret_hash: undefined }, { revoked: "false" }]) {
+      const bad = env("prod", createFakeAlcAuth({ override: () => Response.json({ ...good, ...patch }) }));
+      expect(await verifyBasic(bad, basic(c.username, c.password), PURPOSE)).toBeNull();
+    }
+    // 対照: 同じ形で欄が揃っていれば通る
+    const ok = env("prod", createFakeAlcAuth({ override: () => Response.json(good) }));
+    expect(await verifyBasic(ok, basic(c.username, c.password), PURPOSE)).not.toBeNull();
+  });
+
+  it("purpose が allowlist に無い / 環境名なし → null (alc-auth-worker を引かない)", async () => {
+    const e = env();
+    const c = await create(e);
+    const before = e.fake.calls.length;
     expect(await verifyBasic(e, basic(c.username, c.password), "other")).toBeNull();
     expect(
       await verifyBasic({ ...e, MACHINE_CRED_ENV: undefined }, basic(c.username, c.password), PURPOSE),
     ).toBeNull();
+    expect(e.fake.calls.length).toBe(before);
   });
 
-  it("★ staging の資格情報は MACHINE_CRED_ENV=prod では照合できない (同じ KV namespace でも)", async () => {
-    const kv = createMockKV();
-    const c = await create(env("staging", kv));
-    expect(await verifyBasic(env("staging", kv), basic(c.username, c.password), PURPOSE)).not.toBeNull();
-    expect(await verifyBasic(env("prod", kv), basic(c.username, c.password), PURPOSE)).toBeNull();
+  it("★ staging の資格情報は prod の alc-auth-worker (別の DB) では照合できない", async () => {
+    const staging = env("staging");
+    const prod = env("prod");
+    const c = await create(staging);
+    expect(await verifyBasic(staging, basic(c.username, c.password), PURPOSE)).not.toBeNull();
+    expect(await verifyBasic(prod, basic(c.username, c.password), PURPOSE)).toBeNull();
   });
 });
 
 describe("revokeMachineCredential", () => {
-  it("★ 他 tenant の資格情報は revoke できない (false・record は有効なまま)", async () => {
+  it("★ 他 tenant の資格情報は revoke できない (false・行は有効なまま)", async () => {
     const e = env();
     const c = await create(e, TENANT_A);
     expect(await revokeMachineCredential(e, TENANT_B, c.username)).toBe(false);
+    expect(e.fake.rows.get(c.username)!.revoked).toBe(false);
     expect(await verifyBasic(e, basic(c.username, c.password), PURPOSE)).not.toBeNull();
   });
 
-  it("自 tenant は true。2 回目も true (冪等、書き直さない)", async () => {
-    const kv = createMockKV() as MockKV;
-    const e = env("prod", kv);
+  it("自 tenant は true。2 回目も true (冪等)。送る本文は {tenant_id}", async () => {
+    const e = env();
     const c = await create(e);
     expect(await revokeMachineCredential(e, TENANT_A, c.username)).toBe(true);
-    const after = kv._data[`mcred:prod:${c.username}`];
-    expect((JSON.parse(after!) as MachineCredentialRecord).revoked).toBe(true);
+    expect(e.fake.rows.get(c.username)!.revoked).toBe(true);
     expect(await revokeMachineCredential(e, TENANT_A, c.username)).toBe(true);
-    expect(kv._data[`mcred:prod:${c.username}`]).toBe(after);
+    expect(JSON.parse(e.fake.calls.at(-1)!.body)).toEqual({ tenant_id: TENANT_A });
   });
 
-  it("不在 / 環境名なし → false", async () => {
+  it("不在 / 環境名なし / tenant が空 / username の形が違う → false", async () => {
     const e = env();
     const c = await create(e);
     expect(await revokeMachineCredential(e, TENANT_A, "mc_aaaaaaaaaaaaaaaa")).toBe(false);
-    expect(await revokeMachineCredential(env(null, e.AUTH_CONFIG), TENANT_A, c.username)).toBe(false);
+    expect(await revokeMachineCredential(env(null, e.fake), TENANT_A, c.username)).toBe(false);
+    expect(await revokeMachineCredential(e, "", c.username)).toBe(false);
+    expect(await revokeMachineCredential(e, TENANT_A, "../x")).toBe(false);
+    expect(e.fake.rows.get(c.username)!.revoked).toBe(false);
+  });
+
+  it("200 でも revoked:true でなければ false", async () => {
+    const e = env("prod", createFakeAlcAuth({ override: () => Response.json({ revoked: false }) }));
+    expect(await revokeMachineCredential(e, TENANT_A, "mc_aaaaaaaaaaaaaaaa")).toBe(false);
   });
 });
 
 describe("getActiveMachineCredential", () => {
-  it("有効なら record、失効・不在・環境名なしは null", async () => {
+  it("有効なら tenant と purpose を返す (hash・label・created_at は空)。失効・不在・環境名なしは null", async () => {
     const e = env();
     const c = await create(e);
-    expect((await getActiveMachineCredential(e, c.username))?.tenant_id).toBe(TENANT_A);
-    expect(await getActiveMachineCredential(env(null, e.AUTH_CONFIG), c.username)).toBeNull();
+    expect(await getActiveMachineCredential(e, c.username)).toEqual({
+      username: c.username,
+      tenant_id: TENANT_A,
+      purpose: PURPOSE,
+      label: "",
+      secret_hash: "",
+      created_at: "",
+      revoked: false,
+    });
+    expect(await getActiveMachineCredential(env(null, e.fake), c.username)).toBeNull();
     expect(await getActiveMachineCredential(e, "mc_aaaaaaaaaaaaaaaa")).toBeNull();
+    expect(await getActiveMachineCredential(e, 1 as unknown as string)).toBeNull();
     await revokeMachineCredential(e, TENANT_A, c.username);
     expect(await getActiveMachineCredential(e, c.username)).toBeNull();
   });
@@ -235,37 +283,119 @@ describe("listMachineCredentials", () => {
     expect(list.find((x) => x.username === a1.username)?.revoked).toBe(false);
   });
 
-  it("purpose で絞れる", async () => {
+  it("purpose で絞れる (query に載せる)", async () => {
     const e = env();
     await create(e);
     expect(await listMachineCredentials(e, TENANT_A, PURPOSE)).toHaveLength(1);
+    expect(new URL(e.fake.calls.at(-1)!.url).searchParams.get("purpose")).toBe(PURPOSE);
     expect(await listMachineCredentials(e, TENANT_A, "other")).toEqual([]);
+    expect(new URL(e.fake.calls.at(-1)!.url).searchParams.get("tenant_id")).toBe(TENANT_A);
   });
 
-  it("索引だけ残った行・索引と本体の tenant が食い違う行は出さない", async () => {
-    const kv = createMockKV() as MockKV;
-    const e = env("prod", kv);
-    const b = await create(e, TENANT_B);
-    kv._data[`mcred-tenant:prod:${TENANT_A}:mc_aaaaaaaaaaaaaaaa`] = "1"; // 本体なし
-    kv._data[`mcred-tenant:prod:${TENANT_A}:${b.username}`] = "1"; // 本体は TENANT_B
+  it("形の合わない行・頼んでいない用途の行は出さない", async () => {
+    const ok = { username: "mc_0123456789abcdef", purpose: PURPOSE, label: "x", created_at: "2026-10-13T00:00:00.000Z", revoked: false };
+    const credentials = [
+      ok,
+      null,
+      "x",
+      { ...ok, username: 1 },
+      { ...ok, purpose: "other" },
+      { ...ok, label: null },
+      { ...ok, created_at: 0 },
+      { ...ok, revoked: "no" },
+    ];
+    const e = env("prod", createFakeAlcAuth({ override: () => Response.json({ credentials }) }));
+    expect(await listMachineCredentials(e, TENANT_A)).toEqual([ok]);
+    const other = env("prod", createFakeAlcAuth({ override: () => Response.json({ credentials: [ok] }) }));
+    // 口が絞り損ねても、頼んだ用途と違う行は出さない
+    expect(await listMachineCredentials(other, TENANT_A, "x-other")).toEqual([]);
+  });
+
+  it("credentials が配列でない → 空", async () => {
+    const e = env("prod", createFakeAlcAuth({ override: () => Response.json({ credentials: {} }) }));
     expect(await listMachineCredentials(e, TENANT_A)).toEqual([]);
   });
 
-  it("list の頁を cursor で最後まで辿る", async () => {
-    const kv = createMockKV();
-    const e = env("prod", pagedKV(kv));
-    await create(e, TENANT_A, "1");
-    await create(e, TENANT_A, "2");
-    await create(e, TENANT_A, "3");
-    expect(await listMachineCredentials(e, TENANT_A)).toHaveLength(3);
+  it("環境が違う (別の DB)・環境名なし・tenant が空 → 空", async () => {
+    const staging = env("staging");
+    await create(staging);
+    expect(await listMachineCredentials(env("prod"), TENANT_A)).toEqual([]);
+    expect(await listMachineCredentials(env(null, staging.fake), TENANT_A)).toEqual([]);
+    expect(await listMachineCredentials(staging, "")).toEqual([]);
+  });
+});
+
+describe("★ fail-closed (5 関数とも失敗側の値を返し、throw しない)", () => {
+  const USER = "mc_0123456789abcdef";
+  const PASSWORD = "pw";
+
+  async function seeded(e: MachineCredEnv & { fake: FakeAlcAuth }) {
+    e.fake.rows.set(USER, {
+      username: USER,
+      tenant_id: TENANT_A,
+      purpose: PURPOSE,
+      label: "x",
+      secret_hash: await sha256Hex(PASSWORD),
+      created_at: new Date().toISOString(),
+      revoked: false,
+    });
+    return e;
+  }
+
+  async function all(e: MachineCredEnv) {
+    return {
+      verify: await verifyBasic(e, basic(USER, PASSWORD), PURPOSE),
+      active: await getActiveMachineCredential(e, USER),
+      create: await createMachineCredential(e, TENANT_A, PURPOSE, "x"),
+      list: await listMachineCredentials(e, TENANT_A),
+      revoke: await revokeMachineCredential(e, TENANT_A, USER),
+    };
+  }
+
+  const FAILED = { verify: null, active: null, create: null, list: [], revoke: false };
+
+  it("対照: 正常な fake では 5 関数とも成功側", async () => {
+    const r = await all(await seeded(env()));
+    expect(r.verify).not.toBeNull();
+    expect(r.active).not.toBeNull();
+    expect(r.create).not.toBeNull();
+    expect(r.list).toHaveLength(2);
+    expect(r.revoke).toBe(true);
   });
 
-  it("環境が違う・環境名なし・tenant が空や : 入り → 空", async () => {
-    const kv = createMockKV();
-    await create(env("staging", kv));
-    expect(await listMachineCredentials(env("prod", kv), TENANT_A)).toEqual([]);
-    expect(await listMachineCredentials(env(null, kv), TENANT_A)).toEqual([]);
-    expect(await listMachineCredentials(env("staging", kv), "")).toEqual([]);
-    expect(await listMachineCredentials(env("staging", kv), "a:b")).toEqual([]);
+  it.each<[string, (e: MachineCredEnv & { fake: FakeAlcAuth }) => MachineCredEnv]>([
+    ["ALC_AUTH binding が無い", (e) => ({ ...e, ALC_AUTH: undefined })],
+    ["INTERNAL_SHARED_SECRET が無い", (e) => ({ ...e, INTERNAL_SHARED_SECRET: undefined })],
+    [
+      "INTERNAL_SHARED_SECRET の Secrets Store が throw",
+      (e) => ({ ...e, INTERNAL_SHARED_SECRET: { get: () => Promise.reject(new Error("down")) } as unknown as SecretsStoreSecret }),
+    ],
+    ["MACHINE_CRED_ENV が無い", (e) => ({ ...e, MACHINE_CRED_ENV: undefined })],
+    ["MACHINE_CRED_ENV が不正", (e) => ({ ...e, MACHINE_CRED_ENV: "prod:x" })],
+    ["共有 secret が合わない (口は 404 で本文なし)", (e) => ({ ...e, INTERNAL_SHARED_SECRET: "wrong" })],
+  ])("%s → 失敗側", async (_n, mutate) => {
+    const e = await seeded(env());
+    expect(await all(mutate(e))).toEqual(FAILED);
+    expect(e.fake.rows.get(USER)!.revoked).toBe(false);
+  });
+
+  it.each<[string, () => Response | Promise<Response>]>([
+    ["500", () => new Response("oops", { status: 500 })],
+    ["503", () => Response.json({ ok: true }, { status: 503 })],
+    ["400", () => Response.json({ error: "invalid_body" }, { status: 400 })],
+    ["302", () => new Response(null, { status: 302, headers: { Location: "https://example.invalid/" } })],
+    ["壊れた JSON", () => new Response("{not json", { status: 200 })],
+    ["JSON が null", () => new Response("null", { status: 200 })],
+    ["JSON が配列", () => Response.json([])],
+    ["404 (本文の文字列に依らず無い扱い)", () => Response.json({ error: "anything" }, { status: 404 })],
+  ])("alc-auth-worker が %s → 失敗側", async (_n, res) => {
+    const e = await seeded(env("prod", createFakeAlcAuth({ override: () => res() as Response })));
+    expect(await all(e)).toEqual(FAILED);
+  });
+
+  it("通信が throw → 失敗側", async () => {
+    const e = env();
+    const throwing = { fetch: () => Promise.reject(new TypeError("network")) } as unknown as Fetcher;
+    expect(await all({ ...e, ALC_AUTH: throwing })).toEqual(FAILED);
   });
 });
