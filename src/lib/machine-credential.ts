@@ -27,8 +27,8 @@
  *   - `GET  /internal/machine-credentials/<username>` → 200 {tenant_id, purpose, secret_hash, revoked} / 404
  */
 import { constantTimeEqual, sha256Hex } from "./device";
+import { fetchAlcAuth, type AlcAuthEnv } from "./alc-auth-fetch";
 import { parseBasicAuth } from "./errors";
-import { resolveSecret, type SecretBinding } from "./secret";
 
 /** 資格情報の用途の allowlist (ここ 1 か所に定義する)。用途を足すときはここに足す。 */
 export const MACHINE_CRED_PURPOSES = ["leave-scan"] as const;
@@ -37,18 +37,15 @@ export type MachineCredPurpose = (typeof MACHINE_CRED_PURPOSES)[number];
 /** label の最大長 (管理画面の表示用の名前)。 */
 export const MACHINE_CRED_LABEL_MAX = 64;
 
-/** alc-auth-worker の内部口の URL (host は名目。Service Binding では行き先を決めない)。 */
-const ALC_AUTH_BASE = "https://alc-auth/internal/machine-credentials";
+/** alc-auth-worker の機械用資格情報の内部口の path。 */
+const CREDENTIALS_PATH = "/internal/machine-credentials";
 /** username = `mc_` + 16 hex。照合の前にこの形でなければ alc-auth-worker を引かない。 */
 const USERNAME_RE = /^mc_[0-9a-f]{16}$/;
 /** 環境名の形 (チケットの HKDF の info と payload の `env` に使う)。 */
 const ENV_RE = /^[a-z0-9-]+$/;
 
-export interface MachineCredEnv {
-  /** alc-auth-worker への service binding。未定義なら全関数が失敗側の値を返す。 */
-  ALC_AUTH?: Fetcher;
-  /** alc-auth-worker の内部口に付ける共有 secret。未設定なら全関数が失敗側の値を返す。 */
-  INTERNAL_SHARED_SECRET?: SecretBinding;
+/** `ALC_AUTH` か `INTERNAL_SHARED_SECRET` が無ければ全関数が失敗側の値を返す。 */
+export interface MachineCredEnv extends AlcAuthEnv {
   /** 環境名 (top-level `"prod"` / `[env.staging.vars]` `"staging"`)。 */
   MACHINE_CRED_ENV?: string;
 }
@@ -109,23 +106,17 @@ async function callAlcAuth(
   path: string,
   init: { method: "GET" | "POST"; body?: Record<string, unknown> } = { method: "GET" },
 ): Promise<AlcAuthResult | null> {
-  if (!machineCredEnvName(env) || !env.ALC_AUTH) return null;
-  const secret = await resolveSecret(env.INTERNAL_SHARED_SECRET);
-  if (!secret) return null;
-  const headers = new Headers({ "X-Internal-Shared-Secret": secret });
-  if (init.body) headers.set("Content-Type", "application/json");
-  let res: Response;
+  if (!machineCredEnvName(env)) return null;
+  let res: Response | null;
   try {
-    res = await env.ALC_AUTH.fetch(
-      new Request(`${ALC_AUTH_BASE}${path}`, {
-        method: init.method,
-        headers,
-        body: init.body ? JSON.stringify(init.body) : undefined,
-      }),
-    );
+    res = await fetchAlcAuth(env, `${CREDENTIALS_PATH}${path}`, {
+      method: init.method,
+      body: init.body ? JSON.stringify(init.body) : undefined,
+    });
   } catch {
     return null;
   }
+  if (!res) return null;
   if (res.status === 404) return { status: 404 };
   if (res.status < 200 || res.status > 299) return null;
   try {

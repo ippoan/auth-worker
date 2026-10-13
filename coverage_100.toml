@@ -30,6 +30,15 @@ branches = true
 path = "src/lib/machine-ticket.ts"
 branches = true
 
+# ログインの内部口の行き先 (Cloud Run / alc-auth-worker) と sso-config の 404 の読み分け。
+[[files]]
+path = "src/lib/alc-auth-fetch.ts"
+branches = true
+
+[[files]]
+path = "src/lib/alc-internal.ts"
+branches = true
+
 [[files]]
 path = "src/machine-credential-entrypoint.ts"
 branches = true

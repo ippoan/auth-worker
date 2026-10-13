@@ -10,6 +10,7 @@
  * 移行前 (flag 未設定 or SA key 無し) は従来の HS256 internal-JWT で到達する (非破壊)。
  */
 import type { Env } from "../index";
+import { fetchAlcAuth } from "./alc-auth-fetch";
 import { signInternalJWT } from "./internal-jwt";
 import { resolveSecret, type SecretBinding } from "./secret";
 import { mintGoogleIdToken } from "./oidc";
@@ -77,6 +78,24 @@ async function internalFetch(env: Env, path: string, init?: RequestInit): Promis
   return fetch(`${env.ALC_API_ORIGIN}${path}`, { ...init, headers });
 }
 
+/**
+ * ログインの内部口 (`/internal/auth/...`) を叩く (Refs ohishi-exp/rust-leave-worker#1)。
+ * `ALC_AUTH_LOGIN=1` かつ `ALC_AUTH` binding と `INTERNAL_SHARED_SECRET` が揃っていれば alc-auth-worker
+ * (接頭辞 `/api` 無し) を、それ以外は従来どおり Cloud Run (`/api` + path) を叩く。
+ * `viaAlcAuth` は alc-auth-worker を叩いたか (404 の読み方が違う口のため)。
+ */
+async function loginFetch(
+  env: Env,
+  path: string,
+  init?: { method: "POST"; body: string },
+): Promise<{ res: Response; viaAlcAuth: boolean }> {
+  if (env.ALC_AUTH_LOGIN === "1") {
+    const res = await fetchAlcAuth(env, path, init);
+    if (res) return { res, viaAlcAuth: true };
+  }
+  return { res: await internalFetch(env, `/api${path}`, init), viaAlcAuth: false };
+}
+
 /** SSO 設定を解決する。未登録は null。 */
 export async function resolveSsoConfig(
   env: Env,
@@ -84,8 +103,13 @@ export async function resolveSsoConfig(
   domain: string,
 ): Promise<SsoConfig | null> {
   const qs = `provider=${encodeURIComponent(provider)}&domain=${encodeURIComponent(domain)}`;
-  const res = await internalFetch(env, `/api/internal/auth/sso-config?${qs}`);
-  if (res.status === 404) return null;
+  const { res, viaAlcAuth } = await loginFetch(env, `/internal/auth/sso-config?${qs}`);
+  if (res.status === 404) {
+    if (!viaAlcAuth) return null;
+    // alc-auth-worker は共有 secret の不一致も 404 (本文空) で返すので、「設定なし」と区別する。
+    const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+    if (body?.error === "sso_config_not_found") return null;
+  }
   if (!res.ok) throw new Error(`internal sso-config failed: ${res.status}`);
   return (await res.json()) as SsoConfig;
 }
@@ -428,7 +452,7 @@ export async function upsertLineworksUser(
   env: Env,
   body: { tenant_id: string; lineworks_id: string; email: string; name: string },
 ): Promise<InternalUserWithSlug> {
-  const res = await internalFetch(env, `/api/internal/auth/users/upsert-lineworks`, {
+  const { res } = await loginFetch(env, `/internal/auth/users/upsert-lineworks`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -441,7 +465,7 @@ export async function saveRefreshToken(
   env: Env,
   body: { user_id: string; refresh_hash: string; expires_at: string },
 ): Promise<void> {
-  const res = await internalFetch(env, `/api/internal/auth/refresh-token`, {
+  const { res } = await loginFetch(env, `/internal/auth/refresh-token`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -454,7 +478,7 @@ export async function findUserByLineId(
   lineUserId: string,
 ): Promise<InternalUserWithSlug | null> {
   const qs = `line_user_id=${encodeURIComponent(lineUserId)}`;
-  const res = await internalFetch(env, `/api/internal/auth/users/by-line-id?${qs}`);
+  const { res } = await loginFetch(env, `/internal/auth/users/by-line-id?${qs}`);
   if (!res.ok) throw new Error(`internal by-line-id failed: ${res.status}`);
   return (await res.json()) as InternalUserWithSlug | null;
 }
@@ -468,7 +492,7 @@ export async function upsertGoogleUser(
   env: Env,
   body: { google_sub: string; email: string; name: string },
 ): Promise<InternalUserWithSlug | null> {
-  const res = await internalFetch(env, `/api/internal/auth/users/upsert-google`, {
+  const { res } = await loginFetch(env, `/internal/auth/users/upsert-google`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -482,7 +506,7 @@ export async function upsertLineUser(
   env: Env,
   body: { tenant_id: string; line_user_id: string; name: string },
 ): Promise<InternalUserWithSlug> {
-  const res = await internalFetch(env, `/api/internal/auth/users/upsert-line`, {
+  const { res } = await loginFetch(env, `/internal/auth/users/upsert-line`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -495,7 +519,7 @@ export async function registerLineRecipient(
   env: Env,
   body: { tenant_id: string; name: string; line_user_id: string },
 ): Promise<void> {
-  const res = await internalFetch(env, `/api/internal/auth/recipients/register-line`, {
+  const { res } = await loginFetch(env, `/internal/auth/recipients/register-line`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -508,7 +532,7 @@ export async function recipientsByLineId(
   lineUserId: string,
 ): Promise<Array<{ tenant_id: string; name: string }>> {
   const qs = `line_user_id=${encodeURIComponent(lineUserId)}`;
-  const res = await internalFetch(env, `/api/internal/auth/recipients/by-line-id?${qs}`);
+  const { res } = await loginFetch(env, `/internal/auth/recipients/by-line-id?${qs}`);
   if (!res.ok) throw new Error(`internal recipients-by-line-id failed: ${res.status}`);
   return (await res.json()) as Array<{ tenant_id: string; name: string }>;
 }
