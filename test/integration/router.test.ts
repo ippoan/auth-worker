@@ -303,6 +303,9 @@ vi.mock("../../src/handlers/api-machine-credentials", () => ({
     (req: Request) => new Response(`machine-credentials:${req.method}:${new URL(req.url).pathname}`),
   ),
 }));
+vi.mock("../../src/handlers/machine-relay", () => ({
+  handleMachineRelay: vi.fn((req: Request) => new Response(`machine-relay:${req.method}:${new URL(req.url).pathname}`)),
+}));
 // Stub the DurableObject exports so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
@@ -1004,6 +1007,11 @@ describe("Router (index.ts)", () => {
   ])("%s %s → machine-credentials handler (OPTIONS も handler が捌く)", async (method, path) => {
     const res = await worker.fetch(new Request(`https://auth.test.example${path}`, { method }), env);
     expect(await res.text()).toBe(`machine-credentials:${method}:${path}`);
+  });
+
+  it.each(["PUT", "GET", "PROPFIND", "OPTIONS"])("%s /m/leave-scan/... → machine-relay handler", async (method) => {
+    const res = await worker.fetch(new Request("https://auth.test.example/m/leave-scan/a/b.pdf", { method }), env);
+    expect(await res.text()).toBe(`machine-relay:${method}:/m/leave-scan/a/b.pdf`);
   });
 
   it("/api/machine-credentialsX (接頭辞だけ一致) は handler に行かない", async () => {

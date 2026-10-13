@@ -38,6 +38,10 @@ branches = true
 path = "src/handlers/api-machine-credentials.ts"
 branches = true
 
+[[files]]
+path = "src/handlers/machine-relay.ts"
+branches = true
+
 # Refs ippoan/rust-alc-api#725: backend の口を Service Binding へ振り分ける表と判定。
 # 判定が緩むと、別の口や、引いてはいけない proxy の request まで worker へ流れるので 100% を維持する。
 [[files]]

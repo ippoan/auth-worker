@@ -27,6 +27,7 @@ import { handleOhishiLogiProxy } from "./handlers/ohishi-logi-proxy";
 import { handleCfFlickrCamWorkerProxy } from "./handlers/cf-flickr-cam-worker-proxy";
 import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
 import { handleMachineCredentials, MACHINE_CRED_API_PATH } from "./handlers/api-machine-credentials";
+import { handleMachineRelay } from "./handlers/machine-relay";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
   handleRichMenuList, handleRichMenuCreate, handleRichMenuDelete,
@@ -248,6 +249,10 @@ export interface Env {
    *  `/api/leave/*` を alc-proxy (画面用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。
    *  未定義なら従来どおり Cloud Run。 */
   ALC_LEAVE?: Fetcher;
+  /** 休暇申請の画面 (`nuxt-leave`) への service binding。機械の入口 `/m/leave-scan/*`
+   *  (`handlers/machine-relay.ts`) が、機械用資格情報の Basic を照合したあと `/dav/*` へ中継する。
+   *  未定義なら `/m/leave-scan/*` は Basic が通っても 503 (Refs ohishi-exp/rust-leave-worker#1)。 */
+  LEAVE_APP?: Fetcher;
   /** LINE WORKS の worker (`alc-lineworks`) への service binding。Client Secret と Private Key を扱うのは
    *  この worker だけ。`/api/internal/lineworks/send` (alc-internal-proxy と端末通知) を Cloud Run でなく
    *  ここへ流し (`lib/alc-backend-route.ts`)、Rich Menu と MCP の `lineworks_get` は access token を
@@ -621,6 +626,12 @@ export default {
       // 同一オリジンで叩き、ここで JWT 検証 + X-Tenant-ID 注入して rust へ転送する。
       if (url.pathname.startsWith("/admin/notify/api/")) {
         return handleAdminNotifyApi(request, env);
+      }
+
+      // ohishi-exp/rust-leave-worker#1: 機械の入口 (複合機・PC の Basic)。用途ごとの転送先へ中継するだけで、
+      // tenant は決めない (#434)。method は問わない (WebDAV の PUT 等)。
+      if (url.pathname.startsWith("/m/")) {
+        return handleMachineRelay(request, env);
       }
 
       // ohishi-exp/rust-leave-worker#1: 機械用資格情報の管理 API。nuxt-leave の設定画面が
