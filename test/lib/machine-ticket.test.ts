@@ -195,15 +195,44 @@ describe("verifyTicket", () => {
     expect(await verifyTicket(e, r!.ticket, PURPOSE)).toBeNull();
   });
 
-  it("★ alc-auth-worker に届かない (binding なし・5xx) → 発行も検証も null (fail-closed)", async () => {
+  it("★ alc-auth-worker に確かめられない → 発行は null、検証は { error: \"unavailable\" } (無効と区別する)", async () => {
     const { e, auth } = await setup();
     const r = await issueTicket(e, auth, PURPOSE, SHA);
     expect(r).not.toBeNull();
+    const unavailable = { error: "unavailable" };
     const noBinding = { ...e, ALC_AUTH: undefined };
     expect(await issueTicket(noBinding, auth, PURPOSE, SHA)).toBeNull();
-    expect(await verifyTicket(noBinding, r!.ticket, PURPOSE)).toBeNull();
-    const down = { ...e, ALC_AUTH: createFakeAlcAuth({ override: () => new Response("", { status: 503 }) }).fetcher };
+    expect(await verifyTicket(noBinding, r!.ticket, PURPOSE)).toEqual(unavailable);
+    const noSecret = { ...e, INTERNAL_SHARED_SECRET: undefined };
+    expect(await verifyTicket(noSecret, r!.ticket, PURPOSE)).toEqual(unavailable);
+    const respond = (f: () => Response) => ({ ...e, ALC_AUTH: createFakeAlcAuth({ override: f }).fetcher });
+    const down = respond(() => new Response("", { status: 503 }));
     expect(await issueTicket(down, auth, PURPOSE, SHA)).toBeNull();
-    expect(await verifyTicket(down, r!.ticket, PURPOSE)).toBeNull();
+    expect(await verifyTicket(down, r!.ticket, PURPOSE)).toEqual(unavailable);
+    expect(await verifyTicket(respond(() => new Response("", { status: 500 })), r!.ticket, PURPOSE)).toEqual(unavailable);
+    expect(await verifyTicket(respond(() => new Response("{not json", { status: 200 })), r!.ticket, PURPOSE)).toEqual(unavailable);
+    expect(await verifyTicket(respond(() => new Response("[]", { status: 200 })), r!.ticket, PURPOSE)).toEqual(unavailable);
+    // 200 だが本文の形が合わない (欠けている項目) も、確かめられなかったものとして一時的な失敗。
+    const partial = respond(() => Response.json({ tenant_id: TENANT_A }));
+    expect(await verifyTicket(partial, r!.ticket, PURPOSE)).toEqual(unavailable);
+    const throwing = { ...e, ALC_AUTH: { fetch: async () => { throw new TypeError("network"); } } as unknown as Fetcher };
+    expect(await verifyTicket(throwing, r!.ticket, PURPOSE)).toEqual(unavailable);
+  });
+
+  it("★ 404 (不在) と失効は一時的な失敗ではなく null", async () => {
+    const { e, c, auth } = await setup();
+    const r = await issueTicket(e, auth, PURPOSE, SHA);
+    const notFound = { ...e, ALC_AUTH: createFakeAlcAuth({ override: () => new Response(null, { status: 404 }) }).fetcher };
+    expect(await verifyTicket(notFound, r!.ticket, PURPOSE)).toBeNull();
+    e.fake.rows.get(c.username)!.revoked = true;
+    expect(await verifyTicket(e, r!.ticket, PURPOSE)).toBeNull();
+  });
+
+  it("MACHINE_CRED_ENV が無い・チケットの形が不正なら (alc-auth-worker が落ちていても) null のまま", async () => {
+    const { e, auth } = await setup();
+    const r = await issueTicket(e, auth, PURPOSE, SHA);
+    const down = { ...e, ALC_AUTH: createFakeAlcAuth({ override: () => new Response("", { status: 500 }) }).fetcher };
+    expect(await verifyTicket({ ...down, MACHINE_CRED_ENV: undefined }, r!.ticket, PURPOSE)).toBeNull();
+    expect(await verifyTicket(down, "not.a.jwt", PURPOSE)).toBeNull();
   });
 });

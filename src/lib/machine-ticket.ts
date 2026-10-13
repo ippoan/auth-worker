@@ -22,7 +22,7 @@ import type { SecretBinding } from "./secret";
 import { resolveSecret } from "./secret";
 import { signJwt, verifyJwt } from "./jwt";
 import {
-  getActiveMachineCredential,
+  checkActiveMachineCredential,
   isMachineCredPurpose,
   machineCredEnvName,
   verifyBasic,
@@ -106,15 +106,23 @@ export async function issueTicket(
   return { ticket, tenantId: cred.tenantId, username: cred.username };
 }
 
+/** `verifyTicket` の「一時的な失敗」。無効 (null) とは区別する — 呼び手は再試行してよい。 */
+export interface MachineTicketUnavailable {
+  error: "unavailable";
+}
+
 /**
  * チケットを検証する。署名・期限・形式・環境・用途が合い、**資格情報が今も有効で tenant と用途が
- * 発行時のまま**のときだけ `{tenantId, username, sha256}` を返す。それ以外は null (区別しない)。
+ * 発行時のまま**のときだけ `{tenantId, username, sha256}` を返す。
+ * 無効 (署名・期限・形式・環境・用途の不一致、資格情報の不在・失効、tenant・用途の不一致) は null。
+ * ★ 資格情報を alc-auth-worker に確かめられなかった (binding / secret が無い・5xx・通信失敗・壊れた応答) ときは
+ * null ではなく `{ error: "unavailable" }` (無効と取り違えて捨てさせない)。
  */
 export async function verifyTicket(
   env: MachineTicketEnv,
   ticket: string,
   purpose: string,
-): Promise<{ tenantId: string; username: string; sha256: string } | null> {
+): Promise<{ tenantId: string; username: string; sha256: string } | MachineTicketUnavailable | null> {
   const envName = machineCredEnvName(env);
   if (!envName || !isMachineCredPurpose(purpose)) return null;
   if (typeof ticket !== "string" || !ticket) return null;
@@ -133,7 +141,10 @@ export async function verifyTicket(
   ) {
     return null;
   }
-  const cred = await getActiveMachineCredential(env, p.username);
-  if (!cred || cred.tenant_id !== p.tenant_id || cred.purpose !== purpose) return null;
+  const checked = await checkActiveMachineCredential(env, p.username);
+  if (checked.status === "unavailable") return { error: "unavailable" };
+  if (checked.status !== "active") return null;
+  const cred = checked.credential;
+  if (cred.tenant_id !== p.tenant_id || cred.purpose !== purpose) return null;
   return { tenantId: cred.tenant_id, username: cred.username, sha256: p.sha256 };
 }
