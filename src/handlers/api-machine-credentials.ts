@@ -6,6 +6,8 @@
  *   POST /api/machine-credentials  body {purpose, label}    → 201 {username, password, purpose, label}
  *                                                              (password はこの応答 1 回だけ)
  *   POST /api/machine-credentials/<username>/revoke         → {revoked: true} / 404
+ *   POST /api/machine-credentials/<username>/rotate         → 200 {username, password} / 404
+ *                                                              (password は同じ username のまま、この応答 1 回だけ)
  *
  * 認可:
  *   - `Authorization: Bearer <browser JWT>` を verifyJwt で検証し、`role === "admin"` だけ
@@ -28,6 +30,7 @@ import {
   listMachineCredentials,
   machineCredEnvName,
   revokeMachineCredential,
+  rotateMachineCredential,
 } from "../lib/machine-credential";
 import { resolveSecret } from "../lib/secret";
 
@@ -40,6 +43,7 @@ export const MACHINE_CRED_CORS_ORIGINS: readonly string[] = [
 ];
 
 const REVOKE_RE = /^\/api\/machine-credentials\/([^/]+)\/revoke$/;
+const ROTATE_RE = /^\/api\/machine-credentials\/([^/]+)\/rotate$/;
 
 function corsHeaders(request: Request): Record<string, string> {
   const origin = request.headers.get("Origin");
@@ -101,7 +105,8 @@ export async function handleMachineCredentials(request: Request, env: Env): Prom
   const url = new URL(request.url);
   const isCollection = url.pathname === MACHINE_CRED_API_PATH;
   const revokeMatch = REVOKE_RE.exec(url.pathname);
-  if (!isCollection && !revokeMatch) return json(request, { error: "Not found" }, 404);
+  const rotateMatch = ROTATE_RE.exec(url.pathname);
+  if (!isCollection && !revokeMatch && !rotateMatch) return json(request, { error: "Not found" }, 404);
   const allowed = isCollection ? ["GET", "POST"] : ["POST"];
   if (!allowed.includes(request.method)) {
     return json(request, { error: "Method not allowed" }, 405);
@@ -126,6 +131,13 @@ export async function handleMachineCredentials(request: Request, env: Env): Prom
     const revoked = await revokeMachineCredential(env, caller.tenantId, revokeMatch[1]!);
     if (!revoked) return json(request, { error: "Not found" }, 404);
     return json(request, { revoked: true });
+  }
+
+  if (rotateMatch) {
+    // revoke と同じく decode しない (形が違えば rotate 側で null = 404)。password はログに出さない。
+    const rotated = await rotateMachineCredential(env, caller.tenantId, rotateMatch[1]!);
+    if (!rotated) return json(request, { error: "Not found" }, 404);
+    return json(request, { username: rotated.username, password: rotated.password });
   }
 
   let body: { purpose?: unknown; label?: unknown };
