@@ -19,6 +19,25 @@ branches = true
 path = "src/lib/device-pair.ts"
 branches = true
 
+# Refs ohishi-exp/rust-leave-worker#1: 機械用資格情報 (複合機の Basic) とチケット。
+# 判定が緩むと、他社の資格情報の失効・別環境の資格情報の照合・中身を差し替えたファイルの取り込みが
+# 通ってしまうので 100% を維持する。
+[[files]]
+path = "src/lib/machine-credential.ts"
+branches = true
+
+[[files]]
+path = "src/lib/machine-ticket.ts"
+branches = true
+
+[[files]]
+path = "src/machine-credential-entrypoint.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/api-machine-credentials.ts"
+branches = true
+
 # Refs ippoan/rust-alc-api#725: backend の口を Service Binding へ振り分ける表と判定。
 # 判定が緩むと、別の口や、引いてはいけない proxy の request まで worker へ流れるので 100% を維持する。
 [[files]]

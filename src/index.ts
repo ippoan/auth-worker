@@ -26,6 +26,7 @@ import { handleDeviceNotify } from "./handlers/device-notify";
 import { handleOhishiLogiProxy } from "./handlers/ohishi-logi-proxy";
 import { handleCfFlickrCamWorkerProxy } from "./handlers/cf-flickr-cam-worker-proxy";
 import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
+import { handleMachineCredentials, MACHINE_CRED_API_PATH } from "./handlers/api-machine-credentials";
 import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
   handleRichMenuList, handleRichMenuCreate, handleRichMenuDelete,
@@ -160,6 +161,9 @@ export { KyuyoAuthEntrypoint } from "./kyuyo-auth-entrypoint";
 // ohishi-exp/rust-ichibanboshi#322: 勤怠 Worker (ichibanboshi-kintai) 専用の alc 読みの口
 // (`dtakoEtags` / `dtakoEvents`)。InternalEntrypoint の FORWARDABLE_PATHS を広げないため別 class。
 export { KintaiAlcEntrypoint } from "./kintai-alc-entrypoint";
+// ohishi-exp/rust-leave-worker#1: 機械用資格情報 (複合機の Basic) のチケットの口
+// (`issueTicket` / `verifyTicket`)。nuxt-leave と rust-leave-worker の binding だけが呼ぶので別 class。
+export { MachineCredentialEntrypoint } from "./machine-credential-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
 import type { BrowserWorker } from "@cloudflare/puppeteer";
@@ -198,6 +202,11 @@ export interface Env {
   /** `"true"` のとき admin proxy 等が網羅ログ (verify 結果 / 注入 claims / rust 応答) を
    *  emit する。staging の [vars] でのみ有効化 (Refs rust-alc-api#434 admin 401 調査)。 */
   DEBUG?: string;
+  /** 機械用資格情報 (`lib/machine-credential.ts`) の KV の key に入れる環境名 (top-level `"prod"` /
+   *  `[env.staging.vars]` `"staging"`)。`AUTH_CONFIG` は両 env で同じ namespace なので、これで分ける。
+   *  未設定なら資格情報の発行・照合・チケットは全部失敗側に倒れ、管理 API は 503
+   *  (Refs ohishi-exp/rust-leave-worker#1)。 */
+  MACHINE_CRED_ENV?: string;
   AUTH_CONFIG: KVNamespace;
   /** HS256 JWT secret, shared with rust-alc-api. Used by /top to verify the
    *  `logi_auth_token` cookie before serving the page. Missing → /top
@@ -612,6 +621,15 @@ export default {
       // 同一オリジンで叩き、ここで JWT 検証 + X-Tenant-ID 注入して rust へ転送する。
       if (url.pathname.startsWith("/admin/notify/api/")) {
         return handleAdminNotifyApi(request, env);
+      }
+
+      // ohishi-exp/rust-leave-worker#1: 機械用資格情報の管理 API。nuxt-leave の設定画面が
+      // cross-origin で叩く (OPTIONS も handler 内で捌く)。
+      if (
+        url.pathname === MACHINE_CRED_API_PATH ||
+        url.pathname.startsWith(`${MACHINE_CRED_API_PATH}/`)
+      ) {
+        return handleMachineCredentials(request, env);
       }
 
       if (request.method === "GET") {

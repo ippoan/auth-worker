@@ -442,8 +442,11 @@ export async function revokeDeviceCredential(
   return true;
 }
 
-/** 長さ一致前提の定数時間比較 (hash は固定長 hex なので長さ差は即 false で良い)。 */
-function constantTimeEqual(a: string, b: string): boolean {
+/**
+ * 長さ一致前提の定数時間比較 (hash は固定長 hex なので長さ差は即 false で良い)。
+ * machine credential (`lib/machine-credential.ts`) の secret_hash 照合でも使う。
+ */
+export function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);

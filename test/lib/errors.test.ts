@@ -5,6 +5,7 @@ import {
   corsPreflight,
   extractToken,
   errorResponse,
+  parseBasicAuth,
 } from "../../src/lib/errors";
 
 describe("jsonResponse", () => {
@@ -70,5 +71,30 @@ describe("errorResponse", () => {
     const res = errorResponse(404, "Not found");
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "Not found" });
+  });
+});
+
+describe("parseBasicAuth", () => {
+  it("splits user:pass at the first colon (password may contain colons)", () => {
+    expect(parseBasicAuth(`Basic ${btoa("alice:pa:ss")}`)).toEqual({
+      username: "alice",
+      password: "pa:ss",
+    });
+  });
+
+  it("does not decode the values (callers apply their own encoding rules)", () => {
+    expect(parseBasicAuth(`Basic ${btoa("a%20b:c%3Ad")}`)).toEqual({
+      username: "a%20b",
+      password: "c%3Ad",
+    });
+  });
+
+  it("returns null for missing / non-Basic / broken base64 / no colon", () => {
+    expect(parseBasicAuth(null)).toBeNull();
+    expect(parseBasicAuth(undefined)).toBeNull();
+    expect(parseBasicAuth("")).toBeNull();
+    expect(parseBasicAuth("Bearer abc")).toBeNull();
+    expect(parseBasicAuth("Basic !!!not-base64!!!")).toBeNull();
+    expect(parseBasicAuth(`Basic ${btoa("nocolon")}`)).toBeNull();
   });
 });

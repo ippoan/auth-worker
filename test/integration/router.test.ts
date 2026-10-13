@@ -296,6 +296,13 @@ vi.mock("../../src/handlers/api-dashboard-branch-protection", () => ({
       new Response(`api-dashboard-fix-settings:${owner}/${repo}`),
   ),
 }));
+// ohishi-exp/rust-leave-worker#1: 機械用資格情報の管理 API (path の定数は本物を使う)。
+vi.mock("../../src/handlers/api-machine-credentials", () => ({
+  MACHINE_CRED_API_PATH: "/api/machine-credentials",
+  handleMachineCredentials: vi.fn(
+    (req: Request) => new Response(`machine-credentials:${req.method}:${new URL(req.url).pathname}`),
+  ),
+}));
 // Stub the DurableObject exports so importing index.ts doesn't blow up
 vi.mock("../../src/durable_objects/lineworks-webhook-do", () => ({
   LineworksWebhookDO: class {},
@@ -986,5 +993,21 @@ describe("Router (index.ts)", () => {
     expect(res.status).toBe(500);
     const data = await res.json() as { error: string };
     expect(data.error).toBe("Internal server error");
+  });
+
+  // ohishi-exp/rust-leave-worker#1
+  it.each<[string, string]>([
+    ["GET", "/api/machine-credentials"],
+    ["POST", "/api/machine-credentials"],
+    ["OPTIONS", "/api/machine-credentials"],
+    ["POST", "/api/machine-credentials/mc_0123456789abcdef/revoke"],
+  ])("%s %s → machine-credentials handler (OPTIONS も handler が捌く)", async (method, path) => {
+    const res = await worker.fetch(new Request(`https://auth.test.example${path}`, { method }), env);
+    expect(await res.text()).toBe(`machine-credentials:${method}:${path}`);
+  });
+
+  it("/api/machine-credentialsX (接頭辞だけ一致) は handler に行かない", async () => {
+    const res = await worker.fetch(new Request("https://auth.test.example/api/machine-credentialsX"), env);
+    expect(await res.text()).not.toContain("machine-credentials:");
   });
 });

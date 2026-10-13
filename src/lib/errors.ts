@@ -31,6 +31,26 @@ export function extractToken(request: Request): string | null {
   return null;
 }
 
+/**
+ * `Authorization: Basic <base64(user:pass)>` を分解する。Basic でない / base64 が壊れている /
+ * `:` が無い → null。値の decode (form-urlencoded 等) は呼び手の規約に任せる
+ * (`oidc-token` は RFC 6749 §2.3.1 の decodeURIComponent をかける、machine credential は生のまま)。
+ */
+export function parseBasicAuth(
+  authorization: string | null | undefined,
+): { username: string; password: string } | null {
+  if (!authorization?.startsWith("Basic ")) return null;
+  let decoded: string;
+  try {
+    decoded = atob(authorization.slice("Basic ".length));
+  } catch {
+    return null;
+  }
+  const sep = decoded.indexOf(":");
+  if (sep === -1) return null;
+  return { username: decoded.slice(0, sep), password: decoded.slice(sep + 1) };
+}
+
 export function errorResponse(status: number, message: string): Response {
   return jsonResponse({ error: message }, status);
 }
