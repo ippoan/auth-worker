@@ -272,6 +272,10 @@ export interface Env {
    *  (`X-Internal-Shared-Secret` 付き) で読み書きする。未定義なら資格情報の発行・一覧・失効・照合は
    *  全部失敗側 (fail-closed。Refs ohishi-exp/rust-leave-worker#1)。 */
   ALC_AUTH?: Fetcher;
+  /** `"1"` で、ログインの内部口 (`lib/alc-internal.ts` の sso-config・user の upsert・refresh-token・
+   *  LINE の受信者) を Cloud Run でなく alc-auth-worker (`ALC_AUTH`) へ向ける。`ALC_AUTH` か
+   *  `INTERNAL_SHARED_SECRET` が無ければ Cloud Run のまま (Refs ohishi-exp/rust-leave-worker#1)。 */
+  ALC_AUTH_LOGIN?: string;
   /** cf-alc-recorder (CoreS3 測定データ WS 受口) への service binding。
    *  `/device/setup` の OTA トリガ/進捗ポーリングが recorder の内部 HTTP API
    *  (`Authorization: <INTERNAL_SHARED_SECRET>`) を叩く。未 bind なら OTA 系は

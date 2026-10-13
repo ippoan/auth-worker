@@ -519,6 +519,10 @@ ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "staging"
 # 機械用資格情報の KV key の環境名 (top-level の "prod" と分ける。Refs ohishi-exp/rust-leave-worker#1)。
 MACHINE_CRED_ENV = "staging"
+# ログインの内部口 (sso-config・user の upsert・refresh-token・LINE の受信者) を Cloud Run でなく
+# alc-auth-worker (ALC_AUTH) へ向ける。staging だけ (本番は様子を見てから別に切り替える。
+# Refs ohishi-exp/rust-leave-worker#1)。
+ALC_AUTH_LOGIN = "1"
 # #434 Phase D step 1: internal call (/alc-internal-proxy 等) の認証 token を
 # HS256 共有 JWT → Google OIDC ID token (aud=alc-api-internal) に切替える。
 # ALC_API_PROXY_SA_KEY (env.staging binding) で mint する。rust 側は
