@@ -83,24 +83,36 @@ describe("MachineCredentialEntrypoint (ohishi-exp/rust-leave-worker#1)", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it("alc-auth-worker が throw しても throw せず null (資格情報の層で失敗側に倒れ、log は出ない)", async () => {
+  it("★ alc-auth-worker が throw しても throw せず、発行は null・検証は { error: \"unavailable\" } (log は出ない)", async () => {
     const { e, auth } = await setup();
     const issued = await rpc(e).issueTicket(auth, PURPOSE, SHA);
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(e.ALC_AUTH!, "fetch").mockRejectedValue(new TypeError("network"));
     expect(await rpc(e).issueTicket(auth, PURPOSE, SHA)).toBeNull();
-    expect(await rpc(e).verifyTicket(issued!.ticket, PURPOSE)).toBeNull();
+    expect(await rpc(e).verifyTicket(issued!.ticket, PURPOSE)).toEqual({ error: "unavailable" });
     expect(errSpy).not.toHaveBeenCalled();
   });
 
-  it("下の層が throw しても throw せず null (例外の種類だけ log、資格情報は出さない)", async () => {
+  it("★ alc-auth-worker が 500・壊れた JSON・binding / secret 無しなら verifyTicket は { error: \"unavailable\" }、404・失効は null", async () => {
+    const { e, auth } = await setup();
+    const issued = await rpc(e).issueTicket(auth, PURPOSE, SHA);
+    const unavailable = { error: "unavailable" };
+    const via = (f: () => Response) => ({ ...e, ALC_AUTH: createFakeAlcAuth({ override: f }).fetcher }) as Env;
+    expect(await rpc(via(() => new Response("", { status: 500 }))).verifyTicket(issued!.ticket, PURPOSE)).toEqual(unavailable);
+    expect(await rpc(via(() => new Response("{oops", { status: 200 }))).verifyTicket(issued!.ticket, PURPOSE)).toEqual(unavailable);
+    expect(await rpc({ ...e, ALC_AUTH: undefined } as Env).verifyTicket(issued!.ticket, PURPOSE)).toEqual(unavailable);
+    expect(await rpc({ ...e, INTERNAL_SHARED_SECRET: undefined } as Env).verifyTicket(issued!.ticket, PURPOSE)).toEqual(unavailable);
+    expect(await rpc(via(() => new Response(null, { status: 404 }))).verifyTicket(issued!.ticket, PURPOSE)).toBeNull();
+  });
+
+  it("下の層が throw しても throw せず (発行は null・検証は { error: \"unavailable\" })、例外の種類だけ log、資格情報は出さない", async () => {
     const { e, auth } = await setup();
     const issued = await rpc(e).issueTicket(auth, PURPOSE, SHA);
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     // チケットの鍵の派生 (HKDF) は資格情報の層の外なので、ここで throw させて entrypoint の catch を通す。
     vi.spyOn(crypto.subtle, "importKey").mockRejectedValue(new TypeError("crypto down"));
     expect(await rpc(e).issueTicket(auth, PURPOSE, SHA)).toBeNull();
-    expect(await rpc(e).verifyTicket(issued!.ticket, PURPOSE)).toBeNull();
+    expect(await rpc(e).verifyTicket(issued!.ticket, PURPOSE)).toEqual({ error: "unavailable" });
     const logged = errSpy.mock.calls.map((a) => String(a[0]));
     expect(logged).toEqual([
       JSON.stringify({ event: "machine_ticket_issue_failed", error: "TypeError" }),

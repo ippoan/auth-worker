@@ -12,11 +12,17 @@
  * ★ **`InternalEntrypoint` とは別 class** — 呼べるメソッドは binding の `entrypoint` ごとに決まるので、
  * 分けておけば他の binding の呼び手はチケットを発行できない (blast radius を binding 単位に閉じる)。
  *
- * 戻り値は serializable な素のオブジェクトか null。**throw しない** (失敗の理由は区別して返さない)。
+ * 戻り値は serializable な素のオブジェクトか null。**throw しない**。
+失敗の理由は区別して返さない — ただし `verifyTicket` だけは、一時的な失敗 (資格情報を alc-auth-worker に
+確かめられなかった・例外) を `{ error: "unavailable" }` で無効 (null) と区別する (呼び手に再試行させるため)。
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { Env } from "./index";
-import { issueTicket, verifyTicket } from "./lib/machine-ticket";
+import {
+  issueTicket,
+  verifyTicket,
+  type MachineTicketUnavailable,
+} from "./lib/machine-ticket";
 
 export class MachineCredentialEntrypoint extends WorkerEntrypoint<Env> {
   /** Basic を照合し、通ればチケットを発行する。通らなければ null。 */
@@ -34,17 +40,22 @@ export class MachineCredentialEntrypoint extends WorkerEntrypoint<Env> {
     }
   }
 
-  /** チケットを検証する。通れば `{tenantId, username, sha256}`、通らなければ null。 */
+  /**
+   * チケットを検証する。通れば `{tenantId, username, sha256}`、無効なら null、
+   * 一時的な失敗 (alc-auth-worker に確かめられなかった・例外) なら `{ error: "unavailable" }`。
+   */
   async verifyTicket(
     ticket: string,
     purpose: string,
-  ): Promise<{ tenantId: string; username: string; sha256: string } | null> {
+  ): Promise<
+    { tenantId: string; username: string; sha256: string } | MachineTicketUnavailable | null
+  > {
     if (typeof ticket !== "string" || typeof purpose !== "string") return null;
     try {
       return await verifyTicket(this.env, ticket, purpose);
     } catch (err) {
       logFailure("machine_ticket_verify_failed", err);
-      return null;
+      return { error: "unavailable" };
     }
   }
 }

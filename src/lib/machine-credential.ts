@@ -138,14 +138,24 @@ async function callAlcAuth(
   }
 }
 
-/** 口 4 (`GET /internal/machine-credentials/<username>`) で 1 件引く。不在・形の不正・失敗は null。 */
-async function lookup(
-  env: MachineCredEnv,
-  username: string,
-): Promise<{ tenant_id: string; purpose: string; secret_hash: string; revoked: boolean } | null> {
-  if (typeof username !== "string" || !USERNAME_RE.test(username)) return null;
+type LookupRecord = { tenant_id: string; purpose: string; secret_hash: string; revoked: boolean };
+
+/** 口 4 の引き直しの結果。`unavailable` は「無い」ではなく「確かめられなかった」(再試行すれば変わりうる)。 */
+type LookupResult =
+  | { status: "found"; record: LookupRecord }
+  | { status: "absent" }
+  | { status: "unavailable" };
+
+/**
+ * 口 4 (`GET /internal/machine-credentials/<username>`) で 1 件引く。
+ * 形の不正な username・404 は `absent`。binding / secret / 環境名が無い・通信失敗・2xx/404 以外・
+ * 壊れた JSON・形の合わない本文は `unavailable`。
+ */
+async function lookupDetailed(env: MachineCredEnv, username: string): Promise<LookupResult> {
+  if (typeof username !== "string" || !USERNAME_RE.test(username)) return { status: "absent" };
   const r = await callAlcAuth(env, `/${username}`);
-  if (r?.status !== 200) return null;
+  if (!r) return { status: "unavailable" };
+  if (r.status === 404) return { status: "absent" };
   const { tenant_id, purpose, secret_hash, revoked } = r.body;
   if (
     typeof tenant_id !== "string" ||
@@ -153,31 +163,62 @@ async function lookup(
     typeof secret_hash !== "string" ||
     typeof revoked !== "boolean"
   ) {
-    return null;
+    return { status: "unavailable" };
   }
-  return { tenant_id, purpose, secret_hash, revoked };
+  return { status: "found", record: { tenant_id, purpose, secret_hash, revoked } };
+}
+
+/** 不在・形の不正・失敗は null (区別しない)。`verifyBasic` 用 (失敗側に倒す)。 */
+async function lookup(env: MachineCredEnv, username: string): Promise<LookupRecord | null> {
+  const r = await lookupDetailed(env, username);
+  return r.status === "found" ? r.record : null;
 }
 
 /**
- * 今も有効な (失効していない) 資格情報を返す。チケットの検証 (`lib/machine-ticket.ts`) が
- * 「発行後に失効させた資格情報のチケットを通さない」ために引く。
+ * `checkActiveMachineCredential` の結果。`inactive` は不在・失効 (確定した「無効」)、
+ * `unavailable` は alc-auth-worker に確かめられなかった (一時的な失敗。再試行できる)。
+ */
+export type ActiveMachineCredentialResult =
+  | { status: "active"; credential: MachineCredentialRecord }
+  | { status: "inactive" }
+  | { status: "unavailable" };
+
+/**
+ * 今も有効な (失効していない) 資格情報を引き、「有効 / 無効 / 確かめられなかった」を区別して返す。
+ * チケットの検証 (`lib/machine-ticket.ts`) は、一時的な失敗を無効と取り違えて捨てないためにこちらを使う。
  * ★ 口 4 は label / created_at を返さず、hash もここでは使わないので、その 3 つは空文字で返す。
+ */
+export async function checkActiveMachineCredential(
+  env: MachineCredEnv,
+  username: string,
+): Promise<ActiveMachineCredentialResult> {
+  const r = await lookupDetailed(env, username);
+  if (r.status === "unavailable") return { status: "unavailable" };
+  if (r.status === "absent" || r.record.revoked) return { status: "inactive" };
+  return {
+    status: "active",
+    credential: {
+      username,
+      tenant_id: r.record.tenant_id,
+      purpose: r.record.purpose as MachineCredPurpose,
+      label: "",
+      secret_hash: "",
+      created_at: "",
+      revoked: false,
+    },
+  };
+}
+
+/**
+ * 今も有効な (失効していない) 資格情報を返す。不在・失効・失敗は null (区別しない。区別が要るなら
+ * `checkActiveMachineCredential`)。
  */
 export async function getActiveMachineCredential(
   env: MachineCredEnv,
   username: string,
 ): Promise<MachineCredentialRecord | null> {
-  const record = await lookup(env, username);
-  if (!record || record.revoked) return null;
-  return {
-    username,
-    tenant_id: record.tenant_id,
-    purpose: record.purpose as MachineCredPurpose,
-    label: "",
-    secret_hash: "",
-    created_at: "",
-    revoked: false,
-  };
+  const r = await checkActiveMachineCredential(env, username);
+  return r.status === "active" ? r.credential : null;
 }
 
 /**
