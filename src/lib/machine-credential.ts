@@ -38,7 +38,13 @@ export type MachineCredPurpose = (typeof MACHINE_CRED_PURPOSES)[number];
 export const MACHINE_CRED_LABEL_MAX = 64;
 
 /** alc-auth-worker の機械用資格情報の内部口の path。 */
-const CREDENTIALS_PATH = "/internal/machine-credentials";
+/**
+ * 複合機のパスワード欄が短い (Canon iR-ADV で 24 文字程度) ため、パスワードは 24 文字にする。
+ * 18 byte = 144 bit。
+ */
+const MACHINE_CRED_PASSWORD_BYTES = 18;
+
+const CREDENTIALS_PATH ="/internal/machine-credentials";
 /** username = `mc_` + 16 hex。照合の前にこの形でなければ alc-auth-worker を引かない。 */
 const USERNAME_RE = /^mc_[0-9a-f]{16}$/;
 /** 環境名の形 (チケットの HKDF の info と payload の `env` に使う)。 */
@@ -230,7 +236,7 @@ export async function createMachineCredential(
   if (!trimmed || trimmed.length > MACHINE_CRED_LABEL_MAX) return null;
 
   const username = `mc_${randomHex(8)}`;
-  const password = randomBase64Url(32);
+  const password = randomBase64Url(MACHINE_CRED_PASSWORD_BYTES);
   const r = await callAlcAuth(env, "", {
     method: "POST",
     body: {

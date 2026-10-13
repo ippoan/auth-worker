@@ -56,11 +56,11 @@ describe("purpose allowlist / env name", () => {
 });
 
 describe("createMachineCredential", () => {
-  it("username = mc_ + 16 hex、password = 32 byte の base64url。alc-auth-worker には hash だけ", async () => {
+  it("username = mc_ + 16 hex、password = 18 byte の base64url (24 文字)。alc-auth-worker には hash だけ", async () => {
     const e = env();
     const c = await create(e);
     expect(c.username).toMatch(/^mc_[0-9a-f]{16}$/);
-    expect(c.password).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(c.password).toMatch(/^[A-Za-z0-9_-]{24}$/);
 
     const row = e.fake.rows.get(c.username);
     expect(row).toMatchObject({
