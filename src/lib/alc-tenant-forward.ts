@@ -46,6 +46,26 @@ export async function resolveKvTenant(env: Env, key: string): Promise<string | n
   return UUID_RE.test(tenantId) ? tenantId : null;
 }
 
+/**
+ * AUTH_CONFIG KV の `key` に置いた tenant の許可リスト (UUID 文字列の JSON 配列) を引く。
+ * 無い・空・JSON 配列でない・要素が 0 個 → `null` (呼び手は 503 で返す = fail-closed)。
+ * 要素は UUID の形のものだけ残す。値はこの repo に入れない。
+ */
+export async function resolveKvTenantList(env: Env, key: string): Promise<string[] | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse((await env.AUTH_CONFIG.get(key)) ?? "");
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const ids = parsed
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter((v) => UUID_RE.test(v));
+  return ids.length > 0 ? ids : null;
+}
+
 export interface AlcTenantForwardInput {
   /** 転送先に `X-Tenant-ID` として注入する tenant (呼び手が検査済みであること)。 */
   tenantId: string;

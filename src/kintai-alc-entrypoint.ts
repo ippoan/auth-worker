@@ -15,9 +15,15 @@
  * `entrypoint = "..."` ごとに決まるので、分けておけば blast radius を binding 単位に閉じられる。
  * **呼び手 = 勤怠 Worker だけ**。
  *
- * ★ **呼び手に選ばせないもの**:
- *   - tenant — AUTH_CONFIG KV の `kintai-alc-tenant` で固定 (無い・空・UUID でない → 503、fail-closed)
- *   - path / method — 上の 2 path の GET に固定
+ * ★ **tenant は既定で KV 固定**。呼び手が `tenantId` を渡したときだけ、許可リストの中から選べる:
+ *   - 省略 (`undefined` / `null`) — AUTH_CONFIG KV の `kintai-alc-tenant` で固定
+ *     (無い・空・UUID でない → 503 `kintai_alc_tenant_unset`、fail-closed)
+ *   - 指定 — AUTH_CONFIG KV の `kintai-alc-tenants` (UUID 文字列の JSON 配列) に載っているものに限る。
+ *     載っていない・UUID の形でない → 403 `kintai_alc_tenant_forbidden`、
+ *     許可リストの設定が無い・空・JSON 配列でない → 503 `kintai_alc_tenants_unset`
+ *     (dtako の 2 社は alc の別テナントで、勤怠 Worker が社ごとに読むため)
+ *
+ * ★ **呼び手に選ばせないもの**: path / method — 上の 2 path の GET に固定
  * 呼び手が渡せるのは query だけで、それも**鍵の allowlist** で絞る (知らない鍵・同じ鍵の重複は
  * 400 で Cloud Run を呼ばない)。**値の形は検査しない** — 受け側 (serde が日付を検査し
  * page_size を clamp する) と二重に持つと drift するため。
@@ -30,11 +36,14 @@ import {
   alcRpcError,
   forwardAlcTenantRequest,
   resolveKvTenant,
+  resolveKvTenantList,
   type AlcRpcResult,
 } from "./lib/alc-tenant-forward";
 
 /** 読み先 tenant (UUID 文字列) を置く AUTH_CONFIG KV のキー。値はこの repo に入れない。 */
 const TENANT_KEY = "kintai-alc-tenant";
+/** 呼び手が `tenantId` で選べる tenant の許可リスト (UUID 文字列の JSON 配列) を置く AUTH_CONFIG KV のキー。 */
+const TENANTS_KEY = "kintai-alc-tenants";
 
 const ETAGS_PATH = "/api/dtako/events/etags";
 const ETAGS_KEYS: ReadonlySet<string> = new Set(["date_from", "date_to"]);
@@ -65,27 +74,40 @@ function checkQuery(search: unknown, allowed: ReadonlySet<string>): string | nul
 }
 
 export class KintaiAlcEntrypoint extends WorkerEntrypoint<Env> {
-  /** `GET /api/dtako/events/etags` (tenant は KV 固定)。 */
-  async dtakoEtags(search: string): Promise<AlcRpcResult> {
-    return this.forward(ETAGS_PATH, ETAGS_KEYS, search);
+  /** `GET /api/dtako/events/etags` (tenant は省略で KV 固定、指定は許可リスト内だけ)。 */
+  async dtakoEtags(search: string, tenantId?: string): Promise<AlcRpcResult> {
+    return this.forward(ETAGS_PATH, ETAGS_KEYS, search, tenantId);
   }
 
-  /** `GET /api/dtako/events` (tenant は KV 固定)。 */
-  async dtakoEvents(search: string): Promise<AlcRpcResult> {
-    return this.forward(EVENTS_PATH, EVENTS_KEYS, search);
+  /** `GET /api/dtako/events` (tenant は省略で KV 固定、指定は許可リスト内だけ)。 */
+  async dtakoEvents(search: string, tenantId?: string): Promise<AlcRpcResult> {
+    return this.forward(EVENTS_PATH, EVENTS_KEYS, search, tenantId);
   }
 
   private async forward(
     path: string,
     allowed: ReadonlySet<string>,
     search: string,
+    requested: unknown,
   ): Promise<AlcRpcResult> {
     const query = checkQuery(search, allowed);
     if (query === null) return alcRpcError(400, "query_not_allowed");
 
-    // ★ tenant は KV からだけ。無い・空・UUID でない → Cloud Run を呼ばない。
-    const tenantId = await resolveKvTenant(this.env, TENANT_KEY);
-    if (!tenantId) return alcRpcError(503, "kintai_alc_tenant_unset");
+    let tenantId: string | null;
+    if (requested === undefined || requested === null) {
+      // ★ 省略時は KV からだけ。無い・空・UUID でない → Cloud Run を呼ばない。
+      tenantId = await resolveKvTenant(this.env, TENANT_KEY);
+      if (!tenantId) return alcRpcError(503, "kintai_alc_tenant_unset");
+    } else {
+      // ★ 指定時は許可リストに載っているものだけ (リストは UUID の形の要素だけ残しているので、
+      // 完全一致で UUID の形でない値も弾ける)。
+      const allowedTenants = await resolveKvTenantList(this.env, TENANTS_KEY);
+      if (!allowedTenants) return alcRpcError(503, "kintai_alc_tenants_unset");
+      if (typeof requested !== "string" || !allowedTenants.includes(requested)) {
+        return alcRpcError(403, "kintai_alc_tenant_forbidden");
+      }
+      tenantId = requested;
+    }
 
     return forwardAlcTenantRequest(this.env, { tenantId, path, method: "GET", search: query });
   }

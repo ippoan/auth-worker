@@ -14,6 +14,10 @@ import { mintGoogleIdToken } from "../src/lib/oidc";
 
 /** テスト固有のダミー UUID (本番の値ではない)。 */
 const TENANT = "66666666-6666-6666-6666-666666666666";
+/** 許可リストにだけ載せるダミー UUID。 */
+const OTHER = "77777777-7777-7777-7777-777777777777";
+/** どこにも載せないダミー UUID。 */
+const NOT_LISTED = "55555555-5555-5555-5555-555555555555";
 
 const originalFetch = globalThis.fetch;
 afterAll(() => {
@@ -166,11 +170,11 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("余分な引数 (tenant / path / method) を渡しても無視される (渡す手段が無い)", async () => {
+  it("3 つ目以降の引数 (path / method) を渡しても無視される (渡す手段が無い)", async () => {
     const fetchMock = mockFetch();
     const call = rpc().dtakoEtags as unknown as (...a: unknown[]) => Promise<unknown>;
-    await call.call(rpc(), "date_from=2026-06-01", {
-      tenantId: "55555555-5555-5555-5555-555555555555",
+    await call.call(rpc(), "date_from=2026-06-01", undefined, {
+      tenantId: OTHER,
       path: "/api/employees",
       method: "DELETE",
     });
@@ -178,6 +182,106 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
     expect(String(url)).toBe(`${ORIGIN}/api/dtako/events/etags?date_from=2026-06-01`);
     expect((init as RequestInit).method).toBe("GET");
     expect(((init as RequestInit).headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+  });
+
+  // ── tenantId の指定: KV `kintai-alc-tenants` の許可リスト内だけ ─────────────────
+  describe("tenantId を指定したとき", () => {
+    const LIST = JSON.stringify([TENANT, OTHER]);
+
+    it.each<[string, Method, string | null | undefined]>([
+      ["undefined", "dtakoEtags", undefined],
+      ["null", "dtakoEvents", null],
+    ])("省略 (%s) は従来どおり単数キーの tenant で呼び、許可リストを読まない (%s)", async (_l, m, t) => {
+      const fetchMock = mockFetch();
+      // 許可リストが壊れていても、省略時は影響しない
+      const out = await rpc(env({ "kintai-alc-tenants": "not-json" }))[m](
+        "date_from=2026-06-01",
+        t as string | undefined,
+      );
+      expect(out.status).toBe(200);
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(((init as RequestInit).headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    });
+
+    it.each<[Method, string]>([
+      ["dtakoEtags", "/api/dtako/events/etags"],
+      ["dtakoEvents", "/api/dtako/events"],
+    ])("許可リストに載っている tenant なら、その tenant で呼ぶ (%s)", async (m, path) => {
+      const fetchMock = mockFetch();
+      // 単数キーが無くても、指定時は許可リストだけを見る
+      const kv = createMockKV({ "kintai-alc-tenants": ` ${LIST} ` });
+      const out = await rpc(env({}, { AUTH_CONFIG: kv }))[m]("date_from=2026-06-01", OTHER);
+      expect(out.status).toBe(200);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toBe(`${ORIGIN}${path}?date_from=2026-06-01`);
+      expect((init as RequestInit).method).toBe("GET");
+      expect(((init as RequestInit).headers as Record<string, string>)["X-Tenant-ID"]).toBe(OTHER);
+    });
+
+    it("許可リストの要素の前後の空白は落とす", async () => {
+      const fetchMock = mockFetch();
+      const out = await rpc(env({ "kintai-alc-tenants": JSON.stringify([` ${OTHER}\n`]) })).dtakoEvents(
+        "",
+        OTHER,
+      );
+      expect(out.status).toBe(200);
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(((init as RequestInit).headers as Record<string, string>)["X-Tenant-ID"]).toBe(OTHER);
+    });
+
+    it.each<[string, unknown]>([
+      ["載っていない tenant", NOT_LISTED],
+      ["UUID でない", "not-a-uuid"],
+      ["空文字", ""],
+      ["UUID の前方一致", `${OTHER}x`],
+      ["前後に空白", ` ${OTHER}`],
+      ["文字列でない", { tenantId: OTHER }],
+      ["数値", 1],
+    ])("%s → 403 で Cloud Run を呼ばない", async (_l, t) => {
+      const fetchMock = mockFetch();
+      const out = await rpc(env({ "kintai-alc-tenants": LIST })).dtakoEvents(
+        "date_from=2026-06-01",
+        t as string,
+      );
+      expect(out.status).toBe(403);
+      expect(JSON.parse(out.body).error).toBe("kintai_alc_tenant_forbidden");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    });
+
+    it("許可リストの UUID でない要素は載っていない扱い", async () => {
+      const fetchMock = mockFetch();
+      const out = await rpc(env({ "kintai-alc-tenants": JSON.stringify([TENANT, "not-a-uuid", 1]) }))
+        .dtakoEtags("", "not-a-uuid");
+      expect(out.status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each<[string, string | undefined]>([
+      ["未設定", undefined],
+      ["空", ""],
+      ["JSON でない", "not-json"],
+      ["JSON 配列でない (文字列)", JSON.stringify(TENANT)],
+      ["JSON 配列でない (object)", JSON.stringify({ tenants: [TENANT] })],
+      ["空の配列", "[]"],
+      ["UUID の要素が 0 個", JSON.stringify(["not-a-uuid", 1, null])],
+    ])("許可リストが%sなら 503 で Cloud Run を呼ばない", async (_l, value) => {
+      const fetchMock = mockFetch();
+      const out = await rpc(
+        env(value === undefined ? {} : { "kintai-alc-tenants": value }),
+      ).dtakoEtags("date_from=2026-06-01", TENANT);
+      expect(out.status).toBe(503);
+      expect(JSON.parse(out.body).error).toBe("kintai_alc_tenants_unset");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    });
+
+    it("query の検査は tenant より先 (許可リストにあっても不正な query は 400)", async () => {
+      const fetchMock = mockFetch();
+      const out = await rpc(env({ "kintai-alc-tenants": LIST })).dtakoEtags("foo=1", OTHER);
+      expect(out.status).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   // ── ★ fail-closed: tenant 未設定 / 不正 ───────────────────────────────────
