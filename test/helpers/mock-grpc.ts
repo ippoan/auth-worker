@@ -6,7 +6,6 @@ export function createMockAuthClient() {
     loginWithGoogle: vi.fn(),
     loginWithSsoProvider: vi.fn(),
     resolveSsoProvider: vi.fn(),
-    switchOrganization: vi.fn(),
   };
 }
 

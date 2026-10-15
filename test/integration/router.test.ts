@@ -92,9 +92,6 @@ vi.mock("../../src/handlers/logout", () => ({
 vi.mock("../../src/handlers/api-my-orgs", () => ({
   handleMyOrgs: vi.fn(() => new Response("my-orgs")),
 }));
-vi.mock("../../src/handlers/api-switch-org", () => ({
-  handleSwitchOrg: vi.fn(() => new Response("switch-org")),
-}));
 vi.mock("../../src/handlers/api-rich-menu", () => ({
   handleRichMenuList: vi.fn(() => new Response("rm-list")),
   handleRichMenuCreate: vi.fn(() => new Response("rm-create")),
@@ -472,7 +469,6 @@ describe("Router (index.ts)", () => {
     ["/api/access-requests/list", "ar-list"],
     ["/api/access-requests/approve", "ar-approve"],
     ["/api/access-requests/decline", "ar-decline"],
-    ["/api/switch-org", "switch-org"],
     ["/api/my-orgs", "my-orgs"],
     ["/mcp/device_authorization", "mcp-device-authorization"],
     ["/device/verify", "mcp-device-verify"],

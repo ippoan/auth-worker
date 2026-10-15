@@ -1,9 +1,9 @@
 /**
  * rust-alc-api#434: rust-alc-api は #441 で JWT 検証を撤去した dumb backend に
- * なり、`/api/my-orgs` / `/api/auth/switch-org` は `require_tenant_header`
+ * なり、`/api/my-orgs` は `require_tenant_header`
  * (X-Tenant-ID + X-User-ID/Email/Role を信頼) の後ろにある。これらは auth の
  * 関心事なので client は auth-worker 経由で叩く (auth-worker → rust-alc-api の
- * 一方向 pass-through)。よって auth-worker がこの 2 経路の **前段 proxy** を兼ね、
+ * 一方向 pass-through)。よって auth-worker がこの経路の **前段 proxy** を兼ね、
  * ブラウザ JWT を検証して検証済み identity をヘッダ注入する必要がある。
  * 旧実装は raw `Authorization: Bearer` を素通ししていたが、require_tenant_header
  * は Bearer を読まないため X-Tenant-ID 欠落で 401 になっていた (= 本 helper で解消)。
@@ -28,7 +28,7 @@ import { resolveSecret } from "./secret";
  *
  * `require_tenant_header` は `X-Tenant-ID` (UUID) を必須とし、`X-User-ID` (UUID)
  * + `X-User-Email` + `X-User-Role` が **揃って初めて** AuthUser を復元する。
- * 1 つでも欠けると my_orgs / switch_org が AuthUser を取れず 500/401 になるので、
+ * 1 つでも欠けると my_orgs が AuthUser を取れず 500/401 になるので、
  * 4 点すべてが JWT から取れない token は invalid 扱い (null) にする。
  *
  * 値 (token / secret) は引数とローカルだけを通り、log / response には出さない。
