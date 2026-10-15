@@ -152,109 +152,118 @@ describe("checkOrgAccess", () => {
 
     expect(await checkOrgAccess(env, "https://dtako-admin-wt.trycloudflare.com", "")).toBe(true);
   });
+  it("allows ohishi-exp origin when the email is only on the KV user-acl", async () => {
+    const env = createMockEnv({
+      AUTH_CONFIG: createMockKV({ "app-orgs": APP_ORGS, "user-acl": OHISHI_USER_ACL }),
+      TENANT_ACL: OHISHI_ACL,
+    });
+
+    expect(await checkOrgAccess(env, "https://dtako-admin.example", "tenant-z", "alice@example.com")).toBe(true);
+    expect(await checkOrgAccess(env, "https://dtako-admin.example", "tenant-z", "bob@example.com")).toBe(false);
+  });
 });
 
 describe("isTenantInOrgAllowlist", () => {
-  it("returns true when tenant is listed under the org", () => {
+  it("returns true when tenant is listed under the org", async () => {
     const env = createMockEnv({ TENANT_ACL: OHISHI_ACL });
-    expect(isTenantInOrgAllowlist(env, "ohishi-exp", "tenant-a")).toBe(true);
+    expect(await isTenantInOrgAllowlist(env, "ohishi-exp", "tenant-a")).toBe(true);
   });
 
-  it("returns false for empty tenant_id", () => {
+  it("returns false for empty tenant_id", async () => {
     const env = createMockEnv({ TENANT_ACL: OHISHI_ACL });
-    expect(isTenantInOrgAllowlist(env, "ohishi-exp", "")).toBe(false);
+    expect(await isTenantInOrgAllowlist(env, "ohishi-exp", "")).toBe(false);
   });
 
-  it("returns false when org is not in the ACL", () => {
+  it("returns false when org is not in the ACL", async () => {
     const env = createMockEnv({ TENANT_ACL: OHISHI_ACL });
-    expect(isTenantInOrgAllowlist(env, "other-org", "tenant-a")).toBe(false);
+    expect(await isTenantInOrgAllowlist(env, "other-org", "tenant-a")).toBe(false);
   });
 
-  it("returns false when TENANT_ACL is missing", () => {
+  it("returns false when TENANT_ACL is missing", async () => {
     const env = createMockEnv();
-    expect(isTenantInOrgAllowlist(env, "ohishi-exp", "tenant-a")).toBe(false);
+    expect(await isTenantInOrgAllowlist(env, "ohishi-exp", "tenant-a")).toBe(false);
   });
 
-  it("returns false when TENANT_ACL value for org is not an array", () => {
+  it("returns false when TENANT_ACL value for org is not an array", async () => {
     const env = createMockEnv({ TENANT_ACL: JSON.stringify({ "ohishi-exp": "not-array" }) });
-    expect(isTenantInOrgAllowlist(env, "ohishi-exp", "tenant-a")).toBe(false);
+    expect(await isTenantInOrgAllowlist(env, "ohishi-exp", "tenant-a")).toBe(false);
   });
 });
 
 describe("isOrgWideUser", () => {
-  it("returns true when the email is on USER_ACL for the org", () => {
+  it("returns true when the email is on USER_ACL for the org", async () => {
     const env = createMockEnv({ USER_ACL: OHISHI_USER_ACL });
-    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
+    expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
   });
 
-  it("returns false when the email is not on USER_ACL", () => {
+  it("returns false when the email is not on USER_ACL", async () => {
     const env = createMockEnv({ USER_ACL: OHISHI_USER_ACL });
-    expect(isOrgWideUser(env, "ohishi-exp", "bob@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp", "bob@example.com")).toBe(false);
   });
 
-  it("matches case-insensitively (same rule as matchesOrgAllowlist)", () => {
+  it("matches case-insensitively (same rule as matchesOrgAllowlist)", async () => {
     const env = createMockEnv({ USER_ACL: JSON.stringify({ "ohishi-exp": ["Alice@Example.COM"] }) });
-    expect(isOrgWideUser(env, "ohishi-exp", "ALICE@example.com")).toBe(true);
+    expect(await isOrgWideUser(env, "ohishi-exp", "ALICE@example.com")).toBe(true);
   });
 
   // ★ 早期 return の穴の陰性対照 (lib 側)。TENANT_ACL に載っている人でも、
   //   USER_ACL の判定だけを独立に見るので true になる。matchesOrgAllowlist を
   //   流用して「どちらで通ったか」を返す形にすると tenant で早期 return して
   //   false になる。
-  it("stays true for somebody who is on TENANT_ACL as well (no tenant early-return)", () => {
+  it("stays true for somebody who is on TENANT_ACL as well (no tenant early-return)", async () => {
     const env = createMockEnv({ TENANT_ACL: OHISHI_ACL, USER_ACL: OHISHI_USER_ACL });
-    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
+    expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
   });
 
-  it("ignores TENANT_ACL entirely — a tenant-only user is not org-wide", () => {
+  it("ignores TENANT_ACL entirely — a tenant-only user is not org-wide", async () => {
     const env = createMockEnv({ TENANT_ACL: OHISHI_ACL, USER_ACL: OHISHI_USER_ACL });
-    expect(isOrgWideUser(env, "ohishi-exp", "carol@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp", "carol@example.com")).toBe(false);
   });
 
-  it("returns false when USER_ACL is missing (fail-closed)", () => {
+  it("returns false when USER_ACL is missing (fail-closed)", async () => {
     const env = createMockEnv({ TENANT_ACL: OHISHI_ACL });
-    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
   });
 
-  it("returns false when USER_ACL is malformed JSON (fail-closed)", () => {
+  it("returns false when USER_ACL is malformed JSON (fail-closed)", async () => {
     const env = createMockEnv({ USER_ACL: "not-json" });
-    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
   });
 
-  it("returns false when the org value is not an array (fail-closed)", () => {
+  it("returns false when the org value is not an array (fail-closed)", async () => {
     const env = createMockEnv({ USER_ACL: JSON.stringify({ "ohishi-exp": "alice@example.com" }) });
-    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
   });
 
   // ★ isOrgWideUser は matchesOrgAllowlist と違って **必ず** USER_ACL に触る
   //   (tenant での早期 return が無い)。要素の型崩れで throw すると、TENANT_ACL で
   //   通っていた人まで introspect ごと落ちる。要素ごとに非文字列を捨てる。
-  it("returns false (never throws) when USER_ACL contains non-string elements", () => {
+  it("returns false (never throws) when USER_ACL contains non-string elements", async () => {
     const env = createMockEnv({
       USER_ACL: JSON.stringify({ "ohishi-exp": [1, null, { a: 1 }, ["x"], true] }),
     });
-    expect(() => isOrgWideUser(env, "ohishi-exp", "alice@example.com")).not.toThrow();
-    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
+    await expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).resolves.toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(false);
   });
 
-  it("still matches the string entries when non-strings are mixed in", () => {
+  it("still matches the string entries when non-strings are mixed in", async () => {
     const env = createMockEnv({
       USER_ACL: JSON.stringify({ "ohishi-exp": [1, "alice@example.com", null] }),
     });
-    expect(isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
-    expect(isOrgWideUser(env, "ohishi-exp", "bob@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
+    expect(await isOrgWideUser(env, "ohishi-exp", "bob@example.com")).toBe(false);
   });
 
-  it("returns false when the org key is absent (fail-closed)", () => {
+  it("returns false when the org key is absent (fail-closed)", async () => {
     const env = createMockEnv({ USER_ACL: OHISHI_USER_ACL });
-    expect(isOrgWideUser(env, "ippoan", "alice@example.com")).toBe(false);
-    expect(isOrgWideUser(env, "other-org", "alice@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "ippoan", "alice@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "other-org", "alice@example.com")).toBe(false);
   });
 
-  it("returns false for an empty / omitted email (fail-closed)", () => {
+  it("returns false for an empty / omitted email (fail-closed)", async () => {
     const env = createMockEnv({ USER_ACL: OHISHI_USER_ACL });
-    expect(isOrgWideUser(env, "ohishi-exp", "")).toBe(false);
-    expect(isOrgWideUser(env, "ohishi-exp")).toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp", "")).toBe(false);
+    expect(await isOrgWideUser(env, "ohishi-exp")).toBe(false);
   });
 
   it("does not change what checkOrgAccess decides (observation only)", async () => {
@@ -274,6 +283,31 @@ describe("isOrgWideUser", () => {
     expect(
       await checkOrgAccess(env, "https://dtako-admin.example", "tenant-z", "bob@example.com"),
     ).toBe(false);
+  });
+  // ★ USER_ACL の KV 側 (`user-acl`)。secret と和集合で、片方が壊れても他方は変わらない。
+  it("returns true when the email is only on the KV user-acl", async () => {
+    const env = createMockEnv({ AUTH_CONFIG: createMockKV({ "user-acl": OHISHI_USER_ACL }) });
+    expect(await isOrgWideUser(env, "ohishi-exp", "ALICE@example.com")).toBe(true);
+    expect(await isOrgWideUser(env, "ohishi-exp", "bob@example.com")).toBe(false);
+    expect(await isOrgWideUser(env, "ippoan", "alice@example.com")).toBe(false);
+  });
+
+  it("unions the secret and KV (KV never drops somebody on the secret)", async () => {
+    const env = createMockEnv({
+      USER_ACL: OHISHI_USER_ACL,
+      AUTH_CONFIG: createMockKV({ "user-acl": JSON.stringify({ "ohishi-exp": ["bob@example.com"] }) }),
+    });
+    expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
+    expect(await isOrgWideUser(env, "ohishi-exp", "bob@example.com")).toBe(true);
+    expect(await isOrgWideUser(env, "ohishi-exp", "carol@example.com")).toBe(false);
+  });
+
+  it("keeps the secret's answer when the KV user-acl is malformed / not an array", async () => {
+    for (const raw of ["not-json", JSON.stringify({ "ohishi-exp": "bob@example.com" }), JSON.stringify([1])]) {
+      const env = createMockEnv({ USER_ACL: OHISHI_USER_ACL, AUTH_CONFIG: createMockKV({ "user-acl": raw }) });
+      expect(await isOrgWideUser(env, "ohishi-exp", "alice@example.com")).toBe(true);
+      expect(await isOrgWideUser(env, "ohishi-exp", "bob@example.com")).toBe(false);
+    }
   });
 });
 

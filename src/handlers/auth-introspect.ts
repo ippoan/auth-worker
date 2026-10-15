@@ -197,7 +197,7 @@ export async function introspectToken(
   let orgWide = false;
   const org = await classifyOrigin(env, origin);
   if (org === "ohishi-exp") {
-    orgWide = isOrgWideUser(env, org, email);
+    orgWide = await isOrgWideUser(env, org, email);
   }
 
   return {

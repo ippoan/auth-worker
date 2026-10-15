@@ -562,6 +562,26 @@ describe("handleTopPage", () => {
     );
   });
 
+  // ★ isTenantInOrgAllowlist は async。await を落とすと `!promise` が常に false で全員に出る (fail-open)
+  it("shows ohishi-exp tile only to the email on the KV user-acl", async () => {
+    const env = createMockEnv({
+      AUTH_CONFIG: createMockKV({
+        "origins:prod": "https://dtako-admin.example",
+        "app-orgs": JSON.stringify({ "dtako-admin": "ohishi-exp" }),
+        "user-acl": JSON.stringify({ "ohishi-exp": ["alice@example.com"] }),
+      }),
+      TENANT_ACL: JSON.stringify({ "ohishi-exp": ["tenant-a"] }),
+    });
+    for (const [email, shown] of [["alice@example.com", 1], ["bob@example.com", 0]] as const) {
+      vi.mocked(renderTopPage).mockClear();
+      const req = new Request("https://auth.test.example/top", {
+        headers: { Cookie: await authedCookie({ tenant_id: "tenant-z", email }) },
+      });
+      await handleTopPage(req, env);
+      expect(vi.mocked(renderTopPage).mock.calls[0]![0]).toHaveLength(shown);
+    }
+  });
+
   it("hides ohishi-exp tile when cookie JWT has no tenant_id", async () => {
     const env = createMockEnv({
       AUTH_CONFIG: createMockKV({

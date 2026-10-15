@@ -25,6 +25,13 @@
  *                     (`KyuyoAuthEntrypoint`, Refs ohishi-exp/rust-ichibanboshi#322).
  *                     Read **without** in-memory cache so removing someone
  *                     denies them immediately.
+ *   user-acl        - JSON map of github-org → emails, same shape as the
+ *                     `USER_ACL` secret (`{"ohishi-exp":["a@example.com"]}`).
+ *                     `acl.ts` reads it **in union with** the secret, so people
+ *                     can be added without knowing (and overwriting) the
+ *                     secret's current value, which cannot be read back.
+ *                     Read **without** in-memory cache so removing someone
+ *                     denies them immediately.
  *
  * At runtime the worker reads `origins:<WORKER_ENV>` ∪ `origins:dev` ∪ `origins:wt`
  * and unions them.
@@ -169,6 +176,15 @@ export async function getKyuyoAllowedEmails(env: Env): Promise<string[] | null> 
   if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) return null;
   const emails = (parsed as string[]).map((x) => x.trim().toLowerCase()).filter((x) => x.length > 0);
   return emails.length > 0 ? emails : null;
+}
+
+/**
+ * USER_ACL の KV 側 (`user-acl` KV key)。保存された JSON 文字列をそのまま返す
+ * (未設定は `""`)。解釈と fail-closed は `acl.ts` の `listFor` が secret と同じ規則で行う。
+ * 外した人が即座に拒否されるよう、キャッシュしない読みを使う。
+ */
+export async function getUserAclKv(env: Env): Promise<string> {
+  return readKeyNoCache(env, "user-acl");
 }
 
 /** Test-only cache clear helper. */

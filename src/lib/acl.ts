@@ -5,7 +5,10 @@
  *   - `origins:wt` (KV) — ephemeral worktree tunnels, always bypass ACL
  *   - `app-orgs` (KV JSON) — origin URL → github-org classification
  *   - `TENANT_ACL` (Worker secret JSON) — per-org allowlisted tenant_ids
- *   - `USER_ACL` (Worker secret JSON) — per-org allowlisted user emails
+ *   - `USER_ACL` (Worker secret JSON) ∪ `user-acl` (KV JSON, same shape) —
+ *     per-org allowlisted user emails. The KV half exists because the secret
+ *     cannot be read back, so adding one person via `wrangler secret put`
+ *     would mean rewriting (and risking dropping) everyone else.
  *   - `APP_TENANT_ACL` (Worker secret JSON) — per-redirect-origin allowlisted
  *     tenant_ids; partitions tenants across apps within the same org
  *     (checked AFTER checkOrgAccess in handlers)
@@ -23,7 +26,7 @@
  */
 
 import type { Env } from "../index";
-import { classifyOrigin, isWorktreeOrigin } from "./config";
+import { classifyOrigin, getUserAclKv, isWorktreeOrigin } from "./config";
 
 /**
  * Returns true iff (`tenantId`, `email`) is allowed to access `origin`.
@@ -119,15 +122,17 @@ export function checkAppTenant(
 }
 
 /**
- * Synchronous ACL lookup — assumes the caller already knows the origin's
- * org. Used by /top where classify results are already in hand.
+ * ACL lookup when the caller already knows the origin's org. Used by /top
+ * where classify results are already in hand. Async because the USER_ACL
+ * half reads KV — callers must `await` it (`!promise` is always false and
+ * would silently allow).
  */
-export function isTenantInOrgAllowlist(
+export async function isTenantInOrgAllowlist(
   env: Env,
   org: string,
   tenantId: string,
   email?: string,
-): boolean {
+): Promise<boolean> {
   return matchesOrgAllowlist(env, org, tenantId, email);
 }
 
@@ -137,20 +142,21 @@ export function isTenantInOrgAllowlist(
  *
  * That is exactly "may look beyond their own tenant inside this org":
  * `checkOrgAccess` passes them for any `tenant_id`, so they are not bound by
- * the tenant boundary. This is **authorization data** (`USER_ACL` is the
- * single source of truth for who may cross tenants) — do not confuse it with
+ * the tenant boundary. This is **authorization data** (`USER_ACL` ∪ KV
+ * `user-acl` is the single source of truth for who may cross tenants) — do not confuse it with
  * `DEVELOPER_EMAILS` in `admin-html.ts` / `device-setup.ts`, which is a
  * display-only UI gate and is never consulted for access decisions.
  *
  * Deliberately **not** built on `matchesOrgAllowlist`: that helper checks
  * TENANT_ACL first and returns early, so somebody listed on *both* lists
- * would never be observed as a USER_ACL match. Here only USER_ACL is read.
+ * would never be observed as a USER_ACL match. Here only USER_ACL (secret ∪
+ * KV) is read.
  *
  * Purely observational — nothing in this function feeds an allow/deny
  * decision, so adding it cannot change who gets in.
  *
- * Fail-closed via `listFor`: secret missing / unparseable / org value not an
- * array / org key absent → empty list → `false`. Empty `email` → `false`.
+ * Fail-closed via `listFor`: secret / KV missing / unparseable / org value
+ * not an array / org key absent → empty list → `false`. Empty `email` → `false`.
  * Comparison is case-insensitive, matching `matchesOrgAllowlist`.
  *
  * Non-string elements inside the array are dropped one by one. `listFor` only
@@ -162,27 +168,31 @@ export function isTenantInOrgAllowlist(
  * previously succeeded via TENANT_ACL. `listFor` itself is deliberately left
  * alone (it is shared with the two existing ACL checks).
  */
-export function isOrgWideUser(env: Env, org: string, email?: string): boolean {
+export async function isOrgWideUser(env: Env, org: string, email?: string): Promise<boolean> {
   if (!email) return false;
-  const users = listFor(env.USER_ACL, org)
-    .filter((e): e is string => typeof e === "string")
-    .map((e) => e.toLowerCase());
-  return users.includes(email.toLowerCase());
+  return (await userAclFor(env, org)).includes(email.toLowerCase());
 }
 
-function matchesOrgAllowlist(
+/** `USER_ACL[org]` (secret) ∪ `user-acl[org]` (KV)、小文字化して非文字列は捨てる。
+ * どちらかが欠けても壊れていても、もう片方の判定は変わらない (`listFor` が空にする)。 */
+async function userAclFor(env: Env, org: string): Promise<string[]> {
+  return [...listFor(env.USER_ACL, org), ...listFor(await getUserAclKv(env), org)]
+    .filter((e): e is string => typeof e === "string")
+    .map((e) => e.toLowerCase());
+}
+
+async function matchesOrgAllowlist(
   env: Env,
   org: string,
   tenantId: string,
   email?: string,
-): boolean {
+): Promise<boolean> {
   if (tenantId) {
     const tenants = listFor(env.TENANT_ACL, org);
     if (tenants.includes(tenantId)) return true;
   }
   if (email) {
-    const users = listFor(env.USER_ACL, org).map((e) => e.toLowerCase());
-    if (users.includes(email.toLowerCase())) return true;
+    if ((await userAclFor(env, org)).includes(email.toLowerCase())) return true;
   }
   return false;
 }
