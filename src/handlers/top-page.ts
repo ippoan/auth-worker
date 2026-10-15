@@ -248,11 +248,13 @@ export async function handleTopPage(
   }
   const uniqueApps = [...byName.values()];
 
-  // Drop ohishi-exp tiles unless the cookie JWT's tenant_id is in TENANT_ACL.
+  // Drop ohishi-exp tiles unless the cookie JWT's tenant_id / email is allowlisted.
+  // 判定は tile に依らないのでループの外で 1 回だけ (USER_ACL の KV をキャッシュ無しで読むため)。
+  const ohishiAllowed = await isTenantInOrgAllowlist(env, "ohishi-exp", tenantId, email);
   const visibleApps: AppEntry[] = [];
   for (const app of uniqueApps) {
     const org = await classifyOrigin(env, app.url);
-    if (org === "ohishi-exp" && !isTenantInOrgAllowlist(env, "ohishi-exp", tenantId, email)) {
+    if (org === "ohishi-exp" && !ohishiAllowed) {
       continue;
     }
     visibleApps.push(app);

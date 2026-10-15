@@ -465,6 +465,7 @@ custom_domain = true
 # SSO_ENCRYPTION_KEY   (LINE WORKS bot_secret_encrypted 復号用、rust-alc-api と同値)
 # TENANT_ACL           (JSON: {"<github-org>": ["<tenant-id>", ...]}; gates per-org access)
 # USER_ACL             (JSON: {"<github-org>": ["email@example.com", ...]}; OR-composed with TENANT_ACL)
+#                      KV `user-acl` (AUTH_CONFIG、同じ形) と和集合。secret は読み戻せないので、人を足すのは KV で
 # APP_TENANT_ACL       (JSON: {"bypass_emails":[...], "apps":{"<origin>":["<tenant>"|"*",...]}};
 #                       bypass_emails is a global dev-bypass list (typically staging only);
 #                       apps partitions tenants per redirect-origin within the same org;
