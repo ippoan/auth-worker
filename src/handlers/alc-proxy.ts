@@ -247,6 +247,8 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   if (sub) fwdHeaders["X-User-ID"] = sub;
   if (email) fwdHeaders["X-User-Email"] = email;
   if (role) fwdHeaders["X-User-Role"] = role;
+  const perms = permissionsHeaderValue(payload.perms);
+  if (perms) fwdHeaders["X-User-Permissions"] = perms;
   const contentType = request.headers.get("content-type");
   if (contentType) fwdHeaders["Content-Type"] = contentType;
 
@@ -282,6 +284,20 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
     headers: { Authorization: `Bearer ${idToken}`, ...fwdHeaders },
     body,
   });
+}
+
+/** 権限の文字列として下流へ渡してよい形 (`leave.use`・`*` 等)。 */
+const PERMISSION_RE = /^[a-z*][a-z0-9.*_-]*$/;
+
+/**
+ * 検証済み JWT の `perms` claim (`lib/access-token.ts`) から `X-User-Permissions` の値
+ * (空白区切り) を作る (Refs ohishi-exp/rust-leave-worker#1)。配列でない・形に合わない値は捨て、
+ * 1 つも残らなければ null (ヘッダを付けない)。
+ */
+export function permissionsHeaderValue(perms: unknown): string | null {
+  if (!Array.isArray(perms)) return null;
+  const valid = perms.filter((p): p is string => typeof p === "string" && PERMISSION_RE.test(p));
+  return valid.length > 0 ? valid.join(" ") : null;
 }
 
 export { ROUTE_PREFIX as ALC_PROXY_PREFIX };

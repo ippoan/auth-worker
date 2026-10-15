@@ -310,6 +310,21 @@ describe("handleGoogleCallback", () => {
     expect(decodeJwtPayload(token)!.idp).toBe("google");
   });
 
+  it("alc-auth-worker が返した permissions を perms に載せる / 無ければ key 無し (Refs ohishi-exp/rust-leave-worker#1)", async () => {
+    mockVerify.mockResolvedValue({ redirect_uri: "https://app1.test.example/page" });
+    mockIsAllowed.mockReturnValue(true);
+    stubLoginFetches(userResponse(mockUser({ role: "viewer", permissions: ["leave.use"] })));
+    const req = new Request("https://auth.test.example/oauth/google/callback?code=abc&state=valid");
+    const res = await handleGoogleCallback(req, env);
+    const token = res.headers.get("Set-Cookie")!.match(/logi_auth_token=([^;]+)/)![1]!;
+    expect(decodeJwtPayload(token)!.perms).toEqual(["leave.use"]);
+
+    stubLoginFetches(userResponse());
+    const res2 = await handleGoogleCallback(req.clone(), env);
+    const token2 = res2.headers.get("Set-Cookie")!.match(/logi_auth_token=([^;]+)/)![1]!;
+    expect(decodeJwtPayload(token2)).not.toHaveProperty("perms");
+  });
+
   it("sets logi_auth_token cookie on join flow", async () => {
     mockVerify.mockResolvedValue({
       redirect_uri: "https://app1.test.example/page",

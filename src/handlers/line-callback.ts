@@ -38,7 +38,14 @@ async function issueLineJwt(
   hostname: string,
 ): Promise<Response> {
   const token = await createAccessToken(
-    { id: user.id, email: user.email, name: user.name, tenant_id: user.tenant_id, role: user.role },
+    {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tenant_id: user.tenant_id,
+      role: user.role,
+      permissions: user.permissions ?? [],
+    },
     jwtSecret,
     user.slug,
   );

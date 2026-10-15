@@ -25,6 +25,7 @@ vi.mock("../../src/lib/alc-internal", () => ({
 
 import { handleLineRedirect } from "../../src/handlers/line-redirect";
 import { handleLineCallback } from "../../src/handlers/line-callback";
+import { decodeJwtPayload } from "../../src/lib/jwt";
 import { handleLineSelectTenant } from "../../src/handlers/line-select-tenant";
 import { signSelectToken, verifySelectToken } from "../../src/lib/line-select-token";
 import { isAllowedRedirectUri, verifyOAuthState } from "../../src/lib/security";
@@ -129,6 +130,14 @@ describe("handleLineCallback", () => {
     expect(loc).toContain(`${REDIRECT}?lw_callback=1#`);
     expect(loc).toContain("refresh_token=rt_");
     expect(res.headers.get("Set-Cookie")).toContain("logi_auth_token=");
+  });
+
+  it("alc-auth-worker が返した permissions を perms に載せる (Refs ohishi-exp/rust-leave-worker#1)", async () => {
+    setupTokenProfile();
+    mockFindUser.mockResolvedValue({ ...user, permissions: ["leave.use"] });
+    const res = await handleLineCallback(req("/oauth/line/callback?code=abc&state=x"), env);
+    const token = res.headers.get("Set-Cookie")!.match(/logi_auth_token=([^;]+)/)![1]!;
+    expect(decodeJwtPayload(token)!.perms).toEqual(["leave.use"]);
   });
 
   it("QR invite (tenant in state) → register + upsert + 302", async () => {
@@ -239,6 +248,15 @@ describe("handleLineSelectTenant", () => {
     expect(json.expires_in).toBe(3600);
     // token から復元した line_user_id "U" で recipient/upsert された。
     expect(mockRecipients).toHaveBeenCalledWith(env, "U");
+  });
+
+  it("alc-auth-worker が返した permissions を perms に載せる (Refs ohishi-exp/rust-leave-worker#1)", async () => {
+    const token = await signSelectToken({ line_user_id: "U", line_name: "N" }, SECRET);
+    mockRecipients.mockResolvedValue([{ tenant_id: "t1", name: "T1" }]);
+    mockFindUser.mockResolvedValue({ ...user, permissions: ["leave.use"] });
+    const res = await handleLineSelectTenant(post({ select_token: token, tenant_id: "t1" }), env);
+    const json = (await res.json()) as { access_token: string };
+    expect(decodeJwtPayload(json.access_token)!.perms).toEqual(["leave.use"]);
   });
 });
 

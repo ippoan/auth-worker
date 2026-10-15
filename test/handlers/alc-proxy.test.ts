@@ -457,3 +457,55 @@ describe("handleAlcProxy: X-Device-Dev / X-Device-Role は付けない (Refs ipp
     expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("x-device-role");
   });
 });
+
+describe("handleAlcProxy: X-User-Permissions は検証済み JWT の perms からだけ作る (Refs ohishi-exp/rust-leave-worker#1)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function forwardedHeaders(token: string, headers: Record<string, string> = {}) {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcProxy(req("/alc-proxy/api/employees", { token, headers }), env());
+    expect(res.status).toBe(200);
+    return (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+  }
+
+  function names(h: Record<string, string>): string[] {
+    return Object.keys(h).map((k) => k.toLowerCase());
+  }
+
+  it("perms が 1 つ以上あれば空白区切りで付ける", async () => {
+    const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, { perms: ["leave.use", "*"] }));
+    expect(h["X-User-Permissions"]).toBe("leave.use *");
+  });
+
+  it("perms 無し・空配列・配列でない → ヘッダ無し", async () => {
+    for (const extra of [{}, { perms: [] }, { perms: "leave.use" }]) {
+      const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, extra));
+      expect(names(h)).not.toContain("x-user-permissions");
+    }
+  });
+
+  it("形に合わない値は捨てる (全部捨てたらヘッダ無し)", async () => {
+    const h = await forwardedHeaders(
+      makeJwt(TEST_JWT_SECRET, { perms: ["leave.use", "Leave", "a b", "x\r\nX-Other: 1", 3, "", ".x"] }),
+    );
+    expect(h["X-User-Permissions"]).toBe("leave.use");
+    const none = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, { perms: ["A", "a b"] }));
+    expect(names(none)).not.toContain("x-user-permissions");
+  });
+
+  it("クライアントが送った同名ヘッダは届かない (perms 無しの token)", async () => {
+    const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET), { "X-User-Permissions": "*" });
+    expect(names(h)).not.toContain("x-user-permissions");
+  });
+
+  it("クライアントが送った同名ヘッダは JWT の値で上書きされる", async () => {
+    const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, { perms: ["leave.use"] }), {
+      "X-User-Permissions": "*",
+    });
+    expect(h["X-User-Permissions"]).toBe("leave.use");
+  });
+});

@@ -104,7 +104,14 @@ export async function handleLineworksCallback(request: Request, env: Env): Promi
 
   // access JWT + refresh token を発行し、refresh の hash を rust に保存。
   const token = await createAccessToken(
-    { id: user.id, email: user.email, name: user.name, tenant_id: user.tenant_id, role: user.role },
+    {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tenant_id: user.tenant_id,
+      role: user.role,
+      permissions: user.permissions ?? [],
+    },
     jwtSecret,
     user.slug,
   );

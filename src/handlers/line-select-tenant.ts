@@ -59,7 +59,14 @@ export async function handleLineSelectTenant(request: Request, env: Env): Promis
     (await upsertLineUser(env, { tenant_id: tenantId, line_user_id: lineUserId, name: lineName }));
 
   const token = await createAccessToken(
-    { id: user.id, email: user.email, name: user.name, tenant_id: user.tenant_id, role: user.role },
+    {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tenant_id: user.tenant_id,
+      role: user.role,
+      permissions: user.permissions ?? [],
+    },
     jwtSecret,
     user.slug,
   );
