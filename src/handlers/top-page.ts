@@ -42,6 +42,7 @@ const APP_PATTERNS: Array<{
   { match: (o) => o.includes("nuxt-notify") || o.includes("notify"), name: "通知管理", icon: "📨", description: "メッセージ配信" },
   { match: (o) => o.includes("nuxt-trouble") || o.includes("trouble"), name: "トラブル管理", icon: "🚨", description: "トラブル・事故管理" },
   { match: (o) => o.includes("vehicle-maintenance") || o.includes("maintenance"), name: "車両整備", icon: "🔧", description: "定期点検・修理・部品交換の記録" },
+  { match: (o) => o.includes("nuxt-leave") || o.includes("leave."), name: "休暇申請", icon: "🗓", description: "休暇申請 PDF の紐づけ" },
 ];
 
 /** Map origin URL to app metadata */

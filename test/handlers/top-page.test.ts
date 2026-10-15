@@ -361,6 +361,23 @@ describe("handleTopPage", () => {
     );
   });
 
+  it("maps leave.ippoan.org to 休暇申請", async () => {
+    const env = createMockEnv({
+      allowedOrigins: "https://leave.ippoan.org",
+    });
+    const req = new Request("https://auth.test.example/top", {
+      headers: { Cookie: await authedCookie() },
+    });
+
+    await handleTopPage(req, env);
+
+    expect(renderTopPage).toHaveBeenCalledWith(
+      [{ name: "休暇申請", url: "https://leave.ippoan.org", icon: "🗓", description: "休暇申請 PDF の紐づけ" }],
+      "https://auth.test.example",
+      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+    );
+  });
+
   it("falls back to generic app entry for unknown origins", async () => {
     const env = createMockEnv({
       allowedOrigins: "https://unknown.example",
