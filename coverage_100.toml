@@ -436,3 +436,9 @@ branches = true
 [[files]]
 path = "src/lib/lineworks-get-path.ts"
 branches = true
+
+# Refs ohishi-exp/rust-leave-worker#1: staging だけ me・logout・my-orgs を alc-auth-worker から組む。
+# 切り替えの判定と 404 の読み分けが緩むと、会社が無い me が 200 になる・障害が空の一覧に化けるので 100% を維持する。
+[[files]]
+path = "src/lib/alc-session.ts"
+branches = true

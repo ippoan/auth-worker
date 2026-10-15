@@ -6,6 +6,7 @@
 import type { Env } from "../index";
 import { corsJsonResponse, extractToken } from "../lib/errors";
 import { verifiedIdentityHeaders } from "../lib/identity-headers";
+import { fetchMyOrgs } from "../lib/alc-session";
 
 export async function handleMyOrgs(
   request: Request,
@@ -20,15 +21,8 @@ export async function handleMyOrgs(
   const identity = await verifiedIdentityHeaders(env, token);
   if (!identity) return corsJsonResponse({ error: "Unauthorized" }, 401);
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/my-orgs`, {
-    method: "POST",
-    headers: identity,
-  });
+  const result = await fetchMyOrgs(env, identity);
+  if (!result.ok) return corsJsonResponse({ error: result.error }, result.status);
 
-  if (!resp.ok) {
-    const text = await resp.text();
-    return corsJsonResponse({ error: text }, resp.status);
-  }
-
-  return corsJsonResponse(await resp.json());
+  return corsJsonResponse(result.data);
 }
