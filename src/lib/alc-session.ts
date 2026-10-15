@@ -13,7 +13,7 @@
  * - 404 は本文が `tenant_not_found` のときだけ「会社が無い」(me → 401 / my-orgs → 空の一覧)。それ以外の非 2xx・
  *   本文空の 404 (共有 secret 不一致)・fetch 失敗は 502。
  * - preview override (`X-Alc-Preview-Api-Base`) 付きの me/logout は alc-proxy が helper に流さず従来の経路。
- * - switch-org は対象外。
+ * - switch-org の口は撤去済み。
  */
 import type { Env } from "../index";
 import { fetchAlcAuth } from "./alc-auth-fetch";

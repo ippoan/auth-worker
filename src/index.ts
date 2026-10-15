@@ -28,7 +28,6 @@ import { handleCfFlickrCamWorkerProxy } from "./handlers/cf-flickr-cam-worker-pr
 import { handleAdminNotifyApi } from "./handlers/admin-notify-api";
 import { handleMachineCredentials, MACHINE_CRED_API_PATH } from "./handlers/api-machine-credentials";
 import { handleMachineRelay } from "./handlers/machine-relay";
-import { handleSwitchOrg } from "./handlers/api-switch-org";
 import {
   handleRichMenuList, handleRichMenuCreate, handleRichMenuDelete,
   handleRichMenuImageUpload, handleRichMenuDefaultSet, handleRichMenuDefaultDelete,
@@ -1097,8 +1096,6 @@ export default {
           case "/api/access-requests/decline":
             return await handleAccessRequestDecline(request, env);
           // Organization API
-          case "/api/switch-org":
-            return await handleSwitchOrg(request, env);
           case "/api/my-orgs":
             return await handleMyOrgs(request, env);
           // MCP OAuth Provider — Device Authorization (RFC 8628 §3.1)

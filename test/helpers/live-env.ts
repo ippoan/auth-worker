@@ -23,7 +23,7 @@ export const DEL_INVITATION_ID = "dddddddd-0001-0001-0001-dddddddddddd";
 export const DEL_USER_ID = "dddddddd-0002-0002-0002-dddddddddddd";
 
 /**
- * HS256 JWT。auth-worker (handleMyOrgs / handleSwitchOrg) が `env.JWT_SECRET`
+ * HS256 JWT。auth-worker (handleMyOrgs) が `env.JWT_SECRET`
  * で署名検証して X-Tenant-ID + X-User-* を注入する (rust-alc-api#434)。検証鍵と
  * 一致させたい呼び出し側のため `secret` を渡せる (default は live 用 JWT_SECRET)。
  *

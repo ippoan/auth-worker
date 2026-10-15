@@ -29,7 +29,7 @@ export function testEnv(): Env {
 /**
  * Bearer token 付きリクエスト。token は `testEnv()` の `JWT_SECRET`
  * (= `TEST_JWT_SECRET`、mock/live 共通) で署名し、auth-worker 側の JWT 検証
- * (handleMyOrgs / handleSwitchOrg の identity 注入, rust-alc-api#434) を通す。
+ * (handleMyOrgs の identity 注入, rust-alc-api#434) を通す。
  */
 export function authRequest(path: string, init: RequestInit = {}): Request {
   return new Request(`https://auth.test.example${path}`, {
