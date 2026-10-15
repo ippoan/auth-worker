@@ -16,6 +16,7 @@ import { classifyOrigin, getDisplayOrigins } from "../lib/config";
 import { isTenantInOrgAllowlist } from "../lib/acl";
 import { verifyJwt, decodeJwtPayload, type JwtPayload } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
+import { fetchMyOrgs } from "../lib/alc-session";
 import { verifiedIdentityHeaders } from "../lib/identity-headers";
 
 /** Known app patterns — matches both production and staging URLs */
@@ -79,12 +80,9 @@ async function myOrgsCount(env: Env, token: string): Promise<number | null> {
   try {
     const identity = await verifiedIdentityHeaders(env, token);
     if (!identity) return null;
-    const resp = await fetch(`${env.ALC_API_ORIGIN}/api/my-orgs`, {
-      method: "POST",
-      headers: identity,
-    });
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as { organizations?: unknown };
+    const result = await fetchMyOrgs(env, identity);
+    if (!result.ok) return null;
+    const data = result.data as { organizations?: unknown };
     return Array.isArray(data.organizations) ? data.organizations.length : null;
   } catch {
     return null;
