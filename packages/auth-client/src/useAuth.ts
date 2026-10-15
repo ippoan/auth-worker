@@ -444,45 +444,6 @@ export const useAuth = () => {
     }
   }
 
-  /** 別の組織に切り替え（新しい JWT を発行） */
-  async function switchOrganization(orgId: string): Promise<boolean> {
-    if (!authState.value?.token) return false
-    try {
-      const res = await fetch(`${authWorkerUrl}/api/switch-org`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authState.value.token}`,
-        },
-        body: JSON.stringify({ organizationId: orgId }),
-      })
-      if (!res.ok) return false
-      const data = await res.json() as {
-        token: string
-        expiresAt: string
-        orgId: string
-        orgSlug: string
-      }
-
-      const expiresAt = Math.floor(new Date(data.expiresAt).getTime() / 1000)
-      const { username, provider } = decodeJwtClaims(data.token)
-
-      const newState: AuthState = {
-        token: data.token,
-        orgId: data.orgId,
-        expiresAt,
-        username,
-        provider,
-        orgSlug: data.orgSlug,
-      }
-      writeStorage(newState)
-      authState.value = newState
-      return true
-    } catch {
-      return false
-    }
-  }
-
   // ownerType: 'org' | 'personal' — AuthToolbar が org slug 表示を自動制御するために使用
   const ownerType = useState<string>('auth_owner_type', () => 'org')
 
@@ -541,6 +502,5 @@ export const useAuth = () => {
     organizations,
     isMultiOrg,
     fetchOrganizations,
-    switchOrganization,
   }
 }
