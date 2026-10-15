@@ -42,7 +42,7 @@ import { handleSecretFingerprint } from "./handlers/health-fingerprints";
 import { handleHealthWif } from "./handlers/health-wif";
 import {
   handleUsersList, handleInvitationsList, handleInviteUser,
-  handleDeleteInvitation, handleDeleteUser,
+  handleDeleteInvitation, handleDeleteUser, handleUserRolesList, handleUserRoleSet,
 } from "./handlers/api-users";
 import { handleLogout } from "./handlers/logout";
 import { handleLogoutReturn } from "./handlers/logout-return";
@@ -716,6 +716,9 @@ export default {
           // lockdown 後に data-proxy が backend へ到達できるかと等価。
           case "/health/wif":
             return await handleHealthWif(request, env);
+          // ロールの一覧 (POST は付け外し。Refs ohishi-exp/rust-leave-worker#1)
+          case "/api/users/roles":
+            return await handleUserRolesList(request, env);
           case "/login":
             return await handleLoginPage(request, env);
           case "/top":
@@ -971,6 +974,9 @@ export default {
             return await handleDeleteInvitation(request, env);
           case "/api/users/delete":
             return await handleDeleteUser(request, env);
+          // ロールの付け外し (持ち主は alc-auth-worker。Refs ohishi-exp/rust-leave-worker#1)
+          case "/api/users/roles":
+            return await handleUserRoleSet(request, env);
           // WOFF Auth
           case "/auth/woff":
             return await handleWoffAuth(request, env);

@@ -162,6 +162,14 @@ describe("handleLineworksCallback", () => {
     expect(mockSaveRefresh).toHaveBeenCalled();
   });
 
+  it("alc-auth-worker が返した permissions を perms に載せる (Refs ohishi-exp/rust-leave-worker#1)", async () => {
+    setupSuccess();
+    mockUpsert.mockResolvedValue({ ...okUser, permissions: ["*"] });
+    const res = await handleLineworksCallback(callbackReq(), env);
+    const token = res.headers.get("Set-Cookie")!.match(/logi_auth_token=([^;]+)/)![1]!;
+    expect(decodeJwtPayload(token)!.perms).toEqual(["*"]);
+  });
+
   it("returns 403 when org ACL denies", async () => {
     setupSuccess();
     mockOrgAccess.mockResolvedValue(false);

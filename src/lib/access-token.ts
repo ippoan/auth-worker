@@ -5,7 +5,7 @@
  * (`crates/alc-auth-jwt`) が発行していた token を auth-worker 側で発行する。
  * **claim / refresh フォーマットは rust と一致させる**こと
  * (rust `create_access_token` / `create_refresh_token` / `hash_refresh_token`)。
- * 例外は `idp` の 1 つだけ (下):
+ * 例外は `idp` と `perms` の 2 つだけ (下。rust の `AppClaims` は未知の claim を無視する):
  *
  * - access JWT (`AppClaims`): `{ sub, email, name, tenant_id, role, org_slug?, iat, exp }`、
  *   HS256 / `JWT_SECRET`、`exp = iat + 3600`。`org_slug` は None のとき field 省略。
@@ -14,6 +14,9 @@
  *   key ごと載らない。読むのは `lib/developer.ts::isDeveloperGoogleSession` だけ
  *   (端末の鍵を開発用にする口の認可)。ほかの認可・振り分け・introspect の応答には
  *   使わない・出さない。
+ * - `perms` (rust には無い claim。Refs ohishi-exp/rust-leave-worker#1): alc-auth-worker が user と一緒に
+ *   返す `permissions` (admin は `["*"]`、休暇申請ロールなら `["leave.use"]`)。**空なら key ごと載せない**。
+ *   読むのは `handlers/alc-proxy.ts` だけ (下流への権限ヘッダに写す)。
  * - refresh: raw = `rt_{uuid(no-hyphen)}`、保存する hash = `hex(sha256(raw))`、有効期限 = now + 30日。
  */
 import { signJwt } from "./jwt";
@@ -30,6 +33,8 @@ export interface AccessTokenUser {
   name: string;
   tenant_id: string;
   role: string;
+  /** ロールから展開した権限 (alc-auth-worker が返す)。空なら `perms` claim を載せない。 */
+  permissions?: string[];
 }
 
 /**
@@ -54,6 +59,7 @@ export async function createAccessToken(
   };
   // rust 側は org_slug: Option<String> を serde で skip するので None は field ごと省略する。
   if (orgSlug) payload.org_slug = orgSlug;
+  if (user.permissions && user.permissions.length > 0) payload.perms = user.permissions;
   if (loginProvider) payload.idp = loginProvider;
   return signJwt(payload, secret);
 }

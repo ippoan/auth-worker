@@ -68,6 +68,8 @@ export interface InternalUserWithSlug {
   lineworks_id: string | null;
   line_user_id: string | null;
   slug: string | null;
+  /** ロールから展開した権限 (alc-auth-worker だけが返す。Cloud Run 退避では無い)。 */
+  permissions?: string[];
 }
 
 async function internalFetch(env: Env, path: string, init?: RequestInit): Promise<Response> {
@@ -94,6 +96,74 @@ async function loginFetch(
     if (res) return { res, viaAlcAuth: true };
   }
   return { res: await internalFetch(env, `/api${path}`, init), viaAlcAuth: false };
+}
+
+/** `listUserRoles` の 1 行 (alc-auth-worker の `GET /internal/tenants/{tenant_id}/user-roles`)。 */
+export interface UserRoles {
+  user_id: string;
+  roles: string[];
+}
+
+/** ロールの口の結果。`ok: false` の `status` / `error` はそのまま `/api/users/roles` の応答に使う。 */
+export type UserRolesResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; status: number; error: string };
+
+const ROLES_UPSTREAM_ERROR = { ok: false, status: 502, error: "upstream_error" } as const;
+
+/**
+ * その会社の user ごとのロールを引く (Refs ohishi-exp/rust-leave-worker#1)。ロールの持ち主は
+ * alc-auth-worker だけなので `fetchAlcAuth` を直接叩く (`loginFetch` の Cloud Run 退避は使わない)。
+ * binding / secret が無い・通信の例外・200 以外・形が配列でない → 502。
+ */
+export async function listUserRoles(
+  env: Env,
+  tenantId: string,
+): Promise<UserRolesResult<UserRoles[]>> {
+  let res: Response | null;
+  try {
+    res = await fetchAlcAuth(env, `/internal/tenants/${encodeURIComponent(tenantId)}/user-roles`);
+  } catch {
+    return ROLES_UPSTREAM_ERROR;
+  }
+  if (!res || !res.ok) return ROLES_UPSTREAM_ERROR;
+  const body = (await res.json().catch(() => null)) as unknown;
+  if (!Array.isArray(body)) return ROLES_UPSTREAM_ERROR;
+  return { ok: true, value: body as UserRoles[] };
+}
+
+/**
+ * ロールを付ける (`on`) / 外す。alc-auth-worker の `PUT|DELETE
+ * /internal/tenants/{tenant_id}/users/{user_id}/roles/{role}` → 204。
+ * その会社の user でない (404 `user_not_found`)・未知のロール (400 `unknown_role`) はそのまま返す。
+ * 共有 secret の不一致も 404 (本文空) で来るので、本文で区別して 502 に寄せる。ほかも 502。
+ */
+export async function setUserRole(
+  env: Env,
+  tenantId: string,
+  userId: string,
+  role: string,
+  on: boolean,
+): Promise<UserRolesResult<null>> {
+  const path =
+    `/internal/tenants/${encodeURIComponent(tenantId)}` +
+    `/users/${encodeURIComponent(userId)}/roles/${encodeURIComponent(role)}`;
+  let res: Response | null;
+  try {
+    res = await fetchAlcAuth(env, path, { method: on ? "PUT" : "DELETE" });
+  } catch {
+    return ROLES_UPSTREAM_ERROR;
+  }
+  if (!res) return ROLES_UPSTREAM_ERROR;
+  if (res.ok) return { ok: true, value: null };
+  const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+  if (res.status === 404 && body?.error === "user_not_found") {
+    return { ok: false, status: 404, error: "user_not_found" };
+  }
+  if (res.status === 400 && body?.error === "unknown_role") {
+    return { ok: false, status: 400, error: "unknown_role" };
+  }
+  return ROLES_UPSTREAM_ERROR;
 }
 
 /** SSO 設定を解決する。未登録は null。 */

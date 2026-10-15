@@ -57,6 +57,14 @@ export function renderAdminUsersPage(): string {
     .badge-blue { background: #dbeafe; color: #1d4ed8; }
     .badge-gray { background: #f3f4f6; color: #6b7280; }
     .badge-yellow { background: #fef9c3; color: #a16207; }
+    .role-chip {
+      display: inline-block; padding: 0.125rem 0.625rem; border-radius: 9999px;
+      font-size: 0.75rem; font-weight: 500; cursor: pointer;
+      border: 1px solid #d1d5db; background: white; color: #9ca3af;
+    }
+    .role-chip.on { background: #dcfce7; border-color: #86efac; color: #15803d; }
+    .role-chip:disabled { opacity: 0.6; cursor: default; }
+    .role-err { margin-left: 0.375rem; font-size: 0.75rem; color: #dc2626; }
     .btn {
       padding: 0.5rem 1rem; border: none; border-radius: 6px; font-size: 0.875rem;
       font-weight: 500; cursor: pointer; transition: background 0.2s;
@@ -185,14 +193,46 @@ ${renderAdminAuthScript()}
     return resp.json();
   }
 
+  // ロール (持ち主は alc-auth-worker) を user_id → roles に引く。読めなければ null。
+  async function loadUserRoles() {
+    const data = await api('/api/users/roles', 'GET');
+    if (!data || !Array.isArray(data.user_roles)) return null;
+    const map = {};
+    for (const r of data.user_roles) map[r.user_id] = r.roles || [];
+    return map;
+  }
+
+  // 管理者以外の行に出す「休暇申請」ロールのトグル。
+  function roleCell(u, rolesMap) {
+    if (u.role === 'admin') return '';
+    if (!rolesMap) return '<span class="role-err">ロールを読めませんでした</span>';
+    const on = (rolesMap[u.id] || []).indexOf('leave') >= 0;
+    return '<button type="button" class="role-chip' + (on ? ' on' : '') + '" data-user-id="' + attr(u.id) +
+      '" data-on="' + (on ? '1' : '0') + '" onclick="toggleLeave(this)">休暇申請</button><span class="role-err"></span>';
+  }
+
+  async function toggleLeave(btn) {
+    const err = btn.nextElementSibling;
+    err.textContent = '';
+    btn.disabled = true;
+    const on = btn.getAttribute('data-on') !== '1';
+    const data = await api('/api/users/roles', 'POST', { user_id: btn.getAttribute('data-user-id'), role: 'leave', on });
+    if (data && data.success) {
+      loadUsers();
+      return;
+    }
+    btn.disabled = false;
+    err.textContent = '変更できませんでした';
+  }
+
   async function loadUsers() {
-    const data = await api('/api/users/list');
+    const [data, rolesMap] = await Promise.all([api('/api/users/list'), loadUserRoles()]);
     const el = document.getElementById('users-list');
     if (!data || !data.users || data.users.length === 0) {
       el.innerHTML = '<div class="empty">ユーザーがいません</div>';
       return;
     }
-    let html = '<table><thead><tr><th>名前</th><th>メール</th><th>権限</th><th>登録日</th><th></th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th>名前</th><th>メール</th><th>権限</th><th>ロール</th><th>登録日</th><th></th></tr></thead><tbody>';
     for (const u of data.users) {
       const date = new Date(u.created_at).toLocaleDateString('ja-JP');
       const badge = u.role === 'admin' ? 'badge-blue' : 'badge-gray';
@@ -201,6 +241,7 @@ ${renderAdminAuthScript()}
       html += '<td>' + esc(u.name) + '</td>';
       html += '<td>' + esc(u.email) + '</td>';
       html += '<td><span class="badge ' + badge + '">' + label + '</span></td>';
+      html += '<td>' + roleCell(u, rolesMap) + '</td>';
       html += '<td>' + date + '</td>';
       html += '<td><button class="btn btn-red btn-sm" onclick="deleteUser(\\'' + u.id + '\\')">削除</button></td>';
       html += '</tr>';
@@ -270,6 +311,10 @@ ${renderAdminAuthScript()}
     const d = document.createElement('div');
     d.textContent = s || '';
     return d.innerHTML;
+  }
+
+  function attr(s) {
+    return esc(s).replace(/"/g, '&quot;');
   }
 
   // Init
