@@ -10,6 +10,7 @@ import { getAllowedOrigins } from "../lib/config";
 import { isAllowedRedirectUri, generateOAuthState } from "../lib/security";
 import { resolveSsoConfig } from "../lib/alc-internal";
 import { authorizeUrl } from "../lib/lineworks-oauth";
+import { LW_DOMAIN_RE, setLwLastDomainCookie } from "../lib/cookies";
 
 export async function handleLineworksRedirect(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -25,6 +26,9 @@ export async function handleLineworksRedirect(request: Request, env: Env): Promi
   const domain = domainParam || (address?.includes("@") ? address.split("@")[1] : address);
   if (!domain) {
     return new Response("Missing domain or address parameter", { status: 400 });
+  }
+  if (!LW_DOMAIN_RE.test(domain)) {
+    return new Response("Invalid domain", { status: 400 });
   }
 
   const config = await resolveSsoConfig(env, "lineworks", domain);
@@ -45,8 +49,12 @@ export async function handleLineworksRedirect(request: Request, env: Env): Promi
     config.client_id,
     encodeURIComponent(callbackUri),
     encodeURIComponent(signedState),
+    domain,
   );
 
   console.log(JSON.stringify({ event: "lw_redirect", domain, redirectUri }));
-  return new Response(null, { status: 302, headers: { Location: authorize } });
+  // 前回の会社を覚える (ログイン画面が「前回の会社でログイン」ボタンに使う)。
+  const headers = new Headers({ Location: authorize });
+  headers.append("Set-Cookie", setLwLastDomainCookie(domain));
+  return new Response(null, { status: 302, headers });
 }

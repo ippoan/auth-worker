@@ -9,12 +9,22 @@ interface LoginPageParams {
   googleEnabled: boolean;
   googleRedirectUrl: string;
   lineworksRedirectUrl: string;
+  /** 前回ログインした LINE WORKS の会社 (ドメイン)。あればボタンで出す。 */
+  lineworksLastDomain?: string;
   lineLoginRedirectUrl: string;
 }
 
 export function renderLoginPage(params: LoginPageParams): string {
-  const { redirectUri, orgId, error, googleEnabled, googleRedirectUrl, lineworksRedirectUrl, lineLoginRedirectUrl } =
+  const { redirectUri, orgId, error, googleEnabled, googleRedirectUrl, lineworksRedirectUrl, lineworksLastDomain, lineLoginRedirectUrl } =
     params;
+
+  const lwQuickHtml = lineworksLastDomain
+    ? `<a id="lw_quick" class="lw-quick-btn" href="${escapeHtml(
+        `${lineworksRedirectUrl}?redirect_uri=${encodeURIComponent(redirectUri)}&address=${encodeURIComponent(lineworksLastDomain)}`,
+      )}">LINE WORKS (${escapeHtml(lineworksLastDomain)}) でログイン</a>
+    <a href="#" id="lw_change" class="lw-change" onclick="document.getElementById('lw_quick').style.display='none';this.style.display='none';document.getElementById('lw_form').style.display='';document.getElementById('lw_address_label').style.display='';return false;">別の会社でログイン</a>`
+    : "";
+  const lwFormStyle = lineworksLastDomain ? ' style="display:none"' : "";
 
   const errorHtml = error
     ? `<div class="error">${escapeHtml(error)}</div>`
@@ -147,6 +157,17 @@ export function renderLoginPage(params: LoginPageParams): string {
       font-weight: 500;
     }
     .line-btn:hover { background: #05a847; }
+    .lw-quick-btn {
+      display: block;
+      padding: 0.6rem;
+      background: #00b300;
+      color: white;
+      border-radius: 4px;
+      text-align: center;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .lw-change { display: block; margin-top: 0.5rem; text-align: center; font-size: 0.85rem; color: #666; }
     .lw-form { display: flex; gap: 0.5rem; }
     .lw-form input { margin-bottom: 0; flex: 1; }
     .lw-form button {
@@ -202,10 +223,11 @@ export function renderLoginPage(params: LoginPageParams): string {
       LINE でログイン
     </a>
     <div class="divider"><span>or</span></div>
-    <label for="lw_address">LINE WORKS</label>
-    <form class="lw-form" action="${escapeHtml(lineworksRedirectUrl)}" method="GET">
+    ${lwQuickHtml}
+    <label for="lw_address" id="lw_address_label"${lwFormStyle}>LINE WORKS (会社のドメイン)</label>
+    <form id="lw_form" class="lw-form"${lwFormStyle} action="${escapeHtml(lineworksRedirectUrl)}" method="GET">
       <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}">
-      <input type="text" id="lw_address" name="address" placeholder="user@domain" autocomplete="on" autofocus>
+      <input type="text" id="lw_address" name="address" placeholder="例: example" autocomplete="on"${lineworksLastDomain ? "" : " autofocus"}>
       <button type="submit">Login</button>
     </form>
     <button class="pw-toggle" onclick="togglePwLogin()">パスワードログイン</button>
