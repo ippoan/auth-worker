@@ -6,6 +6,14 @@
  * 切り替えは `ALC_AUTH_SESSION=1` かつ `fetchAlcAuth` が非 null (binding と secret が揃う)。
  * 分岐はこのファイルの 1 か所だけ。呼び手は helper を 1 回呼ぶだけで、フラグを見ない。
  * 値は検証済み JWT の claims からだけ作る (リクエストのヘッダ・body・query は写さない)。
+ *
+ * - `ALC_AUTH_SESSION` は `wrangler.toml` の `[env.staging.vars]` だけに置く。トップレベルの `[vars]` には
+ *   足さない (本番にも `ALC_AUTH` binding と `ALC_AUTH_LOGIN="1"` が在り、流用すると本番も切り替わるため)。
+ *   本番はフラグが無いので従来どおり Cloud Run。
+ * - 404 は本文が `tenant_not_found` のときだけ「会社が無い」(me → 401 / my-orgs → 空の一覧)。それ以外の非 2xx・
+ *   本文空の 404 (共有 secret 不一致)・fetch 失敗は 502。
+ * - preview override (`X-Alc-Preview-Api-Base`) 付きの me/logout は alc-proxy が helper に流さず従来の経路。
+ * - switch-org は対象外。
  */
 import type { Env } from "../index";
 import { fetchAlcAuth } from "./alc-auth-fetch";
