@@ -31,13 +31,17 @@ export function authorizeUrl(
   clientId: string,
   encodedRedirectUri: string,
   encodedState: string,
+  domain?: string,
 ): string {
+  // domain: SSO 構成のドメイン名 (公式 authorize の `domain` パラメータ)。
+  const domainParam = domain ? `&domain=${encodeURIComponent(domain)}` : "";
   return (
     `${AUTHORIZE_ENDPOINT}?client_id=${clientId}` +
     `&redirect_uri=${encodedRedirectUri}` +
     `&response_type=code` +
     `&scope=user.profile.read` +
-    `&state=${encodedState}`
+    `&state=${encodedState}` +
+    domainParam
   );
 }
 

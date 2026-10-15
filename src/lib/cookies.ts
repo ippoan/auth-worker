@@ -136,3 +136,26 @@ export function setBounceCookie(count: number, reason: BounceReason): string {
 export function clearBounceCookie(): string {
   return `${BOUNCE_COOKIE}=; Path=/; Max-Age=0; Secure; SameSite=Lax`;
 }
+
+/**
+ * 前回 LINE WORKS ログインに使った会社 (ドメイン) を覚える cookie。
+ * auth.ippoan.org の host-only (Domain 無し)。auth-client の `lw_domain`
+ * (親ドメイン cookie / localStorage) とは別物。ログイン画面が「前回の会社」ボタンを出すためだけに使う。
+ */
+export const LW_LAST_DOMAIN_COOKIE = "lw_last_domain";
+
+/** LINE WORKS ドメインとして受け付ける形。 */
+export const LW_DOMAIN_RE = /^[a-z0-9][a-z0-9.-]{0,62}$/i;
+
+/** 前回の会社 cookie を読む。無い・形が合わないなら null。 */
+export function getLwLastDomain(request: Request): string | null {
+  const cookie = request.headers.get("Cookie") || "";
+  const m = new RegExp(`(?:^|;\\s*)${LW_LAST_DOMAIN_COOKIE}=([^;]*)`).exec(cookie);
+  if (!m || !LW_DOMAIN_RE.test(m[1]!)) return null;
+  return m[1]!;
+}
+
+/** 前回の会社 cookie を張る Set-Cookie 値 (Max-Age 1 年)。domain は検証済みの値を渡す。 */
+export function setLwLastDomainCookie(domain: string): string {
+  return `${LW_LAST_DOMAIN_COOKIE}=${domain}; Path=/; Max-Age=31536000; Secure; HttpOnly; SameSite=Lax`;
+}

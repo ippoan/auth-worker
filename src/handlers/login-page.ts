@@ -3,7 +3,7 @@ import { getAllowedOrigins } from "../lib/config";
 import { resolveSecret } from "../lib/secret";
 import { isAllowedRedirectUri } from "../lib/security";
 import { renderLoginPage } from "../lib/html";
-import { getBounce } from "../lib/cookies";
+import { getBounce, getLwLastDomain } from "../lib/cookies";
 
 /** Referer ヘッダから origin + pathname だけを取り出す (query/fragment は落とす)。 */
 function refererOriginPath(request: Request): string | null {
@@ -85,6 +85,7 @@ export async function handleLoginPage(
     googleEnabled,
     googleRedirectUrl,
     lineworksRedirectUrl: `${authOrigin}/oauth/lineworks/redirect`,
+    lineworksLastDomain: getLwLastDomain(request) ?? undefined,
     lineLoginRedirectUrl,
   });
 
