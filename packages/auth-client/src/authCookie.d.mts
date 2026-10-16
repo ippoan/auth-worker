@@ -31,3 +31,12 @@ export interface AuthCookieState {
  * `exp` の未来判定はしない (呼び出し側が `findValidAuthCookieToken` で済ませる)。
  */
 export declare function authStateFromToken(token: string): AuthCookieState | null
+
+/**
+ * 認証 state がまだ有効か (`expiresAt > nowSec`)。state が null / undefined なら false。
+ * computed (`isAuthenticated`) は時刻を追跡しないため、「今」を見たい箇所はこちらを直に呼ぶ。
+ */
+export declare function isAuthStateValid(
+  state: { expiresAt: number } | null | undefined,
+  nowSec: number,
+): boolean

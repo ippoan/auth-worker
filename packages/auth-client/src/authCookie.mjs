@@ -83,3 +83,17 @@ export function authStateFromToken(token) {
     orgSlug: orgSlug ? String(orgSlug) : undefined,
   }
 }
+
+/**
+ * 認証 state がまだ有効か (`expiresAt > nowSec`)。state が null なら false。
+ *
+ * `useAuth().isAuthenticated` は computed で `Date.now()` を追跡しないため、
+ * 持ち続けると最初の結果を返し続ける。期限切れタイマー / 前面復帰 (visibilitychange)
+ * のように「今」を見たい箇所は、computed ではなくこの関数を直に呼ぶ。
+ * @param {{ expiresAt: number } | null | undefined} state
+ * @param {number} nowSec
+ * @returns {boolean}
+ */
+export function isAuthStateValid(state, nowSec) {
+  return !!state && state.expiresAt > nowSec
+}
