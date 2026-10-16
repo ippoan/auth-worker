@@ -45,8 +45,8 @@ jobs:
       # dirs は repos と同順 (alc-app のみ web/、他は repo root)。cross-org
       # (ohishi-exp) 分は PROPAGATE_PAT がその org に repo scope を持つ必要あり。
       npm_publish_name: '@ippoan/auth-client'
-      npm_publish_propagate_repos: 'ippoan/nuxt-pwa-carins,ippoan/nuxt-items,ohishi-exp/nuxt_dtako_logs,ohishi-exp/nuxt-ichibanboshi,ohishi-exp/nuxt-ichibanboshi-seikyu,ohishi-exp/nuxt-dtako-admin,ippoan/nuxt-trouble,ippoan/nuxt-notify,ippoan/alc-app'
-      npm_publish_propagate_dirs: '.,.,.,.,.,.,.,.,web'
+      npm_publish_propagate_repos: 'ippoan/nuxt-pwa-carins,ippoan/nuxt-items,ohishi-exp/nuxt_dtako_logs,ohishi-exp/nuxt-ichibanboshi,ohishi-exp/nuxt-ichibanboshi-seikyu,ohishi-exp/nuxt-dtako-admin,ippoan/nuxt-trouble,ippoan/nuxt-notify,ippoan/alc-app,ohishi-exp/nuxt-leave'
+      npm_publish_propagate_dirs: '.,.,.,.,.,.,.,.,web,.'
       # Release Wave compatibility (Refs ippoan/ci-dashboard#157):
       # auth-worker は integration test で rust-alc-api を backend として叩く
       # consumer。docker-compose.test.yml の API_IMAGE を現 production SHA に
