@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { authStateFromToken, findValidAuthCookieToken, readCookieValues } from '../src/authCookie.mjs'
+import {
+  authStateFromToken,
+  findValidAuthCookieToken,
+  isAuthStateValid,
+  readCookieValues,
+} from '../src/authCookie.mjs'
 
 /** base64url (UTF-8 safe、`-` / `_` を含みうる実運用と同型) で JWT を組む */
 function b64url(obj: Record<string, unknown>): string {
@@ -131,5 +136,21 @@ describe('authStateFromToken', () => {
   it('返り値に token が入っている', () => {
     const t = makeToken({ exp: NOW + 60 })
     expect(authStateFromToken(t)?.token).toBe(t)
+  })
+})
+
+describe('isAuthStateValid', () => {
+  it('期限の前は true', () => {
+    expect(isAuthStateValid({ expiresAt: NOW + 1 }, NOW)).toBe(true)
+  })
+  it('ちょうど期限 (expiresAt === now) は false', () => {
+    expect(isAuthStateValid({ expiresAt: NOW }, NOW)).toBe(false)
+  })
+  it('期限の後は false', () => {
+    expect(isAuthStateValid({ expiresAt: NOW - 1 }, NOW)).toBe(false)
+  })
+  it('state が null / undefined なら false', () => {
+    expect(isAuthStateValid(null, NOW)).toBe(false)
+    expect(isAuthStateValid(undefined, NOW)).toBe(false)
   })
 })

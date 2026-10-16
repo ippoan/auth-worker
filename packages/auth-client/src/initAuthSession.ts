@@ -24,6 +24,7 @@
  * initAuthSession() の前に行い、自前で認証を確立した場合は呼ばない。
  */
 import { useAuth } from './useAuth'
+import { isAuthStateValid } from './authCookie.mjs'
 
 export interface InitAuthSessionOptions {
   /** `?lw=<domain>` パラメータの保存 + URL クリーンアップを行う (default: true) */
@@ -120,19 +121,36 @@ export function initAuthSession(options: InitAuthSessionOptions = {}): void {
     void fetchOrganizations()
   }
 
-  // 5. 期限切れタイマーを設定
+  // 5. 期限切れの監視 (タイマー + 前面復帰)
+  //    `isAuthenticated` は computed で時刻を追跡しないため、持ち続けた値は最初の
+  //    結果 (true) を返し続ける。ここでは computed を見ず、authState と今の時刻で直に判定する。
   if (expiryTimer) {
+    const nowSec = () => Math.floor(Date.now() / 1000)
+
+    // 期限切れなら cookie から復旧を 1 回試し (他アプリで再ログイン済みの場合)、
+    // まだ切れていれば再ログインへ。
+    const redirectIfExpired = () => {
+      if (isAuthStateValid(authState.value, nowSec())) return
+      recoverFromCookie()
+      if (!isAuthStateValid(authState.value, nowSec())) {
+        redirectToLogin()
+      }
+    }
+
     const state = authState.value
     if (state) {
-      const now = Math.floor(Date.now() / 1000)
-      const msUntilExpiry = (state.expiresAt - now) * 1000
+      const msUntilExpiry = (state.expiresAt - nowSec()) * 1000
       if (msUntilExpiry > 0) {
-        setTimeout(() => {
-          if (!isAuthenticated.value) {
-            redirectToLogin()
-          }
-        }, msUntilExpiry)
+        setTimeout(redirectIfExpired, msUntilExpiry)
       }
+    }
+
+    // PWA をバックグラウンドから戻したとき。バックグラウンドではタイマーが
+    // 止まる/遅れるため、前面に戻った時点で改めて期限を見る。
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') redirectIfExpired()
+      })
     }
   }
 }
