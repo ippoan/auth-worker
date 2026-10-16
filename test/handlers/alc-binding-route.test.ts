@@ -1567,3 +1567,73 @@ describe("trouble の口 → ALC_TROUBLE binding (Refs ippoan/rust-alc-api#747)"
     expect(trouble.fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", () => {
+  /** UUID の形 (8-4-4-4-12) を 1 文字の繰り返しで組み立てる。 */
+  const uuidOf = (c: string) => [8, 4, 4, 4, 12].map((n) => c.repeat(n)).join("-");
+  const ID = uuidOf("c");
+  /** worker (ippoan/alc-measurements-worker) に在る 7 口: [method, path]。 */
+  const MEASUREMENT_ROUTES: ReadonlyArray<readonly [string, string]> = [
+    ["POST", "/api/measurements"],
+    ["GET", "/api/measurements"],
+    ["POST", "/api/measurements/start"],
+    ["GET", `/api/measurements/${ID}`],
+    ["PUT", `/api/measurements/${ID}`],
+    ["GET", `/api/measurements/${ID}/face-photo`],
+    ["GET", `/api/measurements/${ID}/video`],
+  ];
+
+  function setupMeasurements() {
+    const measurements = makeBinding();
+    return { measurements, ...setup({ ALC_MEASUREMENTS: measurements as unknown as Fetcher }) };
+  }
+
+  it("7 口は画面用と端末用が ALC_MEASUREMENTS へ。内部用・管理画面用は null", () => {
+    const { measurements, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    for (const [method, path] of MEASUREMENT_ROUTES) {
+      expect(resolveAlcBinding(path, env, "browser"), `${method} ${path}`).toEqual(target);
+      expect(resolveAlcBinding(path, env, "device"), `${method} ${path}`).toEqual(target);
+      expect(resolveAlcBinding(path, env, "internal"), `${method} ${path}`).toBeNull();
+      expect(resolveAlcBinding(path, env, "admin"), `${method} ${path}`).toBeNull();
+    }
+  });
+
+  it("大文字の UUID でも ALC_MEASUREMENTS へ行く", () => {
+    const { measurements, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    const upper = ID.toUpperCase();
+    for (const path of [`/api/measurements/${upper}`, `/api/measurements/${upper}/face-photo`, `/api/measurements/${upper}/video`]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "device"), path).toEqual(target);
+    }
+  });
+
+  it("UUID でない path・下位の余り・近い名前は null (= Cloud Run)", () => {
+    const { env } = setupMeasurements();
+    for (const path of [
+      "/api/measurements/m-1",
+      `/api/measurements/${ID}/other`,
+      `/api/measurements/${ID}/face-photo/x`,
+      `/api/measurements/${ID}/video/x`,
+      `/api/measurements/${ID}/`,
+      `/api/measurements/${ID}x`,
+      "/api/measurements/start/x",
+      "/api/measurements/",
+      "/api/measurementsx",
+      `/x/api/measurements/${ID}`,
+    ]) {
+      for (const proxy of ["browser", "device"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら、どの口も null (= Cloud Run)", () => {
+    const { env } = setup();
+    for (const [, path] of MEASUREMENT_ROUTES) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "device"), path).toBeNull();
+    }
+  });
+});
