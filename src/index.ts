@@ -266,6 +266,9 @@ export interface Env {
    *  予約の発火 `/api/internal/trouble/schedules/{id}/fire` を alc-internal-proxy (内部用) が Cloud Run でなくここへ流す
    *  (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
   ALC_TROUBLE?: Fetcher;
+  /** 測定の worker (`alc-measurements`) への service binding。定義されている時だけ、`/api/measurements` 系の 7 口を
+   *  alc-proxy (画面用) と device-data-proxy (端末用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+  ALC_MEASUREMENTS?: Fetcher;
   /** alc-auth-worker (`ippoan/alc-auth-worker`) への service binding。機械用資格情報
    *  (`lib/machine-credential.ts`) の表 `alc_api.machine_credentials` を内部口
    *  (`X-Internal-Shared-Secret` 付き) で読み書きする。未定義なら資格情報の発行・一覧・失効・照合は
