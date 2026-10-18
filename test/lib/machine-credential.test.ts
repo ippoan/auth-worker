@@ -40,9 +40,10 @@ async function create(e: MachineCredEnv, tenant = TENANT_A, label = "複合機 1
 }
 
 describe("purpose allowlist / env name", () => {
-  it("allowlist は leave-scan だけ", () => {
-    expect(MACHINE_CRED_PURPOSES).toEqual(["leave-scan"]);
+  it("allowlist は leave-scan と fuel-utran だけ", () => {
+    expect(MACHINE_CRED_PURPOSES).toEqual(["leave-scan", "fuel-utran"]);
     expect(isMachineCredPurpose("leave-scan")).toBe(true);
+    expect(isMachineCredPurpose("fuel-utran")).toBe(true);
     expect(isMachineCredPurpose("other")).toBe(false);
     expect(isMachineCredPurpose(undefined)).toBe(false);
   });
