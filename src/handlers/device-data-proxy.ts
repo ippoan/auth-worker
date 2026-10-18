@@ -283,7 +283,7 @@ const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map
  * 第二の端末クラス) 専用の method + path 許可表 (Refs ippoan/alc-app#353)。
  *
  * 許可するのは `alc-app` の `BloodPressureMeasurement.vue` から実際に辿った経路
- * 4 本だけ (既定拒否): NFC 読取 → 従業員照会、顔認証用の顔データ同期、測定開始、
+ * 4 本と、指静脈の登録 (下記) だけ (既定拒否): NFC 読取 → 従業員照会、顔認証用の顔データ同期、測定開始、
  * 測定更新 (測定値の保存)。
  *
  * **`GET /api/devices/settings/[^/]+` は入れない。** 測定台は端末レコードを持たず
@@ -301,12 +301,21 @@ const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map
  * 同時に開いてしまう。`KIOSK_ROUTES` / `TENKO_MANAGER_ROUTES` と同じ
  * `{ method, pattern }` 方式にし、pattern は両端を `^…$` で固定、可変 segment は
  * `[^/]+` のみ許可する。
+ *
+ * **`PUT /api/vein/templates/{employee_id}` (指静脈テンプレートの上書き登録) も入れる**
+ * (Refs ippoan/alc-app#437, ippoan/vein-match#20)。血圧測定タブに指静脈の登録画面が
+ * 付き、測定台の URL から開いたときもこの鍵で登録を呼ぶため。登録は顔
+ * (`PUT /api/employees/{id}/face`) と同じ扱いにする、というユーザー判断 (2026-09-25) が
+ * あり、`KIOSK_ROUTES` の同じ行と method・pattern を揃えてある。**それ以外の指静脈の口は
+ * 入れない** — 削除 (`DELETE`) は kiosk にも無く、テンプレート一覧 (`GET`、tenant 全員の
+ * 生体情報) と 1:N 照合 (`POST /api/vein/identify`) は登録画面が呼ばないので既定拒否のまま。
  */
 const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/api\/employees\/lookup$/ },
   { method: "GET", pattern: /^\/api\/employees\/face-data$/ },
   { method: "POST", pattern: /^\/api\/measurements\/start$/ },
   { method: "PUT", pattern: /^\/api\/measurements\/[^/]+$/ },
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
 ];
 
 /**

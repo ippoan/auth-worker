@@ -1446,6 +1446,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     { method: "GET", path: "/api/employees/face-data" },
     { method: "POST", path: "/api/measurements/start" },
     { method: "PUT", path: "/api/measurements/m-1" },
+    // 血圧測定タブの指静脈登録 (Refs ippoan/alc-app#437)。登録だけで、他の指静脈の口は下で 403。
+    { method: "PUT", path: "/api/vein/templates/emp-1" },
   ];
 
   for (const { method, path } of ALLOWED) {
@@ -1487,8 +1489,11 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "GET", path: "/api/timecard/punches" },
       // 端末レコードを持たないので settings は呼ばれない口 (表に入れていない)。
       { method: "GET", path: "/api/devices/settings/dev-1" },
-      // 指静脈: kiosk だけに開けた口で、測定台には開けない。
-      { method: "PUT", path: "/api/vein/templates/emp-1" },
+      // 指静脈: 登録 (PUT) 以外は kiosk だけに開けた口か、どの端末にも無い口 (削除)。
+      { method: "DELETE", path: "/api/vein/templates/emp-1" },
+      { method: "GET", path: "/api/vein/templates/emp-1" },
+      { method: "PUT", path: "/api/vein/templates" },
+      { method: "PUT", path: "/api/vein/templates/emp-1/extra" },
       { method: "GET", path: "/api/vein/templates" },
       { method: "POST", path: "/api/vein/identify" },
     ];
@@ -1503,7 +1508,7 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
   });
 
   it("device-kiosk の許可表は BP_STATION_ROUTES 追加で変わらない (退行検知)", async () => {
-    // BP_STATION_ROUTES の 4 本は KIOSK_ROUTES にも元から含まれる (両 role とも
+    // BP_STATION_ROUTES の各行は KIOSK_ROUTES にも元から含まれる (両 role とも
     // 呼ぶ口)。ここでは KIOSK_ROUTES 側の table が新設した METHOD_ROUTE_TABLES
     // エントリの影響を受けず今までどおり通ることだけを固定する。
     const fetchMock = okFetch();
@@ -1617,6 +1622,24 @@ describe("Service Binding へ振り分ける path の defense-in-depth (isUnsafe
     const binding = { fetch: vi.fn(async (): Promise<Response> => new Response("from-binding")) };
     const token = await signTestJwt(
       { sub: "device-kiosk-1", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK },
+      TEST_JWT_SECRET,
+    );
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/vein/templates/%2e%2e%2fadmin", { method: "PUT", token }),
+      env({ ALC_VEIN: binding as unknown as Fetcher }),
+    );
+    expect(res.status).toBe(403);
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  // 測定台にも指静脈の登録を開けた (Refs ippoan/alc-app#437) ので、同じ止め方が効くことを固定する。
+  it("bp-station の PUT /api/vein/templates/%2e%2e%2fadmin も 403 で、binding にも Cloud Run にも届かない", async () => {
+    const cloudRun = vi.fn(async (): Promise<Response> => new Response("ok", { status: 200 }));
+    globalThis.fetch = cloudRun as unknown as typeof fetch;
+    const binding = { fetch: vi.fn(async (): Promise<Response> => new Response("from-binding")) };
+    const token = await signTestJwt(
+      { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role: DEVICE_ROLE_BP_STATION },
       TEST_JWT_SECRET,
     );
     const res = await handleDeviceDataProxy(
