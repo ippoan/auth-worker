@@ -6,6 +6,9 @@
  * 機械の入口を auth-worker (Access の外) 1 か所にまとめる。
  *
  * - 用途 (purpose) ごとの転送先は `MACHINE_RELAY_ROUTES` の 1 か所。表に無い用途は 404
+ *   - `leave-scan` → nuxt-leave (`LEAVE_APP`) の `/dav/*` (複合機のスキャン)
+ *   - `fuel-utran` → rust-fuel-worker (`FUEL_WORKER`) の `/machine/fuel-utran/*` (Windows の USB 常駐アプリの
+ *     取り込み。Refs yhonda-ohishi/nginx#814)
  * - Basic が無い・通らない → 401 + `WWW-Authenticate: Basic` (理由は区別しない。複合機は 401 を見てから
  *   Basic を付け直す)
  * - 通れば、method・ヘッダ・本文を**そのまま中継**し、応答もそのまま返す (本文はストリームのまま渡し、
@@ -21,7 +24,7 @@ import { resolveSecret } from "../lib/secret";
 
 interface MachineRelayRoute {
   /** 転送先の Service Binding の名前 (`Env` の key)。 */
-  binding: "LEAVE_APP";
+  binding: "LEAVE_APP" | "FUEL_WORKER";
   /** 転送先の path の接頭辞。`/m/<purpose>` をこれに置き換える。 */
   pathPrefix: string;
 }
@@ -29,6 +32,7 @@ interface MachineRelayRoute {
 /** 用途 → 転送先。用途を足すときは `MACHINE_CRED_PURPOSES` と併せてここに足す。 */
 export const MACHINE_RELAY_ROUTES: Readonly<Record<string, MachineRelayRoute>> = {
   "leave-scan": { binding: "LEAVE_APP", pathPrefix: "/dav" },
+  "fuel-utran": { binding: "FUEL_WORKER", pathPrefix: "/machine/fuel-utran" },
 };
 
 /** Service Binding 越しの fetch なので host は使われない (path と query だけが意味を持つ)。 */

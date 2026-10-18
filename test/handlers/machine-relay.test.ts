@@ -52,8 +52,41 @@ function put(path: string, headers: Record<string, string> = {}, body: string | 
 }
 
 describe("handleMachineRelay (/m/<purpose>/*、Refs ohishi-exp/rust-leave-worker#1)", () => {
-  it("用途の表は leave-scan → LEAVE_APP の /dav だけ", () => {
-    expect(MACHINE_RELAY_ROUTES).toEqual({ "leave-scan": { binding: "LEAVE_APP", pathPrefix: "/dav" } });
+  it("用途の表は leave-scan → LEAVE_APP の /dav と fuel-utran → FUEL_WORKER の /machine/fuel-utran だけ", () => {
+    expect(MACHINE_RELAY_ROUTES).toEqual({
+      "leave-scan": { binding: "LEAVE_APP", pathPrefix: "/dav" },
+      "fuel-utran": { binding: "FUEL_WORKER", pathPrefix: "/machine/fuel-utran" },
+    });
+  });
+
+  it("★ fuel-utran は FUEL_WORKER の /machine/fuel-utran/* へ中継する (Authorization を残し、X-Tenant-ID は付けない。Refs yhonda-ohishi/nginx#814)", async () => {
+    const fuel = fakeBinding();
+    const { e, auth: leaveAuth, calls: leaveCalls, alcAuth } = await setup({ FUEL_WORKER: fuel.fetcher });
+    const c = (await createMachineCredential(e, TENANT, "fuel-utran", "給油 PC"))!;
+    const auth = `Basic ${btoa(`${c.username}:${c.password}`)}`;
+    const res = await handleMachineRelay(
+      new Request(`${ORIGIN}/m/fuel-utran/uploads`, {
+        method: "POST",
+        headers: { Authorization: auth, "Content-Type": "text/csv", "X-Tenant-ID": "forged-tenant" },
+        body: "CSVDATA",
+      }),
+      e,
+    );
+    expect(res.status).toBe(201);
+    expect(fuel.calls).toHaveLength(1);
+    const f = fuel.calls[0]!;
+    expect(new URL(f.url).pathname).toBe("/machine/fuel-utran/uploads");
+    expect(f.method).toBe("POST");
+    expect(f.body).toBe("CSVDATA");
+    expect(f.headers.get("Authorization")).toBe(auth);
+    expect(f.headers.get("X-Internal-Shared-Secret")).toBe(SHARED);
+    expect(f.headers.get("X-Tenant-ID")).toBeNull();
+    expect(leaveCalls).toHaveLength(0);
+    // leave-scan の資格情報では fuel-utran に入れない (用途違い)
+    const cross = await handleMachineRelay(put("/m/fuel-utran/uploads", { Authorization: leaveAuth }), e);
+    expect(cross.status).toBe(401);
+    expect(fuel.calls).toHaveLength(1);
+    expect(alcAuth.rows.get(c.username)?.purpose).toBe("fuel-utran");
   });
 
   it("★ Basic が通れば method・path・query・body・Authorization をそのまま中継し、X-Internal-Shared-Secret を付ける", async () => {

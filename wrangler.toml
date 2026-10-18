@@ -178,6 +178,15 @@ service = "alc-trouble"
 binding = "ALC_MEASUREMENTS"
 service = "alc-measurements"
 
+# rust-fuel-worker (ohishi-exp/rust-fuel-worker、yhonda-ohishi/nginx#814)。燃料の参照と CSV 取り込みの API /api/fuel/* を
+# 画面用の proxy (/alc-proxy) から回し (src/lib/alc-backend-route.ts)、機械の入口 /m/fuel-utran/* (src/handlers/machine-relay.ts) を
+# Basic の照合後に /machine/fuel-utran/* へ中継する。rust-fuel-worker は Service Binding 専用で、届く経路はこの binding だけ。
+# fuel には staging の worker が無いので env.staging には bind しない (staging の /api/fuel/* は Cloud Run に流れ、
+# /m/fuel-utran/* は 503 になる。承知のうえ)。
+[[services]]
+binding = "FUEL_WORKER"
+service = "rust-fuel-worker"
+
 # alc-auth-worker (ippoan/alc-auth-worker、ohishi-exp/rust-leave-worker#1)。機械用資格情報の表
 # alc_api.machine_credentials を内部口 (X-Internal-Shared-Secret 付き) で読み書きする (src/lib/machine-credential.ts)。
 # alc-auth-worker は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-auth-worker-staging。

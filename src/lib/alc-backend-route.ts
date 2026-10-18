@@ -37,6 +37,8 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * `/api/recalculate-pending` は「要再計算」の印が付いた 乗務員 × 月 をまとめて計算し直す口 (完全一致)。画面のアップロード後と、取り込みの一区切りの relay (内部用) の両方から呼ぶ。
  * `/api/leave/` は勤怠申請 (休暇・遅刻などの申請) の管理 API (prefix)。管理画面からだけ呼ぶので `alc-leave` へ回すのは画面用の proxy だけ
  * (端末用・内部用は入れない。メール受信の取り込みは、この表を通らず email-receiver から直接 Service Binding で呼ぶ)。
+ * `/api/fuel/` は燃料 (給油の実績・給油カード) の参照と CSV 取り込みの API (prefix)。画面 (nuxt-dtako-admin) からだけ呼ぶので
+ * `rust-fuel-worker` へ回すのは画面用の proxy だけ (Windows の常駐アプリは `/m/fuel-utran/*` の machine-relay を通り、この表は引かない)。
  * `/api/internal/lineworks/send` は LINE WORKS への通知の送信 (完全一致)。内部用の proxy (internal-jwt クラス) と端末通知
  * (`device-notify-send.ts`、同じく `internal` として引く) から `alc-lineworks` へ回す。
  * `/api/lineworks/deploy-check` は本番デプロイ後の確認の通知 (完全一致)。画面用の proxy (/alc-proxy) だけ `alc-lineworks` へ回す。
@@ -68,6 +70,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/recalculate-drivers", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/recalculate-pending", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "internal"] },
   { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
+  { match: "prefix", path: "/api/fuel/", binding: "FUEL_WORKER", host: "rust-fuel-worker", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },
   { match: "exact", path: "/api/lineworks/deploy-check", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["browser"] },
   { match: "prefix", path: "/api/notify/recipients/", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },

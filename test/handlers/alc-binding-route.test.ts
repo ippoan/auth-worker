@@ -115,6 +115,20 @@ describe("resolveAlcBinding", () => {
     expect(resolveAlcBinding("/api/leave/settings", env, "browser")).toBeNull();
   });
 
+  it("/api/fuel/ は画面用だけ FUEL_WORKER へ解決され、端末用・内部用は null (Refs yhonda-ohishi/nginx#814)", () => {
+    const fuel = makeBinding();
+    const { env } = setup({ FUEL_WORKER: fuel as unknown as Fetcher });
+    expect(resolveAlcBinding("/api/fuel/intank", env, "browser")).toEqual({ fetcher: fuel, host: "rust-fuel-worker" });
+    expect(resolveAlcBinding("/api/fuel/intank", env, "device")).toBeNull();
+    expect(resolveAlcBinding("/api/fuel/intank", env, "internal")).toBeNull();
+    expect(resolveAlcBinding("/api/fuel-x/intank", env, "browser")).toBeNull();
+  });
+
+  it("/api/fuel/ は binding 未定義なら null (staging は bind しないので Cloud Run のまま)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding("/api/fuel/intank", env, "browser")).toBeNull();
+  });
+
   it("/api/upload は完全一致だけ。下位の path・末尾 / 付きは一致しない", () => {
     const { dtako, env } = setup();
     expect(resolveAlcBinding("/api/upload", env, "browser")).toEqual({ fetcher: dtako, host: "alc-dtako" });

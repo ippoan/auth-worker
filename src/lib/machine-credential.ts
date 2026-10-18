@@ -32,7 +32,7 @@ import { fetchAlcAuth, type AlcAuthEnv } from "./alc-auth-fetch";
 import { parseBasicAuth } from "./errors";
 
 /** 資格情報の用途の allowlist (ここ 1 か所に定義する)。用途を足すときはここに足す。 */
-export const MACHINE_CRED_PURPOSES = ["leave-scan"] as const;
+export const MACHINE_CRED_PURPOSES = ["leave-scan", "fuel-utran"] as const;
 export type MachineCredPurpose = (typeof MACHINE_CRED_PURPOSES)[number];
 
 /** label の最大長 (管理画面の表示用の名前)。 */
