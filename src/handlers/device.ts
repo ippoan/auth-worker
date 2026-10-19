@@ -17,7 +17,12 @@ import { extractToken } from "../lib/errors";
 import { resolveSecret } from "../lib/secret";
 import { verifyJwt } from "../lib/jwt";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
-import { isReadOnlyToken } from "./device-setup";
+import {
+  explicitDevDevice,
+  isReadOnlyToken,
+  logDevDeviceSet,
+  type OperatorSession,
+} from "./device-setup";
 import { resolveActiveDeviceTenant } from "../lib/alc-internal";
 import {
   createDeviceCredential,
@@ -56,15 +61,7 @@ function jsonNoStore(body: unknown, status = 200): Response {
   });
 }
 
-interface OperatorSession {
-  tenantId: string;
-  email: string;
-  /** JWT の `token_kind` claim (issue #433 と同じ claim)。通常の Google ログインは
-   *  付けないため `""`。dev-login (`"dev"`) / device-key (`"device-key"`) はここに入る。 */
-  tokenKind: string;
-}
-
-/** Bearer session JWT を検証し operator の tenant/email/token_kind を返す。不正なら null。 */
+/** Bearer session JWT を検証し operator の tenant/email/token_kind/idp を返す。不正なら null。 */
 async function operatorSession(request: Request, env: Env): Promise<OperatorSession | null> {
   const token = extractToken(request);
   if (!token) return null;
@@ -79,6 +76,7 @@ async function operatorSession(request: Request, env: Env): Promise<OperatorSess
     tenantId,
     email: (payload.email as string | undefined) || "",
     tokenKind: (payload.token_kind as string | undefined) || "",
+    idp: (payload.idp as string | undefined) || "",
   };
 }
 
@@ -104,8 +102,13 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
   const role = normalizeDeviceRole(body.role);
   const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
 
+  // 開発用の鍵 (Refs ippoan/alc-app#387): 規則は explicitDevDevice の 1 つ。明示が無ければ非 dev。
+  const devDevice = explicitDevDevice(body, session);
+  if (devDevice instanceof Response) return devDevice;
+
   const now = Math.floor(Date.now() / 1000);
-  const cred = await createDeviceCredential(env, session.tenantId, label, now, role, siteId);
+  const cred = await createDeviceCredential(env, session.tenantId, label, now, role, siteId, devDevice);
+  if (devDevice !== undefined) logDevDeviceSet("device", devDevice);
 
   return jsonNoStore(
     {

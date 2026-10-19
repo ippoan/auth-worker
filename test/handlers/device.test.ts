@@ -22,6 +22,7 @@ import {
 } from "../../src/lib/device";
 import { verifyJwt } from "../../src/lib/jwt";
 import { resolveActiveDeviceTenant } from "../../src/lib/alc-internal";
+import { DEVELOPER_EMAILS } from "../../src/lib/developer";
 import { createMockKV } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 import type { Env } from "../../src/index";
@@ -779,5 +780,58 @@ describe("POST /device/token の dev_device claim (Refs ippoan/alc-app#387)", ()
 
   it("dev_device: false の record でも claim は載らない", async () => {
     expect(await tokenClaims(false)).not.toHaveProperty("dev_device");
+  });
+});
+
+describe("POST /device/pair の dev_device (Refs ippoan/alc-app#387)", () => {
+  const devSession = (claims: Record<string, unknown> = {}) =>
+    opToken({ email: DEVELOPER_EMAILS[0], idp: "google", ...claims });
+
+  async function pair(body: Record<string, unknown>, token: string, env = makeEnv()) {
+    const res = await handleDevicePair(post("/device/pair", body, bearer(token)), env);
+    return { res, env };
+  }
+
+  async function record(env: Env, res: Response) {
+    const { device_id } = (await res.clone().json()) as { device_id: string };
+    return JSON.parse((await env.AUTH_CONFIG.get(`device:${device_id}`)) as string) as Record<string, unknown>;
+  }
+
+  it("開発者の Google session + dev_device:true → 登録簿に dev_device:true、/device/token の claim にも載る", async () => {
+    const { res, env } = await pair({ dev_device: true }, await devSession());
+    expect(res.status).toBe(201);
+    expect((await record(env, res)).dev_device).toBe(true);
+    const cred = (await res.clone().json()) as { device_id: string; device_secret: string };
+    const tokRes = await handleDeviceToken(post("/device/token", cred), env);
+    const { access_token } = (await tokRes.json()) as { access_token: string };
+    expect((await verifyJwt(access_token, SECRET, ENV))!.dev_device).toBe(true);
+  });
+
+  it("開発者のメールでも idp が google でなければ 403", async () => {
+    const { res } = await pair({ dev_device: true }, await devSession({ idp: "line" }));
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe("developer_google_session_required");
+  });
+
+  it("開発者でないメール + idp=google + dev_device:true → 403", async () => {
+    const { res } = await pair({ dev_device: true }, await opToken({ idp: "google" }));
+    expect(res.status).toBe(403);
+  });
+
+  it("dev_device 無し → 非 dev (従来どおり)", async () => {
+    const { res, env } = await pair({}, await devSession());
+    expect(res.status).toBe(201);
+    expect(await record(env, res)).not.toHaveProperty("dev_device");
+  });
+
+  it("dev_device:false → 非 dev", async () => {
+    const { res, env } = await pair({ dev_device: false }, await devSession());
+    expect(res.status).toBe(201);
+    expect(await record(env, res)).not.toHaveProperty("dev_device");
+  });
+
+  it("dev_device が boolean でなければ 400", async () => {
+    const { res } = await pair({ dev_device: "true" }, await devSession());
+    expect(res.status).toBe(400);
   });
 });
