@@ -98,6 +98,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/internal/trouble/camera-down-tickets", binding: "ALC_TROUBLE", host: "alc-trouble", proxies: ["internal"] },
   { match: "exact", path: "/api/measurements", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/measurements/start", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
+  { match: "exact", path: "/api/measurements/alert-test", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "admin"] },
   {
     match: "pattern",
     pattern: /^\/api\/measurements\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
