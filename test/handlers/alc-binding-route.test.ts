@@ -1613,6 +1613,20 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     }
   });
 
+  it("alert-test (受信者管理のテスト送信) は画面用と管理画面用が ALC_MEASUREMENTS へ。端末用・内部用は null", () => {
+    const { measurements, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    const path = "/api/measurements/alert-test";
+    expect(resolveAlcBinding(path, env, "browser")).toEqual(target);
+    expect(resolveAlcBinding(path, env, "admin")).toEqual(target);
+    expect(resolveAlcBinding(path, env, "device")).toBeNull();
+    expect(resolveAlcBinding(path, env, "internal")).toBeNull();
+    for (const near of ["/api/measurements/alert-test/x", "/api/measurements/alert-testx"]) {
+      expect(resolveAlcBinding(near, env, "browser"), near).toBeNull();
+      expect(resolveAlcBinding(near, env, "admin"), near).toBeNull();
+    }
+  });
+
   it("大文字の UUID でも ALC_MEASUREMENTS へ行く", () => {
     const { measurements, env } = setupMeasurements();
     const target = { fetcher: measurements, host: "alc-measurements" };
