@@ -108,7 +108,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   },
   {
     match: "pattern",
-    pattern: /^\/api\/measurements\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(face-photo|video)$/i,
+    pattern: /^\/api\/measurements\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(face-photo|video|tenko)$/i,
     binding: "ALC_MEASUREMENTS",
     host: "alc-measurements",
     proxies: ["browser", "device"],

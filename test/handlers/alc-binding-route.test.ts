@@ -19,7 +19,7 @@ import { handleDeviceDataProxy } from "../../src/handlers/device-data-proxy";
 import { handleAlcInternalProxy } from "../../src/handlers/alc-internal-proxy";
 import { mintGoogleIdToken } from "../../src/lib/oidc";
 import { resolveAlcBinding } from "../../src/lib/alc-backend-route";
-import { DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_KIOSK } from "../../src/lib/device";
+import { DEVICE_ROLE_BP_STATION, DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_KIOSK } from "../../src/lib/device";
 import { internalAuthToken } from "../../src/lib/alc-internal";
 import { sendDeviceNotify } from "../../src/lib/device-notify-send";
 import { handleAdminNotifyApi } from "../../src/handlers/admin-notify-api";
@@ -1586,7 +1586,7 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
   /** UUID の形 (8-4-4-4-12) を 1 文字の繰り返しで組み立てる。 */
   const uuidOf = (c: string) => [8, 4, 4, 4, 12].map((n) => c.repeat(n)).join("-");
   const ID = uuidOf("c");
-  /** worker (ippoan/alc-measurements-worker) に在る 7 口: [method, path]。 */
+  /** worker (ippoan/alc-measurements-worker) に在る 8 口: [method, path]。 */
   const MEASUREMENT_ROUTES: ReadonlyArray<readonly [string, string]> = [
     ["POST", "/api/measurements"],
     ["GET", "/api/measurements"],
@@ -1595,6 +1595,7 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     ["PUT", `/api/measurements/${ID}`],
     ["GET", `/api/measurements/${ID}/face-photo`],
     ["GET", `/api/measurements/${ID}/video`],
+    ["POST", `/api/measurements/${ID}/tenko`],
   ];
 
   function setupMeasurements() {
@@ -1602,7 +1603,7 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     return { measurements, ...setup({ ALC_MEASUREMENTS: measurements as unknown as Fetcher }) };
   }
 
-  it("7 口は画面用と端末用が ALC_MEASUREMENTS へ。内部用・管理画面用は null", () => {
+  it("8 口は画面用と端末用が ALC_MEASUREMENTS へ。内部用・管理画面用は null", () => {
     const { measurements, env } = setupMeasurements();
     const target = { fetcher: measurements, host: "alc-measurements" };
     for (const [method, path] of MEASUREMENT_ROUTES) {
@@ -1631,7 +1632,7 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     const { measurements, env } = setupMeasurements();
     const target = { fetcher: measurements, host: "alc-measurements" };
     const upper = ID.toUpperCase();
-    for (const path of [`/api/measurements/${upper}`, `/api/measurements/${upper}/face-photo`, `/api/measurements/${upper}/video`]) {
+    for (const path of [`/api/measurements/${upper}`, `/api/measurements/${upper}/face-photo`, `/api/measurements/${upper}/video`, `/api/measurements/${upper}/tenko`]) {
       expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
       expect(resolveAlcBinding(path, env, "device"), path).toEqual(target);
     }
@@ -1644,6 +1645,9 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
       `/api/measurements/${ID}/other`,
       `/api/measurements/${ID}/face-photo/x`,
       `/api/measurements/${ID}/video/x`,
+      `/api/measurements/${ID}/tenko/x`,
+      `/api/measurements/${ID}/tenkox`,
+      "/api/measurements/m-1/tenko",
       `/api/measurements/${ID}/`,
       `/api/measurements/${ID}x`,
       "/api/measurements/start/x",
@@ -1655,6 +1659,99 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
         expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
       }
     }
+  });
+
+  describe("端末の POST /api/measurements/{uuid}/tenko (点呼の確定)", () => {
+    async function deviceReq(path: string, method: string, role: string = DEVICE_ROLE_KIOSK, claims: Record<string, unknown> = {}) {
+      const token = await signTestJwt({ sub: "device-1", tenant_id: TENANT, role, ...claims }, TEST_JWT_SECRET);
+      return new Request(`https://auth.test.example/device-data-proxy${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        ...(method === "GET" ? {} : { body: JSON.stringify({ tenko_method: "IT点呼" }) }),
+      });
+    }
+
+    it("kiosk の要求は ALC_MEASUREMENTS の binding へ。tenant は JWT から、Cloud Run には行かない", async () => {
+      const { measurements, cloudRun, env } = setupMeasurements();
+      const res = await handleDeviceDataProxy(
+        await deviceReq(`/api/measurements/${ID}/tenko`, "POST"),
+        env,
+      );
+      expect(await res.text()).toBe("from-binding");
+      const [url, init] = measurements.fetch.mock.calls[0]!;
+      expect(url).toBe(`https://alc-measurements/api/measurements/${ID}/tenko`);
+      expect(init!.method).toBe("POST");
+      expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+      expect(cloudRun).not.toHaveBeenCalled();
+    });
+
+    it("dev の鍵なら PUT /api/measurements/{uuid} と同じ X-Device-Dev の印が付く", async () => {
+      const { measurements, env } = setupMeasurements();
+      for (const [method, path] of [["PUT", `/api/measurements/${ID}`], ["POST", `/api/measurements/${ID}/tenko`]] as const) {
+        measurements.fetch.mockClear();
+        const res = await handleDeviceDataProxy(await deviceReq(path, method, DEVICE_ROLE_KIOSK, { dev_device: true }), env);
+        expect(res.status, path).toBe(200);
+        const h = measurements.fetch.mock.calls[0]![1]!.headers as Record<string, string>;
+        expect(h["X-Device-Dev"], path).toBe("1");
+        expect(h["X-Device-Role"], path).toBe(DEVICE_ROLE_KIOSK);
+      }
+    });
+
+    it("GET・別 method・別の下位 path・uuid でない path は 403 で、binding にも Cloud Run にも届かない", async () => {
+      const { measurements, cloudRun, env } = setupMeasurements();
+      for (const [method, path] of [
+        ["GET", `/api/measurements/${ID}/tenko`],
+        ["PUT", `/api/measurements/${ID}/tenko`],
+        ["DELETE", `/api/measurements/${ID}/tenko`],
+        ["POST", `/api/measurements/${ID}/tenko/x`],
+        ["POST", `/api/measurements/${ID}/tenkox`],
+        ["POST", `/api/measurements/${ID}/other`],
+        ["POST", "/api/measurements/tenko"],
+        ["POST", "/api/measurements//tenko"],
+      ] as const) {
+        const res = await handleDeviceDataProxy(await deviceReq(path, method), env);
+        expect(res.status, `${method} ${path}`).toBe(403);
+      }
+      expect(measurements.fetch).not.toHaveBeenCalled();
+      expect(cloudRun).not.toHaveBeenCalled();
+    });
+
+    it("uuid でない path (m-1・%2e%2e%2fadmin) は許可表は通る (既存の PUT と同じ) が binding へは行かず Cloud Run へ", async () => {
+      for (const path of ["/api/measurements/m-1/tenko", "/api/measurements/%2e%2e%2fadmin/tenko"]) {
+        const { measurements, cloudRun, env } = setupMeasurements();
+        const res = await handleDeviceDataProxy(await deviceReq(path, "POST"), env);
+        expect(await res.text(), path).toBe("from-cloud-run");
+        expect(measurements.fetch, path).not.toHaveBeenCalled();
+        expect(cloudRun, path).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it("血圧測定台 (device-bp-station) の role でも通り、ALC_MEASUREMENTS へ回る (Cloud Run には行かない)", async () => {
+      const { measurements, cloudRun, env } = setupMeasurements();
+      const res = await handleDeviceDataProxy(
+        await deviceReq(`/api/measurements/${ID}/tenko`, "POST", DEVICE_ROLE_BP_STATION),
+        env,
+      );
+      expect(await res.text()).toBe("from-binding");
+      const [url, init] = measurements.fetch.mock.calls[0]!;
+      expect(url).toBe(`https://alc-measurements/api/measurements/${ID}/tenko`);
+      expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+      expect(cloudRun).not.toHaveBeenCalled();
+    });
+
+    it("血圧測定台でも GET・PUT・下位 path の余りは 403", async () => {
+      const { measurements, cloudRun, env } = setupMeasurements();
+      for (const [method, path] of [
+        ["GET", `/api/measurements/${ID}/tenko`],
+        ["PUT", `/api/measurements/${ID}/tenko`],
+        ["POST", `/api/measurements/${ID}/tenko/x`],
+      ] as const) {
+        const res = await handleDeviceDataProxy(await deviceReq(path, method, DEVICE_ROLE_BP_STATION), env);
+        expect(res.status, `${method} ${path}`).toBe(403);
+      }
+      expect(measurements.fetch).not.toHaveBeenCalled();
+      expect(cloudRun).not.toHaveBeenCalled();
+    });
   });
 
   it("binding が未定義なら、どの口も null (= Cloud Run)", () => {
