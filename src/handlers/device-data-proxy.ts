@@ -284,8 +284,8 @@ const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map
  * 第二の端末クラス) 専用の method + path 許可表 (Refs ippoan/alc-app#353)。
  *
  * 許可するのは `alc-app` の `BloodPressureMeasurement.vue` から実際に辿った経路
- * 4 本と、指静脈の登録 (下記) だけ (既定拒否): NFC 読取 → 従業員照会、顔認証用の顔データ同期、測定開始、
- * 測定更新 (測定値の保存)。
+ * (NFC 読取 → 従業員照会、顔認証用の顔データ同期、測定開始、測定更新 (測定値の保存)、
+ * 点呼の確定) と、指静脈の登録画面が呼ぶ口 (下記) だけ (既定拒否)。
  *
  * **`GET /api/devices/settings/[^/]+` は入れない。** 測定台は端末レコードを持たず
  * `deviceId` が構造的に空なので、この口は呼ばれない (呼ばれない口を既定拒否の外に
@@ -310,9 +310,19 @@ const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map
  * あり、`KIOSK_ROUTES` の同じ行と method・pattern を揃えてある。**それ以外の指静脈の口は
  * 入れない** — 削除 (`DELETE`) は kiosk にも無く、テンプレート一覧 (`GET`、tenant 全員の
  * 生体情報) と 1:N 照合 (`POST /api/vein/identify`) は登録画面が呼ばないので既定拒否のまま。
+ * 承認待ちの一覧 (`GET /api/vein/templates/pending`) と承認
+ * (`POST /api/vein/templates/{employee_id}/approve`) は管理者のログインだけの口で、
+ * **どの端末の鍵の表にも入れない** (Refs ippoan/alc-app#436)。
+ *
+ * **`GET /api/employees/by-code/{code}` (社員番号から乗務員を引く) も入れる**
+ * (Refs ippoan/alc-app#436)。指静脈の登録画面で、NFC を使わずに社員番号のキーパッドから
+ * 乗務員を選ぶため。`KIOSK_ROUTES` / `TENKO_MANAGER_ROUTES` の同じ行と method・pattern を
+ * 揃えてある。社員番号の総当たりで名前が引ける点はキオスクと同じで、rate limit は
+ * 足さない (指の登録は管理者の承認で止まる)。
  */
 const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/api\/employees\/lookup$/ },
+  { method: "GET", pattern: /^\/api\/employees\/by-code\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/employees\/face-data$/ },
   { method: "POST", pattern: /^\/api\/measurements\/start$/ },
   { method: "PUT", pattern: /^\/api\/measurements\/[^/]+$/ },
