@@ -728,13 +728,13 @@ describe("handleAlarmKeyRegister の dev_device と replaces_pubkey (Refs ippoan
     expect(snapshot(kv)).toBe("{}");
   });
 
-  it("replaces_pubkey: 新 record が古い record の label / usage を写し (body の値は見ない)、古い record は失効する", async () => {
+  it("replaces_pubkey: 新 record が古い record の label / usage を写し、古い record は失効する", async () => {
     const { env, kv } = makeEnvWithKv();
     const old = await register(env, { pubkey: fakePubkey(50), label: "cab-1", usage: "tenko-manager" }, await opHeaders());
     const oldBefore = readRecord(kv, old);
     const next = await register(
       env,
-      { pubkey: fakePubkey(51), replaces_pubkey: fakePubkey(50), label: "ignored", usage: "kiosk" },
+      { pubkey: fakePubkey(51), replaces_pubkey: fakePubkey(50) },
       await opHeaders(),
     );
     expect(next).not.toBe(old);
@@ -759,6 +759,44 @@ describe("handleAlarmKeyRegister の dev_device と replaces_pubkey (Refs ippoan
       await devHeaders(),
     );
     expect(readRecord(kv, next)).toMatchObject({ label: "cab-1", usage: "kiosk", dev_device: true });
+  });
+
+  it("replaces_pubkey + usage / label: 新 record はその値になる (Vein Station を運行者端末に付け直す。Refs ippoan/alc-app#436)", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const old = await register(env, { pubkey: fakePubkey(65), label: "voice-s3r", usage: "tenko-manager" }, await opHeaders());
+    const next = await register(
+      env,
+      { pubkey: fakePubkey(66), replaces_pubkey: fakePubkey(65), usage: "kiosk", label: "vein-station", dev_device: true },
+      await devHeaders(),
+    );
+    expect(readRecord(kv, next)).toMatchObject({ label: "vein-station", usage: "kiosk", dev_device: true });
+    expect(readRecord(kv, old)).toMatchObject({ label: "voice-s3r", usage: "tenko-manager" });
+    expect(typeof readRecord(kv, old).revoked_at).toBe("number");
+
+    // 片方だけなら、もう片方は古い record から写す
+    const usageOnly = await register(env, { pubkey: fakePubkey(67), replaces_pubkey: fakePubkey(66), usage: "bp-station" }, await opHeaders());
+    expect(readRecord(kv, usageOnly)).toMatchObject({ label: "vein-station", usage: "bp-station", dev_device: true });
+    const labelOnly = await register(env, { pubkey: fakePubkey(68), replaces_pubkey: fakePubkey(67), label: "renamed" }, await opHeaders());
+    expect(readRecord(kv, labelOnly)).toMatchObject({ label: "renamed", usage: "bp-station" });
+  });
+
+  it.each([
+    ["usage が一覧に無い値", { usage: "admin" }],
+    ["usage が null", { usage: null }],
+    ["label が空文字", { label: "" }],
+    ["label が 65 文字", { label: "x".repeat(65) }],
+    ["label が数値", { label: 1 }],
+  ])("replaces_pubkey + 不正な値 (%s) は 400 で何も書かれず、古い record は失効しない", async (_name, extra) => {
+    const { env, kv } = makeEnvWithKv();
+    const old = await register(env, { pubkey: fakePubkey(69), label: "a", usage: "kiosk" }, await opHeaders());
+    const before = snapshot(kv);
+    const res = await handleAlarmKeyRegister(
+      postJson(PATH, { pubkey: fakePubkey(70), replaces_pubkey: fakePubkey(69), ...extra }, await opHeaders()),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(snapshot(kv)).toBe(before);
+    expect(readRecord(kv, old)).not.toHaveProperty("revoked_at");
   });
 
   it("replaces_pubkey + 明示なし: 古い record が dev → 新も dev (引き継ぎ) / 本番 → 本番", async () => {
@@ -803,12 +841,15 @@ describe("handleAlarmKeyRegister の dev_device と replaces_pubkey (Refs ippoan
 
     const before = snapshot(kv);
     for (const replaces of [fakePubkey(60), fakePubkey(61), fakePubkey(62), fakePubkey(63), "not-a-pubkey", 1, null]) {
-      const res = await handleAlarmKeyRegister(
-        postJson(PATH, { pubkey: fakePubkey(64), replaces_pubkey: replaces, dev_device: true }, await devHeaders()),
-        env,
-      );
-      expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: "replaced_key_not_found" });
+      // usage / label を添えても旧 record の検査は同じ
+      for (const extra of [{}, { usage: "kiosk", label: "vein-station" }]) {
+        const res = await handleAlarmKeyRegister(
+          postJson(PATH, { pubkey: fakePubkey(64), replaces_pubkey: replaces, dev_device: true, ...extra }, await devHeaders()),
+          env,
+        );
+        expect(res.status).toBe(409);
+        expect(await res.json()).toEqual({ error: "replaced_key_not_found" });
+      }
     }
     expect(snapshot(kv)).toBe(before);
   });
