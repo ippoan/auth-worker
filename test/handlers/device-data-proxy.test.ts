@@ -1451,6 +1451,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     { method: "GET", path: "/api/employees/face-data" },
     { method: "POST", path: "/api/measurements/start" },
     { method: "PUT", path: "/api/measurements/m-1" },
+    // 点呼の確定 (結果カードの IT点呼 / 終了)。測定台として登録した端末でも同じ画面になる (Refs ippoan/alc-app#436)。
+    { method: "POST", path: "/api/measurements/m-1/tenko" },
     // 血圧測定タブの指静脈登録 (Refs ippoan/alc-app#437)。登録だけで、他の指静脈の口は下で 403。
     { method: "PUT", path: "/api/vein/templates/emp-1" },
   ];
@@ -1490,8 +1492,10 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "GET", path: "/api/employees/emp-1" },
       { method: "GET", path: "/api/measurements" },
       { method: "POST", path: "/api/measurements" },
-      // 点呼の確定は結果カードを出す運転者の端末 (kiosk) だけ。測定台には開けない。
-      { method: "POST", path: "/api/measurements/m-1/tenko" },
+      // 点呼の確定は POST だけ。別 method・下位 path の余りは 403。
+      { method: "GET", path: "/api/measurements/m-1/tenko" },
+      { method: "PUT", path: "/api/measurements/m-1/tenko" },
+      { method: "POST", path: "/api/measurements/m-1/tenko/x" },
       { method: "GET", path: "/api/tenko/dashboard" },
       { method: "GET", path: "/api/timecard/punches" },
       // 端末レコードを持たないので settings は呼ばれない口 (表に入れていない)。

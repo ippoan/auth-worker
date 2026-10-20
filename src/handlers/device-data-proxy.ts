@@ -316,6 +316,7 @@ const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees\/face-data$/ },
   { method: "POST", pattern: /^\/api\/measurements\/start$/ },
   { method: "PUT", pattern: /^\/api\/measurements\/[^/]+$/ },
+  { method: "POST", pattern: /^\/api\/measurements\/[^/]+\/tenko$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
 ];
 

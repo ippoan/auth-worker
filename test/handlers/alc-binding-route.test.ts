@@ -1726,13 +1726,29 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
       }
     });
 
-    it("血圧測定台 (device-bp-station) の role では通らない", async () => {
+    it("血圧測定台 (device-bp-station) の role でも通り、ALC_MEASUREMENTS へ回る (Cloud Run には行かない)", async () => {
       const { measurements, cloudRun, env } = setupMeasurements();
       const res = await handleDeviceDataProxy(
         await deviceReq(`/api/measurements/${ID}/tenko`, "POST", DEVICE_ROLE_BP_STATION),
         env,
       );
-      expect(res.status).toBe(403);
+      expect(await res.text()).toBe("from-binding");
+      const [url, init] = measurements.fetch.mock.calls[0]!;
+      expect(url).toBe(`https://alc-measurements/api/measurements/${ID}/tenko`);
+      expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+      expect(cloudRun).not.toHaveBeenCalled();
+    });
+
+    it("血圧測定台でも GET・PUT・下位 path の余りは 403", async () => {
+      const { measurements, cloudRun, env } = setupMeasurements();
+      for (const [method, path] of [
+        ["GET", `/api/measurements/${ID}/tenko`],
+        ["PUT", `/api/measurements/${ID}/tenko`],
+        ["POST", `/api/measurements/${ID}/tenko/x`],
+      ] as const) {
+        const res = await handleDeviceDataProxy(await deviceReq(path, method, DEVICE_ROLE_BP_STATION), env);
+        expect(res.status, `${method} ${path}`).toBe(403);
+      }
       expect(measurements.fetch).not.toHaveBeenCalled();
       expect(cloudRun).not.toHaveBeenCalled();
     });
