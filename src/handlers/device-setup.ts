@@ -946,7 +946,9 @@ function setupPage(issuer: string, email: string): string {
     .join("\n");
   // developer のみ: 接続中の機体の鍵を、開発用 / 本番として書き直す (Refs ippoan/alc-app#387)。
   // 開発用かどうかは鍵を書き込む時点で決まるので、切り替えの入口はここ 1 つ。機種は
-  // DEVICE_KINDS の全部 (credential を発行しない機種 = 署名鍵だけの機種も書き直せる)。
+  // DEVICE_KINDS の全部 (credential を発行しない機種 = 署名鍵だけの機種も書き直せる) と、
+  // Vein Station (署名鍵を運行者端末の用途で付け直す。インストーラーのリンクを増やさないよう
+  // DEVICE_KINDS には入れない — Refs ippoan/alc-app#436)。
   // 表示の出し分けだけで、権限の根拠はサーバ側 (explicitDevDevice)。
   const rewriteHtml = isDeveloper
     ? `<p><label for="rewrite-kind">書き直す機体の機種</label>
@@ -954,6 +956,7 @@ function setupPage(issuer: string, email: string): string {
 ${Object.entries(DEVICE_KINDS)
   .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
   .join("\n")}
+  <option value="vein-station">Vein Station (指静脈読み取り端末)</option>
 </select></p>
 <p><button id="rewrite-dev" type="button" style="background:#b45309">接続中の機体を開発用として書き直す</button>
 <button id="rewrite-prod" type="button" style="background:#1a56db">接続中の機体を本番として書き直す</button></p>
@@ -2513,18 +2516,19 @@ async function revokeAlarmKey(fingerprint, label) {
 // CoreS3/AtomS3 登録 (runCoreS3OrPrint) と同じ構造化行プロトコルの上に立つが、
 // AUTH SET のような credential 注入は行わない (公開鍵の登録のみ)。
 //
-// rewrite = { devDevice, port, paired } は「接続中の機体を書き直す」からの呼び出し (それ以外は
-// undefined): 鍵を作り直し (AUTH KEYGEN FORCE)、作り直す前の公開鍵を replaces_pubkey に添えて
-// 差し替える。ラベルと用途は古い record からサーバが写すので聞かない。port は選択済みのもの、
-// paired は端末の鍵を書き直した後か。結果は #result に出し、済んだら true (端末の鍵を書き直した
-// 機体が署名鍵を持たなければ、何もせず true)、失敗は false を返す。
+// rewrite = { devDevice, port, paired, usage?, label? } は「接続中の機体を書き直す」からの呼び出し
+// (それ以外は undefined): 鍵を作り直し (AUTH KEYGEN FORCE)、作り直す前の公開鍵を replaces_pubkey に
+// 添えて差し替える。ラベルと用途は聞かない — usage / label があればその値に替え、無ければ古い
+// record からサーバが写す。usage がある (Vein Station) ときは、旧鍵が無い・登録簿に無い機体も
+// 新規登録に回す。port は選択済みのもの、paired は端末の鍵を書き直した後か。結果は #result に出し、
+// 済んだら true (端末の鍵を書き直した機体が署名鍵を持たなければ、何もせず true)、失敗は false を返す。
 async function registerAlarmKey(rewrite) {
   const out = rewrite ? resultEl : alarmKeyResultEl;
   alarmKeyRegisterBtn.disabled = true;
   out.textContent = "";
   let port;
   try {
-    const usage = alarmKeyUsageEl.value;
+    const usage = rewrite && rewrite.usage ? rewrite.usage : alarmKeyUsageEl.value;
     if (!rewrite && !ALARM_KEY_USAGE_DISPLAY[usage]) throw new Error("用途を選んでから登録してください");
     if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
     port = rewrite ? rewrite.port : await navigator.serial.requestPort();
@@ -2594,8 +2598,8 @@ async function registerAlarmKey(rewrite) {
       lines.length = 0;
     }
     let pubkey = "";
-    if (!rewrite || oldPubkey) {
-      await send(rewrite ? "AUTH KEYGEN FORCE" : "AUTH KEYGEN");
+    if (!rewrite || oldPubkey || rewrite.usage) {
+      await send(oldPubkey ? "AUTH KEYGEN FORCE" : "AUTH KEYGEN");
       let pubkeyLine = await waitLine(/^(AUTH PUBKEY |ERR AUTH: key exists)/, 5000);
       if (/^ERR AUTH: key exists/.test(pubkeyLine)) {
         // 既に鍵がある機体 — 新規生成せず既存の公開鍵を取り直す
@@ -2611,7 +2615,8 @@ async function registerAlarmKey(rewrite) {
     await port.close().catch(() => {});
     port = null;
 
-    if (rewrite) {
+    // 差し替えで済めば終わり。Vein Station (rewrite.usage) は旧鍵が無い・登録簿に無いとき、下の新規登録へ進む。
+    if (rewrite && (oldPubkey || !rewrite.usage)) {
       if (!oldPubkey) {
         // 署名鍵を持たない機体。端末の鍵を書き直した後なら、それで全部。
         if (!rewrite.paired) throw new Error("この機体には署名鍵がありません。下の「署名鍵の登録」から登録してください");
@@ -2621,35 +2626,40 @@ async function registerAlarmKey(rewrite) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ pubkey, replaces_pubkey: oldPubkey, dev_device: rewrite.devDevice }),
+        body: JSON.stringify({ pubkey, replaces_pubkey: oldPubkey, dev_device: rewrite.devDevice, usage: rewrite.usage, label: rewrite.label }),
       });
-      if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))).error;
+      if (res.ok) {
+        loadAlarmKeys();
+        return true;
+      }
+      const err = (await res.json().catch(() => ({}))).error;
+      if (!(err === "replaced_key_not_found" && rewrite.usage)) {
         throw new Error(err === "replaced_key_not_found"
           ? "この機体の署名鍵は登録簿に見つかりませんでした。下の「署名鍵の登録」から登録してください"
           : err === "developer_google_session_required"
             ? "Google でログインし直してください"
             : "署名鍵の登録に失敗しました。もう一度書き直してください");
       }
-      loadAlarmKeys();
-      return true;
     }
 
     const defaultLabel = usage === "kiosk" ? "cores3" : "voice-s3r";
-    const label = (prompt("このデバイスのラベル (1〜64文字)", defaultLabel) || "").trim();
+    const label = rewrite && rewrite.label
+      ? rewrite.label
+      : (prompt("このデバイスのラベル (1〜64文字)", defaultLabel) || "").trim();
     if (!label) throw new Error("ラベルが未入力のため中止しました");
 
     const res = await fetch(ISSUER + "/device/setup/alarm-key", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ pubkey, label, usage }),
+      body: JSON.stringify({ pubkey, label, usage, dev_device: rewrite ? rewrite.devDevice : undefined }),
     });
     if (res.status === 409) throw new Error("この鍵は既に登録済みです");
     if (!res.ok) throw new Error("登録に失敗: HTTP " + res.status);
 
-    alarmKeyResultEl.innerHTML = '<span class="ok">登録完了</span>';
+    if (!rewrite) alarmKeyResultEl.innerHTML = '<span class="ok">登録完了</span>';
     loadAlarmKeys();
+    return true;
   } catch (e) {
     out.innerHTML = '<span class="ng">失敗: ' +
       String(e && e.message ? e.message : e).replace(/[<>&]/g, "") + "</span>";
@@ -2676,10 +2686,13 @@ async function rewriteConnectedDevice(devDevice, buttons) {
     if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
     // 機体の選択 (ブラウザの許可ダイアログ) は、押した操作が有効なうちに先に済ませる。書き込みは確認の後。
     const port = await navigator.serial.requestPort();
-    if (!confirm("接続中の機体を" + (devDevice ? "開発用" : "本番") +
-      "として書き直しますか? (端末の鍵と署名鍵を作り直します。古い鍵は使えなくなります)")) return;
     const kind = document.getElementById("rewrite-kind").value;
+    const veinStation = kind === "vein-station";
+    if (!confirm("接続中の機体を" + (devDevice ? "開発用" : "本番") + "として書き直しますか? (" +
+      (veinStation ? "署名鍵" : "端末の鍵と署名鍵") + "を作り直します。古い鍵は使えなくなります)")) return;
     const rewrite = { devDevice, port, paired: PAIRABLE_KINDS.includes(kind) };
+    // Vein Station は署名鍵だけの機体として、運行者端末の用途で付け直す (Refs ippoan/alc-app#436)。
+    if (veinStation) Object.assign(rewrite, { usage: "kiosk", label: "vein-station" });
     if (rewrite.paired) {
       kindSel.value = kind;
       syncPrinterRow();
@@ -2687,7 +2700,9 @@ async function rewriteConnectedDevice(devDevice, buttons) {
       if (!(await run(undefined, rewrite))) return;
     }
     if (kind !== "p4-gw" && !(await registerAlarmKey(rewrite))) return;
-    resultEl.innerHTML = '<span class="ok">' + REWRITE_DONE + "</span>";
+    resultEl.innerHTML = '<span class="ok">' + (veinStation
+      ? "Vein Station を運行者端末として" + (devDevice ? "開発用" : "本番") + "で登録しました。点呼の画面を再読み込みしてください"
+      : REWRITE_DONE) + "</span>";
     loadDevices();
     loadAlarmKeys();
   } catch (e) {

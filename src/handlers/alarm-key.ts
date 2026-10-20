@@ -8,6 +8,7 @@
  *
  *   POST /device/setup/alarm-key         — {pubkey, label, usage} → 登録
  *                                          ({pubkey, replaces_pubkey} で作り直した鍵への差し替え。
+ *                                          label / usage を添えればその値に替える。
  *                                          dev_device で開発用の鍵として登録 — 明示できるのは
  *                                          開発者の Google session だけ。Refs ippoan/alc-app#387)
  *   GET  /device/setup/alarm-keys        — operator の tenant の一覧
@@ -169,8 +170,9 @@ async function readTenantIndex(env: Env, tenantId: string): Promise<string[]> {
  *
  * **差し替え (`replaces_pubkey`)**: 機体が鍵を作り直した (`AUTH KEYGEN FORCE`) ときに、
  * 作り直す前の公開鍵を添える。その record (同じ tenant・未失効) の `label` と `usage` を
- * 新しい record に写し (body の label / usage は見ない)、新しい record を保存した**後に**
- * 古い record を失効させる。古い record が見つからなければ 409 `replaced_key_not_found` で
+ * 新しい record に写し、新しい record を保存した**後に**古い record を失効させる。body に
+ * `label` / `usage` があればその値に替える (不正なら 400。書き直しで機種の用途を付け直すため —
+ * Refs ippoan/alc-app#436)。古い record が見つからなければ 409 `replaced_key_not_found` で
  * 何も書かない。
  *
  * **`dev_device`** (Refs ippoan/alc-app#387): 規則は `explicitDevDevice` の 1 つ。明示が無ければ
@@ -208,20 +210,14 @@ export async function handleAlarmKeyRegister(request: Request, env: Env): Promis
     replaced = { fingerprint: oldFingerprint, record: old };
   }
 
-  let label: string;
-  let usage: AlarmKeyUsage;
-  if (replaced) {
-    label = replaced.record.label;
-    usage = replaced.record.usage;
-  } else {
-    if (!isValidLabel(body.label)) {
-      return jsonNoStore({ error: "label は 1〜64 文字で必要です" }, 400);
-    }
-    label = body.label;
-    if (!isAlarmKeyUsage(body.usage)) {
-      return jsonNoStore({ error: `usage は ${ALARM_KEY_USAGES.join(" / ")} のどれかで必要です` }, 400);
-    }
-    usage = body.usage;
+  // 差し替えで省いた label / usage は古い record から写す。新規はどちらも必須。
+  const label = replaced && body.label === undefined ? replaced.record.label : body.label;
+  if (!isValidLabel(label)) {
+    return jsonNoStore({ error: "label は 1〜64 文字で必要です" }, 400);
+  }
+  const usage = replaced && body.usage === undefined ? replaced.record.usage : body.usage;
+  if (!isAlarmKeyUsage(usage)) {
+    return jsonNoStore({ error: `usage は ${ALARM_KEY_USAGES.join(" / ")} のどれかで必要です` }, 400);
   }
 
   const existing = await getAlarmKeyRecord(env, fingerprint);

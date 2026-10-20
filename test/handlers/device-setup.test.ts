@@ -2201,6 +2201,9 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
     const select = html.slice(html.indexOf('<select id="rewrite-kind"'));
     const options = select.slice(0, select.indexOf("</select>"));
     for (const name of Object.keys(DEVICE_KINDS)) expect(options).toContain(`value="${name}"`);
+    // Vein Station は書き直しの select にだけ足す (DEVICE_KINDS = インストーラーのリンクは増やさない。Refs ippoan/alc-app#436)
+    expect(options).toContain('<option value="vein-station">Vein Station (指静脈読み取り端末)</option>');
+    expect(DEVICE_KINDS).not.toHaveProperty("vein-station");
     // ペアリングの画面・署名鍵の登録の画面に「開発用」のチェックは足さない
     expect(html).not.toMatch(/type="checkbox"[^>]*dev[_-]device/);
   });
@@ -2219,8 +2222,11 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
   it("confirm と完了の文言", async () => {
     const html = await pageHtml();
     const fn = extractFn(html, "rewriteConnectedDevice");
-    expect(fn).toContain('"接続中の機体を" + (devDevice ? "開発用" : "本番") +');
-    expect(fn).toContain('"として書き直しますか? (端末の鍵と署名鍵を作り直します。古い鍵は使えなくなります)"');
+    expect(fn).toContain('"接続中の機体を" + (devDevice ? "開発用" : "本番") + "として書き直しますか? (" +');
+    expect(fn).toContain('(veinStation ? "署名鍵" : "端末の鍵と署名鍵") + "を作り直します。古い鍵は使えなくなります)"');
+    expect(fn).toContain(
+      '"Vein Station を運行者端末として" + (devDevice ? "開発用" : "本番") + "で登録しました。点呼の画面を再読み込みしてください"',
+    );
     // 機体の選択 (許可ダイアログ) → confirm → 書き込み、の順
     expect(fn.indexOf("navigator.serial.requestPort()")).toBeLessThan(fn.indexOf("confirm("));
     expect(fn.indexOf("confirm(")).toBeLessThan(fn.indexOf("await run("));
@@ -2243,6 +2249,8 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
     );
     // credential を発行する機種だけ端末の鍵の手順、P4 GW 以外は署名鍵の手順
     expect(fn).toContain("paired: PAIRABLE_KINDS.includes(kind)");
+    // Vein Station は端末の鍵を持たない (PAIRABLE_KINDS に無い) ので、署名鍵の手順だけを運行者端末の用途で流す
+    expect(fn).toContain('if (veinStation) Object.assign(rewrite, { usage: "kiosk", label: "vein-station" });');
     expect(fn).toContain("if (rewrite.paired) {");
     expect(fn).toContain("if (!(await run(undefined, rewrite))) return;");
     expect(fn).toContain('if (kind !== "p4-gw" && !(await registerAlarmKey(rewrite))) return;');
@@ -2289,14 +2297,15 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
   it("署名鍵: 古い公開鍵を控えて AUTH KEYGEN FORCE、replaces_pubkey と dev_device で差し替える", async () => {
     const html = await pageHtml();
     const fn = extractFn(html, "registerAlarmKey");
-    expect(fn).toContain('await send(rewrite ? "AUTH KEYGEN FORCE" : "AUTH KEYGEN");');
+    expect(fn).toContain('await send(oldPubkey ? "AUTH KEYGEN FORCE" : "AUTH KEYGEN");');
     expect(fn).toContain(
-      "body: JSON.stringify({ pubkey, replaces_pubkey: oldPubkey, dev_device: rewrite.devDevice }),",
+      "body: JSON.stringify({ pubkey, replaces_pubkey: oldPubkey, dev_device: rewrite.devDevice, usage: rewrite.usage, label: rewrite.label }),",
     );
     // 古い公開鍵 (AUTH PUBKEY) → 作り直し、の順。控えた応答行は捨ててから作り直す
     expect(fn.indexOf("oldPubkey = (await waitLine(")).toBeLessThan(fn.indexOf('"AUTH KEYGEN FORCE"'));
-    // 今までの登録 (ラベルと用途を聞く) の body は変えない
-    expect(fn).toContain("body: JSON.stringify({ pubkey, label, usage }),");
+    // 新規登録の body を組むのは 1 か所 (書き直しの Vein Station もここへ合流する)
+    expect(fn).toContain("body: JSON.stringify({ pubkey, label, usage, dev_device: rewrite ? rewrite.devDevice : undefined }),");
+    expect(fn.split('fetch(ISSUER + "/device/setup/alarm-key"').length - 1).toBe(2);
     expect(html).toContain('alarmKeyRegisterBtn.addEventListener("click", () => registerAlarmKey());');
     // 失敗の文言
     expect(fn).toContain(
@@ -2306,6 +2315,179 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
     expect(fn).toContain("署名鍵の登録に失敗しました。もう一度書き直してください");
     // 署名鍵を持たない機体: 端末の鍵を書き直した後なら何もせず済み、署名鍵だけの機種なら止める
     expect(fn).toContain("if (!rewrite.paired) throw new Error(");
+  });
+
+  describe("registerAlarmKey を偽の機体と fetch で動かす", () => {
+    type Sent = { url: string; body: Record<string, unknown> };
+    /** AUTH PUBKEY / AUTH KEYGEN [FORCE] / PING に答える偽の機体 (WebSerial の port)。 */
+    function fakePort(initialPubkey: string | null) {
+      let pubkey = initialPubkey;
+      let generated = 0;
+      const commands: string[] = [];
+      const queue: Uint8Array[] = [];
+      let waiting: ((r: { value?: Uint8Array; done: boolean }) => void) | null = null;
+      const emit = (line: string) => {
+        const chunk = new TextEncoder().encode(line + "\n");
+        if (waiting) {
+          const w = waiting;
+          waiting = null;
+          w({ value: chunk, done: false });
+        } else queue.push(chunk);
+      };
+      const port = {
+        open: async () => {},
+        close: async () => {},
+        setSignals: async () => {},
+        writable: {
+          getWriter: () => ({
+            write: async (data: Uint8Array) => {
+              const cmd = new TextDecoder().decode(data).trim();
+              commands.push(cmd);
+              if (cmd === "PING") emit("PONG");
+              else if (cmd === "AUTH PUBKEY") emit(pubkey ? `AUTH PUBKEY ${pubkey}` : "ERR AUTH: no key");
+              else if (cmd === "AUTH KEYGEN" && pubkey) emit("ERR AUTH: key exists");
+              else if (cmd === "AUTH KEYGEN" || cmd === "AUTH KEYGEN FORCE") {
+                pubkey = `new-key-${++generated}`;
+                emit(`AUTH PUBKEY ${pubkey}`);
+              }
+            },
+            releaseLock: () => {},
+          }),
+        },
+        readable: {
+          getReader: () => ({
+            read: () =>
+              new Promise<{ value?: Uint8Array; done: boolean }>((resolve) => {
+                const next = queue.shift();
+                if (next) resolve({ value: next, done: false });
+                else waiting = resolve;
+              }),
+            cancel: async () => {
+              waiting?.({ done: true });
+            },
+          }),
+        },
+      };
+      return { port, commands };
+    }
+
+    /** 画面の script から registerAlarmKey を取り出し、偽の port と fetch の応答で 1 回流す。 */
+    async function runRegister(
+      rewrite: Record<string, unknown> | undefined,
+      responses: Array<{ status: number; body?: Record<string, unknown> }>,
+    ) {
+      const html = await pageHtml();
+      const known = html.match(/const KNOWN = (\/.*\/);/)![1]!;
+      const sent: Sent[] = [];
+      const fetchFn = async (url: string, init: { body: string }) => {
+        sent.push({ url, body: JSON.parse(init.body) as Record<string, unknown> });
+        const r = responses.shift()!;
+        return { ok: r.status < 300, status: r.status, json: async () => r.body ?? {} };
+      };
+      const prompts: string[] = [];
+      const resultEl = { textContent: "", innerHTML: "" };
+      const alarmKeyResultEl = { textContent: "", innerHTML: "" };
+      const fn = new Function(
+        "alarmKeyRegisterBtn",
+        "resultEl",
+        "alarmKeyResultEl",
+        "alarmKeyUsageEl",
+        "ALARM_KEY_USAGE_DISPLAY",
+        "navigator",
+        "fetch",
+        "prompt",
+        "loadAlarmKeys",
+        "ISSUER",
+        `const KNOWN = ${known}; async ${extractFn(html, "registerAlarmKey")}; return registerAlarmKey;`,
+      )(
+        { disabled: false },
+        resultEl,
+        alarmKeyResultEl,
+        { value: "tenko-manager" },
+        { kiosk: "運行者端末", "tenko-manager": "運行管理者席" },
+        { serial: { requestPort: async () => rewrite?.port } },
+        fetchFn,
+        (msg: string) => {
+          prompts.push(msg);
+          return "typed";
+        },
+        () => {},
+        "https://issuer.example",
+      ) as (rewrite?: Record<string, unknown>) => Promise<boolean>;
+      const ok = await fn(rewrite);
+      return { ok, sent, prompts, resultEl };
+    }
+    const vein = (port: unknown, devDevice = true) => ({
+      devDevice,
+      port,
+      paired: false,
+      usage: "kiosk",
+      label: "vein-station",
+    });
+
+    it("Vein Station + 旧鍵あり: 差し替えの body に usage / label を足す (1 回で済む)", async () => {
+      const { port, commands } = fakePort("old-key");
+      const r = await runRegister(vein(port), [{ status: 200, body: { fingerprint: "f" } }]);
+      expect(r.ok).toBe(true);
+      expect(commands).toContain("AUTH KEYGEN FORCE");
+      expect(r.sent).toEqual([
+        {
+          url: "https://issuer.example/device/setup/alarm-key",
+          body: { pubkey: "new-key-1", replaces_pubkey: "old-key", dev_device: true, usage: "kiosk", label: "vein-station" },
+        },
+      ]);
+      expect(r.prompts).toEqual([]);
+    });
+
+    it("Vein Station + 旧鍵なし (AUTH PUBKEY が ERR): 鍵を作り、新規登録に回す (ラベルは聞かない)", async () => {
+      const { port, commands } = fakePort(null);
+      const r = await runRegister(vein(port, false), [{ status: 200, body: { fingerprint: "f" } }]);
+      expect(r.ok).toBe(true);
+      expect(commands).toContain("AUTH KEYGEN");
+      expect(commands).not.toContain("AUTH KEYGEN FORCE");
+      expect(r.sent.map((s) => s.body)).toEqual([
+        { pubkey: "new-key-1", label: "vein-station", usage: "kiosk", dev_device: false },
+      ]);
+      expect(r.prompts).toEqual([]);
+    });
+
+    it("Vein Station + 旧鍵が登録簿に無い (409 replaced_key_not_found): 作った鍵を新規登録に回す", async () => {
+      const { port } = fakePort("old-key");
+      const r = await runRegister(vein(port), [
+        { status: 409, body: { error: "replaced_key_not_found" } },
+        { status: 200, body: { fingerprint: "f" } },
+      ]);
+      expect(r.ok).toBe(true);
+      expect(r.sent.map((s) => s.body)).toEqual([
+        { pubkey: "new-key-1", replaces_pubkey: "old-key", dev_device: true, usage: "kiosk", label: "vein-station" },
+        { pubkey: "new-key-1", label: "vein-station", usage: "kiosk", dev_device: true },
+      ]);
+    });
+
+    it("Vein Station + 差し替えがほかの理由で失敗: 新規登録に回らず止める", async () => {
+      const { port } = fakePort("old-key");
+      const r = await runRegister(vein(port), [{ status: 403, body: { error: "developer_google_session_required" } }]);
+      expect(r.ok).toBe(false);
+      expect(r.sent).toHaveLength(1);
+      expect(r.resultEl.innerHTML).toContain("Google でログインし直してください");
+    });
+
+    it("ほかの機種 (usage なし) は今までどおり: 旧鍵なしは止め、409 は新規登録に回らない", async () => {
+      const noKey = await runRegister({ devDevice: true, port: fakePort(null).port, paired: false }, []);
+      expect(noKey.ok).toBe(false);
+      expect(noKey.sent).toEqual([]);
+      expect(noKey.resultEl.innerHTML).toContain("この機体には署名鍵がありません");
+
+      const { port } = fakePort("old-key");
+      const missing = await runRegister({ devDevice: true, port, paired: false }, [
+        { status: 409, body: { error: "replaced_key_not_found" } },
+      ]);
+      expect(missing.ok).toBe(false);
+      expect(missing.sent.map((s) => s.body)).toEqual([
+        { pubkey: "new-key-1", replaces_pubkey: "old-key", dev_device: true },
+      ]);
+      expect(missing.resultEl.innerHTML).toContain("この機体の署名鍵は登録簿に見つかりませんでした");
+    });
   });
 
   it("画面: client script が構文として通る (開発者・開発者でないアカウントの両方)", async () => {
