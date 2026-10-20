@@ -415,6 +415,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "POST", path: "/api/measurements" },
     { method: "POST", path: "/api/measurements/start" },
     { method: "PUT", path: "/api/measurements/m-1" },
+    { method: "POST", path: "/api/measurements/m-1/tenko" },
     { method: "GET", path: "/api/measurements" },
     { method: "GET", path: "/api/measurements/m-1" },
     { method: "GET", path: "/api/measurements/m-1/face-photo" },
@@ -493,6 +494,10 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "DELETE", path: "/api/measurements/m-1" },
       { method: "POST", path: "/api/measurements/m-1/video" },
       { method: "PUT", path: "/api/measurements/m-1/face-photo" },
+      { method: "GET", path: "/api/measurements/m-1/tenko" },
+      { method: "PUT", path: "/api/measurements/m-1/tenko" },
+      { method: "POST", path: "/api/measurements/m-1/tenko/x" },
+      { method: "POST", path: "/api/measurements/tenko" },
       { method: "GET", path: "/api/car-inspections/lookup" },
     ];
     for (const { method, path } of cases) {
@@ -1485,6 +1490,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "GET", path: "/api/employees/emp-1" },
       { method: "GET", path: "/api/measurements" },
       { method: "POST", path: "/api/measurements" },
+      // 点呼の確定は結果カードを出す運転者の端末 (kiosk) だけ。測定台には開けない。
+      { method: "POST", path: "/api/measurements/m-1/tenko" },
       { method: "GET", path: "/api/tenko/dashboard" },
       { method: "GET", path: "/api/timecard/punches" },
       // 端末レコードを持たないので settings は呼ばれない口 (表に入れていない)。
