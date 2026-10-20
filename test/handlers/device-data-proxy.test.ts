@@ -1448,6 +1448,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
   // ★ BP_STATION_ROUTES の全行を method + path で固定する (表駆動)。
   const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
     { method: "POST", path: "/api/employees/lookup" },
+    // 指静脈の登録画面で、社員番号のキーパッドから乗務員を選ぶ (Refs ippoan/alc-app#436)。
+    { method: "GET", path: "/api/employees/by-code/1234" },
     { method: "GET", path: "/api/employees/face-data" },
     { method: "POST", path: "/api/measurements/start" },
     { method: "PUT", path: "/api/measurements/m-1" },
@@ -1487,6 +1489,12 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "DELETE", path: "/api/employees/lookup" },
       { method: "PUT", path: "/api/employees/face-data" },
       { method: "GET", path: "/api/measurements/start" },
+      // 社員番号の照会は GET だけ。別 method・下位 path の余りは 403。
+      { method: "POST", path: "/api/employees/by-code/1234" },
+      { method: "PUT", path: "/api/employees/by-code/1234" },
+      { method: "DELETE", path: "/api/employees/by-code/1234" },
+      { method: "GET", path: "/api/employees/by-code" },
+      { method: "GET", path: "/api/employees/by-code/1234/x" },
       // kiosk が通せる他の口 (測定台には要らない)。
       { method: "GET", path: "/api/employees" },
       { method: "GET", path: "/api/employees/emp-1" },
@@ -1514,6 +1522,41 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
         env(),
       );
       expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 指静脈の承認待ち一覧・承認はどの端末の鍵でも 403 (管理者のログインだけ、Refs ippoan/alc-app#436)", async () => {
+    const fetchMock = okFetch();
+    const tokens = [
+      await bpToken(),
+      await kioskToken(),
+      await signTestJwt(
+        { sub: "device-kiosk-dev", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK, dev_device: true },
+        TEST_JWT_SECRET,
+      ),
+      await signTestJwt(
+        { sub: "alarm:cafebabecafebabe", tenant_id: TENANT, role: DEVICE_ROLE_TENKO_MANAGER },
+        TEST_JWT_SECRET,
+      ),
+    ];
+    for (const token of tokens) {
+      for (const { method, path } of [
+        { method: "GET", path: "/api/vein/templates/pending" },
+        { method: "POST", path: "/api/vein/templates/emp-1/approve" },
+      ]) {
+        const res = await handleDeviceDataProxy(
+          req(`/device-data-proxy${path}`, {
+            method,
+            token,
+            ...(method !== "GET"
+              ? { headers: { "content-type": "application/json" }, body: JSON.stringify({}) }
+              : {}),
+          }),
+          env(),
+        );
+        expect(res.status, `${method} ${path}`).toBe(403);
+      }
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });

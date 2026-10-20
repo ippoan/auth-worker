@@ -167,8 +167,9 @@ export const DEVICE_ROLE_TENKO_MANAGER = "device-tenko-manager";
  * 血圧測定台 (血圧計をつないだ PC、VoiceS3R を挿した第二の端末クラス) 専用 role
  * (Refs ippoan/alc-app#353)。`/device/alarm-token` に用途 `bp-station` で登録した鍵の
  * 署名を出したときだけ mint される。`/device-data-proxy` で通せるのは NFC 照会・
- * 顔データ同期・測定開始・測定更新の 4 本だけで、`device-kiosk` / `device-tenko-manager`
- * とは blast radius を分離する。
+ * 顔データ同期・測定開始・測定更新・点呼の確定と、指静脈の登録画面が呼ぶ口 (登録と、
+ * 社員番号から乗務員を選ぶための by-code) だけで (正本は `BP_STATION_ROUTES`)、
+ * `device-kiosk` / `device-tenko-manager` とは blast radius を分離する。
  *
  * `DEVICE_ROLE_TENKO_MANAGER` と同じ理由で **意図して `DEVICE_ROLES` に入れていない。**
  * pairing で長命 credential を発行する role ではなく、alarm-key 経由の短命 JWT
