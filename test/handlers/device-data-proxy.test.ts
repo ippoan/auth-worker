@@ -405,6 +405,8 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "PUT", path: "/api/employees/emp-1/face" },
     { method: "PUT", path: "/api/vein/templates/emp-1" },
     { method: "GET", path: "/api/vein/templates" },
+    { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+    { method: "GET", path: "/api/vein/module-templates" },
     { method: "POST", path: "/api/vein/identify" },
     { method: "GET", path: "/api/employees/emp-1" },
     { method: "GET", path: "/api/timecard/punches" },
@@ -522,6 +524,13 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "GET", path: "/api/vein/templates/emp-1" },
       { method: "POST", path: "/api/vein/templates" },
       { method: "PUT", path: "/api/vein/identify" },
+      // モジュール記録: 余計な path・別 method・別の語尾は 403。
+      { method: "PUT", path: "/api/vein/templates/emp-1/module/extra" },
+      { method: "POST", path: "/api/vein/templates/emp-1/module" },
+      { method: "GET", path: "/api/vein/templates/emp-1/module" },
+      { method: "PUT", path: "/api/vein/module-templates" },
+      { method: "POST", path: "/api/vein/module-templates" },
+      { method: "GET", path: "/api/vein/module-templates/emp-1" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
@@ -1515,6 +1524,9 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "PUT", path: "/api/vein/templates/emp-1/extra" },
       { method: "GET", path: "/api/vein/templates" },
       { method: "POST", path: "/api/vein/identify" },
+      // モジュール記録の 2 本も測定台には入れない (kiosk 専用)。
+      { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+      { method: "GET", path: "/api/vein/module-templates" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
