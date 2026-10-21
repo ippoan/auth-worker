@@ -131,6 +131,14 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * (`DELETE /api/vein/templates/{employee_id}`) は入れない** — 顔にもキオスクの
  * 削除口は無く (管理者の browser JWT だけ)、指静脈もそれに揃える。
  *
+ * 指静脈モジュールの記録 (照合を端末のモジュールへ移す M-b、Refs ippoan/alc-app#436):
+ * `PUT /api/vein/templates/{employee_id}/module` (モジュールが作った記録全体の預け入れ) と
+ * `GET /api/vein/module-templates` (承認済みの記録の一覧。端末が自分のモジュールへ書き戻す)
+ * を入れる。後者は `GET /api/vein/templates` と同じ到達面 (tenant の承認済み生体記録を
+ * キオスクへ) で、**alc-vein-worker は tenant ヘッダーだけを信じるので、認可はこの表だけで
+ * 決まる**。測定台の鍵には入れない (下の `BP_STATION_ROUTES` の判断と同じ)。
+ * `DEV_EXTRA_GET_ROUTES` にも入れず、開発用の端末だけが使うことは画面側で守る。
+ *
  * カードの持ち主の照会 (`POST /api/timecard/cards/lookup`、body に `card_id`、
  * Refs ippoan/alc-app#387)。運転者の端末 (ブラウザ) に USB で繋いだ機体が社員証を読んだとき、
  * 画面が「このカードは誰のものか」をサーバーに引くのに使う。**読み取りだけの照会**で、
@@ -149,6 +157,8 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^\/api\/employees\/[^/]+\/face$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/vein\/templates$/ },
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
+  { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "POST", pattern: /^\/api\/vein\/identify$/ },
   { method: "GET", pattern: /^\/api\/employees\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/timecard\/punches$/ },
@@ -310,6 +320,8 @@ const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map
  * あり、`KIOSK_ROUTES` の同じ行と method・pattern を揃えてある。**それ以外の指静脈の口は
  * 入れない** — 削除 (`DELETE`) は kiosk にも無く、テンプレート一覧 (`GET`、tenant 全員の
  * 生体情報) と 1:N 照合 (`POST /api/vein/identify`) は登録画面が呼ばないので既定拒否のまま。
+ * モジュール記録の 2 本 (`PUT …/{employee_id}/module`・`GET /api/vein/module-templates`) も
+ * 同じ理由で入れない。
  * 承認待ちの一覧 (`GET /api/vein/templates/pending`) と承認
  * (`POST /api/vein/templates/{employee_id}/approve`) は管理者のログインだけの口で、
  * **どの端末の鍵の表にも入れない** (Refs ippoan/alc-app#436)。
