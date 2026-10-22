@@ -136,8 +136,8 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * `GET /api/vein/module-templates` (承認済みの記録の一覧。端末が自分のモジュールへ書き戻す)
  * を入れる。後者は `GET /api/vein/templates` と同じ到達面 (tenant の承認済み生体記録を
  * キオスクへ) で、**alc-vein-worker は tenant ヘッダーだけを信じるので、認可はこの表だけで
- * 決まる**。測定台の鍵には入れない (下の `BP_STATION_ROUTES` の判断と同じ)。
- * `DEV_EXTRA_GET_ROUTES` にも入れず、開発用の端末だけが使うことは画面側で守る。
+ * 決まる**。本番・開発用の端末とも使う (alc-app の `usesVeinModule`)。測定台の鍵にも同じ 2 本を
+ * 開ける (下の `BP_STATION_ROUTES`)。
  *
  * カードの持ち主の照会 (`POST /api/timecard/cards/lookup`、body に `card_id`、
  * Refs ippoan/alc-app#387)。運転者の端末 (ブラウザ) に USB で繋いだ機体が社員証を読んだとき、
@@ -319,9 +319,17 @@ const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map
  * (`PUT /api/employees/{id}/face`) と同じ扱いにする、というユーザー判断 (2026-09-25) が
  * あり、`KIOSK_ROUTES` の同じ行と method・pattern を揃えてある。**それ以外の指静脈の口は
  * 入れない** — 削除 (`DELETE`) は kiosk にも無く、テンプレート一覧 (`GET`、tenant 全員の
- * 生体情報) と 1:N 照合 (`POST /api/vein/identify`) は登録画面が呼ばないので既定拒否のまま。
- * モジュール記録の 2 本 (`PUT …/{employee_id}/module`・`GET /api/vein/module-templates`) も
- * 同じ理由で入れない。
+ * 生体情報) と 1:N 照合 (`POST /api/vein/identify`) は測定台が呼ばないので既定拒否のまま。
+ *
+ * **モジュール記録の 2 本 (`PUT …/{employee_id}/module`・`GET /api/vein/module-templates`) と、
+ * 照合で当たった乗務員を引く `GET /api/employees/{id}` は入れる** (Refs ippoan/alc-app#436)。
+ * 指静脈の登録・照合・同期は測定台でも端末のモジュールで行う、というユーザー判断 (2026-10-22)。
+ * モジュール形式で登録した人はサーバーの照合 (`POST /api/vein/identify`) に載らないので、
+ * 測定台だけサーバーの照合のままだと、そこから先は一人も特定できない。
+ * `GET /api/vein/module-templates` は tenant の承認済みの記録 (生体情報) を測定台へ開く口になる点は
+ * `GET /api/employees/face-data` と同じ扱い。`GET /api/employees/{id}` は `{id}` を UUID の形に限る
+ * (`UUID_SEGMENT`) — `[^/]+` だと `GET /api/employees/face-data` 以外の固定 path (`by-code` など) の
+ * 形にも当たりうるため、`TENKO_MANAGER_ROUTES` と同じ書き方にする。
  * 承認待ちの一覧 (`GET /api/vein/templates/pending`) と承認
  * (`POST /api/vein/templates/{employee_id}/approve`) は管理者のログインだけの口で、
  * **どの端末の鍵の表にも入れない** (Refs ippoan/alc-app#436)。
@@ -340,6 +348,9 @@ const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^\/api\/measurements\/[^/]+$/ },
   { method: "POST", pattern: /^\/api\/measurements\/[^/]+\/tenko$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
+  { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
+  { method: "GET", pattern: new RegExp(`^/api/employees/${UUID_SEGMENT}$`) },
 ];
 
 /**
