@@ -1464,8 +1464,13 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     { method: "PUT", path: "/api/measurements/m-1" },
     // 点呼の確定 (結果カードの IT点呼 / 終了)。測定台として登録した端末でも同じ画面になる (Refs ippoan/alc-app#436)。
     { method: "POST", path: "/api/measurements/m-1/tenko" },
-    // 血圧測定タブの指静脈登録 (Refs ippoan/alc-app#437)。登録だけで、他の指静脈の口は下で 403。
+    // 血圧測定タブの指静脈登録 (Refs ippoan/alc-app#437)。
     { method: "PUT", path: "/api/vein/templates/emp-1" },
+    // 指静脈の登録・照合・同期は測定台も端末のモジュールで行う (Refs ippoan/alc-app#436)。
+    { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+    { method: "GET", path: "/api/vein/module-templates" },
+    // 照合で当たった乗務員を引く。{id} は UUID の形だけ (下で UUID 以外は 403)。
+    { method: "GET", path: "/api/employees/0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e" },
   ];
 
   for (const { method, path } of ALLOWED) {
@@ -1517,16 +1522,23 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "GET", path: "/api/timecard/punches" },
       // 端末レコードを持たないので settings は呼ばれない口 (表に入れていない)。
       { method: "GET", path: "/api/devices/settings/dev-1" },
-      // 指静脈: 登録 (PUT) 以外は kiosk だけに開けた口か、どの端末にも無い口 (削除)。
+      // 乗務員の引き当ては UUID の形だけ。
+      { method: "PUT", path: "/api/employees/0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e" },
+      { method: "DELETE", path: "/api/employees/0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e" },
+      { method: "GET", path: "/api/employees/0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e/face" },
+      // 指静脈: 登録 (PUT)・モジュール記録の 2 本以外は kiosk だけに開けた口か、どの端末にも無い口 (削除)。
       { method: "DELETE", path: "/api/vein/templates/emp-1" },
       { method: "GET", path: "/api/vein/templates/emp-1" },
       { method: "PUT", path: "/api/vein/templates" },
       { method: "PUT", path: "/api/vein/templates/emp-1/extra" },
       { method: "GET", path: "/api/vein/templates" },
       { method: "POST", path: "/api/vein/identify" },
-      // モジュール記録の 2 本も測定台には入れない (kiosk 専用)。
-      { method: "PUT", path: "/api/vein/templates/emp-1/module" },
-      { method: "GET", path: "/api/vein/module-templates" },
+      // モジュール記録は PUT / GET の 2 本だけ。別 method・下位 path の余りは 403。
+      { method: "GET", path: "/api/vein/templates/emp-1/module" },
+      { method: "POST", path: "/api/vein/templates/emp-1/module" },
+      { method: "PUT", path: "/api/vein/templates/emp-1/module/extra" },
+      { method: "POST", path: "/api/vein/module-templates" },
+      { method: "GET", path: "/api/vein/module-templates/emp-1" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
