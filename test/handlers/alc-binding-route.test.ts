@@ -1608,17 +1608,23 @@ describe("trouble の口 → ALC_TROUBLE binding (Refs ippoan/rust-alc-api#747)"
 });
 
 describe("拠点カメラの切り出し → ALC_CAM_CLIPS binding (ippoan/alc-cam)", () => {
-  it("/api/cam-clips/ は画面用だけが ALC_CAM_CLIPS へ。端末用・内部用・管理画面用と近い名前は null", () => {
+  it("/api/cam-clips/ は画面用と端末用が ALC_CAM_CLIPS へ。内部用・管理画面用と近い名前は null", () => {
     const clips = makeBinding();
     const { env } = setup({ ALC_CAM_CLIPS: clips as unknown as Fetcher });
     const target = { fetcher: clips, host: "alc-cam-sd-ingest" };
-    for (const path of ["/api/cam-clips/clips", "/api/cam-clips/clips/TS-NS320W-55/20261023T125800_20261023T125930.mp4"]) {
+    // 端末用で通せる口は device-data-proxy の許可表 (運行管理者席の GET /cameras だけ) が絞る
+    for (const path of [
+      "/api/cam-clips/cameras",
+      "/api/cam-clips/clips",
+      "/api/cam-clips/clips/TS-NS320W-55/20261023T125800_20261023T125930.mp4",
+    ]) {
       expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
-      expect(resolveAlcBinding(path, env, "device"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "device"), path).toEqual(target);
       expect(resolveAlcBinding(path, env, "internal"), path).toBeNull();
       expect(resolveAlcBinding(path, env, "admin"), path).toBeNull();
     }
     expect(resolveAlcBinding("/api/cam-clipsx", env, "browser")).toBeNull();
+    expect(resolveAlcBinding("/api/cam-clipsx", env, "device")).toBeNull();
   });
 
   it("binding が無ければ null (= Cloud Run)", () => {

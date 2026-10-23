@@ -1862,3 +1862,102 @@ describe("Service Binding へ振り分ける path の defense-in-depth (isUnsafe
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras → ALC_CAM_CLIPS (ippoan/alc-cam)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  const CAMERAS = "/api/cam-clips/cameras";
+
+  function setupClips() {
+    const clips = { fetch: vi.fn(async (): Promise<Response> => new Response("from-clips")) };
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response("from-cloud-run"));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return { clips, fetchMock, env: env({ ALC_CAM_CLIPS: clips as unknown as Fetcher }) };
+  }
+
+  const managerToken = (claims: Record<string, unknown> = {}) =>
+    signTestJwt(
+      { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role: DEVICE_ROLE_TENKO_MANAGER, ...claims },
+      TEST_JWT_SECRET,
+    );
+
+  it("席の鍵の GET は binding へ。ingest に付くのは X-Tenant-ID / X-Device-Role / X-Device-Id で、X-User-Role は付かない", async () => {
+    const { clips, fetchMock, env: e } = setupClips();
+    const res = await handleDeviceDataProxy(
+      req(`/device-data-proxy${CAMERAS}`, {
+        method: "GET",
+        token: await managerToken(),
+        // client が名乗っても下流には届かない
+        headers: { "X-User-Role": "admin", "X-Tenant-ID": "22222222-2222-2222-2222-222222222222" },
+      }),
+      e,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("from-clips");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [url, init] = clips.fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`https://alc-cam-sd-ingest${CAMERAS}`);
+    expect(init.method).toBe("GET");
+    expect(init.headers).toEqual({
+      "X-Tenant-ID": TENANT,
+      "X-Device-Role": DEVICE_ROLE_TENKO_MANAGER,
+      "X-Device-Id": "alarm:deadbeefdeadbeef",
+    });
+  });
+
+  it("開発用の席の鍵なら X-Device-Dev: 1 も付く", async () => {
+    const { clips, env: e } = setupClips();
+    await handleDeviceDataProxy(
+      req(`/device-data-proxy${CAMERAS}`, { method: "GET", token: await managerToken({ dev_device: true }) }),
+      e,
+    );
+    const init = (clips.fetch.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect((init.headers as Record<string, string>)["X-Device-Dev"]).toBe("1");
+  });
+
+  it("★ 席の鍵でも GET /cameras 以外の cam-clips の口と、GET 以外の method は 403 (binding にも Cloud Run にも届かない)", async () => {
+    const { clips, fetchMock, env: e } = setupClips();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "POST", path: CAMERAS },
+      { method: "PUT", path: CAMERAS },
+      { method: "PATCH", path: CAMERAS },
+      { method: "DELETE", path: CAMERAS },
+      { method: "GET", path: `${CAMERAS}/` },
+      { method: "GET", path: `${CAMERAS}/TS-NS320W-55` },
+      { method: "PATCH", path: `${CAMERAS}/TS-NS320W-55` },
+      { method: "GET", path: "/api/cam-clips/clips" },
+      { method: "POST", path: "/api/cam-clips/clips" },
+      { method: "GET", path: "/api/cam-clips/clips/TS-NS320W-55/x.mp4" },
+      { method: "GET", path: "/api/cam-clips/device-candidates" },
+      { method: "GET", path: "/api/cam-clips/camerasx" },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await managerToken() }),
+        e,
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(clips.fetch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 席の鍵以外の device 鍵は GET /cameras も 403", async () => {
+    const { clips, fetchMock, env: e } = setupClips();
+    for (const role of [
+      DEVICE_ROLE,
+      DEVICE_ROLE_KIOSK,
+      DEVICE_ROLE_BP_STATION,
+      DEVICE_ROLE_DTAKO_INGEST,
+      DEVICE_ROLE_DTAKO_RELAY,
+    ]) {
+      for (const claims of [{}, { dev_device: true }]) {
+        const token = await signTestJwt({ sub: "device-1", tenant_id: TENANT, role, ...claims }, TEST_JWT_SECRET);
+        const res = await handleDeviceDataProxy(req(`/device-data-proxy${CAMERAS}`, { method: "GET", token }), e);
+        expect(res.status, `${role} ${JSON.stringify(claims)}`).toBe(403);
+      }
+    }
+    expect(clips.fetch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

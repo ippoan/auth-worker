@@ -232,6 +232,12 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * backend 側は読み取り専用 (照会するだけで打刻しない)。開発用の鍵に限らず席の鍵すべてに開く。
  * 開くのはこの POST 1 本だけ (両端固定)。
  *
+ * カメラの一覧 (`GET /api/cam-clips/cameras`) は、遠隔点呼の画面が乗務員の端末からカメラを引いて
+ * 映像 (cam-room) を開くのに使う (ippoan/alc-cam の ingest。Service Binding `ALC_CAM_CLIPS`)。
+ * 開くのはこの GET 1 本だけ (両端固定)。カメラの登録・更新・切り出し・候補の口は開けない。
+ * ingest 側も `X-Device-Role: device-tenko-manager` にはこの GET だけを許し、録画の設定を除いた
+ * `id`・`name`・`device_ids` だけを返す。
+ *
  * **入れない口 (モニターが呼ばない、または席が行を持たない)**:
  * - `GET /api/employees/face-data` — tenant 全員の生体情報。モニターからの呼び出しが 0 件。
  * - `GET /api/devices/settings/{id}` — 運行管理者席は devices に行を持たない。
@@ -277,6 +283,7 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: new RegExp(`^/api/tenko/driver-info/${UUID_SEGMENT}$`) },
   { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/judgment$`) },
   { method: "POST", pattern: /^\/api\/timecard\/cards\/lookup$/ },
+  { method: "GET", pattern: /^\/api\/cam-clips\/cameras$/ },
 ];
 
 /**
