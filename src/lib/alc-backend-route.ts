@@ -101,6 +101,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/measurements", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/measurements/start", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/measurements/alert-test", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "admin"] },
+  // 血圧の日報のテスト送信 (admin だけ。判定は alc-measurements-worker が X-User-Role で行う。alert-test と同じ経路。Refs ippoan/alc-app#436)
+  { match: "exact", path: "/api/measurements/bp-report-test", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "admin"] },
   // 血圧の通知の設定 (社員 ↔ LINE WORKS、本人への通知・日報の受け取り。既存の通知の宛先とは別管理、Refs ippoan/alc-app#436)。
   // 管理者の画面 (alc-app) からだけ使う。admin の判定は alc-measurements-worker が X-User-Role で行う
   { match: "prefix", path: "/api/bp-notify/", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser"] },

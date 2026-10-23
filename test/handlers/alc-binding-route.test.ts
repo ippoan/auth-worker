@@ -1673,6 +1673,20 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     }
   });
 
+  it("bp-report-test (血圧の日報のテスト送信) は画面用と管理画面用が ALC_MEASUREMENTS へ。端末用・内部用は null", () => {
+    const { measurements, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    const path = "/api/measurements/bp-report-test";
+    expect(resolveAlcBinding(path, env, "browser")).toEqual(target);
+    expect(resolveAlcBinding(path, env, "admin")).toEqual(target);
+    expect(resolveAlcBinding(path, env, "device")).toBeNull();
+    expect(resolveAlcBinding(path, env, "internal")).toBeNull();
+    for (const near of ["/api/measurements/bp-report-test/x", "/api/measurements/bp-report-testx"]) {
+      expect(resolveAlcBinding(near, env, "browser"), near).toBeNull();
+      expect(resolveAlcBinding(near, env, "admin"), near).toBeNull();
+    }
+  });
+
   it("血圧の通知の設定 (/api/bp-notify/) は画面用だけが ALC_MEASUREMENTS へ。端末用・内部用・管理画面用は null", () => {
     const { measurements, env } = setupMeasurements();
     const target = { fetcher: measurements, host: "alc-measurements" };
