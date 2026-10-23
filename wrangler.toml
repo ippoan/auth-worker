@@ -45,7 +45,12 @@ ALC_API_PREVIEW_HOST_SUFFIX = "rust-alc-api-747065218280.asia-northeast1.run.app
 # (device-data-proxy.ts の KIOSK_ROUTES doc 参照)。
 # ★ この口に書き込みを足すな — 安全性は「常に読み取り専用であること」に依存する
 # (rust-alc-api 側のハンドラにも同じコメントを #c644-25 が入れる)。
-ALC_PROXY_DEV_WRITE_ALLOWLIST = "/api/employees/lookup"
+# /api/cam-clips/clips (ippoan/alc-cam の ingest/、拠点カメラの SD 録画の時間指定の切り出し) は
+# **書き込みのある口** として意図して足した: MCP の verify_eval (dev token) から本番の切り出しを
+# 作って確かめるため。副作用は R2 alc-cam-recordings に切り出し (と元ファイル) を置くことだけで、
+# 同じ時間帯は作り直さない・1 回 120 分まで・admin でないと Worker が 403。判定は prefix 一致なので
+# /api/cam-clips/clips/<名前> の非 GET も通るが、Worker はその下に GET (取り出し) しか持たない (他は 404)。
+ALC_PROXY_DEV_WRITE_ALLOWLIST = "/api/employees/lookup,/api/cam-clips/clips"
 WORKER_ENV = "prod"
 # 機械用資格情報 (lib/machine-credential.ts) の KV key の環境名。AUTH_CONFIG は staging と同じ namespace
 # なので key で分ける (Refs ohishi-exp/rust-leave-worker#1)。消すと資格情報とチケットが全部失敗側に倒れる。
