@@ -139,6 +139,17 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * 決まる**。本番・開発用の端末とも使う (alc-app の `usesVeinModule`)。測定台の鍵にも同じ 2 本を
  * 開ける (下の `BP_STATION_ROUTES`)。
  *
+ * 運行管理者による承認 (Refs ippoan/alc-app#436): `GET /api/vein/module-templates/pending`
+ * (承認待ちの記録の一覧。名前・版・登録した端末の id だけで、記録の中身は返さない) と
+ * `POST /api/vein/templates/{employee_id}/approve-by-employee` を入れる。**管理者のログインが
+ * 無い端末の口を開けて良い理由**: 承認者は端末の画面で管理者自身が指静脈を照合して決まる社員
+ * (`approver_employee_id`) で、利用者の権限ではない。alc-vein-worker が承認者の役割
+ * (manager か admin)・承認者自身の承認済みの登録・自己承認でないことを毎回検査して拒否する
+ * (403 `approver_not_manager` / `approver_not_enrolled` / `self_approval`)。版 (`updated_at`)
+ * が違えば 409 で書かない。端末が書けるのは「承認待ち → 承認済み」だけで、削除・内容の書き換えは
+ * できない。管理者のログインの口 (`GET /api/vein/templates/pending`・`POST …/approve`) は別で、
+ * 端末の表には入れない。測定台の鍵にも同じ 2 本を開ける。
+ *
  * カードの持ち主の照会 (`POST /api/timecard/cards/lookup`、body に `card_id`、
  * Refs ippoan/alc-app#387)。運転者の端末 (ブラウザ) に USB で繋いだ機体が社員証を読んだとき、
  * 画面が「このカードは誰のものか」をサーバーに引くのに使う。**読み取りだけの照会**で、
@@ -159,6 +170,8 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/vein\/templates$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
+  { method: "GET", pattern: /^\/api\/vein\/module-templates\/pending$/ },
+  { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/approve-by-employee$/ },
   { method: "POST", pattern: /^\/api\/vein\/identify$/ },
   { method: "GET", pattern: /^\/api\/employees\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/timecard\/punches$/ },
@@ -332,7 +345,10 @@ const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map
  * 形にも当たりうるため、`TENKO_MANAGER_ROUTES` と同じ書き方にする。
  * 承認待ちの一覧 (`GET /api/vein/templates/pending`) と承認
  * (`POST /api/vein/templates/{employee_id}/approve`) は管理者のログインだけの口で、
- * **どの端末の鍵の表にも入れない** (Refs ippoan/alc-app#436)。
+ * **どの端末の鍵の表にも入れない** (Refs ippoan/alc-app#436)。ただし運行管理者の指静脈の照合で
+ * 承認する別の 2 本 (`GET /api/vein/module-templates/pending`・
+ * `POST /api/vein/templates/{employee_id}/approve-by-employee`) は入れる — 承認者は照合で決まり、
+ * サーバーが役割・登録・自己承認を検査する (理由は `KIOSK_ROUTES` の doc)。
  *
  * **`GET /api/employees/by-code/{code}` (社員番号から乗務員を引く) も入れる**
  * (Refs ippoan/alc-app#436)。指静脈の登録画面で、NFC を使わずに社員番号のキーパッドから
@@ -350,6 +366,8 @@ const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
+  { method: "GET", pattern: /^\/api\/vein\/module-templates\/pending$/ },
+  { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/approve-by-employee$/ },
   { method: "GET", pattern: new RegExp(`^/api/employees/${UUID_SEGMENT}$`) },
 ];
 
