@@ -1690,6 +1690,75 @@ describe("X-Device-Dev / X-Device-Role ヘッダ転送 (Refs ippoan/alc-app#387)
   });
 });
 
+describe("X-Device-Id ヘッダ転送 (token の sub を下流へ渡す, Refs ippoan/alc-app#436)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function tokenWithSub(sub: unknown): Promise<string> {
+    return signTestJwt(
+      { ...(sub === undefined ? {} : { sub }), tenant_id: TENANT, role: DEVICE_ROLE_KIOSK },
+      TEST_JWT_SECRET,
+    );
+  }
+
+  // Cloud Run 経路 (GET /api/employees)
+  async function cloudRunHeaders(token: string, headers?: Record<string, string>) {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/employees", { method: "GET", token, headers }),
+      env(),
+    );
+    return (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+  }
+
+  // Service Binding 経路 (PUT /api/vein/templates/{id})
+  async function bindingHeaders(token: string, headers?: Record<string, string>) {
+    const binding = { fetch: vi.fn(async (): Promise<Response> => new Response("from-binding")) };
+    await handleDeviceDataProxy(
+      req("/device-data-proxy/api/vein/templates/emp-1", {
+        method: "PUT",
+        token,
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({}),
+      }),
+      env({ ALC_VEIN: binding as unknown as Fetcher }),
+    );
+    expect(binding.fetch).toHaveBeenCalledTimes(1);
+    const init = (binding.fetch.mock.calls[0] as unknown as [string, RequestInit])[1];
+    return init.headers as Record<string, string>;
+  }
+
+  it("検証済み token の sub を X-Device-Id で付ける (Cloud Run / Service Binding)", async () => {
+    expect((await cloudRunHeaders(await tokenWithSub("device-kiosk-1")))["X-Device-Id"]).toBe("device-kiosk-1");
+    expect((await bindingHeaders(await tokenWithSub("device-kiosk-1")))["X-Device-Id"]).toBe("device-kiosk-1");
+  });
+
+  it("鍵で取った端末の sub (alarm:<16 hex>) もそのまま付く", async () => {
+    const t = await tokenWithSub("alarm:deadbeefdeadbeef");
+    expect((await cloudRunHeaders(t))["X-Device-Id"]).toBe("alarm:deadbeefdeadbeef");
+    expect((await bindingHeaders(t))["X-Device-Id"]).toBe("alarm:deadbeefdeadbeef");
+  });
+
+  it("★ client が X-Device-Id を送っても claim の値で上書きされる (Cloud Run / Service Binding)", async () => {
+    const t = await tokenWithSub("device-kiosk-1");
+    const fake = { "X-Device-Id": "device-fake-9" };
+    expect((await cloudRunHeaders(t, fake))["X-Device-Id"]).toBe("device-kiosk-1");
+    expect((await bindingHeaders(t, fake))["X-Device-Id"]).toBe("device-kiosk-1");
+  });
+
+  it("★ sub が無い・空・文字列でないなら付けず、client の値も通さない (Cloud Run / Service Binding)", async () => {
+    const fake = { "X-Device-Id": "device-fake-9" };
+    for (const sub of [undefined, "", 123]) {
+      const t = await tokenWithSub(sub);
+      expect(await cloudRunHeaders(t, fake)).not.toHaveProperty("X-Device-Id");
+      expect(await bindingHeaders(t, fake)).not.toHaveProperty("X-Device-Id");
+    }
+  });
+});
+
 describe("Service Binding へ振り分ける path の defense-in-depth (isUnsafeBackendPath)", () => {
   beforeEach(() => vi.restoreAllMocks());
 
