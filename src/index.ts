@@ -269,6 +269,10 @@ export interface Env {
   /** 測定の worker (`alc-measurements`) への service binding。定義されている時だけ、`/api/measurements` 系の 7 口を
    *  alc-proxy (画面用) と device-data-proxy (端末用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
   ALC_MEASUREMENTS?: Fetcher;
+  /** 拠点カメラの SD 録画の切り出しの worker (`alc-cam-sd-ingest`、ippoan/alc-cam の ingest/) への service binding。
+   *  定義されている時だけ、`/api/cam-clips/*` を alc-proxy (画面用) がここへ流す (`lib/alc-backend-route.ts`)。
+   *  未定義なら従来どおり Cloud Run (= 404)。 */
+  ALC_CAM_CLIPS?: Fetcher;
   /** 燃料の worker (`rust-fuel-worker`、Refs yhonda-ohishi/nginx#814) への service binding。定義されている時だけ、
    *  `/api/fuel/*` を alc-proxy (画面用) が Cloud Run でなくここへ流し (`lib/alc-backend-route.ts`)、機械の入口
    *  `/m/fuel-utran/*` (`handlers/machine-relay.ts`) が Basic を照合したあと `/machine/fuel-utran/*` へ中継する。
