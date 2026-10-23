@@ -284,7 +284,10 @@ describe("alc-proxy → ALC_VEIN binding", () => {
 
   it("Range は binding へ渡し、206 と Content-Range はそのまま返す (動画のシーク)", async () => {
     const clips = {
-      fetch: vi.fn(async () => new Response("part", { status: 206, headers: { "Content-Range": "bytes 0-3/100", "Accept-Ranges": "bytes" } })),
+      fetch: vi.fn(
+        async (_url: string, _init?: RequestInit) =>
+          new Response("part", { status: 206, headers: { "Content-Range": "bytes 0-3/100", "Accept-Ranges": "bytes" } }),
+      ),
     };
     const { env } = setup({ ALC_CAM_CLIPS: clips as unknown as Fetcher });
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/cam-clips/clips/c/x.mp4", { method: "GET", headers: { Range: "bytes=0-3" } }), env);
