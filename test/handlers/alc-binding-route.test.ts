@@ -1630,6 +1630,23 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     }
   });
 
+  it("血圧の通知の設定 (/api/bp-notify/) は画面用だけが ALC_MEASUREMENTS へ。端末用・内部用・管理画面用は null", () => {
+    const { measurements, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    for (const path of [
+      "/api/bp-notify/settings",
+      `/api/bp-notify/settings/${ID}`,
+      "/api/bp-notify/lineworks-users",
+      "/api/bp-notify/link-by-name",
+    ]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "device"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "internal"), path).toBeNull();
+      expect(resolveAlcBinding(path, env, "admin"), path).toBeNull();
+    }
+    expect(resolveAlcBinding("/api/bp-notifyx", env, "browser")).toBeNull();
+  });
+
   it("大文字の UUID でも ALC_MEASUREMENTS へ行く", () => {
     const { measurements, env } = setupMeasurements();
     const target = { fetcher: measurements, host: "alc-measurements" };
