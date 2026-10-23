@@ -282,6 +282,29 @@ describe("alc-proxy → ALC_VEIN binding", () => {
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 
+  it("Range は binding へ渡し、206 と Content-Range はそのまま返す (動画のシーク)", async () => {
+    const clips = {
+      fetch: vi.fn(
+        async (_url: string, _init?: RequestInit) =>
+          new Response("part", { status: 206, headers: { "Content-Range": "bytes 0-3/100", "Accept-Ranges": "bytes" } }),
+      ),
+    };
+    const { env } = setup({ ALC_CAM_CLIPS: clips as unknown as Fetcher });
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/cam-clips/clips/c/x.mp4", { method: "GET", headers: { Range: "bytes=0-3" } }), env);
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe("bytes 0-3/100");
+    const init = clips.fetch.mock.calls[0]![1] as RequestInit;
+    expect((init.headers as Record<string, string>).Range).toBe("bytes=0-3");
+  });
+
+  it("Range は Cloud Run 経路にも渡す。無ければ付けない", async () => {
+    const { cloudRun, env } = setup();
+    await handleAlcProxy(alcReq("/alc-proxy/api/tenko/x", { method: "GET", headers: { Range: "bytes=5-" } }), env);
+    expect((cloudRun.mock.calls[0]![1]!.headers as Record<string, string>).Range).toBe("bytes=5-");
+    await handleAlcProxy(alcReq("/alc-proxy/api/tenko/x", { method: "GET" }), env);
+    expect((cloudRun.mock.calls[1]![1]!.headers as Record<string, string>).Range).toBeUndefined();
+  });
+
   it("(b) binding 未定義なら /api/vein/... も Cloud Run へ", async () => {
     const { binding, cloudRun, env } = setup({ ALC_VEIN: undefined });
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/vein/identify", { body: "{}" }), env);

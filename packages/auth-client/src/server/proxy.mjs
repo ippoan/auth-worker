@@ -84,14 +84,27 @@ function bearerToken(authHeader) {
   return m ? m[1] : undefined
 }
 
+/** 部分取得 (Range) に関わる応答ヘッダ。写さないとブラウザは 206 を解釈できずシークできない */
+const RANGE_RESPONSE_HEADERS = ['content-range', 'accept-ranges']
+
 /** backend レスポンスを event に転送する (両 proxy handler 共通)。 */
 async function streamBackendResponse(event, response, path) {
   const responseContentType = response.headers.get('content-type')
   if (responseContentType) setHeader(event, 'content-type', responseContentType)
   const contentDisposition = response.headers.get('content-disposition')
   if (contentDisposition) setHeader(event, 'content-disposition', contentDisposition)
+  for (const name of RANGE_RESPONSE_HEADERS) {
+    const value = response.headers.get(name)
+    if (value) setHeader(event, name, value)
+  }
   setResponseStatus(event, response.status)
   switch (classifyProxyResponse(response.status, responseContentType, path)) {
+    case 'media': {
+      // 本文を溜めずにそのまま流す。長さはそのまま写す (動画の総量や 206 の部分の長さ)
+      const contentLength = response.headers.get('content-length')
+      if (contentLength) setHeader(event, 'content-length', contentLength)
+      return response.body
+    }
     case 'stream':
       // SSE は溜めずに ReadableStream のまま返す (進みを逐次に届ける)
       setHeader(event, 'cache-control', response.headers.get('cache-control') || 'no-cache')
@@ -203,6 +216,7 @@ export function createAuthWorkerProxyHandler(options) {
       token,
       contentType: getHeader(event, 'content-type'),
       previewApiBase: getCookie(event, PREVIEW_API_BASE_COOKIE),
+      range: getHeader(event, 'range'),
     })
 
     // service binding fetch には絶対 URL が要る (host は binding が無視するが

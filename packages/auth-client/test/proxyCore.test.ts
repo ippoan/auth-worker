@@ -91,6 +91,12 @@ describe('buildAlcProxyHeaders', () => {
     })
   })
 
+  it('range があれば Range に載せ、無ければ出さない (動画のシーク)', () => {
+    const base = { sharedSecret: 's', origin: 'https://a.example' }
+    expect(buildAlcProxyHeaders({ ...base, range: 'bytes=0-99' }).Range).toBe('bytes=0-99')
+    expect('Range' in buildAlcProxyHeaders(base)).toBe(false)
+  })
+
   it('previewApiBase が空/undefined なら header を出さない', () => {
     expect(
       buildAlcProxyHeaders({ sharedSecret: 's', origin: 'https://x.example', previewApiBase: undefined }),
@@ -192,6 +198,15 @@ describe('classifyProxyResponse', () => {
 
   it('非 JSON content-type は binary', () => {
     expect(classifyProxyResponse(200, 'application/pdf', 'files/1')).toBe('binary')
+  })
+
+  it('206 と video/* audio/* は media (溜めずに流す)。event-stream は stream のまま', () => {
+    expect(classifyProxyResponse(206, 'application/octet-stream', '/x')).toBe('media')
+    expect(classifyProxyResponse(206, null, '/x')).toBe('media')
+    expect(classifyProxyResponse(200, 'video/mp4', '/cam-clips/clips/a.mp4')).toBe('media')
+    expect(classifyProxyResponse(200, 'audio/mpeg', '/x')).toBe('media')
+    expect(classifyProxyResponse(200, 'image/png', '/x')).toBe('binary')
+    expect(classifyProxyResponse(206, 'text/event-stream', '/x')).toBe('stream')
   })
 
   it('204 は empty', () => {

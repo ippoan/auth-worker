@@ -245,7 +245,7 @@ export interface ProxyHeaderInput {
   xTenantId?: string
 }
 
-export type ProxyResponseKind = 'binary' | 'empty' | 'json' | 'stream'
+export type ProxyResponseKind = 'binary' | 'empty' | 'json' | 'media' | 'stream'
 
 export declare function buildProxyHeaders(input: ProxyHeaderInput): Record<string, string>
 
@@ -263,6 +263,8 @@ export declare function buildAlcProxyHeaders(input: {
    *  `X-Alc-Preview-Api-Base` に載せる。検証は auth-worker `/alc-proxy` 側
    *  (Refs ippoan/ci-dashboard#472)。 */
   previewApiBase?: string
+  /** 部分取得 (動画のシーク等) の `Range` 要求ヘッダ。あれば `Range` に載せる */
+  range?: string
 }): Record<string, string>
 
 /**

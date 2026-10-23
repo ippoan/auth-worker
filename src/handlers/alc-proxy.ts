@@ -252,6 +252,10 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   if (perms) fwdHeaders["X-User-Permissions"] = perms;
   const contentType = request.headers.get("content-type");
   if (contentType) fwdHeaders["Content-Type"] = contentType;
+  // 部分取得 (動画のシーク等) の Range を渡す。応答 (206 + Content-Range) は下でそのまま返すので、
+  // ここで渡さないと backend が毎回 200 で丸ごと返し、ブラウザはシークできない (ippoan/alc-cam の切り出し)
+  const range = request.headers.get("range");
+  if (range) fwdHeaders["Range"] = range;
 
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
