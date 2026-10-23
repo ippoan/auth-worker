@@ -280,9 +280,11 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
 ];
 
 /**
- * dev の鍵 (`dev_device === true` の `device-kiosk`) が、その鍵で書いた記録を見るための口。
+ * dev の鍵 (`dev_device === true` の `device-kiosk`) が、その鍵で書いた記録を見るための口と、
+ * 開発用のキオスクの管理画面が読む GET (測定の一覧・端末・承認待ち端末・点呼の乗務員)。
  * backend は `X-Device-Dev` で dev の行だけを返すので、本番の記録は見えない。
- * `KIOSK_ROUTES` に入れないのは、本番のキオスクに記録簿を開けないため。
+ * `KIOSK_ROUTES` に入れないのは、本番のキオスクにこれらを開けないため。
+ * path は `url.pathname` で照合するので query は含まれない (完全一致で足りる)。
  *
  * role で引く表ではなく **claim を見る別次元の判定**なので、`METHOD_ROUTE_TABLES` には
  * 入れず `handleDeviceDataProxy` 内で明示的に分岐する (GET のみ。表は下の
@@ -292,6 +294,11 @@ const DEV_KIOSK_RECORD_ROUTES: ReadonlyArray<RegExp> = [
   /^\/api\/tenko\/records$/,
   /^\/api\/tenko\/records\/csv$/,
   /^\/api\/tenko\/records\/[^/]+$/,
+  // 開発用のキオスクの管理画面の読み取り (これまで 403 forbidden だった GET)
+  /^\/api\/hub\/measurements$/,
+  /^\/api\/devices$/,
+  /^\/api\/devices\/pending$/,
+  /^\/api\/tenko-call\/drivers$/,
 ];
 
 /**

@@ -1010,6 +1010,50 @@ describe("dev キオスクの記録簿 GET (Refs ippoan/alc-app#387)", () => {
     });
   }
 
+  const ADMIN_READ_PATHS = ["/api/hub/measurements", "/api/devices", "/api/devices/pending", "/api/tenko-call/drivers"];
+
+  for (const path of ADMIN_READ_PATHS) {
+    it(`dev_device: true のキオスク: GET ${path} は通り (query 付きでも)、X-Device-Dev: 1 が付く`, async () => {
+      const fetchMock = okFetch();
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}?limit=5`, { method: "GET", token: await kioskToken({ dev_device: true }) }),
+        env(),
+      );
+      expect(res.status).toBe(200);
+      expect(String(fetchMock.mock.calls[0]![0])).toBe(`https://alc-api.test.example${path}?limit=5`);
+      const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+      expect(h["X-Device-Dev"]).toBe("1");
+    });
+
+    it(`dev でないキオスクの鍵: GET ${path} は 403 のまま`, async () => {
+      const fetchMock = okFetch();
+      for (const claims of [{}, { dev_device: false }, { dev_device: "1" }]) {
+        const res = await handleDeviceDataProxy(
+          req(`/device-data-proxy${path}`, { method: "GET", token: await kioskToken(claims) }),
+          env(),
+        );
+        expect(res.status, `${JSON.stringify(claims)} ${path}`).toBe(403);
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it(`dev_device: true のキオスク: POST ${path} と ${path}/x は 403 (GET の完全一致だけ)`, async () => {
+      const fetchMock = okFetch();
+      const token = await kioskToken({ dev_device: true });
+      const post = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method: "POST", token }),
+        env(),
+      );
+      const deep = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}/x`, { method: "GET", token }),
+        env(),
+      );
+      expect(post.status).toBe(403);
+      expect(deep.status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  }
+
   it("dev_device が false / 文字列 \"1\" のキオスク: 記録簿 GET は 403", async () => {
     const fetchMock = okFetch();
     for (const dev of [false, "1"]) {
