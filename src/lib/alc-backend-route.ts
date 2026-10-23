@@ -104,6 +104,9 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   // 血圧の通知の設定 (社員 ↔ LINE WORKS、本人への通知・日報の受け取り。既存の通知の宛先とは別管理、Refs ippoan/alc-app#436)。
   // 管理者の画面 (alc-app) からだけ使う。admin の判定は alc-measurements-worker が X-User-Role で行う
   { match: "prefix", path: "/api/bp-notify/", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser"] },
+  // 拠点カメラの SD 録画の時間指定の切り出し (ippoan/alc-cam の ingest/)。管理者の画面からだけ使う。
+  // admin とテナントの判定は alc-cam-sd-ingest が X-User-Role / X-Tenant-ID で行う
+  { match: "prefix", path: "/api/cam-clips/", binding: "ALC_CAM_CLIPS", host: "alc-cam-sd-ingest", proxies: ["browser"] },
   {
     match: "pattern",
     pattern: /^\/api\/measurements\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,

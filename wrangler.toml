@@ -178,6 +178,13 @@ service = "alc-trouble"
 binding = "ALC_MEASUREMENTS"
 service = "alc-measurements"
 
+# alc-cam-sd-ingest (ippoan/alc-cam の ingest/)。拠点カメラの SD 録画の時間指定の切り出し /api/cam-clips/* を画面用の proxy
+# (/alc-proxy) から回す (src/lib/alc-backend-route.ts)。workers_dev = false・route なしで、届く経路はこの binding だけ。
+# staging の worker は無いので env.staging には bind しない (staging の /api/cam-clips/* は Cloud Run に流れて 404。承知のうえ)。
+[[services]]
+binding = "ALC_CAM_CLIPS"
+service = "alc-cam-sd-ingest"
+
 # rust-fuel-worker (ohishi-exp/rust-fuel-worker、yhonda-ohishi/nginx#814)。燃料の参照と CSV 取り込みの API /api/fuel/* を
 # 画面用の proxy (/alc-proxy) から回し (src/lib/alc-backend-route.ts)、機械の入口 /m/fuel-utran/* (src/handlers/machine-relay.ts) を
 # Basic の照合後に /machine/fuel-utran/* へ中継する。rust-fuel-worker は Service Binding 専用で、届く経路はこの binding だけ。
