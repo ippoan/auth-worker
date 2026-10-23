@@ -84,6 +84,8 @@ export function buildAlcProxyHeaders(input) {
   // flip 前 preview override (Refs ippoan/ci-dashboard#472)。値の検証は
   // auth-worker `/alc-proxy` 側 (同一 service の tagged revision URL に pin)。
   if (input.previewApiBase) headers['X-Alc-Preview-Api-Base'] = input.previewApiBase
+  // 部分取得 (動画のシーク等)。auth-worker `/alc-proxy` が backend へ渡し、206 をそのまま返す
+  if (input.range) headers['Range'] = input.range
   return headers
 }
 
@@ -103,12 +105,16 @@ export function isJsonContentType(contentType) {
 /**
  * backend レスポンスの転送方法を分類する。
  * - text/event-stream → stream (溜めずにそのまま流す。`/download` 判定より前)
+ * - 206 (部分取得) / `video/*` / `audio/*` → media (溜めずにそのまま流す。大きな動画を
+ *   メモリに載せない・Range に答えた 206 を崩さない。stream と違い SSE 用のヘッダは付けない)
  * - `/download` を含む path / 非 JSON content-type → binary パススルー
  * - 204 → empty
  * - それ以外 → JSON (parse 失敗時は `{ error: <text> }` に包む)
  */
 export function classifyProxyResponse(status, contentType, path) {
   if (contentType && contentType.includes('text/event-stream')) return 'stream'
+  if (status === 206) return 'media'
+  if (contentType && /^(video|audio)\//i.test(contentType.trim())) return 'media'
   if (path.includes('/download')) return 'binary'
   if (contentType && !contentType.includes('application/json')) return 'binary'
   if (status === 204) return 'empty'
