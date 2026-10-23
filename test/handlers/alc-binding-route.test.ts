@@ -1101,6 +1101,8 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     "/api/notify/lineworks/users",
     "/api/notify/lineworks/login-activity",
     "/api/notify/test-distribute",
+    "/api/notify/employees",
+    "/api/notify/recipients/link-employees-by-name",
   ];
   /** Cloud Run に残る notify の口と、近い名前の path (表が拾ってはいけない)。 */
   const CLOUD_RUN_PATHS = [

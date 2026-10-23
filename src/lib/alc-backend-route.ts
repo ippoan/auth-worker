@@ -80,6 +80,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/notify/lineworks/users", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
   { match: "exact", path: "/api/notify/lineworks/login-activity", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
   { match: "exact", path: "/api/notify/test-distribute", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  // 宛先の画面の社員の選択肢 (宛先と社員の結び付け、Refs ippoan/alc-app#436)。alc-notify-worker v0.1.5 から
+  { match: "exact", path: "/api/notify/employees", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
   {
     match: "pattern",
     pattern: /^\/api\/notify\/documents\/[0-9a-f-]{36}\/distribute$/,
