@@ -38,6 +38,7 @@ import {
   resolveAlcBinding,
 } from "../lib/alc-backend-route";
 import { DEVICE_ROLES } from "../lib/device";
+import { isDeveloperGoogleSession } from "../lib/developer";
 import { handleSessionPath } from "../lib/alc-session";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 
@@ -248,6 +249,17 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   if (sub) fwdHeaders["X-User-ID"] = sub;
   if (email) fwdHeaders["X-User-Email"] = email;
   if (role) fwdHeaders["X-User-Role"] = role;
+  // 宛先 (社内 IP) を書ける「システム管理者」の判定を DEVELOPER_EMAILS 1 か所に寄せる。
+  // fwdHeaders は毎回作り直すのでクライアントの同名ヘッダは届かない (Refs ippoan/alc-cam#2)
+  if (
+    isDeveloperGoogleSession({
+      email,
+      tokenKind,
+      idp: (payload.idp as string | undefined) || "",
+    })
+  ) {
+    fwdHeaders["X-User-Developer"] = "1";
+  }
   const perms = permissionsHeaderValue(payload.perms);
   if (perms) fwdHeaders["X-User-Permissions"] = perms;
   const contentType = request.headers.get("content-type");

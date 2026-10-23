@@ -509,3 +509,50 @@ describe("handleAlcProxy: X-User-Permissions は検証済み JWT の perms か�
     expect(h["X-User-Permissions"]).toBe("leave.use");
   });
 });
+
+describe("handleAlcProxy: X-User-Developer は開発者の Google session にだけ付ける (Refs ippoan/alc-cam#2)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function forwardedHeaders(token: string, headers: Record<string, string> = {}) {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcProxy(req("/alc-proxy/api/employees", { token, headers }), env());
+    expect(res.status).toBe(200);
+    return (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+  }
+
+  const DEV = "m.tama.ramu@gmail.com";
+
+  it("開発者のメール + Google の session → X-User-Developer: 1", async () => {
+    const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, { email: DEV, idp: "google" }));
+    expect(h["X-User-Developer"]).toBe("1");
+  });
+
+  it("開発者のメールでも idp が Google でない / token_kind が空でない → 付かない", async () => {
+    for (const extra of [
+      { idp: "line" },
+      { idp: "lineworks" },
+      {},
+      { idp: "google", token_kind: "dev" },
+      { idp: "google", token_kind: "device-key" },
+    ]) {
+      const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, { email: DEV, ...extra }));
+      expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("x-user-developer");
+    }
+  });
+
+  it("開発者でないメール → 付かない", async () => {
+    const h = await forwardedHeaders(
+      makeJwt(TEST_JWT_SECRET, { email: "someone@example.com", idp: "google" }),
+    );
+    expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("x-user-developer");
+  });
+
+  it("クライアントが X-User-Developer: 1 を付けても、開発者でなければ届かない", async () => {
+    const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET), { "X-User-Developer": "1" });
+    expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("x-user-developer");
+  });
+});
