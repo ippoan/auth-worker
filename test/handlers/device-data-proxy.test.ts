@@ -407,6 +407,9 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "GET", path: "/api/vein/templates" },
     { method: "PUT", path: "/api/vein/templates/emp-1/module" },
     { method: "GET", path: "/api/vein/module-templates" },
+    // 運行管理者の照合による承認 (Refs ippoan/alc-app#436)。
+    { method: "GET", path: "/api/vein/module-templates/pending" },
+    { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee" },
     { method: "POST", path: "/api/vein/identify" },
     { method: "GET", path: "/api/employees/emp-1" },
     { method: "GET", path: "/api/timecard/punches" },
@@ -531,6 +534,13 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "PUT", path: "/api/vein/module-templates" },
       { method: "POST", path: "/api/vein/module-templates" },
       { method: "GET", path: "/api/vein/module-templates/emp-1" },
+      // 承認: 管理者のログインの口 (pending / approve) は端末に開けない。照合による承認は別 method・余りの path を 403。
+      { method: "GET", path: "/api/vein/templates/pending" },
+      { method: "POST", path: "/api/vein/templates/emp-1/approve" },
+      { method: "POST", path: "/api/vein/module-templates/pending" },
+      { method: "GET", path: "/api/vein/templates/emp-1/approve-by-employee" },
+      { method: "PUT", path: "/api/vein/templates/emp-1/approve-by-employee" },
+      { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee/extra" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
@@ -1469,6 +1479,9 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     // 指静脈の登録・照合・同期は測定台も端末のモジュールで行う (Refs ippoan/alc-app#436)。
     { method: "PUT", path: "/api/vein/templates/emp-1/module" },
     { method: "GET", path: "/api/vein/module-templates" },
+    // 運行管理者の照合による承認 (Refs ippoan/alc-app#436)。
+    { method: "GET", path: "/api/vein/module-templates/pending" },
+    { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee" },
     // 照合で当たった乗務員を引く。{id} は UUID の形だけ (下で UUID 以外は 403)。
     { method: "GET", path: "/api/employees/0b6f1c2e-3d4a-4b5c-8d9e-0f1a2b3c4d5e" },
   ];
@@ -1539,6 +1552,13 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "PUT", path: "/api/vein/templates/emp-1/module/extra" },
       { method: "POST", path: "/api/vein/module-templates" },
       { method: "GET", path: "/api/vein/module-templates/emp-1" },
+      // 承認: 管理者のログインの口 (pending / approve) は端末に開けない。照合による承認は別 method・余りの path を 403。
+      { method: "GET", path: "/api/vein/templates/pending" },
+      { method: "POST", path: "/api/vein/templates/emp-1/approve" },
+      { method: "POST", path: "/api/vein/module-templates/pending" },
+      { method: "GET", path: "/api/vein/templates/emp-1/approve-by-employee" },
+      { method: "PUT", path: "/api/vein/templates/emp-1/approve-by-employee" },
+      { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee/extra" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
