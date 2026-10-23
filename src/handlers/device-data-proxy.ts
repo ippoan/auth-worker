@@ -437,6 +437,11 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   if (payload.dev_device === true) fwdHeaders["X-Device-Dev"] = "1";
   fwdHeaders["X-Device-Role"] = role;
 
+  // 端末の識別 (どの端末で登録したか等の記録用)。検証済み token の sub だけから組み立てる。
+  // fwdHeaders は新規オブジェクトなので client が送った X-Device-Id は入る経路が無い。
+  // sub が文字列で空でないときだけ付ける。
+  if (typeof payload.sub === "string" && payload.sub !== "") fwdHeaders["X-Device-Id"] = payload.sub;
+
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? await request.arrayBuffer() : undefined;
