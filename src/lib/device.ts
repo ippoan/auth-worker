@@ -391,6 +391,7 @@ export async function setDeviceSiteId(
 /**
  * tenant に紐づく有効な (revoke されていない) device credential 一覧を
  * 発行日時降順で返す (Refs /device/setup の登録済み一覧)。
+ * `includeRevoked: true` のときだけ失効済みも含める (既定 false。名前の表示用)。
  *
  * KV には tenant 二次索引が無いため `device:` prefix を全走査して filter する
  * (device 数は運用上小さい前提。list 上限 1000 keys を超える規模になったら
@@ -399,13 +400,14 @@ export async function setDeviceSiteId(
 export async function listDeviceRecordsByTenant(
   env: DeviceKvEnv,
   tenantId: string,
+  { includeRevoked = false }: { includeRevoked?: boolean } = {},
 ): Promise<DeviceRecord[]> {
   const listed = await env.AUTH_CONFIG.list({ prefix: KV_PREFIX, limit: 1000 });
   const records = await Promise.all(
     listed.keys.map((k) => getDeviceRecord(env, k.name.slice(KV_PREFIX.length))),
   );
   return records
-    .filter((r): r is DeviceRecord => !!r && r.tenant_id === tenantId && !r.revoked)
+    .filter((r): r is DeviceRecord => !!r && r.tenant_id === tenantId && (includeRevoked || !r.revoked))
     .sort((a, b) => b.created_at - a.created_at);
 }
 
