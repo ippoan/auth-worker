@@ -30,6 +30,8 @@
  *   - `ota_device` (登録済みデバイスへ公式 firmware の OTA、issue #535) も `mcp.write`
  *   - `lineworks_get` (LINE WORKS API への read-only GET、掲示板/ユーザー配下のみ。
  *     #540 の掲示板既読の調査用) も `mcp.write` + dev-login allowlist
+ *   - `run_cam_clips_auto` (拠点カメラ 1 台の自動切り出しを今すぐ回す。dev token は画面用の proxy で
+ *     書き込みを止められるので、試験記録の切り出しを確かめる口として MCP に置く) も `mcp.write` + dev-login allowlist
  */
 
 import type { Env } from "../index";
@@ -83,6 +85,8 @@ const OTA_TIMEOUT_MS = 90_000;
 /** `create_test_record` — 記録の行が backend に入るのを待つ間隔と全体の待ち時間 (機体は次の周回で送る)。 */
 const TEST_RECORD_POLL_INTERVAL_MS = 1500;
 const TEST_RECORD_TIMEOUT_MS = 15_000;
+/** `run_cam_clips_auto` — カメラの ID (ingest の cameras.id) の形。 */
+const CAMERA_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** `create_test_record` が読み返す件数 (試験記録だけの一覧の新しい順。command_id で 1 件を選ぶ)。 */
 const TEST_RECORD_LIST_LIMIT = 20;
 
@@ -932,6 +936,67 @@ const TOOLS: ToolDef[] = [
         await new Promise((resolve) => setTimeout(resolve, TEST_RECORD_POLL_INTERVAL_MS));
       }
       return { device_id: deviceId, command_id: commandId, seq, record: null, pending: true };
+    },
+  },
+  {
+    name: "run_cam_clips_auto",
+    description:
+      "Run the automatic clipping of one site camera of your tenant now (the same job as the hourly " +
+      "cron of alc-cam-sd-ingest and the 今すぐ切り出す button of the recording tab): every event of " +
+      "the devices tied to the camera that has no clip yet gets its ±10s clip cut from the camera's " +
+      "SD recording. Use after create_test_record to check the clip path without waiting for the " +
+      "next cron. Waits for the ingest answer (it pulls from the SD, so it can take up to ~2 minutes). " +
+      "Returns `{camera_id, status, result}`: `result` is the ingest answer as is (`cameras[0]` " +
+      "carries the counts). Errors are returned as `{camera_id, error}`: `not_configured` (no " +
+      "ALC_CAM_CLIPS binding — staging), `forbidden` (your user is not a tenant admin), " +
+      "`backend_error` (with `status` and `body`). Same allowlist gate as issue_dev_token; only " +
+      "cameras of the caller's own tenant are reachable (ingest scopes by X-Tenant-ID).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        camera_id: {
+          type: "string",
+          description: "Camera ID (UUID) as shown in the recording tab (/api/cam-clips/cameras)",
+        },
+      },
+      required: ["camera_id"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const cameraId = asString(args["camera_id"]);
+      if (!cameraId || !CAMERA_ID_RE.test(cameraId)) {
+        throw new DevLoginError(400, "camera_id must be a UUID");
+      }
+      const fetcher = ctx.env.ALC_CAM_CLIPS;
+      if (!fetcher) return { camera_id: cameraId, error: "not_configured" };
+
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      // ingest は X-User-Role: admin だけを管理者として受ける。画面用の proxy と同じく、本人が admin のときだけ名乗る
+      if (resolved.user.role !== "admin") return { camera_id: cameraId, error: "forbidden" };
+
+      const res = await fetcher.fetch("https://alc-cam-sd-ingest/api/cam-clips/auto-run", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Tenant-ID": resolved.user.tenant_id,
+          "X-User-Role": "admin",
+        },
+        body: JSON.stringify({ camera_id: cameraId }),
+      });
+      const text = await res.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = null;
+      }
+      if (!res.ok || body === null) {
+        return { camera_id: cameraId, error: "backend_error", status: res.status, body: text.slice(0, 500) };
+      }
+      return { camera_id: cameraId, status: res.status, result: body };
     },
   },
   {
