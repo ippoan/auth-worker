@@ -76,6 +76,11 @@ export interface AlcTenantForwardInput {
   search?: string;
   body?: string;
   contentType?: string;
+  /**
+   * 開発の軸 (`X-Device-Dev: 1`) の行を読み書きする。MCP `create_test_record` が試験記録を
+   * 読み返すときだけ立てる (Refs ippoan/alc-cam#2)。
+   */
+  deviceDev?: boolean;
 }
 
 export async function forwardAlcTenantRequest(
@@ -106,6 +111,7 @@ export async function forwardAlcTenantRequest(
     "X-Tenant-ID": input.tenantId,
   };
   if (input.contentType) headers["Content-Type"] = input.contentType;
+  if (input.deviceDev) headers["X-Device-Dev"] = "1";
 
   const method = (input.method || "GET").toUpperCase();
   const hasBody = method !== "GET" && method !== "HEAD";
