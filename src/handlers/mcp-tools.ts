@@ -45,6 +45,7 @@ import { getBotAccess, pickLineworksBotConfigId } from "../lib/lineworks-bot-cre
 import { LINEWORKS_GET_BODY_MAX, resolveLineworksGetTarget } from "../lib/lineworks-get-path";
 import { getCommandResult, managedDeviceKind, sendDeviceCommand } from "./device-setup";
 import { DEVICE_ROLE_HUB, DEVICE_ROLE_PRINT, DEVICE_ROLE_TIMECARD } from "../lib/device";
+import { forwardAlcTenantRequest } from "../lib/alc-tenant-forward";
 import { decryptWithKey } from "../lib/mcp-crypto";
 import { resolveMcpJwtSecret, verifyMcpJwt, type McpJwtPayload } from "../lib/mcp-jwt";
 import {
@@ -79,6 +80,12 @@ const GET_LOG_TIMEOUT_MS = 8000;
 /** `ota_device` の進捗ポーリング間隔と全体の待ち時間 (書き込みは数十秒かかる)。 */
 const OTA_POLL_INTERVAL_MS = 2000;
 const OTA_TIMEOUT_MS = 90_000;
+/** `create_test_record` — 記録の行が backend に入るのを待つ間隔と全体の待ち時間 (機体は次の周回で送る)。 */
+const TEST_RECORD_POLL_INTERVAL_MS = 1500;
+const TEST_RECORD_TIMEOUT_MS = 15_000;
+/** `create_test_record` が読み返す件数 (試験記録だけの一覧の新しい順。command_id で 1 件を選ぶ)。 */
+const TEST_RECORD_LIST_LIMIT = 20;
+
 /** `ota_device` が焼ける機種の role。p4-gw (GitHub Releases 配布) は進捗 phase の形が
  *  未確認なので入れない — `managedDeviceKind` は p4-gw でも kind を返すため別に絞る。 */
 const OTA_DEVICE_ROLES: ReadonlySet<string> = new Set([
@@ -840,6 +847,94 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "create_test_record",
+    description:
+      "Make one managed hub device (CoreS3) of your tenant create a development test record " +
+      "(hub_measurements kind `test`) through its normal measurement queue and uplink, then read " +
+      "the stored row back. Use after an OTA to check the record path without waiting for a real " +
+      "measurement. The row ALWAYS goes to the development axis (is_dev = true) even on a " +
+      "production device, so it never shows in the production record book, tenko, timecard or CSV. " +
+      "Sends a `test_record` command over the recorder WebSocket, waits up to 8s for `{ok, seq}`, " +
+      "then up to 15s for the row. Returns `{device_id, command_id, seq, record, pending}`: " +
+      "`record` is `{id, device_id, via_device_id, machine_id, kind, seq, payload, recorded_at, " +
+      "created_at, is_dev}` (`device_id` is the record ID — `alarm:<fp>` when the device proved its " +
+      "machine key — and `via_device_id` the hub ID it connected with), or null with `pending: true` " +
+      "if the row has not arrived yet — call again with the same `command_id` to only read it back " +
+      "(no new record). Errors are returned as `{error}`: `device_not_found`, " +
+      "`unsupported_device_kind` (not a hub device), `device_not_connected`, `busy` (OTA or tenko " +
+      "in progress), `timeout`, `unsupported_firmware` (firmware predates `test_record`), " +
+      "`backend_error`. Same allowlist gate as issue_dev_token; only devices of the caller's own " +
+      "tenant are reachable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: {
+          type: "string",
+          description: "Device ID as shown in the device management page (the hub ID)",
+        },
+        command_id: {
+          type: "string",
+          description:
+            "command_id of a previous call: only read that record back, do not create a new one",
+        },
+      },
+      required: ["device_id"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const deviceId = asString(args["device_id"]);
+      if (!deviceId) throw new DevLoginError(400, "device_id is required");
+      const givenCommandId = args["command_id"];
+      if (givenCommandId !== undefined && (typeof givenCommandId !== "string" || !givenCommandId)) {
+        throw new DevLoginError(400, "command_id must be a non-empty string");
+      }
+
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      const tenantId = resolved.user.tenant_id;
+
+      // 他テナント・revoked・未登録は null (fail-closed)。試験記録は hub の測定の経路なので hub だけ
+      const kind = await managedDeviceKind(ctx.env, tenantId, deviceId);
+      if (!kind) return { device_id: deviceId, error: "device_not_found" };
+      if (kind.pairRole !== DEVICE_ROLE_HUB) {
+        return { device_id: deviceId, error: "unsupported_device_kind" };
+      }
+
+      let commandId: string;
+      let seq: number | null = null;
+      if (typeof givenCommandId === "string") {
+        commandId = givenCommandId;
+      } else {
+        const sent = await sendDeviceCommand(ctx.env, tenantId, deviceId, { action: "test_record" });
+        if ("error" in sent) {
+          return sent.error === "recorder_error"
+            ? { device_id: deviceId, error: sent.error, status: sent.status }
+            : { device_id: deviceId, error: sent.error };
+        }
+        commandId = sent.id;
+        const answer = await waitTestRecordAnswer(ctx.env, tenantId, commandId);
+        if ("error" in answer) return { device_id: deviceId, command_id: commandId, ...answer };
+        seq = answer.seq;
+      }
+
+      // 機体は積んだ記録を次の周回で送る。開発の軸の試験記録から command_id で 1 件を選ぶ
+      const attempts = Math.floor(TEST_RECORD_TIMEOUT_MS / TEST_RECORD_POLL_INTERVAL_MS);
+      for (let i = 0; i < attempts; i++) {
+        const found = await findTestRecord(ctx.env, tenantId, commandId);
+        if (found === "backend_error") {
+          return { device_id: deviceId, command_id: commandId, seq, error: "backend_error" };
+        }
+        if (found) {
+          return { device_id: deviceId, command_id: commandId, seq: found.seq, record: found, pending: false };
+        }
+        await new Promise((resolve) => setTimeout(resolve, TEST_RECORD_POLL_INTERVAL_MS));
+      }
+      return { device_id: deviceId, command_id: commandId, seq, record: null, pending: true };
+    },
+  },
+  {
     name: "verify_rls",
     description:
       "本番 DB で、テナントごとの行の出し分け (RLS) の不変条件・backend の実行用ロールの属性・" +
@@ -892,6 +987,70 @@ const TOOLS: ToolDef[] = [
     },
   },
 ];
+
+/**
+ * `create_test_record` — 機体の `command_result` を待つ。`{ok:true, seq}` なら seq、
+ * `{ok:false, error}` は機体の断り (`busy` 等)、`ok` の無い応答は旧ファーム (未知の action を `{}` で ack する)。
+ */
+async function waitTestRecordAnswer(
+  env: Env,
+  tenantId: string,
+  commandId: string,
+): Promise<{ seq: number } | { error: string; status?: number }> {
+  const attempts = Math.floor(GET_LOG_TIMEOUT_MS / GET_LOG_POLL_INTERVAL_MS);
+  for (let i = 0; i < attempts; i++) {
+    await new Promise((resolve) => setTimeout(resolve, GET_LOG_POLL_INTERVAL_MS));
+    const result = await getCommandResult(env, tenantId, commandId);
+    if (result.kind === "error") {
+      return result.error === "recorder_error"
+        ? { error: result.error, status: result.status }
+        : { error: result.error };
+    }
+    if (result.kind === "pending") continue;
+    const payload = result.payload;
+    if (!isObject(payload) || typeof payload["ok"] !== "boolean") {
+      return { error: "unsupported_firmware" };
+    }
+    if (payload["ok"] !== true) {
+      return { error: asString(payload["error"]) ?? "device_error" };
+    }
+    if (typeof payload["seq"] !== "number") return { error: "unsupported_firmware" };
+    return { seq: payload["seq"] };
+  }
+  return { error: "timeout" };
+}
+
+/**
+ * `create_test_record` — 開発の軸 (`X-Device-Dev: 1`) の試験記録 (kind `test`) から、payload の
+ * `command_id` が一致する行を探す。本番の軸は読まない。無ければ null、backend が答えなければ `backend_error`。
+ */
+async function findTestRecord(
+  env: Env,
+  tenantId: string,
+  commandId: string,
+): Promise<Record<string, unknown> | null | "backend_error"> {
+  const res = await forwardAlcTenantRequest(env, {
+    tenantId,
+    path: "/api/hub/measurements",
+    method: "GET",
+    search: `?kind=test&limit=${TEST_RECORD_LIST_LIMIT}`,
+    deviceDev: true,
+  });
+  if (res.status !== 200) return "backend_error";
+  let body: unknown;
+  try {
+    body = JSON.parse(res.body);
+  } catch {
+    return "backend_error";
+  }
+  const items = isObject(body) && Array.isArray(body["items"]) ? body["items"] : [];
+  const row = items.find(
+    (r): r is Record<string, unknown> =>
+      isObject(r) && isObject(r["payload"]) && r["payload"]["command_id"] === commandId,
+  );
+  // この口が読むのは開発の軸だけ (is_dev は backend の応答に無いので、読み方から付ける)
+  return row ? { ...row, is_dev: true } : null;
+}
 
 const TOOL_BY_NAME: Record<string, ToolDef> = Object.fromEntries(
   TOOLS.map((t) => [t.name, t]),

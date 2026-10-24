@@ -1681,6 +1681,167 @@ describe("POST /mcp/tools — get_device_log", () => {
       });
     });
   });
+
+  describe("create_test_record", () => {
+    /** 機体の答え 500ms × 16 + 行の待ち 1.5 秒 × 10 を越えるぶん進める。 */
+    const TR = { tool: "create_test_record", stepMs: 500, steps: 80 };
+    const ROW = {
+      id: "row-1",
+      tenant_id: TENANT_ID,
+      device_id: "alarm:0123456789abcdef",
+      kind: "test",
+      payload: { type: "test", command_id: "cmd-1" },
+      seq: 7,
+      session_id: null,
+      via_device_id: DEVICE_ID,
+      machine_id: "alarm:0123456789abcdef",
+      recorded_at: "2026-10-25T00:00:00Z",
+      created_at: "2026-10-25T00:00:01Z",
+    };
+
+    /** POST には cmd-1 を返し、結果の GET には `answer` を返す (null なら 404 = まだ)。 */
+    function trRecorder(answer: unknown) {
+      return mockRecorder((req) => {
+        if (req.method === "POST") return new Response(JSON.stringify({ id: "cmd-1" }), { status: 202 });
+        return answer === null
+          ? new Response("{}", { status: 404 })
+          : new Response(JSON.stringify({ payload: answer }), { status: 200 });
+      });
+    }
+
+    /** tenant 解決は既存の応答、backend の一覧は `lists` を順に返す (尽きたら最後を繰り返す)。 */
+    function trEnv(recorder: unknown, lists: Array<() => Response>) {
+      const env = logEnv(recorder);
+      env.ALC_API_PROXY_SA_KEY = "{}" as Env["ALC_API_PROXY_SA_KEY"];
+      const backend: Array<{ url: string; headers: Headers }> = [];
+      globalThis.fetch = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+        const req = new Request(input as string, init);
+        if (new URL(req.url).pathname === "/api/hub/measurements") {
+          backend.push({ url: req.url, headers: req.headers });
+          return lists[Math.min(backend.length, lists.length) - 1]!();
+        }
+        return internalUserResponse();
+      }) as typeof fetch;
+      return { env, backend };
+    }
+    const list = (items: unknown[]) => () =>
+      new Response(JSON.stringify({ items, limit: 20, offset: 0, has_more: false }), { status: 200 });
+
+    it("★ test_record を送り、開発の軸の一覧から command_id の行を返す", async () => {
+      const rec = trRecorder({ ok: true, seq: 7 });
+      const { env, backend } = trEnv(rec.fetcher, [
+        list([]),
+        list([{ ...ROW, id: "row-0", payload: { type: "test", command_id: "cmd-0" } }, ROW]),
+      ]);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID }, TR);
+      expect(result.isError).toBe(false);
+      expect(parsed(result)).toEqual({
+        device_id: DEVICE_ID,
+        command_id: "cmd-1",
+        seq: 7,
+        record: { ...ROW, is_dev: true },
+        pending: false,
+      });
+      expect(JSON.parse(rec.calls[0]!.body)).toEqual({ payload: { action: "test_record" } });
+      expect(backend).toHaveLength(2);
+      const url = new URL(backend[0]!.url);
+      expect(url.searchParams.get("kind")).toBe("test");
+      expect(backend[0]!.headers.get("X-Device-Dev")).toBe("1");
+      expect(backend[0]!.headers.get("X-Tenant-ID")).toBe(TENANT_ID);
+      expect(backend[0]!.headers.get("Authorization")).toBe("Bearer fake-oidc-token");
+    });
+
+    it("command_id を渡すと読み返すだけ (機体へ送らない)。行がまだなら pending", async () => {
+      const rec = trRecorder(null);
+      const { env, backend } = trEnv(rec.fetcher, [list([])]);
+      const result = await callDeviceTool(env, { device_id: DEVICE_ID, command_id: "cmd-9" }, TR);
+      expect(parsed(result)).toEqual({
+        device_id: DEVICE_ID,
+        command_id: "cmd-9",
+        seq: null,
+        record: null,
+        pending: true,
+      });
+      expect(rec.calls).toHaveLength(0);
+      expect(backend).toHaveLength(10);
+    });
+
+    it("機体の断り・旧ファーム・無応答は error で返し、一覧を読まない", async () => {
+      for (const [answer, error] of [
+        [{ ok: false, error: "busy" }, "busy"],
+        [{ ok: false }, "device_error"],
+        [{}, "unsupported_firmware"],
+        [{ ok: true }, "unsupported_firmware"],
+        [null, "timeout"],
+      ] as const) {
+        const rec = trRecorder(answer);
+        const { env, backend } = trEnv(rec.fetcher, [list([ROW])]);
+        const result = await callDeviceTool(env, { device_id: DEVICE_ID }, TR);
+        expect(parsed(result)).toEqual({ device_id: DEVICE_ID, command_id: "cmd-1", error });
+        expect(backend).toHaveLength(0);
+      }
+    });
+
+    it("recorder が結果を返せなければ recorder_error (status つき)", async () => {
+      const rec = mockRecorder((req) =>
+        req.method === "POST"
+          ? new Response(JSON.stringify({ id: "cmd-1" }), { status: 202 })
+          : new Response("{}", { status: 500 }),
+      );
+      const { env } = trEnv(rec.fetcher, [list([])]);
+      expect(parsed(await callDeviceTool(env, { device_id: DEVICE_ID }, TR))).toEqual({
+        device_id: DEVICE_ID,
+        command_id: "cmd-1",
+        error: "recorder_error",
+        status: 500,
+      });
+      const down = mockRecorder(() => new Response("{}", { status: 500 }));
+      const d = trEnv(down.fetcher, [list([])]);
+      expect(parsed(await callDeviceTool(d.env, { device_id: DEVICE_ID }, TR))).toEqual({
+        device_id: DEVICE_ID,
+        error: "recorder_error",
+        status: 500,
+      });
+    });
+
+    it("backend が答えなければ backend_error", async () => {
+      for (const res of [() => new Response("no", { status: 502 }), () => new Response("not json", { status: 200 })]) {
+        const rec = trRecorder({ ok: true, seq: 7 });
+        const { env } = trEnv(rec.fetcher, [res]);
+        const result = await callDeviceTool(env, { device_id: DEVICE_ID }, TR);
+        expect(parsed(result)).toEqual({
+          device_id: DEVICE_ID,
+          command_id: "cmd-1",
+          seq: 7,
+          error: "backend_error",
+        });
+      }
+    });
+
+    it("hub 以外・他テナント・未接続・入力の誤り", async () => {
+      const rec = trRecorder({ ok: true, seq: 7 });
+      const { env } = trEnv(rec.fetcher, [list([])]);
+      expect(parsed(await callDeviceTool(env, { device_id: PRINT_DEVICE_ID }, TR))).toEqual({
+        device_id: PRINT_DEVICE_ID,
+        error: "unsupported_device_kind",
+      });
+      expect(parsed(await callDeviceTool(env, { device_id: OTHER_TENANT_DEVICE_ID }, TR))).toEqual({
+        device_id: OTHER_TENANT_DEVICE_ID,
+        error: "device_not_found",
+      });
+      expect(rec.calls).toHaveLength(0);
+      const bad = await callDeviceTool(env, { device_id: DEVICE_ID, command_id: "" }, TR);
+      expect(bad.isError).toBe(true);
+      expect(bad.content[0]!.text).toContain("command_id must be a non-empty string");
+
+      const offline = mockRecorder(() => new Response("{}", { status: 404 }));
+      const off = trEnv(offline.fetcher, [list([])]);
+      expect(parsed(await callDeviceTool(off.env, { device_id: DEVICE_ID }, TR))).toEqual({
+        device_id: DEVICE_ID,
+        error: "device_not_connected",
+      });
+    });
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────
@@ -1690,6 +1851,12 @@ describe("POST /mcp/tools — get_device_log", () => {
 // vi.hoisted / vi.mock はファイル先頭へ巻き上げられるので、この位置でも全体に効く
 // (他の describe は worksApiGet を使わない)。
 // ────────────────────────────────────────────────────────────────────────
+// create_test_record が backend を読むときの OIDC (Cloud Run 用) だけ差し替える (他の describe は mint を使わない)
+vi.mock("../../src/lib/oidc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/oidc")>()),
+  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
+}));
+
 const worksApiGetMock = vi.hoisted(() => vi.fn());
 vi.mock("../../src/lib/lineworks-bot-api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/lineworks-bot-api")>()),
