@@ -71,6 +71,47 @@ describe("GET /internal/device-labels — 応答", () => {
     expect(Object.keys(body)).toEqual(["devices"]);
   });
 
+  it("all 無しは失効済みを返さず revoked キーも付けない (all=0 も同じ)", async () => {
+    const env = makeEnv();
+    const live = await createDeviceCredential(env, "tenant-a", "live-a", NOW, DEVICE_ROLE_KIOSK);
+    const gone = await createDeviceCredential(env, "tenant-a", "gone-a", NOW + 1, DEVICE_ROLE_KIOSK);
+    await revokeDeviceCredential(env, gone.device_id);
+    for (const q of ["?tenant_id=tenant-a", "?tenant_id=tenant-a&all=0"]) {
+      const body = (await (await handleInternalDeviceLabels(req(SECRET, q), env)).json()) as {
+        devices: Array<Record<string, unknown>>;
+      };
+      expect(body.devices).toEqual([{ device_id: live.device_id, label: "live-a" }]);
+      expect("revoked" in (body.devices[0] ?? {})).toBe(false);
+    }
+  });
+
+  it("all=1 は失効済みも revoked: true で返し、有効は revoked: false。他テナントは載らない", async () => {
+    const env = makeEnv();
+    const live = await createDeviceCredential(env, "tenant-a", "live-a", NOW, DEVICE_ROLE_KIOSK);
+    const gone = await createDeviceCredential(env, "tenant-a", "gone-a", NOW + 1, DEVICE_ROLE_KIOSK);
+    await createDeviceCredential(env, "tenant-b", "other-b", NOW + 2, DEVICE_ROLE_KIOSK);
+    const goneB = await createDeviceCredential(env, "tenant-b", "gone-b", NOW + 3, DEVICE_ROLE_KIOSK);
+    await revokeDeviceCredential(env, gone.device_id);
+    await revokeDeviceCredential(env, goneB.device_id);
+
+    const res = await handleInternalDeviceLabels(req(SECRET, "?tenant_id=tenant-a&all=1"), env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    const body = (await res.json()) as { devices: Array<Record<string, unknown>> };
+    expect(body.devices).toEqual([
+      { device_id: gone.device_id, label: "gone-a", revoked: true },
+      { device_id: live.device_id, label: "live-a", revoked: false },
+    ]);
+    for (const d of body.devices) expect(Object.keys(d).sort()).toEqual(["device_id", "label", "revoked"]);
+  });
+
+  it("all=1 でも secret 無しは従来どおり 401", async () => {
+    const env = makeEnv();
+    const res = await handleInternalDeviceLabels(req(undefined, "?tenant_id=tenant-a&all=1"), env);
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe(JSON.stringify({ error: "unauthorized" }));
+  });
+
   it("label が無い record は label: null", async () => {
     const env = makeEnv();
     const c = await createDeviceCredential(env, "tenant-a", "x", NOW, DEVICE_ROLE_KIOSK);
