@@ -21,9 +21,10 @@
  *   | `bp-station`    | 血圧測定台   | `device-bp-station`      |
  *   | `cam-host`      | 拠点 PC のカメラ配信の拡張 | `device-cam-host` |
  *
- * `cam-host` だけは**専用の鍵を持たず、用途 `kiosk` の鍵 (CoreS3) の署名で出す** —
- * sub を運行者端末と同じ `alarm:<fp>` にし、cam_camera_devices の紐づけ ID に使うため
- * (`lib/alarm-nonce.ts::keyUsageForPurpose`)。nonce の purpose は kiosk と分けてある。
+ * `cam-host` だけは**専用の鍵を持たず、用途 `kiosk` (CoreS3 / Vein Station) か `bp-station`
+ * (測定台の ATOM S3) の鍵の署名で出す** — sub をその機体と同じ `alarm:<fp>` にし、
+ * cam_camera_devices の紐づけ ID に使うため (`lib/alarm-nonce.ts::keyUsagesForPurpose`)。
+ * nonce の purpose は kiosk / bp-station と分けてある。
  *
  * **4 用途とも role は `device-<usage>` の 1:1 対応**なので、対応表は持たず
  * `roleForUsage` で計算する (Refs ippoan/alc-app#353。以前は管理者ログイン用途
@@ -54,7 +55,7 @@ import {
 /** この口が受け付ける用途 (= nonce の purpose。`lib/alarm-nonce.ts` の正本)。 */
 type AlarmTokenUsage = AlarmNoncePurpose;
 import { mintDeviceJwt } from "../lib/device";
-import { ALARM_NONCE_PURPOSES, keyUsageForPurpose, type AlarmNoncePurpose } from "../lib/alarm-nonce";
+import { ALARM_NONCE_PURPOSES, keyUsagesForPurpose, type AlarmNoncePurpose } from "../lib/alarm-nonce";
 
 /**
  * usage → 端末 JWT の role。`ALARM_NONCE_PURPOSES` の 4 用途とも `device-<usage>` の
@@ -171,7 +172,8 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   const bpBonded = bpBondedRaw as boolean | undefined;
 
   // 用途。ここで決まった usage を nonce の purpose・mint する role (`roleForUsage`) に
-  // そのまま使い、鍵の usage は `keyUsageForPurpose` で引く (cam-host だけ kiosk、他は同じ値)
+  // そのまま使い、受け付ける鍵の usage は `keyUsagesForPurpose` で引く (cam-host だけ
+  // kiosk / bp-station、他は同じ値)
   // (`ALARM_NONCE_PURPOSES` に無い用途は他の失敗と同じ 401)。
   const usage = resolveAlarmTokenUsage(body.usage);
   if (!usage) return invalidAlarmToken();
@@ -182,12 +184,12 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   // b. 登録済み・未失効・**用途が一致する**鍵で署名を検証する (署名対象は nonce + bpBonded、
   //    `verifyAlarmSignature` 内の `buildAlarmSignedMessage` が組み立て直す)。
   //    キオスクの鍵で運行管理者の JWT を取ろうとすると、ここで落ちる。cam-host は
-  //    キオスクの鍵でだけ通る (運行管理者席・測定台の鍵では落ちる)。
+  //    キオスク・測定台の鍵でだけ通る (運行管理者席の鍵では落ちる)。
   const verified = await verifyAlarmSignature(env, {
     pubkeyB64,
     sigB64,
     nonce,
-    usage: keyUsageForPurpose(usage),
+    usages: keyUsagesForPurpose(usage),
     bpBonded,
   });
   if (!verified) return invalidAlarmToken();

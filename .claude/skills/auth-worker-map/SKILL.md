@@ -166,8 +166,9 @@ Google ログイン直後の本番状態が再現でき、ページ側の門番 
 - 一覧 (`GET /device/setup/list`、`GET /device/setup/alarm-keys`) の各行に `dev_device: boolean`。
   alarm-keys の各行には `sub` (`alarm:<fingerprint>` = その鍵の JWT の sub。録画のカメラ↔端末の紐づけ ID) もある。
 - **`/device/alarm-token` の用途 `cam-host`** (拠点 PC のカメラ配信の拡張の鍵、role `device-cam-host`) は
-  **専用の鍵を持たず用途 `kiosk` の鍵の署名で出す** (sub を CoreS3 と揃えるため。`lib/alarm-nonce.ts::keyUsageForPurpose`)。
-  nonce の purpose は kiosk と別。`/device-data-proxy` で通るのは `GET /api/cam-clips/cameras/mine` だけ (`CAM_HOST_ROUTES`)。
+  **専用の鍵を持たず用途 `kiosk` (CoreS3 / Vein Station) か `bp-station` (測定台の ATOM S3) の鍵の署名で出す**
+  (sub をその機体と揃えるため。`lib/alarm-nonce.ts::keyUsagesForPurpose` / `CAM_HOST_SIGNER_USAGES`)。
+  nonce の purpose は kiosk / bp-station と別。`/device-data-proxy` で通るのは `GET /api/cam-clips/cameras/mine` だけ (`CAM_HOST_ROUTES`)。
   `/device/setup` の画面は「開発用」の印 (`devDeviceMark`) を全員に出す。
 
 ### 画面の入口は 1 つ —「接続中の機体を開発用 / 本番として書き直す」

@@ -925,12 +925,13 @@ describe("POST /device/alarm-token の dev_device claim (Refs ippoan/alc-app#387
 });
 
 /**
- * 拠点 PC のカメラ配信の拡張に渡す鍵 (`cam-host`)。専用の鍵は無く、**用途 kiosk の鍵 (CoreS3)
- * の署名で出す** — sub を運行者端末と同じ `alarm:<fp>` にするため。
+ * 拠点 PC のカメラ配信の拡張に渡す鍵 (`cam-host`)。専用の鍵は無く、**用途 kiosk (CoreS3 /
+ * Vein Station) か bp-station (測定台の ATOM S3) の鍵の署名で出す** — sub をその機体と同じ
+ * `alarm:<fp>` にするため。
  *
  * 固定したいのは:
- *   - kiosk の鍵 + cam-host の nonce で `device-cam-host` が出て、sub は kiosk の JWT と同じ
- *   - 運行管理者席・測定台の鍵からは出ない / nonce の purpose は kiosk と使い回せない
+ *   - kiosk / bp-station の鍵 + cam-host の nonce で `device-cam-host` が出て、sub はその鍵の JWT と同じ
+ *   - 運行管理者席の鍵からは出ない / nonce の purpose は kiosk と使い回せない
  *   - 出した JWT は `/cameras/mine` だけを通り、`/auth/introspect` が role と sub を返す
  */
 describe("POST /device/alarm-token の用途 cam-host (拠点 PC の拡張の鍵)", () => {
@@ -1003,9 +1004,30 @@ describe("POST /device/alarm-token の用途 cam-host (拠点 PC の拡張の鍵
     expect(kioskPayload.sub).toBe(payload.sub);
   });
 
-  it.each(["tenko-manager", "bp-station"])("★ 用途 %s の鍵 (VoiceS3R) からは cam-host は出ない (401)", async (usage) => {
+  it("測定台の鍵 (用途 bp-station、ATOM S3) でも role=device-cam-host が出て、sub は同じ鍵の bp-station の JWT と同じ", async () => {
     const keypair = generateKeypair();
-    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage }).kv);
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "bp-station" }).kv);
+    const res = await handleDeviceAlarmToken(
+      tokenRequest(await tokenBody(env, keypair, { nonceUsage: "cam-host", bodyUsage: "cam-host" })),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const payload = decodeJwtPayload(((await res.json()) as { access_token: string }).access_token)!;
+    expect(payload.role).toBe(DEVICE_ROLE_CAM_HOST);
+
+    const bpRes = await handleDeviceAlarmToken(
+      tokenRequest(await tokenBody(env, keypair, { nonceUsage: "bp-station", bodyUsage: "bp-station" })),
+      env,
+    );
+    expect(bpRes.status).toBe(200);
+    const bpPayload = decodeJwtPayload(((await bpRes.json()) as { access_token: string }).access_token)!;
+    expect(bpPayload.role).toBe("device-bp-station");
+    expect(bpPayload.sub).toBe(payload.sub);
+  });
+
+  it("★ 運行管理者席の鍵 (用途 tenko-manager、VoiceS3R) からは cam-host は出ない (401)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage: "tenko-manager" }).kv);
     await expectInvalid(
       await handleDeviceAlarmToken(
         tokenRequest(await tokenBody(env, keypair, { nonceUsage: "cam-host", bodyUsage: "cam-host" })),

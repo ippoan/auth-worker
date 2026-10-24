@@ -7,7 +7,8 @@ import {
   buildAlarmSignedMessage,
   ALARM_NONCE_TTL_SEC,
   ALARM_NONCE_PURPOSES,
-  keyUsageForPurpose,
+  keyUsagesForPurpose,
+  CAM_HOST_SIGNER_USAGES,
 } from "../../src/lib/alarm-nonce";
 import { ALARM_KEY_USAGES, type AlarmKeyUsage } from "../../src/handlers/alarm-key";
 import { createMockEnv, type MockKV } from "../helpers/mock-env";
@@ -25,9 +26,10 @@ describe("AlarmKeyUsage と AlarmNoncePurpose の語彙", () => {
     expect(ALARM_NONCE_PURPOSES).toEqual([...ALARM_KEY_USAGES, "cam-host"]);
   });
 
-  it("keyUsageForPurpose: cam-host は kiosk の鍵、他は同じ値", () => {
-    expect(keyUsageForPurpose("cam-host")).toBe("kiosk");
-    for (const usage of ALARM_KEY_USAGES) expect(keyUsageForPurpose(usage)).toBe(usage);
+  it("keyUsagesForPurpose: cam-host は kiosk / bp-station の鍵、他は同じ値 1 つ", () => {
+    expect(CAM_HOST_SIGNER_USAGES).toEqual(["kiosk", "bp-station"]);
+    expect(keyUsagesForPurpose("cam-host")).toEqual(["kiosk", "bp-station"]);
+    for (const usage of ALARM_KEY_USAGES) expect(keyUsagesForPurpose(usage)).toEqual([usage]);
   });
 });
 
@@ -129,7 +131,7 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
   it.each<AlarmKeyUsage>(["kiosk", "tenko-manager"])("用途 %s が一致すれば鍵を返す", async (usage) => {
     const env = createMockEnv();
     const { pubkeyB64, sigB64, fp } = seedSignedKey(env, usage);
-    const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage });
+    const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: [usage] });
     expect(verified?.fingerprint).toBe(fp);
     expect(verified?.record.usage).toBe(usage);
   });
@@ -141,7 +143,30 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
     const env = createMockEnv();
     const { pubkeyB64, sigB64 } = seedSignedKey(env, registered);
     expect(
-      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: requested }),
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: [requested] }),
+    ).toBeNull();
+  });
+
+  it.each<AlarmKeyUsage>(["kiosk", "bp-station"])(
+    "複数の用途を受け付ける口 (cam-host) では用途 %s の鍵も通る",
+    async (usage) => {
+      const env = createMockEnv();
+      const { pubkeyB64, sigB64, fp } = seedSignedKey(env, usage);
+      const verified = await verifyAlarmSignature(env, {
+        pubkeyB64,
+        sigB64,
+        nonce: NONCE,
+        usages: CAM_HOST_SIGNER_USAGES,
+      });
+      expect(verified?.fingerprint).toBe(fp);
+    },
+  );
+
+  it("複数の用途を受け付ける口でも、含まれない用途 (tenko-manager) の鍵は null", async () => {
+    const env = createMockEnv();
+    const { pubkeyB64, sigB64 } = seedSignedKey(env, "tenko-manager");
+    expect(
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: CAM_HOST_SIGNER_USAGES }),
     ).toBeNull();
   });
 
@@ -150,7 +175,7 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
     async (usage) => {
       const env = createMockEnv();
       const { pubkeyB64, sigB64 } = seedSignedKey(env, null);
-      expect(await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage })).toBeNull();
+      expect(await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: [usage] })).toBeNull();
     },
   );
 
@@ -158,7 +183,7 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
     const env = createMockEnv();
     const { pubkeyB64, sigB64 } = seedSignedKey(env, "admin");
     expect(
-      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk" }),
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: ["kiosk"] }),
     ).toBeNull();
   });
 
@@ -170,7 +195,7 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
         pubkeyB64: "!!!not valid base64!!!",
         sigB64: "y",
         nonce: NONCE,
-        usage: "kiosk",
+        usages: ["kiosk"],
       }),
     ).toBeNull();
   });
@@ -183,7 +208,7 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
         pubkeyB64: Buffer.from(new Uint8Array(10)).toString("base64url"), // 正しい base64url、長さが違う
         sigB64: Buffer.from(new Uint8Array(64)).toString("base64url"),
         nonce: NONCE,
-        usage: "kiosk",
+        usages: ["kiosk"],
       }),
     ).toBeNull();
   });
@@ -207,7 +232,7 @@ describe("verifyAlarmSignature の用途 (usage) 照合", () => {
         pubkeyB64: pubRaw.toString("base64url"),
         sigB64: sig.toString("base64url"),
         nonce: NONCE,
-        usage: "kiosk",
+        usages: ["kiosk"],
       }),
     ).toBeNull();
   });
@@ -254,7 +279,7 @@ describe("verifyAlarmSignature のボンド状態 (bp) 署名 (Refs #571)", () =
   it("後方互換: nonce だけの署名 (bpBonded 未指定) は今までどおり通る", async () => {
     const env = createMockEnv();
     const { pubkeyB64, sigB64, fp } = seedSignedKeyWithBp(env, "kiosk");
-    const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk" });
+    const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: ["kiosk"] });
     expect(verified?.fingerprint).toBe(fp);
   });
 
@@ -268,7 +293,7 @@ describe("verifyAlarmSignature のボンド状態 (bp) 署名 (Refs #571)", () =
       pubkeyB64,
       sigB64,
       nonce: NONCE,
-      usage: "kiosk",
+      usages: ["kiosk"],
       bpBonded,
     });
     expect(verified?.fingerprint).toBe(fp);
@@ -278,7 +303,7 @@ describe("verifyAlarmSignature のボンド状態 (bp) 署名 (Refs #571)", () =
     const env = createMockEnv();
     const { pubkeyB64, sigB64 } = seedSignedKeyWithBp(env, "kiosk", true);
     expect(
-      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk", bpBonded: false }),
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: ["kiosk"], bpBonded: false }),
     ).toBeNull();
   });
 
@@ -286,7 +311,7 @@ describe("verifyAlarmSignature のボンド状態 (bp) 署名 (Refs #571)", () =
     const env = createMockEnv();
     const { pubkeyB64, sigB64 } = seedSignedKeyWithBp(env, "kiosk", true);
     expect(
-      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk" }),
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: ["kiosk"] }),
     ).toBeNull();
   });
 
@@ -294,7 +319,7 @@ describe("verifyAlarmSignature のボンド状態 (bp) 署名 (Refs #571)", () =
     const env = createMockEnv();
     const { pubkeyB64, sigB64 } = seedSignedKeyWithBp(env, "kiosk");
     expect(
-      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usage: "kiosk", bpBonded: true }),
+      await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce: NONCE, usages: ["kiosk"], bpBonded: true }),
     ).toBeNull();
   });
 });
