@@ -243,6 +243,8 @@ describe("handleAlarmKeyList", () => {
     expect(data.keys).toHaveLength(1);
     expect(data.keys[0]!.label).toBe("cab-1");
     expect(data.keys[0]!.usage).toBe("kiosk");
+    // sub は alarm-token が出す JWT の sub と同じ形 (録画の設定の端末候補に使う)
+    expect((data.keys[0] as { sub?: string }).sub).toBe(`alarm:${data.keys[0]!.fingerprint}`);
     expect(data.keys[0]!.revoked_at).toBeUndefined();
     expect(data.keys[0]).not.toHaveProperty("pubkey");
   });

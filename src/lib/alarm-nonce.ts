@@ -31,16 +31,30 @@ import {
 import { verifyEd25519 } from "./ed25519";
 
 /**
- * nonce を何に使うか。**`AlarmKeyUsage` (`handlers/alarm-key.ts`) と同じ語彙** —
- * 以前は usage と purpose を別々に手書きしていて、削除済みの旧・管理者ログイン
- * 用途の 2 つの綴りが食い違っていた (Refs ippoan/alc-app#353)。用途ごとに
- * purpose を分けるのは変わらず (運行者端末の nonce への署名で運行管理者の JWT を
- * 取らせないため。Refs ippoan/alc-app#337)。
+ * nonce を何に使うか (= `/device/alarm-token` が出す JWT の用途)。**`AlarmKeyUsage`
+ * (`handlers/alarm-key.ts`) の語彙 + 鍵を持たない用途 `cam-host`** — 以前は usage と
+ * purpose を別々に手書きしていて、削除済みの旧・管理者ログイン用途の 2 つの綴りが
+ * 食い違っていた (Refs ippoan/alc-app#353)。用途ごとに purpose を分けるのは変わらず
+ * (運行者端末の nonce への署名で運行管理者の JWT を取らせないため。Refs ippoan/alc-app#337)。
+ *
+ * `cam-host` (拠点 PC のカメラ配信の拡張に渡す鍵) は **専用の鍵を登録しない**。
+ * 紐づけ ID (JWT の sub = `alarm:<fp>`) を運行者端末 (CoreS3) と同じにするため、
+ * 用途 `kiosk` の鍵の署名で出す (対応は `keyUsageForPurpose`)。purpose は分けてあるので、
+ * kiosk 向けに出した nonce への署名で cam-host の JWT は取れない (逆も同じ)。
  */
-export type AlarmNoncePurpose = AlarmKeyUsage;
+export type AlarmNoncePurpose = AlarmKeyUsage | "cam-host";
 
-/** 受理する purpose の正本 (= `AlarmKeyUsage` と同じ配列)。 */
-export const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = ALARM_KEY_USAGES;
+/** 受理する purpose の正本 (`AlarmKeyUsage` の配列 + `cam-host`)。 */
+export const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = [...ALARM_KEY_USAGES, "cam-host"];
+
+/**
+ * purpose → 署名を受け付ける鍵の用途。`cam-host` は `kiosk` の鍵 (上の doc)、他は同じ値。
+ * 鍵の用途は 1 つなので、cam-host の JWT を出せるのは運行者端末の鍵だけ
+ * (運行管理者席・測定台の鍵からは出ない)。
+ */
+export function keyUsageForPurpose(purpose: AlarmNoncePurpose): AlarmKeyUsage {
+  return purpose === "cam-host" ? "kiosk" : purpose;
+}
 
 /** nonce の TTL (秒)。両エンドポイントの `expires_in` と一致させる。 */
 export const ALARM_NONCE_TTL_SEC = 60;

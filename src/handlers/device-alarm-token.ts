@@ -19,13 +19,18 @@
  *   | `kiosk` (既定)  | 運行者端末   | `device-kiosk`           |
  *   | `tenko-manager` | 運行管理者席 | `device-tenko-manager`   |
  *   | `bp-station`    | 血圧測定台   | `device-bp-station`      |
+ *   | `cam-host`      | 拠点 PC のカメラ配信の拡張 | `device-cam-host` |
  *
- * **3 用途とも role は `device-<usage>` の 1:1 対応**なので、対応表は持たず
+ * `cam-host` だけは**専用の鍵を持たず、用途 `kiosk` の鍵 (CoreS3) の署名で出す** —
+ * sub を運行者端末と同じ `alarm:<fp>` にし、cam_camera_devices の紐づけ ID に使うため
+ * (`lib/alarm-nonce.ts::keyUsageForPurpose`)。nonce の purpose は kiosk と分けてある。
+ *
+ * **4 用途とも role は `device-<usage>` の 1:1 対応**なので、対応表は持たず
  * `roleForUsage` で計算する (Refs ippoan/alc-app#353。以前は管理者ログイン用途
  * (ブラウザ経由、席ではなく口を表す別軸) が混ざっていたため対応表が要ったが、
- * 本番で未使用だったため畳んだ — `AlarmKeyUsage` = `AlarmNoncePurpose` = この口が
- * 受け付ける用途、の 3 つが完全に同じ語彙になった)。usage は nonce の purpose にもそのまま
- * 使う。鍵 (`alarmkey:<fp>`) 側の `usage` と一致しなければ署名検証の時点で落ちるので、
+ * 本番で未使用だったため畳んだ — `AlarmNoncePurpose` = この口が受け付ける用途で、
+ * `AlarmKeyUsage` はそこから鍵を持たない `cam-host` を除いた語彙)。usage は nonce の purpose
+ * にもそのまま使う。鍵 (`alarmkey:<fp>`) 側の `usage` と一致しなければ署名検証の時点で落ちるので、
  * **キオスクの鍵 (usage=kiosk) から運行管理者の role は出ない** — nonce の purpose も
  * 用途ごとに分けてあり、運行者端末向けに出した nonce への署名も使い回せない。
  * `usage` 省略時は `kiosk` (既存 CoreS3 ファーム / alc-app との後方互換)。
@@ -46,30 +51,32 @@ import {
   consumeAlarmNonce,
   verifyAlarmSignature,
 } from "../lib/alarm-nonce";
+/** この口が受け付ける用途 (= nonce の purpose。`lib/alarm-nonce.ts` の正本)。 */
+type AlarmTokenUsage = AlarmNoncePurpose;
 import { mintDeviceJwt } from "../lib/device";
-import { ALARM_KEY_USAGES, type AlarmKeyUsage } from "./alarm-key";
+import { ALARM_NONCE_PURPOSES, keyUsageForPurpose, type AlarmNoncePurpose } from "../lib/alarm-nonce";
 
 /**
- * usage → 端末 JWT の role。`ALARM_KEY_USAGES` の 3 用途とも `device-<usage>` の
+ * usage → 端末 JWT の role。`ALARM_NONCE_PURPOSES` の 4 用途とも `device-<usage>` の
  * 1:1 対応 (Refs ippoan/alc-app#353。`DEVICE_ROLE_KIOSK` 等の定数値と一致することは
  * テストで固定する)。
  */
-export function roleForUsage(usage: AlarmKeyUsage): string {
+export function roleForUsage(usage: AlarmTokenUsage): string {
   return `device-${usage}`;
 }
 
 /** 用途の既定 (既存 CoreS3 ファーム / alc-app は usage を送らない)。 */
-const DEFAULT_ALARM_TOKEN_USAGE: AlarmKeyUsage = "kiosk";
+const DEFAULT_ALARM_TOKEN_USAGE: AlarmTokenUsage = "kiosk";
 
 /**
- * 外部入力 (query / body) の usage を `AlarmKeyUsage` に解決する。未指定・空は既定
- * (kiosk)、`ALARM_KEY_USAGES` に無い値は null (= 呼び出し側が拒否する。fail-closed。
+ * 外部入力 (query / body) の usage を `AlarmTokenUsage` に解決する。未指定・空は既定
+ * (kiosk)、`ALARM_NONCE_PURPOSES` に無い値は null (= 呼び出し側が拒否する。fail-closed。
  * 畳んだ旧・管理者ログイン用途もここで落ちる)。
  */
-function resolveAlarmTokenUsage(raw: unknown): AlarmKeyUsage | null {
+function resolveAlarmTokenUsage(raw: unknown): AlarmTokenUsage | null {
   if (raw === undefined || raw === null || raw === "") return DEFAULT_ALARM_TOKEN_USAGE;
   if (typeof raw !== "string") return null;
-  return (ALARM_KEY_USAGES as ReadonlyArray<string>).includes(raw) ? (raw as AlarmKeyUsage) : null;
+  return (ALARM_NONCE_PURPOSES as ReadonlyArray<string>).includes(raw) ? (raw as AlarmTokenUsage) : null;
 }
 
 /** 端末 JWT の寿命 (秒)。 */
@@ -118,7 +125,7 @@ function clientIp(request: Request): string {
 
 /**
  * `GET /device/alarm-nonce[?usage=…]` — その用途の purpose を持つ nonce を発行する。
- * `usage` 省略時は `kiosk` (後方互換)。`ALARM_KEY_USAGES` に無い用途は 400。
+ * `usage` 省略時は `kiosk` (後方互換)。`ALARM_NONCE_PURPOSES` に無い用途は 400。
  */
 export async function handleDeviceAlarmNonce(request: Request, env: Env): Promise<Response> {
   const okRate = await checkAndBumpRateLimit(
@@ -135,7 +142,7 @@ export async function handleDeviceAlarmNonce(request: Request, env: Env): Promis
   // (呼び出し側の綴り間違いを「鍵が違う」と誤診させない)。
   if (!usage) return jsonNoStoreCors({ error: "invalid_usage" }, 400);
 
-  // nonce の purpose は usage と同じ値 (`AlarmNoncePurpose` = `AlarmKeyUsage`)。
+  // nonce の purpose は usage と同じ値 (`AlarmNoncePurpose` = この口の用途)。
   const nonce = await issueAlarmNonce(env, { purpose: usage });
   return jsonNoStoreCors({ nonce, expires_in: ALARM_NONCE_TTL_SEC });
 }
@@ -163,9 +170,9 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   if (bpBondedRaw !== undefined && typeof bpBondedRaw !== "boolean") return invalidAlarmToken();
   const bpBonded = bpBondedRaw as boolean | undefined;
 
-  // 用途。ここで決まった usage を nonce の purpose・鍵の usage・mint する role
-  // (`roleForUsage`) の 3 つにそのまま使うので、3 つがズレようがない
-  // (`ALARM_KEY_USAGES` に無い用途は他の失敗と同じ 401)。
+  // 用途。ここで決まった usage を nonce の purpose・mint する role (`roleForUsage`) に
+  // そのまま使い、鍵の usage は `keyUsageForPurpose` で引く (cam-host だけ kiosk、他は同じ値)
+  // (`ALARM_NONCE_PURPOSES` に無い用途は他の失敗と同じ 401)。
   const usage = resolveAlarmTokenUsage(body.usage);
   if (!usage) return invalidAlarmToken();
 
@@ -174,8 +181,15 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
 
   // b. 登録済み・未失効・**用途が一致する**鍵で署名を検証する (署名対象は nonce + bpBonded、
   //    `verifyAlarmSignature` 内の `buildAlarmSignedMessage` が組み立て直す)。
-  //    キオスクの鍵で運行管理者の JWT を取ろうとすると、ここで落ちる。
-  const verified = await verifyAlarmSignature(env, { pubkeyB64, sigB64, nonce, usage, bpBonded });
+  //    キオスクの鍵で運行管理者の JWT を取ろうとすると、ここで落ちる。cam-host は
+  //    キオスクの鍵でだけ通る (運行管理者席・測定台の鍵では落ちる)。
+  const verified = await verifyAlarmSignature(env, {
+    pubkeyB64,
+    sigB64,
+    nonce,
+    usage: keyUsageForPurpose(usage),
+    bpBonded,
+  });
   if (!verified) return invalidAlarmToken();
   const { fingerprint, record } = verified;
 

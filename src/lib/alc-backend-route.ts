@@ -107,8 +107,9 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   // 管理者の画面 (alc-app) からだけ使う。admin の判定は alc-measurements-worker が X-User-Role で行う
   { match: "prefix", path: "/api/bp-notify/", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser"] },
   // 拠点カメラの SD 録画の時間指定の切り出し (ippoan/alc-cam の ingest/)。管理者の画面から使う。
-  // 端末用は運行管理者席の鍵がカメラ一覧 (`GET /api/cam-clips/cameras`) を読むためだけに足してある
-  // (通せる口は device-data-proxy の `TENKO_MANAGER_ROUTES` の 1 行。他の device role の表には無い)。
+  // 端末用は運行管理者席の鍵がカメラ一覧 (`GET /api/cam-clips/cameras`) を、拠点 PC の拡張の鍵が
+  // 担当カメラ (`GET /api/cam-clips/cameras/mine`) を読むためだけに足してある (通せる口は
+  // device-data-proxy の `TENKO_MANAGER_ROUTES` と `CAM_HOST_ROUTES` の各 1 行。他の device role の表には無い)。
   // 呼び手とテナントの判定は alc-cam-sd-ingest が X-User-Role / X-Device-Role / X-Tenant-ID で行う
   { match: "prefix", path: "/api/cam-clips/", binding: "ALC_CAM_CLIPS", host: "alc-cam-sd-ingest", proxies: ["browser", "device"] },
   {
