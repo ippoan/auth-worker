@@ -1842,6 +1842,102 @@ describe("POST /mcp/tools — get_device_log", () => {
       });
     });
   });
+
+  describe("run_cam_clips_auto", () => {
+    const CAMERA_ID = "0f4be522-ae22-4903-859d-e16a48b645a1";
+    const RC = { tool: "run_cam_clips_auto" };
+
+    /** ALC_CAM_CLIPS (alc-cam-sd-ingest) を模した Fetcher。受けた要求を記録する。 */
+    function camEnv(handler: () => Response): { env: Env; calls: Array<{ url: string; headers: Headers; body: string }> } {
+      const env = logEnv(undefined);
+      const calls: Array<{ url: string; headers: Headers; body: string }> = [];
+      env.ALC_CAM_CLIPS = {
+        async fetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+          const req = new Request(input as string, init);
+          calls.push({ url: req.url, headers: req.headers, body: init?.body ? String(init.body) : "" });
+          return handler();
+        },
+      } as unknown as Env["ALC_CAM_CLIPS"];
+      return { env, calls };
+    }
+
+    it("tools/list に run_cam_clips_auto が出る (mcp.write)", async () => {
+      const { env } = envWithKv();
+      const jwt = await googleUserJwt();
+      const res = await handleMcpTools(
+        await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+        env,
+      );
+      const body = (await res.json()) as { result: { tools: Array<{ name: string }> } };
+      expect(body.result.tools.map((t) => t.name)).toContain("run_cam_clips_auto");
+    });
+
+    it("★ 自テナントの管理者として ingest の /auto-run を叩き、応答をそのまま返す", async () => {
+      const answer = { cameras: [{ camera_id: CAMERA_ID, clipped: 1, failed: 0 }] };
+      const { env, calls } = camEnv(() => new Response(JSON.stringify(answer), { status: 200 }));
+      const result = await callDeviceTool(env, { camera_id: CAMERA_ID }, RC);
+      expect(result.isError).toBe(false);
+      expect(parsed(result)).toEqual({ camera_id: CAMERA_ID, status: 200, result: answer });
+      expect(calls).toHaveLength(1);
+      expect(new URL(calls[0]!.url).pathname).toBe("/api/cam-clips/auto-run");
+      expect(calls[0]!.headers.get("X-Tenant-ID")).toBe(TENANT_ID);
+      expect(calls[0]!.headers.get("X-User-Role")).toBe("admin");
+      expect(JSON.parse(calls[0]!.body)).toEqual({ camera_id: CAMERA_ID });
+    });
+
+    it("ingest が失敗・JSON でない応答は backend_error (status と body つき)", async () => {
+      for (const [res, status, body] of [
+        [() => new Response("nope", { status: 404 }), 404, "nope"],
+        [() => new Response("not json", { status: 200 }), 200, "not json"],
+      ] as const) {
+        const { env } = camEnv(res);
+        expect(parsed(await callDeviceTool(env, { camera_id: CAMERA_ID }, RC))).toEqual({
+          camera_id: CAMERA_ID,
+          error: "backend_error",
+          status,
+          body,
+        });
+      }
+    });
+
+    it("binding が無ければ not_configured・管理者でなければ forbidden (ingest を叩かない)", async () => {
+      const none = logEnv(undefined);
+      expect(parsed(await callDeviceTool(none, { camera_id: CAMERA_ID }, RC))).toEqual({
+        camera_id: CAMERA_ID,
+        error: "not_configured",
+      });
+
+      const { env, calls } = camEnv(() => new Response("{}", { status: 200 }));
+      const viewer = await internalUserResponse().json();
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ...(viewer as object), role: "viewer" }), { status: 200 }),
+      );
+      expect(parsed(await callDeviceTool(env, { camera_id: CAMERA_ID }, RC))).toEqual({
+        camera_id: CAMERA_ID,
+        error: "forbidden",
+      });
+      expect(calls).toHaveLength(0);
+    });
+
+    it("dev-login の allowlist に無ければ拒否 (ingest を叩かない)", async () => {
+      const { env, calls } = camEnv(() => new Response("{}", { status: 200 }));
+      (env.MCP_OAUTH_KV as unknown as { _data: Record<string, string> })._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] =
+        JSON.stringify(["google:someone-else@example.com"]);
+      const denied = await callDeviceTool(env, { camera_id: CAMERA_ID }, RC);
+      expect(denied.isError).toBe(true);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("camera_id が UUID でなければ入力の誤り", async () => {
+      const { env, calls } = camEnv(() => new Response("{}", { status: 200 }));
+      for (const args of [{}, { camera_id: "" }, { camera_id: "cam-1" }]) {
+        const bad = await callDeviceTool(env, args, RC);
+        expect(bad.isError).toBe(true);
+        expect(bad.content[0]!.text).toContain("camera_id must be a UUID");
+      }
+      expect(calls).toHaveLength(0);
+    });
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────
