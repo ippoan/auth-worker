@@ -15,6 +15,7 @@ import {
   handleDeviceAlarmNonce,
   handleDeviceAlarmToken,
   ALARM_TOKEN_TTL_SEC,
+  alarmTokenTtlSec,
   roleForUsage,
 } from "../../src/handlers/device-alarm-token";
 import { handleDeviceDataProxy } from "../../src/handlers/device-data-proxy";
@@ -25,6 +26,8 @@ import {
   DEVICE_ROLE_TENKO_MANAGER,
   DEVICE_ROLE_BP_STATION,
   DEVICE_ROLE_CAM_HOST,
+  DEVICE_ROLE_HUB_RECORD,
+  DEVICE_JWT_TTL_SECONDS,
 } from "../../src/lib/device";
 import { handleAuthIntrospect } from "../../src/handlers/auth-introspect";
 import { decodeJwtPayload } from "../../src/lib/jwt";
@@ -551,6 +554,7 @@ describe("roleForUsage (Refs ippoan/alc-app#353)", () => {
     ["tenko-manager", DEVICE_ROLE_TENKO_MANAGER],
     ["bp-station", DEVICE_ROLE_BP_STATION],
     ["cam-host", DEVICE_ROLE_CAM_HOST],
+    ["hub-record", DEVICE_ROLE_HUB_RECORD],
   ])("roleForUsage(%s) === %s", (usage, expected) => {
     expect(roleForUsage(usage as Parameters<typeof roleForUsage>[0])).toBe(expected);
   });
@@ -1121,5 +1125,146 @@ describe("POST /device/alarm-token の用途 cam-host (拠点 PC の拡張の鍵
     expect(body.role).toBe(DEVICE_ROLE_CAM_HOST);
     expect(body.sub).toBe(`alarm:${fp}`);
     expect(body.tenant_id).toBe(TENANT_ID);
+  });
+});
+
+/**
+ * CoreS3 が測定の記録を機体の鍵の ID で残すための証明 (`hub-record`)。専用の鍵は無く、
+ * **用途 kiosk (CoreS3) の鍵の署名でだけ出す**。
+ *
+ * 固定したいのは:
+ *   - kiosk の鍵 + hub-record の nonce で `device-hub-record` が出て、sub はその鍵の JWT と同じ・寿命は 1 時間
+ *   - 測定台・運行管理者席の鍵からは出ない / nonce の purpose は kiosk・cam-host と使い回せない
+ *   - 出した JWT は `/device-data-proxy` のどの口も通らない (証明にしか使えない)
+ *   - dev の鍵なら dev_device が載る (recorder が 1 本目の JWT と突き合わせる)
+ */
+describe("POST /device/alarm-token の用途 hub-record (CoreS3 の記録の ID の証明)", () => {
+  async function issueNonce(env: Env, usage?: string): Promise<string> {
+    const url = usage
+      ? `${AUTH_ORIGIN}/device/alarm-nonce?usage=${encodeURIComponent(usage)}`
+      : `${AUTH_ORIGIN}/device/alarm-nonce`;
+    const res = await handleDeviceAlarmNonce(new Request(url), env);
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { nonce: string }).nonce;
+  }
+
+  async function tokenBody(
+    env: Env,
+    keypair: Keypair,
+    opts: { nonceUsage?: string; bodyUsage?: string },
+  ): Promise<Record<string, unknown>> {
+    const nonce = await issueNonce(env, opts.nonceUsage);
+    return {
+      nonce,
+      pubkey: b64url(keypair.pubRaw),
+      sig: signNonceAscii(keypair.privateKey, nonce),
+      ...(opts.bodyUsage === undefined ? {} : { usage: opts.bodyUsage }),
+    };
+  }
+
+  async function hubRecordResponse(env: Env, keypair: Keypair): Promise<Response> {
+    return handleDeviceAlarmToken(
+      tokenRequest(await tokenBody(env, keypair, { nonceUsage: "hub-record", bodyUsage: "hub-record" })),
+      env,
+    );
+  }
+
+  it("?usage=hub-record は purpose=hub-record の nonce を積む", async () => {
+    const env = makeEnv();
+    const nonce = await issueNonce(env, "hub-record");
+    const stored = JSON.parse(
+      (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`]!,
+    ) as Record<string, unknown>;
+    expect(stored.purpose).toBe("hub-record");
+  });
+
+  it("kiosk の鍵で role=device-hub-record・寿命 1 時間、sub は同じ鍵の kiosk の JWT と同じ", async () => {
+    const keypair = generateKeypair();
+    const { fp, kv } = alarmKeySeed(keypair.pubRaw, { usage: "kiosk" });
+    const env = makeEnv(kv);
+    const res = await hubRecordResponse(env, keypair);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string; expires_in: number; tenant_id: string };
+    expect(body.expires_in).toBe(DEVICE_JWT_TTL_SECONDS);
+    expect(body.expires_in).toBe(3600);
+    expect(body.tenant_id).toBe(TENANT_ID);
+    const payload = decodeJwtPayload(body.access_token)!;
+    expect(payload.role).toBe(DEVICE_ROLE_HUB_RECORD);
+    expect(payload.role).toBe("device-hub-record");
+    expect(payload.aud).toBe(DEVICE_JWT_AUDIENCE);
+    expect(payload.sub).toBe(`alarm:${fp}`);
+    expect((payload.exp as number) - (payload.iat as number)).toBe(3600);
+
+    const kioskRes = await handleDeviceAlarmToken(tokenRequest(await signedBody(env, keypair)), env);
+    const kiosk = (await kioskRes.json()) as { access_token: string; expires_in: number };
+    expect(decodeJwtPayload(kiosk.access_token)!.sub).toBe(payload.sub);
+    // 他の用途の寿命は変えない
+    expect(kiosk.expires_in).toBe(ALARM_TOKEN_TTL_SEC);
+  });
+
+  it("alarmTokenTtlSec: hub-record だけ 1 時間、他は 900 秒", () => {
+    expect(alarmTokenTtlSec("hub-record")).toBe(DEVICE_JWT_TTL_SECONDS);
+    for (const usage of ["kiosk", "tenko-manager", "bp-station", "cam-host"] as const) {
+      expect(alarmTokenTtlSec(usage), usage).toBe(ALARM_TOKEN_TTL_SEC);
+    }
+  });
+
+  it.each(["bp-station", "tenko-manager"])("★ 用途 %s の鍵からは hub-record は出ない (401)", async (usage) => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw, { usage }).kv);
+    expect((await hubRecordResponse(env, keypair)).status).toBe(401);
+  });
+
+  it("★ kiosk / cam-host 向けの nonce への署名は hub-record の JWT に使えない (逆向きも 401)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
+    for (const nonceUsage of [undefined, "cam-host"]) {
+      const res = await handleDeviceAlarmToken(
+        tokenRequest(await tokenBody(env, keypair, { nonceUsage, bodyUsage: "hub-record" })),
+        env,
+      );
+      expect(res.status, String(nonceUsage)).toBe(401);
+    }
+    const reverse = await handleDeviceAlarmToken(
+      tokenRequest(await tokenBody(env, keypair, { nonceUsage: "hub-record" })),
+      env,
+    );
+    expect(reverse.status).toBe(401);
+  });
+
+  it("出した JWT は /device-data-proxy のどの口も通らない (403)", async () => {
+    const keypair = generateKeypair();
+    const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
+    const res = await hubRecordResponse(env, keypair);
+    const { access_token } = (await res.json()) as { access_token: string };
+
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    for (const path of ["/api/employees/face-data", "/api/cam-clips/cameras/mine", "/api/hub/measurements"]) {
+      const denied = await handleDeviceDataProxy(
+        new Request(`${AUTH_ORIGIN}/device-data-proxy${path}`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${access_token}` },
+        }),
+        env,
+      );
+      expect(denied.status, path).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dev の鍵なら dev_device === true が載る", async () => {
+    const keypair = generateKeypair();
+    const { fp, kv } = alarmKeySeed(keypair.pubRaw);
+    const rec = JSON.parse(kv[`alarmkey:${fp}`]!) as Record<string, unknown>;
+    kv[`alarmkey:${fp}`] = JSON.stringify({ ...rec, dev_device: true });
+    const env = makeEnv(kv);
+    const res = await hubRecordResponse(env, keypair);
+    const { access_token } = (await res.json()) as { access_token: string };
+    expect(decodeJwtPayload(access_token)!.dev_device).toBe(true);
   });
 });

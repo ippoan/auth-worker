@@ -42,11 +42,19 @@ import { verifyEd25519 } from "./ed25519";
  * 用途 `kiosk` (CoreS3 / Vein Station) か `bp-station` (血圧測定台の ATOM S3) の鍵の署名で
  * 出す (対応は `keyUsagesForPurpose`)。purpose は分けてあるので、kiosk / bp-station 向けに
  * 出した nonce への署名で cam-host の JWT は取れない (逆も同じ)。
+ *
+ * `hub-record` (CoreS3 が測定の記録を機体の鍵の ID で残すための証明) も専用の鍵を持たない。
+ * CoreS3 が自分の鍵 (用途 kiosk) で署名して取り、cf-alc-recorder の WS 接続に hub の JWT と並べて
+ * 添える。recorder は sub (`alarm:<fp>`) を記録の device_id に使うだけで、この role はどの許可表にも無い。
  */
-export type AlarmNoncePurpose = AlarmKeyUsage | "cam-host";
+export type AlarmNoncePurpose = AlarmKeyUsage | "cam-host" | "hub-record";
 
-/** 受理する purpose の正本 (`AlarmKeyUsage` の配列 + `cam-host`)。 */
-export const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = [...ALARM_KEY_USAGES, "cam-host"];
+/** 受理する purpose の正本 (`AlarmKeyUsage` の配列 + `cam-host` + `hub-record`)。 */
+export const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = [
+  ...ALARM_KEY_USAGES,
+  "cam-host",
+  "hub-record",
+];
 
 /**
  * cam-host の JWT の署名を受け付ける鍵の用途。拠点 PC に挿さる機体 = 運行者端末 (CoreS3 /
@@ -57,11 +65,20 @@ export const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = [...ALARM_
 export const CAM_HOST_SIGNER_USAGES: ReadonlyArray<AlarmKeyUsage> = ["kiosk", "bp-station"];
 
 /**
+ * hub-record の JWT の署名を受け付ける鍵の用途。WS で測定を送るのは CoreS3 (用途 kiosk) だけ
+ * (Vein Station・測定台はネットワークを持たず PC 経由)。
+ */
+export const HUB_RECORD_SIGNER_USAGES: ReadonlyArray<AlarmKeyUsage> = ["kiosk"];
+
+/**
  * purpose → 署名を受け付ける鍵の用途の集合。`cam-host` は {@link CAM_HOST_SIGNER_USAGES}、
- * 他は同じ値 1 つだけ (キオスクの鍵から運行管理者・測定台の role は出ない)。
+ * `hub-record` は {@link HUB_RECORD_SIGNER_USAGES}、他は同じ値 1 つだけ
+ * (キオスクの鍵から運行管理者・測定台の role は出ない)。
  */
 export function keyUsagesForPurpose(purpose: AlarmNoncePurpose): ReadonlyArray<AlarmKeyUsage> {
-  return purpose === "cam-host" ? CAM_HOST_SIGNER_USAGES : [purpose];
+  if (purpose === "cam-host") return CAM_HOST_SIGNER_USAGES;
+  if (purpose === "hub-record") return HUB_RECORD_SIGNER_USAGES;
+  return [purpose];
 }
 
 /** nonce の TTL (秒)。両エンドポイントの `expires_in` と一致させる。 */

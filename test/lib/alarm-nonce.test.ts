@@ -9,6 +9,7 @@ import {
   ALARM_NONCE_PURPOSES,
   keyUsagesForPurpose,
   CAM_HOST_SIGNER_USAGES,
+  HUB_RECORD_SIGNER_USAGES,
 } from "../../src/lib/alarm-nonce";
 import { ALARM_KEY_USAGES, type AlarmKeyUsage } from "../../src/handlers/alarm-key";
 import { createMockEnv, type MockKV } from "../helpers/mock-env";
@@ -19,16 +20,18 @@ const NONCE = "0123456789abcdef0123456789abcdef";
 
 // Refs ippoan/alc-app#353: `AlarmKeyUsage` (鍵の usage) と `AlarmNoncePurpose`
 // (nonce の purpose) は、以前は別々に手書きしていて `admin-login` (usage) と
-// `login` (purpose) が食い違っていた。purpose = 鍵の用途 + 鍵を持たない `cam-host`
+// `login` (purpose) が食い違っていた。purpose = 鍵の用途 + 鍵を持たない `cam-host` / `hub-record`
 // であることを実行時に検査して固定する (型だけでは足し忘れが出ない)。
 describe("AlarmKeyUsage と AlarmNoncePurpose の語彙", () => {
-  it("ALARM_NONCE_PURPOSES は ALARM_KEY_USAGES + cam-host", () => {
-    expect(ALARM_NONCE_PURPOSES).toEqual([...ALARM_KEY_USAGES, "cam-host"]);
+  it("ALARM_NONCE_PURPOSES は ALARM_KEY_USAGES + cam-host + hub-record", () => {
+    expect(ALARM_NONCE_PURPOSES).toEqual([...ALARM_KEY_USAGES, "cam-host", "hub-record"]);
   });
 
-  it("keyUsagesForPurpose: cam-host は kiosk / bp-station の鍵、他は同じ値 1 つ", () => {
+  it("keyUsagesForPurpose: cam-host は kiosk / bp-station、hub-record は kiosk の鍵、他は同じ値 1 つ", () => {
     expect(CAM_HOST_SIGNER_USAGES).toEqual(["kiosk", "bp-station"]);
     expect(keyUsagesForPurpose("cam-host")).toEqual(["kiosk", "bp-station"]);
+    expect(HUB_RECORD_SIGNER_USAGES).toEqual(["kiosk"]);
+    expect(keyUsagesForPurpose("hub-record")).toEqual(["kiosk"]);
     for (const usage of ALARM_KEY_USAGES) expect(keyUsagesForPurpose(usage)).toEqual([usage]);
   });
 });

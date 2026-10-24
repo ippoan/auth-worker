@@ -193,6 +193,16 @@ export const DEVICE_ROLE_BP_STATION = "device-bp-station";
  */
 export const DEVICE_ROLE_CAM_HOST = "device-cam-host";
 
+/**
+ * CoreS3 が測定の記録を機体の鍵の ID で残すための証明の role。`/device/alarm-token` に用途
+ * `hub-record` で、CoreS3 自身の鍵 (用途 `kiosk`) の署名を出して取る。cf-alc-recorder が WS 接続の
+ * `X-Machine-Token` で受け、sub (`alarm:<fp>`) を `hub_measurements.device_id` に使う。
+ *
+ * **どの許可表にも入れない** (`device-data-proxy.ts` の表・recorder の `RECORDER_DEVICE_ROLES`・
+ * `DEVICE_ROLES`)。この JWT 単独では何もできない。
+ */
+export const DEVICE_ROLE_HUB_RECORD = "device-hub-record";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
 export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,
