@@ -20,13 +20,19 @@
  *   | `tenko-manager` | 運行管理者席 | `device-tenko-manager`   |
  *   | `bp-station`    | 血圧測定台   | `device-bp-station`      |
  *   | `cam-host`      | 拠点 PC のカメラ配信の拡張 | `device-cam-host` |
+ *   | `hub-record`    | CoreS3 の測定の記録の ID の証明 | `device-hub-record` |
  *
  * `cam-host` だけは**専用の鍵を持たず、用途 `kiosk` (CoreS3 / Vein Station) か `bp-station`
  * (測定台の ATOM S3) の鍵の署名で出す** — sub をその機体と同じ `alarm:<fp>` にし、
  * cam_camera_devices の紐づけ ID に使うため (`lib/alarm-nonce.ts::keyUsagesForPurpose`)。
  * nonce の purpose は kiosk / bp-station と分けてある。
  *
- * **4 用途とも role は `device-<usage>` の 1:1 対応**なので、対応表は持たず
+ * `hub-record` も専用の鍵を持たず、用途 `kiosk` (CoreS3) の鍵の署名で出す。CoreS3 が自分で取り、
+ * cf-alc-recorder の WS 接続に hub の JWT と並べて添える (recorder は sub を記録の device_id に
+ * 使う)。role はどの許可表にも無く、証明にしか使えない。ハンドシェイクでしか見ないので、寿命は
+ * hub の device JWT と同じ 1 時間 (`alarmTokenTtlSec`)。
+ *
+ * **5 用途とも role は `device-<usage>` の 1:1 対応**なので、対応表は持たず
  * `roleForUsage` で計算する (Refs ippoan/alc-app#353。以前は管理者ログイン用途
  * (ブラウザ経由、席ではなく口を表す別軸) が混ざっていたため対応表が要ったが、
  * 本番で未使用だったため畳んだ — `AlarmNoncePurpose` = この口が受け付ける用途で、
@@ -54,11 +60,11 @@ import {
 } from "../lib/alarm-nonce";
 /** この口が受け付ける用途 (= nonce の purpose。`lib/alarm-nonce.ts` の正本)。 */
 type AlarmTokenUsage = AlarmNoncePurpose;
-import { mintDeviceJwt } from "../lib/device";
+import { DEVICE_JWT_TTL_SECONDS, mintDeviceJwt } from "../lib/device";
 import { ALARM_NONCE_PURPOSES, keyUsagesForPurpose, type AlarmNoncePurpose } from "../lib/alarm-nonce";
 
 /**
- * usage → 端末 JWT の role。`ALARM_NONCE_PURPOSES` の 4 用途とも `device-<usage>` の
+ * usage → 端末 JWT の role。`ALARM_NONCE_PURPOSES` の 5 用途とも `device-<usage>` の
  * 1:1 対応 (Refs ippoan/alc-app#353。`DEVICE_ROLE_KIOSK` 等の定数値と一致することは
  * テストで固定する)。
  */
@@ -82,6 +88,14 @@ function resolveAlarmTokenUsage(raw: unknown): AlarmTokenUsage | null {
 
 /** 端末 JWT の寿命 (秒)。 */
 export const ALARM_TOKEN_TTL_SEC = 900;
+
+/**
+ * 用途ごとの寿命 (秒)。`hub-record` だけ hub の device JWT と同じ {@link DEVICE_JWT_TTL_SECONDS}
+ * (WS のハンドシェイクでしか見ないので短くする利点が薄く、CoreS3 の取り直しの TLS を増やさない)。
+ */
+export function alarmTokenTtlSec(usage: AlarmTokenUsage): number {
+  return usage === "hub-record" ? DEVICE_JWT_TTL_SECONDS : ALARM_TOKEN_TTL_SEC;
+}
 /** alarm-nonce の per-IP rate limit。 */
 const NONCE_RATE_LIMIT_PER_MINUTE = 30;
 /** alarm-token の per-IP rate limit。 */
@@ -214,7 +228,7 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
       env,
       { device_id: `alarm:${fingerprint}`, tenant_id: record.tenant_id, role: roleForUsage(usage) },
       Math.floor(Date.now() / 1000),
-      ALARM_TOKEN_TTL_SEC,
+      alarmTokenTtlSec(usage),
       { bpBonded, devDevice: record.dev_device },
     );
   } catch {
@@ -231,7 +245,7 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
   return jsonNoStoreCors({
     access_token: token,
     token_type: "Bearer",
-    expires_in: ALARM_TOKEN_TTL_SEC,
+    expires_in: alarmTokenTtlSec(usage),
     tenant_id: record.tenant_id,
   });
 }
