@@ -16,8 +16,8 @@
  * 無い record は拒否する (fail-closed)。ある用途向けに発行した nonce への署名を
  * 別の用途の JWT に使い回させないため。
  *
- * 鍵の record も用途 (`usage`) を持つ。署名検証時は呼び出し側 (口) の用途との一致を
- * 要求し、usage の無い record は拒否する (nonce の purpose と同じ fail-closed)。
+ * 鍵の record も用途 (`usage`) を持つ。署名検証時は呼び出し側 (口) が受け付ける用途に
+ * 含まれることを要求し、usage の無い record は拒否する (nonce の purpose と同じ fail-closed)。
  */
 import type { Env } from "../index";
 import {
@@ -38,9 +38,10 @@ import { verifyEd25519 } from "./ed25519";
  * (運行者端末の nonce への署名で運行管理者の JWT を取らせないため。Refs ippoan/alc-app#337)。
  *
  * `cam-host` (拠点 PC のカメラ配信の拡張に渡す鍵) は **専用の鍵を登録しない**。
- * 紐づけ ID (JWT の sub = `alarm:<fp>`) を運行者端末 (CoreS3) と同じにするため、
- * 用途 `kiosk` の鍵の署名で出す (対応は `keyUsageForPurpose`)。purpose は分けてあるので、
- * kiosk 向けに出した nonce への署名で cam-host の JWT は取れない (逆も同じ)。
+ * 紐づけ ID (JWT の sub = `alarm:<fp>`) をその PC に挿さった機体の鍵と同じにするため、
+ * 用途 `kiosk` (CoreS3 / Vein Station) か `bp-station` (血圧測定台の ATOM S3) の鍵の署名で
+ * 出す (対応は `keyUsagesForPurpose`)。purpose は分けてあるので、kiosk / bp-station 向けに
+ * 出した nonce への署名で cam-host の JWT は取れない (逆も同じ)。
  */
 export type AlarmNoncePurpose = AlarmKeyUsage | "cam-host";
 
@@ -48,12 +49,19 @@ export type AlarmNoncePurpose = AlarmKeyUsage | "cam-host";
 export const ALARM_NONCE_PURPOSES: ReadonlyArray<AlarmNoncePurpose> = [...ALARM_KEY_USAGES, "cam-host"];
 
 /**
- * purpose → 署名を受け付ける鍵の用途。`cam-host` は `kiosk` の鍵 (上の doc)、他は同じ値。
- * 鍵の用途は 1 つなので、cam-host の JWT を出せるのは運行者端末の鍵だけ
- * (運行管理者席・測定台の鍵からは出ない)。
+ * cam-host の JWT の署名を受け付ける鍵の用途。拠点 PC に挿さる機体 = 運行者端末 (CoreS3 /
+ * Vein Station、用途 kiosk) と血圧測定台 (ATOM S3、用途 bp-station)。運行管理者席
+ * (tenko-manager) の鍵からは出さない。cam-host の role で通るのは `/cameras/mine` だけで、
+ * 返るのも録画の設定でその鍵に紐づけたカメラだけ (`device-data-proxy.ts` の `CAM_HOST_ROUTES`)。
  */
-export function keyUsageForPurpose(purpose: AlarmNoncePurpose): AlarmKeyUsage {
-  return purpose === "cam-host" ? "kiosk" : purpose;
+export const CAM_HOST_SIGNER_USAGES: ReadonlyArray<AlarmKeyUsage> = ["kiosk", "bp-station"];
+
+/**
+ * purpose → 署名を受け付ける鍵の用途の集合。`cam-host` は {@link CAM_HOST_SIGNER_USAGES}、
+ * 他は同じ値 1 つだけ (キオスクの鍵から運行管理者・測定台の role は出ない)。
+ */
+export function keyUsagesForPurpose(purpose: AlarmNoncePurpose): ReadonlyArray<AlarmKeyUsage> {
+  return purpose === "cam-host" ? CAM_HOST_SIGNER_USAGES : [purpose];
 }
 
 /** nonce の TTL (秒)。両エンドポイントの `expires_in` と一致させる。 */
@@ -154,7 +162,13 @@ export async function consumeAlarmNonce(
  */
 export async function verifyAlarmSignature(
   env: Env,
-  input: { pubkeyB64: string; sigB64: string; nonce: string; usage: AlarmKeyUsage; bpBonded?: boolean },
+  input: {
+    pubkeyB64: string;
+    sigB64: string;
+    nonce: string;
+    usages: ReadonlyArray<AlarmKeyUsage>;
+    bpBonded?: boolean;
+  },
 ): Promise<VerifiedAlarmKey | null> {
   let pubkeyRaw: Uint8Array;
   let sig: Uint8Array;
@@ -169,8 +183,9 @@ export async function verifyAlarmSignature(
   const fingerprint = await fingerprintFromRawPubkey(pubkeyRaw);
   const record = await getAlarmKeyRecord(env, fingerprint);
   if (!record || record.revoked_at !== undefined) return null;
-  // 用途は口ごとに 1 つ。usage の無い record (undefined) もここで落ちる。
-  if (record.usage !== input.usage) return null;
+  // 口が受け付ける用途 (cam-host 以外は 1 つ) に鍵の用途が無ければ落ちる。usage の無い
+  // record (undefined) もここで落ちる。
+  if (!input.usages.includes(record.usage)) return null;
 
   // 入力の pubkey は fingerprint を引く鍵にだけ使い、署名検証は必ず record 側の
   // pubkey (登録時の正本) で行う。
