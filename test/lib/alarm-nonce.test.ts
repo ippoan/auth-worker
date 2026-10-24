@@ -7,6 +7,7 @@ import {
   buildAlarmSignedMessage,
   ALARM_NONCE_TTL_SEC,
   ALARM_NONCE_PURPOSES,
+  keyUsageForPurpose,
 } from "../../src/lib/alarm-nonce";
 import { ALARM_KEY_USAGES, type AlarmKeyUsage } from "../../src/handlers/alarm-key";
 import { createMockEnv, type MockKV } from "../helpers/mock-env";
@@ -16,12 +17,17 @@ const REDIRECT_URI = "https://app1.test.example/page";
 const NONCE = "0123456789abcdef0123456789abcdef";
 
 // Refs ippoan/alc-app#353: `AlarmKeyUsage` (鍵の usage) と `AlarmNoncePurpose`
-// (nonce の purpose) は同じ語彙のはずが、以前は別々に手書きしていて
-// `admin-login` (usage) と `login` (purpose) が食い違っていた。配列の一致を
-// 実行時に検査して固定する (型だけでは足し忘れが出ない)。
+// (nonce の purpose) は、以前は別々に手書きしていて `admin-login` (usage) と
+// `login` (purpose) が食い違っていた。purpose = 鍵の用途 + 鍵を持たない `cam-host`
+// であることを実行時に検査して固定する (型だけでは足し忘れが出ない)。
 describe("AlarmKeyUsage と AlarmNoncePurpose の語彙", () => {
-  it("ALARM_KEY_USAGES と ALARM_NONCE_PURPOSES が一致する", () => {
-    expect(ALARM_NONCE_PURPOSES).toEqual(ALARM_KEY_USAGES);
+  it("ALARM_NONCE_PURPOSES は ALARM_KEY_USAGES + cam-host", () => {
+    expect(ALARM_NONCE_PURPOSES).toEqual([...ALARM_KEY_USAGES, "cam-host"]);
+  });
+
+  it("keyUsageForPurpose: cam-host は kiosk の鍵、他は同じ値", () => {
+    expect(keyUsageForPurpose("cam-host")).toBe("kiosk");
+    for (const usage of ALARM_KEY_USAGES) expect(keyUsageForPurpose(usage)).toBe(usage);
   });
 });
 

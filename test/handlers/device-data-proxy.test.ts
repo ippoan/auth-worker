@@ -8,6 +8,7 @@ import {
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_TENKO_MANAGER,
   DEVICE_ROLE_BP_STATION,
+  DEVICE_ROLE_CAM_HOST,
 } from "../../src/lib/device";
 
 // OIDC mint は別ユニットでテスト済み。ここでは handler の flow
@@ -1948,12 +1949,110 @@ describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras 
       DEVICE_ROLE,
       DEVICE_ROLE_KIOSK,
       DEVICE_ROLE_BP_STATION,
+      DEVICE_ROLE_CAM_HOST,
       DEVICE_ROLE_DTAKO_INGEST,
       DEVICE_ROLE_DTAKO_RELAY,
     ]) {
       for (const claims of [{}, { dev_device: true }]) {
         const token = await signTestJwt({ sub: "device-1", tenant_id: TENANT, role, ...claims }, TEST_JWT_SECRET);
         const res = await handleDeviceDataProxy(req(`/device-data-proxy${CAMERAS}`, { method: "GET", token }), e);
+        expect(res.status, `${role} ${JSON.stringify(claims)}`).toBe(403);
+      }
+    }
+    expect(clips.fetch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("拠点 PC の拡張の鍵の担当カメラ GET /api/cam-clips/cameras/mine → ALC_CAM_CLIPS (device-cam-host)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  const MINE = "/api/cam-clips/cameras/mine";
+
+  function setupClips() {
+    const clips = { fetch: vi.fn(async (): Promise<Response> => new Response("from-clips")) };
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response("from-cloud-run"));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return { clips, fetchMock, env: env({ ALC_CAM_CLIPS: clips as unknown as Fetcher }) };
+  }
+
+  const camHostToken = (claims: Record<string, unknown> = {}) =>
+    signTestJwt(
+      { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role: DEVICE_ROLE_CAM_HOST, ...claims },
+      TEST_JWT_SECRET,
+    );
+
+  it("GET /cameras/mine は binding へ。X-Device-Id は sub (= cam_camera_devices の紐づけ ID)", async () => {
+    const { clips, fetchMock, env: e } = setupClips();
+    const res = await handleDeviceDataProxy(
+      req(`/device-data-proxy${MINE}`, {
+        method: "GET",
+        token: await camHostToken(),
+        // client が名乗っても下流には届かない
+        headers: { "X-Device-Id": "alarm:0000000000000000", "X-Tenant-ID": "22222222-2222-2222-2222-222222222222" },
+      }),
+      e,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("from-clips");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [url, init] = clips.fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`https://alc-cam-sd-ingest${MINE}`);
+    expect(init.method).toBe("GET");
+    expect(init.headers).toEqual({
+      "X-Tenant-ID": TENANT,
+      "X-Device-Role": DEVICE_ROLE_CAM_HOST,
+      "X-Device-Id": "alarm:deadbeefdeadbeef",
+    });
+  });
+
+  it("★ 拡張の鍵は /cameras/mine の GET 以外すべて 403 (他の cam-clips の口・他 method・点呼の口)", async () => {
+    const { clips, fetchMock, env: e } = setupClips();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      { method: "POST", path: MINE },
+      { method: "PUT", path: MINE },
+      { method: "PATCH", path: MINE },
+      { method: "DELETE", path: MINE },
+      { method: "GET", path: `${MINE}/` },
+      { method: "GET", path: `${MINE}x` },
+      { method: "GET", path: "/api/cam-clips/cameras" },
+      { method: "GET", path: "/api/cam-clips/cameras/TS-NS320W-55" },
+      { method: "GET", path: "/api/cam-clips/clips" },
+      { method: "GET", path: "/api/cam-clips/device-candidates" },
+      { method: "GET", path: "/api/employees/face-data" },
+      { method: "POST", path: "/api/employees/lookup" },
+      { method: "POST", path: "/api/measurements/start" },
+      { method: "GET", path: "/api/tenko/schedules" },
+    ];
+    for (const { method, path } of cases) {
+      for (const claims of [{}, { dev_device: true }]) {
+        const res = await handleDeviceDataProxy(
+          req(`/device-data-proxy${path}`, { method, token: await camHostToken(claims) }),
+          e,
+        );
+        expect(res.status, `${method} ${path} ${JSON.stringify(claims)}`).toBe(403);
+      }
+    }
+    expect(clips.fetch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 拡張の鍵以外の device 鍵 (kiosk / 運行管理者席 / 測定台 ほか) は /cameras/mine が 403", async () => {
+    const { clips, fetchMock, env: e } = setupClips();
+    for (const role of [
+      DEVICE_ROLE,
+      DEVICE_ROLE_KIOSK,
+      DEVICE_ROLE_TENKO_MANAGER,
+      DEVICE_ROLE_BP_STATION,
+      DEVICE_ROLE_DTAKO_INGEST,
+      DEVICE_ROLE_DTAKO_RELAY,
+    ]) {
+      for (const claims of [{}, { dev_device: true }]) {
+        const token = await signTestJwt(
+          { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role, ...claims },
+          TEST_JWT_SECRET,
+        );
+        const res = await handleDeviceDataProxy(req(`/device-data-proxy${MINE}`, { method: "GET", token }), e);
         expect(res.status, `${role} ${JSON.stringify(claims)}`).toBe(403);
       }
     }

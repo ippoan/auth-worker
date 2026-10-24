@@ -177,6 +177,22 @@ export const DEVICE_ROLE_TENKO_MANAGER = "device-tenko-manager";
  */
 export const DEVICE_ROLE_BP_STATION = "device-bp-station";
 
+/**
+ * 拠点 PC のカメラ配信の拡張 (ippoan/alc-cam の extension) 専用 role。点呼の PWA が
+ * `/device/alarm-token` に用途 `cam-host` で CoreS3 (用途 `kiosk` の鍵) の署名を出して取り、
+ * 拡張へ渡す。`/device-data-proxy` で通せるのは担当カメラの取得
+ * (`GET /api/cam-clips/cameras/mine`) だけ (正本は `CAM_HOST_ROUTES`)。cam-room の配信は
+ * DO が `/auth/introspect` でこの role を確かめる。
+ *
+ * **kiosk の鍵を拡張に渡さないための role** — 拡張は点呼・測定・顔データの口を持たない。
+ * 逆に kiosk の鍵ではカメラの RTSP の資格情報 (`/cameras/mine`) は取れない。
+ * sub は kiosk と同じ `alarm:<fp>` (同じ鍵の署名で出すため) で、cam_camera_devices の
+ * 紐づけ ID になる。
+ *
+ * `DEVICE_ROLE_TENKO_MANAGER` と同じ理由で **意図して `DEVICE_ROLES` に入れていない。**
+ */
+export const DEVICE_ROLE_CAM_HOST = "device-cam-host";
+
 /** pairing / credential 発行で受理する device role の allowlist。 */
 export const DEVICE_ROLES: ReadonlySet<string> = new Set([
   DEVICE_ROLE,

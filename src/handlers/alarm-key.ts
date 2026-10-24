@@ -256,7 +256,13 @@ export async function handleAlarmKeyRegister(request: Request, env: Env): Promis
   return jsonNoStore({ fingerprint });
 }
 
-/** GET /device/setup/alarm-keys — operator の tenant に登録済みの警告デバイス鍵一覧。 */
+/**
+ * GET /device/setup/alarm-keys — operator の tenant に登録済みの警告デバイス鍵一覧。
+ *
+ * `sub` はこの鍵で `/device/alarm-token` が出す JWT の sub (`alarm:<fingerprint>`)。
+ * 録画の設定でカメラを端末に紐づける ID (cam_camera_devices.device_id) にそのまま使う
+ * (呼び手に形式を組み立てさせない)。
+ */
 export async function handleAlarmKeyList(request: Request, env: Env): Promise<Response> {
   const pre = await adminRequest(request, env);
   if (pre instanceof Response) return pre;
@@ -264,6 +270,7 @@ export async function handleAlarmKeyList(request: Request, env: Env): Promise<Re
   const fingerprints = await readTenantIndex(env, pre.session.tenantId);
   const keys: Array<{
     fingerprint: string;
+    sub: string;
     label: string;
     usage: AlarmKeyUsage;
     created_at: number;
@@ -276,6 +283,7 @@ export async function handleAlarmKeyList(request: Request, env: Env): Promise<Re
     if (!record || record.tenant_id !== pre.session.tenantId) continue;
     keys.push({
       fingerprint,
+      sub: `alarm:${fingerprint}`,
       label: record.label,
       usage: record.usage,
       created_at: record.created_at,

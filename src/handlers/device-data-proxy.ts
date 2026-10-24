@@ -41,6 +41,7 @@ import {
   DEVICE_ROLE_KIOSK,
   DEVICE_ROLE_TENKO_MANAGER,
   DEVICE_ROLE_BP_STATION,
+  DEVICE_ROLE_CAM_HOST,
 } from "../lib/device";
 
 const ROUTE_PREFIX = "/device-data-proxy";
@@ -386,6 +387,20 @@ const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
 ];
 
 /**
+ * `device-cam-host` role (拠点 PC のカメラ配信の拡張、`DEVICE_ROLE_CAM_HOST` の doc) 専用の
+ * method + path 許可表。通すのは担当カメラの取得 (`GET /api/cam-clips/cameras/mine`) の
+ * 1 本だけ (両端固定)。ingest (alc-cam-sd-ingest) は `X-Device-Role: device-cam-host` と
+ * `X-Device-Id` (= sub) で cam_camera_devices を引き、そのカメラの RTSP の接続先と
+ * 資格情報を返す。カメラ一覧 (`/cameras`) を含め他の口は開けない。
+ *
+ * 逆に `/cameras/mine` は **この role の表にだけ置く** (kiosk・運行管理者席・測定台の鍵では
+ * 403) — RTSP の資格情報を返す口なので、拡張に渡す鍵以外から取らせない。
+ */
+const CAM_HOST_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: "GET", pattern: /^\/api\/cam-clips\/cameras\/mine$/ },
+];
+
+/**
  * method + path で照合する role → 許可表。ここに無い role は従来どおり
  * `ROLE_PATH_ALLOWLIST` (method を見ない Set 完全一致) を引く。どちらにも
  * 無い role は何も転送できない (既定拒否)。
@@ -398,6 +413,7 @@ const METHOD_ROUTE_TABLES: ReadonlyMap<string, ReadonlyArray<{ method: string; p
     [DEVICE_ROLE_KIOSK, KIOSK_ROUTES],
     [DEVICE_ROLE_TENKO_MANAGER, TENKO_MANAGER_ROUTES],
     [DEVICE_ROLE_BP_STATION, BP_STATION_ROUTES],
+    [DEVICE_ROLE_CAM_HOST, CAM_HOST_ROUTES],
   ]);
 
 function jsonError(status: number, error: string): Response {
