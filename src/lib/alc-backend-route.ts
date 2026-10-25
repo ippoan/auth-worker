@@ -50,7 +50,6 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * `/api/trouble/` は trouble の全部の口 (prefix)。worker が rust の口を全部持つので丸ごと `alc-trouble` へ回す。画面用の proxy だけ
  * (nuxt-trouble は /alc-proxy 経由)。予約の発火 (`/api/internal/trouble/schedules/{id}/fire`) は id を UUID に固定した pattern で、
  * 内部用の proxy (internal-jwt クラス。大小文字は alc-internal-proxy の分類と揃える) だけ。
- * カメラ停止の自動チケット (`/api/internal/trouble/camera-down-tickets`) は完全一致で、内部用の proxy (shared-secret クラス) だけ。
  * `/api/measurements` は測定 (アルコール検査の記録) の 7 口で、`alc-measurements` へ回す。画面用と端末用の proxy だけ
  * (内部用の proxy は /api/measurements を 403 で通さないので入れない)。一覧・登録 (`/api/measurements`)・開始 (`/api/measurements/start`) は完全一致、
  * 1 件の取得・更新 (`/{id}`) と顔写真・動画 (`/{id}/face-photo`・`/{id}/video`) は id を UUID に固定した pattern。prefix は足さない
@@ -97,7 +96,6 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-trouble",
     proxies: ["internal"],
   },
-  { match: "exact", path: "/api/internal/trouble/camera-down-tickets", binding: "ALC_TROUBLE", host: "alc-trouble", proxies: ["internal"] },
   { match: "exact", path: "/api/measurements", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/measurements/start", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/measurements/alert-test", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "admin"] },
