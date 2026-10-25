@@ -2,6 +2,9 @@
  * Workers RPC entrypoint — smb Worker (SMB の車検証 PDF を取り込む Cron worker) が
  * **service binding 越しにだけ**呼ぶ口 (Refs ohishi-exp/smb-watch#14)。
  *
+ * 登録先は alc-carins (ippoan/alc-carins-worker) の `POST /api/files` (振り分けの表の `rpc` の行。binding が無ければ
+ * 従来どおり rust-alc-api。Refs ippoan/rust-alc-api#680)。
+ *
  * 旧経路は社内の box (smb-watch) → carins `/api/device-upload` → auth-worker
  * `/device-data-proxy/api/files` (device JWT) → rust-alc-api `POST /api/files`
  * だった。box を Worker に置き換えるにあたり、**公開の upload 口と device JWT を
@@ -42,10 +45,10 @@ const TENANT_KEY = "smb-ingest-tenant";
 /** `device-notify-targets` map の中で smb Worker の宛先を引く key。 */
 const NOTIFY_KEY = "smb-ingest";
 
-/** rust-alc-api の carins ファイル登録 (`{filename, type, content(base64)}`)。 */
+/** 車検証のファイル登録 (`{filename, type, content(base64)}`。alc-carins、binding が無ければ rust-alc-api)。 */
 const INGEST_PATH = "/api/files";
 
-/** `contentBase64.length` の上限 (16 MiB)。超えたら Cloud Run を呼ばず 413。 */
+/** `contentBase64.length` の上限 (16 MiB)。超えたら登録先を呼ばず 413。 */
 const MAX_CONTENT_BASE64_LEN = 16 * 1024 * 1024;
 
 /** `ingestFile` の引数。RPC 越しに渡るので serializable な素の値だけ。 */
@@ -73,7 +76,7 @@ export class SmbIngestEntrypoint extends WorkerEntrypoint<Env> {
       return alcRpcError(413, "payload_too_large");
     }
 
-    // ★ tenant は KV からだけ。無い・空・UUID でない → Cloud Run を呼ばない。
+    // ★ tenant は KV からだけ。無い・空・UUID でない → 登録先を呼ばない。
     const tenantId = await resolveKvTenant(this.env, TENANT_KEY);
     if (!tenantId) return alcRpcError(503, "smb_ingest_tenant_unset");
 

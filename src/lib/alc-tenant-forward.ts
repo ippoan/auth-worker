@@ -2,6 +2,8 @@
  * Service binding RPC (`InternalEntrypoint` / `SmbIngestEntrypoint` / `KintaiAlcEntrypoint`) から
  * rust-alc-api の tenant data 経路 (`require_tenant_header`) を叩く共通部分。
  *
+ *   ⓪ path が振り分けの表 (`lib/alc-backend-route.ts`) の `rpc` の行に一致し binding が在れば、domain worker へ
+ *      Service Binding で渡す (`X-Tenant-ID` などだけ。OIDC は要らない)
  *   ① env guard (`ALC_API_PROXY_SA_KEY` / `ALC_API_ORIGIN`)
  *   ② OIDC mint (Cloud Run IAM lockdown 用、aud=service URL)
  *   ③ `Authorization: Bearer <OIDC>` + `X-Tenant-ID` を付けて forward
@@ -17,6 +19,7 @@
 import type { Env } from "../index";
 import { resolveSecret } from "./secret";
 import { mintGoogleIdToken } from "./oidc";
+import { forwardViaAlcBinding, resolveAlcBinding } from "./alc-backend-route";
 
 /**
  * RPC の戻り値。
@@ -87,6 +90,23 @@ export async function forwardAlcTenantRequest(
   env: Env,
   input: AlcTenantForwardInput,
 ): Promise<AlcRpcResult> {
+  const rawSearch = input.search || "";
+  const search = !rawSearch || rawSearch.startsWith("?") ? rawSearch : `?${rawSearch}`;
+  const headers: Record<string, string> = { "X-Tenant-ID": input.tenantId };
+  if (input.contentType) headers["Content-Type"] = input.contentType;
+  if (input.deviceDev) headers["X-Device-Dev"] = "1";
+  const method = (input.method || "GET").toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const body = hasBody ? input.body : undefined;
+
+  // ── ⓪ domain worker (Service Binding) への振り分け ────────────────────────
+  // path は entrypoint の定数・allowlist のもの (この関数は検査しない。冒頭の注)
+  const binding = resolveAlcBinding(input.path, env, "rpc");
+  if (binding) {
+    const res = await forwardViaAlcBinding(binding, input.path, search, { method, headers, body });
+    return { status: res.status, body: await res.text(), contentType: res.headers.get("content-type") };
+  }
+
   // ── ① env guard ──────────────────────────────────────────────────────────
   const saKey = await resolveSecret(env.ALC_API_PROXY_SA_KEY);
   if (!saKey) return alcRpcError(503, "internal entrypoint not configured");
@@ -102,24 +122,11 @@ export async function forwardAlcTenantRequest(
   }
 
   // ── ③ forward ────────────────────────────────────────────────────────────
-  const rawSearch = input.search || "";
-  const search = !rawSearch || rawSearch.startsWith("?") ? rawSearch : `?${rawSearch}`;
   const target = `${apiOrigin.replace(/\/$/, "")}${input.path}${search}`;
-
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${idToken}`,
-    "X-Tenant-ID": input.tenantId,
-  };
-  if (input.contentType) headers["Content-Type"] = input.contentType;
-  if (input.deviceDev) headers["X-Device-Dev"] = "1";
-
-  const method = (input.method || "GET").toUpperCase();
-  const hasBody = method !== "GET" && method !== "HEAD";
-
   const res = await fetch(target, {
     method,
-    headers,
-    body: hasBody ? input.body : undefined,
+    headers: { Authorization: `Bearer ${idToken}`, ...headers },
+    body,
   });
 
   return {
