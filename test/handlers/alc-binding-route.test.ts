@@ -1770,3 +1770,53 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     }
   });
 });
+
+describe("Bot 設定の口 → ALC_LINEWORKS binding (Refs ippoan/rust-alc-api#680)", () => {
+  const BOT = "/api/admin/bot/configs";
+  const ID = "0f0e0d0c-0b0a-4908-8706-050403020100";
+
+  it("一覧・保存・削除の口 (exact) は画面用と管理画面用が ALC_LINEWORKS へ。内部用・端末用は null", () => {
+    const { lineworks, env } = setup();
+    expect(resolveAlcBinding(BOT, env, "browser")).toEqual({ fetcher: lineworks, host: "alc-lineworks" });
+    expect(resolveAlcBinding(BOT, env, "admin")).toEqual({ fetcher: lineworks, host: "alc-lineworks" });
+    expect(resolveAlcBinding(BOT, env, "internal")).toBeNull();
+    expect(resolveAlcBinding(BOT, env, "device")).toBeNull();
+  });
+
+  it("id 付きの削除 (UUID) は画面用だけ。export・UUID でない・余りは拾わない (export は Cloud Run)", () => {
+    const { lineworks, env } = setup();
+    expect(resolveAlcBinding(`${BOT}/${ID}`, env, "browser")).toEqual({ fetcher: lineworks, host: "alc-lineworks" });
+    expect(resolveAlcBinding(`${BOT}/${ID.toUpperCase()}`, env, "browser")).not.toBeNull();
+    expect(resolveAlcBinding(`${BOT}/${ID}`, env, "admin")).toBeNull();
+    for (const path of [
+      `${BOT}/export`,
+      `${BOT}/x`,
+      `${BOT}/${ID}/secrets`,
+      `${BOT}/${ID}x`,
+      `${BOT}/`,
+      `${BOT}x`,
+      `/x${BOT}`,
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_LINEWORKS: undefined });
+    expect(resolveAlcBinding(BOT, env, "browser")).toBeNull();
+    expect(resolveAlcBinding(BOT, env, "admin")).toBeNull();
+  });
+
+  it("alc-proxy の DELETE /api/admin/bot/configs/{id} は binding に届く (Cloud Run は呼ばれない)", async () => {
+    const { lineworks, cloudRun, env } = setup();
+    const res = await handleAlcProxy(alcReq(`/alc-proxy${BOT}/${ID}`, { method: "DELETE" }), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = lineworks.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-lineworks${BOT}/${ID}`);
+    expect(init!.method).toBe("DELETE");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
