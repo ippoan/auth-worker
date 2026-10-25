@@ -11,8 +11,12 @@ import type {
 import {
   buildAdminForwardHeaders,
   debugRustResponse,
+  fetchAdminBackend,
 } from "../lib/admin-proxy";
 import { resolveSecret } from "../lib/secret";
+
+/** Bot 設定の口 (alc-lineworks-worker。export だけは Cloud Run の `/api/admin/bot/configs/export` のまま) */
+const BOT_CONFIGS_PATH = "/api/admin/bot/configs";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -41,7 +45,9 @@ export async function handleBotConfigList(
   const headers = await buildAdminForwardHeaders(token, env, "bot_config_list");
   if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/bot/configs`, {
+  // 振り分けの表で alc-lineworks-worker へ (binding が無ければ Cloud Run。Refs ippoan/rust-alc-api#680)
+  const resp = await fetchAdminBackend(env, BOT_CONFIGS_PATH, "", {
+    method: "GET",
     headers,
   });
 
@@ -112,7 +118,7 @@ export async function handleBotConfigUpsert(
   );
   if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/bot/configs`, {
+  const resp = await fetchAdminBackend(env, BOT_CONFIGS_PATH, "", {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -263,7 +269,7 @@ export async function handleBotConfigDelete(
   );
   if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/bot/configs`, {
+  const resp = await fetchAdminBackend(env, BOT_CONFIGS_PATH, "", {
     method: "DELETE",
     headers,
     body: JSON.stringify({ id: body.id }),

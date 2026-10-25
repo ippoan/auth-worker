@@ -17,7 +17,7 @@
 import type { Env } from "../index";
 import type { BotConfigListResponse } from "../types/alc-api";
 import type { BotAccess } from "./lineworks-bot-api";
-import { buildAdminForwardHeaders } from "./admin-proxy";
+import { buildAdminForwardHeaders, fetchAdminBackend } from "./admin-proxy";
 import { verifyJwt } from "./jwt";
 import { resolveSecret } from "./secret";
 
@@ -82,7 +82,8 @@ export async function getBotAccess(
  */
 export async function pickLineworksBotConfigId(env: Env, token: string): Promise<string | null> {
   const headers = await adminHeaders(env, token, "bot_config_list");
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/bot/configs`, { headers });
+  // 振り分けの表で alc-lineworks-worker へ (binding が無ければ Cloud Run。Refs ippoan/rust-alc-api#680)
+  const resp = await fetchAdminBackend(env, "/api/admin/bot/configs", "", { method: "GET", headers });
   if (!resp.ok) {
     throw new Error(`Failed to list bot configs: ${resp.status}`);
   }

@@ -72,6 +72,17 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/fuel/", binding: "FUEL_WORKER", host: "rust-fuel-worker", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },
   { match: "exact", path: "/api/lineworks/deploy-check", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["browser"] },
+  // Bot 設定 (一覧・保存・削除)。rust-alc-api から alc-lineworks-worker へ移した (Refs ippoan/rust-alc-api#680)。
+  // 画面 (nuxt-leave・nuxt-notify の alc-proxy) と auth-worker 自身 (管理画面・MCP の Bot 選び = admin proxy) が呼ぶ。
+  // id 付きの削除は nuxt-leave の形 (UUID に固定。開発者だけの `/export` は Cloud Run に残す)
+  { match: "exact", path: "/api/admin/bot/configs", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["browser", "admin"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/admin\/bot\/configs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_LINEWORKS",
+    host: "alc-lineworks",
+    proxies: ["browser"],
+  },
   { match: "prefix", path: "/api/notify/recipients/", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
   { match: "prefix", path: "/api/notify/groups/", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
   { match: "prefix", path: "/api/notify/lineworks/channels/", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },

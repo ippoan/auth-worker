@@ -1963,7 +1963,10 @@ describe("POST /mcp/tools — lineworks_get", () => {
   const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
   const ACCESS_TOKEN = "ACCESS-TOKEN-XYZ";
   const origFetch = globalThis.fetch;
+  /** Bot 設定の一覧の口 (ALC_LINEWORKS の `/api/admin/bot/configs`) と、一覧以外の bot config の口 (Cloud Run) に届いた URL */
   let rustUrls: string[] = [];
+  /** ALC_LINEWORKS の Bot 設定の一覧が返す行 */
+  let botConfigs: unknown[] = [];
   /** ALC_LINEWORKS の token の口に届いた要求 */
   let tokenCalls: Request[] = [];
   /** token の口の応答 (既定は 200) */
@@ -1978,12 +1981,9 @@ describe("POST /mcp/tools — lineworks_get", () => {
 
   function routeFetch(configs: unknown[]): void {
     rustUrls = [];
+    botConfigs = configs;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith("/api/admin/bot/configs")) {
-        rustUrls.push(url);
-        return jsonRes({ configs });
-      }
       if (url.includes("/api/admin/bot/configs/")) {
         // /secrets 等、一覧以外の bot config の口は叩かない (叩いたら記録して失敗させる)
         rustUrls.push(url);
@@ -2013,7 +2013,13 @@ describe("POST /mcp/tools — lineworks_get", () => {
       jsonRes({ access_token: ACCESS_TOKEN, expires_at: 1700000000, bot_id: "bid" });
     env.ALC_LINEWORKS = {
       fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        tokenCalls.push(new Request(input, init));
+        const req = new Request(input, init);
+        // Bot 設定の一覧は振り分けの表で alc-lineworks-worker へ来る (Refs ippoan/rust-alc-api#680)
+        if (new URL(req.url).pathname === "/api/admin/bot/configs") {
+          rustUrls.push(new URL(req.url).pathname);
+          return jsonRes({ configs: botConfigs });
+        }
+        tokenCalls.push(req);
         return tokenResponse();
       }),
     } as unknown as Fetcher;
@@ -2081,8 +2087,8 @@ describe("POST /mcp/tools — lineworks_get", () => {
     const [accessToken, url] = worksApiGetMock.mock.calls[0]!;
     expect(accessToken).toBe(ACCESS_TOKEN);
     expect(url).toBe("https://www.worksapis.com/v1.0/boards/1/posts/2/readers?count=100");
-    // rust は bot config の一覧だけ (/secrets は叩かない)
-    expect(rustUrls).toEqual([`${env.ALC_API_ORIGIN}/api/admin/bot/configs`]);
+    // bot config は一覧だけ (alc-lineworks-worker。/secrets 等の口は叩かない)
+    expect(rustUrls).toEqual(["/api/admin/bot/configs"]);
     // token は alc-lineworks から、caller の tenant・選んだ bot config・path の scope で取る
     expect(tokenCalls).toHaveLength(1);
     expect(new URL(tokenCalls[0]!.url).pathname).toBe("/api/internal/lineworks/token");
