@@ -53,6 +53,10 @@ MACHINE_CRED_ENV = "prod"
 # ログインの内部口 (sso-config・user の upsert・refresh-token・LINE の受信者) を Cloud Run でなく
 # alc-auth-worker (ALC_AUTH) へ向ける。staging で動作確認済み (Refs ohishi-exp/rust-leave-worker#1)。消すと Cloud Run 経由に戻る。
 ALC_AUTH_LOGIN = "1"
+# /api/auth/me・/api/auth/logout・/api/my-orgs を Cloud Run でなく alc-auth-worker (ALC_AUTH) の内部口から組む
+# (lib/alc-session.ts)。staging で動作確認済み。rust-alc-api の monolith から 3 本を消すための切り替え
+# (Refs ippoan/rust-alc-api#680)。消すと Cloud Run 経由に戻る (monolith から 3 本を消すまでは)。
+ALC_AUTH_SESSION = "1"
 # #434 Phase D: prod でも internal call の認証 token を Google OIDC ID token
 # (aud=alc-api-internal、ALC_API_PROXY_SA_KEY で mint) にする。staging で実証済み。
 # rust prod が INTERNAL_AUTH_TRUST_OIDC=1 + custom-audiences で受理できる状態に
@@ -549,8 +553,8 @@ MACHINE_CRED_ENV = "staging"
 # alc-auth-worker (ALC_AUTH) へ向ける。staging で先に確かめ、本番もトップレベルの [vars] の同名の値で切り替える。
 # (Refs ohishi-exp/rust-leave-worker#1)
 ALC_AUTH_LOGIN = "1"
-# staging だけ /api/auth/me・/api/auth/logout・/api/my-orgs を alc-auth-worker の内部口から組む
-# (staging の会社は Cloud Run の DB に無く me が 500 になるため)。トップレベルには足さない (本番は Cloud Run)。
+# /api/auth/me・/api/auth/logout・/api/my-orgs を alc-auth-worker の内部口から組む (トップレベルと同じ。
+# env は [vars] を継承しないので staging にも書く。staging の会社は Cloud Run の DB に無く、Cloud Run では me が 500 になる)。
 ALC_AUTH_SESSION = "1"
 # #434 Phase D step 1: internal call (/alc-internal-proxy 等) の認証 token を
 # HS256 共有 JWT → Google OIDC ID token (aud=alc-api-internal) に切替える。

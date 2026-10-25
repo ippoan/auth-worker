@@ -288,7 +288,7 @@ export interface Env {
    *  `INTERNAL_SHARED_SECRET` が無ければ Cloud Run のまま (Refs ohishi-exp/rust-leave-worker#1)。 */
   ALC_AUTH_LOGIN?: string;
   /** `"1"` で、`/api/auth/me`・`/api/auth/logout`・`/api/my-orgs` を alc-auth-worker (`ALC_AUTH`) の内部口から
-   *  組んで答える (`lib/alc-session.ts`)。staging だけに置く。無い・`ALC_AUTH`/secret が無ければ Cloud Run
+   *  組んで答える (`lib/alc-session.ts`)。本番・staging の両方に置く。無い・`ALC_AUTH`/secret が無ければ Cloud Run
    *  (Refs ohishi-exp/rust-leave-worker#1)。 */
   ALC_AUTH_SESSION?: string;
   /** cf-alc-recorder (CoreS3 測定データ WS 受口) への service binding。
