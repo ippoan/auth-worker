@@ -28,4 +28,4 @@ auth-client は `.vue` ソースファイルをそのまま ship する（ビル
 - **ロールの持ち主は alc-auth-worker** (`ALC_AUTH`)。ロール = 権限の集合で、user を返す内部口 (upsert-google / upsert-lineworks / upsert-line / by-line-id) が展開済みの `permissions` を返す (admin は `["*"]`、休暇申請ロールは `["leave.use"]`)。auth-worker はロールを保存しない (Refs ohishi-exp/rust-leave-worker#1)
 - ログインの callback が `createAccessToken` で JWT の claim `perms` に写す (空なら key ごと省略。dev token には載らない)。下流へは `alc-proxy.ts` だけが、検証済み JWT の `perms` から `X-User-Permissions` (空白区切り、形に合わない値は捨てる) を作って渡す。admin-proxy / identity-headers には足さない
 - `/admin/users` の「休暇申請」トグルは `/api/users/roles` (GET 一覧 / POST 付け外し、admin のみ、tenant は JWT から) → alc-auth-worker の `/internal/tenants/{tenant_id}/...`。Cloud Run への退避は無い。付け外しは次のログインから JWT に効く
-- staging だけ `ALC_AUTH_SESSION` (`[env.staging.vars]` のみ) で me・logout・my-orgs を `lib/alc-session.ts` が alc-auth-worker から組む。本番は Cloud Run。詳細は同ファイル冒頭
+- `ALC_AUTH_SESSION` (本番の `[vars]` と `[env.staging.vars]` の両方) で me・logout・my-orgs を `lib/alc-session.ts` が alc-auth-worker から組む (Refs ippoan/rust-alc-api#680)。消すと Cloud Run に戻る。詳細は同ファイル冒頭

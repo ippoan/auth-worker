@@ -1,15 +1,15 @@
 /**
- * staging だけ、`/api/auth/me`・`/api/auth/logout`・`/api/my-orgs` を alc-auth-worker (`ALC_AUTH`) の
- * 内部口から組んで答える (Refs ohishi-exp/rust-leave-worker#1)。staging の会社は alc-auth-worker と
- * staging の DB が作るため、Cloud Run staging (rust-alc-api) の DB には無く、me が 500 になる。
+ * `/api/auth/me`・`/api/auth/logout`・`/api/my-orgs` を alc-auth-worker (`ALC_AUTH`) の内部口から組んで答える
+ * (Refs ohishi-exp/rust-leave-worker#1)。staging で先に入れ (staging の会社は alc-auth-worker と staging の DB が作るため、
+ * Cloud Run staging の DB には無く me が 500 になる)、本番も rust-alc-api の monolith から 3 本を消すために切り替えた
+ * (Refs ippoan/rust-alc-api#680)。
  *
  * 切り替えは `ALC_AUTH_SESSION=1` かつ `fetchAlcAuth` が非 null (binding と secret が揃う)。
  * 分岐はこのファイルの 1 か所だけ。呼び手は helper を 1 回呼ぶだけで、フラグを見ない。
  * 値は検証済み JWT の claims からだけ作る (リクエストのヘッダ・body・query は写さない)。
  *
- * - `ALC_AUTH_SESSION` は `wrangler.toml` の `[env.staging.vars]` だけに置く。トップレベルの `[vars]` には
- *   足さない (本番にも `ALC_AUTH` binding と `ALC_AUTH_LOGIN="1"` が在り、流用すると本番も切り替わるため)。
- *   本番はフラグが無いので従来どおり Cloud Run。
+ * - `ALC_AUTH_SESSION` は `wrangler.toml` のトップレベルの `[vars]` (本番) と `[env.staging.vars]` の両方に置く
+ *   (env は `[vars]` を継承しない)。フラグを消せば Cloud Run の経路に戻る (monolith から 3 本を消すまで)。
  * - 404 は本文が `tenant_not_found` のときだけ「会社が無い」(me → 401 / my-orgs → 空の一覧)。それ以外の非 2xx・
  *   本文空の 404 (共有 secret 不一致)・fetch 失敗は 502。
  * - preview override (`X-Alc-Preview-Api-Base`) 付きの me/logout は alc-proxy が helper に流さず従来の経路。

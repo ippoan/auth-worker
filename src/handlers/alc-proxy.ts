@@ -277,7 +277,7 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   // 認証・ACL・ヘッダ付け直しは上で完了済み。binding 未定義 / 表に無い path /
   // flip 前 preview override (Cloud Run の tagged revision 宛) は従来どおり Cloud Run。
   // binding 経路では OIDC mint しない (Cloud Run IAM 用。mint 失敗で 502 にしない)。
-  // staging だけ me・logout は alc-auth-worker から答える (判定は lib/alc-session.ts の 1 か所。preview は従来の経路)。
+  // me・logout は alc-auth-worker から答える (判定は lib/alc-session.ts の 1 か所。preview は従来の経路)。
   if (!previewBase) {
     const session = await handleSessionPath(env, backendPath, method, { tenantId, sub, email, role });
     if (session) return session;
