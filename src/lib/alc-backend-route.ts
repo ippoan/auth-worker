@@ -2,9 +2,9 @@ import type { Env } from "../index";
 
 /**
  * 表を引く proxy の種別 (画面用 = alc-proxy / 内部用 = alc-internal-proxy / 端末用 = device-data-proxy /
- * 管理画面用 = admin-notify-api・api-line-users)。
+ * 管理画面用 = admin-notify-api・api-line-users / RPC = Service Binding の entrypoint の `forwardAlcTenantRequest`)。
  */
-export type AlcProxyKind = "browser" | "internal" | "device" | "admin";
+export type AlcProxyKind = "browser" | "internal" | "device" | "admin" | "rpc";
 
 /** 振り分け表の 1 行の一致のさせ方。 */
 export type AlcRouteMatch =
@@ -54,6 +54,11 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * (内部用の proxy は /api/measurements を 403 で通さないので入れない)。一覧・登録 (`/api/measurements`)・開始 (`/api/measurements/start`) は完全一致、
  * 1 件の取得・更新 (`/{id}`) と顔写真・動画 (`/{id}/face-photo`・`/{id}/video`) は id を UUID に固定した pattern。prefix は足さない
  * (UUID に固定するので `GET /api/measurements/start` や他の下位 path は Cloud Run に残る)。
+ * 車検証 (`/api/car-inspections/`・`/api/files`・`/api/nfc-tags/`) と車両整備 (`/api/maintenance/`) は `alc-carins` へ回す
+ * (Refs ippoan/rust-alc-api#680)。画面用は nuxt-pwa-carins・nuxt-trouble・nuxt-vehicle-maintenance・alc-app。端末用は
+ * 車検証の登録 (`/api/files`) と期限の照合 (`/api/car-inspections/lookup`。どちらも device-data-proxy の role の表で絞る)。
+ * RPC は smb Worker の取り込み (SmbIngest の `/api/files`)。`/api/files` は下位の口が別なので完全一致・個別の行にし、
+ * worker に無い下位の口 (`not-attached`・`{uuid}` の取得・削除・復元) と `/api/car-inspection-files/` は Cloud Run に残す。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -135,6 +140,19 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-measurements",
     proxies: ["browser", "device"],
   },
+  { match: "prefix", path: "/api/car-inspections/", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser", "device"] },
+  { match: "exact", path: "/api/files", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser", "device", "rpc"] },
+  { match: "exact", path: "/api/files/recent", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser"] },
+  { match: "exact", path: "/api/files/verify", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/download$/i,
+    binding: "ALC_CARINS",
+    host: "alc-carins",
+    proxies: ["browser"],
+  },
+  { match: "prefix", path: "/api/nfc-tags/", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser"] },
+  { match: "prefix", path: "/api/maintenance/", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser"] },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */

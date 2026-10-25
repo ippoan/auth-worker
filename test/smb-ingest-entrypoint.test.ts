@@ -293,3 +293,37 @@ describe("SmbIngestEntrypoint#notify (ohishi-exp/smb-watch#14)", () => {
     expect(logged.status).toBe(500);
   });
 });
+
+describe("SmbIngestEntrypoint#ingestFile → ALC_CARINS (Refs ippoan/rust-alc-api#680)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it("binding が在れば alc-carins の POST /api/files へ渡す (X-Tenant-ID と Content-Type だけ。OIDC は作らず Cloud Run も呼ばない)", async () => {
+    const fetchMock = mockFetch();
+    const carins = {
+      fetch: vi.fn(
+        async (_url: string, _init?: RequestInit) =>
+          new Response(JSON.stringify({ uuid: "w" }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    };
+    const out = await rpc(env({}, { ALC_CARINS: carins as unknown as Fetcher, ALC_API_PROXY_SA_KEY: undefined })).ingestFile(FILE);
+    expect(out).toEqual({ status: 201, body: JSON.stringify({ uuid: "w" }), contentType: "application/json" });
+    const [url, init] = carins.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-carins/api/files");
+    expect(init!.method).toBe("POST");
+    expect(init!.redirect).toBe("manual");
+    expect(init!.headers).toEqual({ "X-Tenant-ID": TENANT, "Content-Type": "application/json" });
+    expect(JSON.parse(init!.body as string)).toEqual({
+      filename: FILE.filename,
+      type: FILE.contentType,
+      content: FILE.contentBase64,
+    });
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

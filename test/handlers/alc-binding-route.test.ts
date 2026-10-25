@@ -1820,3 +1820,105 @@ describe("Bot 設定の口 → ALC_LINEWORKS binding (Refs ippoan/rust-alc-api#6
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("車検証・車両整備の口 → ALC_CARINS binding (Refs ippoan/rust-alc-api#680)", () => {
+  const uuidOf = (c: string) => [8, 4, 4, 4, 12].map((n) => c.repeat(n)).join("-");
+  const ID = uuidOf("c");
+  /** worker (ippoan/alc-carins-worker の crates/carins) の router に在る口のうち、画面用だけが使うもの */
+  const BROWSER_ONLY = [
+    "/api/files/recent",
+    "/api/files/verify",
+    `/api/files/${ID}/download`,
+    `/api/files/${ID.toUpperCase()}/download`,
+    "/api/nfc-tags",
+    "/api/nfc-tags/search",
+    "/api/nfc-tags/04a1b2",
+    "/api/maintenance/vehicles",
+    `/api/maintenance/vehicles/${ID}/carins`,
+    "/api/maintenance/vehicles/carins-import",
+    "/api/maintenance/categories",
+    `/api/maintenance/records/${ID}/files`,
+    `/api/maintenance/files/${ID}/download`,
+  ];
+  /** 画面用と端末用 (端末で通せる口は device-data-proxy の role の表で絞る) */
+  const BROWSER_AND_DEVICE = [
+    "/api/car-inspections/current",
+    "/api/car-inspections/expired",
+    "/api/car-inspections/vehicle-categories",
+    "/api/car-inspections/by-car/CARID000000001/history",
+    "/api/car-inspections/lookup",
+  ];
+  /** worker に無い (rust にだけ在る) 下位の口と、近い名前は Cloud Run に残る */
+  const STAYS_ON_CLOUD_RUN = [
+    "/api/files/not-attached",
+    `/api/files/${ID}`,
+    `/api/files/${ID}/delete`,
+    `/api/files/${ID}/restore`,
+    "/api/files/x/download",
+    `/api/files/${ID}/download/x`,
+    "/api/car-inspection-files/current",
+    "/api/filesx",
+    "/api/maintenancex",
+  ];
+
+  function setupCarins() {
+    const carins = makeBinding();
+    return { carins, ...setup({ ALC_CARINS: carins as unknown as Fetcher }) };
+  }
+
+  it("表の行と proxy の組み合わせ (/api/files は画面用・端末用・RPC、照合などは画面用・端末用、ほかは画面用だけ)", () => {
+    const { carins, env } = setupCarins();
+    const target = { fetcher: carins, host: "alc-carins" };
+    expect(resolveAlcBinding("/api/files", env, "browser")).toEqual(target);
+    expect(resolveAlcBinding("/api/files", env, "device")).toEqual(target);
+    expect(resolveAlcBinding("/api/files", env, "rpc")).toEqual(target);
+    expect(resolveAlcBinding("/api/files", env, "internal")).toBeNull();
+    expect(resolveAlcBinding("/api/files", env, "admin")).toBeNull();
+    for (const path of BROWSER_AND_DEVICE) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "device"), path).toEqual(target);
+      for (const proxy of ["internal", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    for (const path of BROWSER_ONLY) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      for (const proxy of ["internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    for (const path of STAYS_ON_CLOUD_RUN) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding("/api/files", env, "rpc")).toBeNull();
+    expect(resolveAlcBinding("/api/maintenance/vehicles", env, "browser")).toBeNull();
+  });
+
+  it("alc-proxy の整備の口は binding に届く (付け直したヘッダだけ。Authorization は渡さない)", async () => {
+    const { carins, cloudRun, env } = setupCarins();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/maintenance/records?page=2", { method: "GET" }), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = carins.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-carins/api/maintenance/records?page=2");
+    const h = init!.headers as Record<string, string>;
+    expect(h["X-Tenant-ID"]).toBeTruthy();
+    expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("authorization");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("device-data-proxy のキオスクの車検期限の照合は binding に届く", async () => {
+    const { carins, cloudRun, env } = setupCarins();
+    const res = await handleDeviceDataProxy(await kioskReq("/device-data-proxy/api/car-inspections/lookup", "POST"), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = carins.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-carins/api/car-inspections/lookup");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
