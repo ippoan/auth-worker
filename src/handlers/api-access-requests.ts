@@ -1,149 +1,83 @@
 /**
- * Access Requests API endpoints (REST version)
- * Client JS → auth-worker API → rust-alc-api REST API
+ * 参加の申請の API (参加ページと管理画面が呼ぶ)。
+ * Client JS → auth-worker → alc-auth-worker の内部口 (`ALC_AUTH`、Refs ippoan/rust-alc-api#680)。
+ * 以前は rust-alc-api の `/api/access-requests*` を叩いていた。
+ *
+ * 申請はログイン中の誰でも (申請者は JWT の sub)、一覧・承認・却下は申請先の会社の管理者だけ (会社は JWT の tenant)。
  */
 
 import type { Env } from "../index";
-import { alcIdentityHeaders } from "../lib/alc-data-fetch";
+import {
+  callTenantAdmin,
+  errorResponse,
+  jsonResponse,
+  requireCaller,
+  tenantPath,
+} from "../lib/alc-tenant-admin";
 
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-function extractToken(request: Request): string | null {
-  const auth = request.headers.get("Authorization");
-  if (auth?.startsWith("Bearer ")) {
-    return auth.slice(7);
-  }
-  return null;
-}
-
-export async function handleAccessRequestCreate(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const token = extractToken(request);
-  if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
+export async function handleAccessRequestCreate(request: Request, env: Env): Promise<Response> {
+  const caller = await requireCaller(request, env, { admin: false, write: true });
+  if (caller instanceof Response) return caller;
 
   const body = (await request.json()) as { orgSlug: string };
   if (!body.orgSlug) {
     return jsonResponse({ error: "orgSlug is required" }, 400);
   }
 
-  // #434 lockdown: browser JWT を検証 → OIDC + X-Tenant-ID/X-User-* 注入で rust を叩く
-  // (rust は dumb backend で素の JWT を見ず注入 header を読む / IAM は OIDC を要求)。
-  const idh = await alcIdentityHeaders(env, token);
-  if (!idh) return jsonResponse({ error: "Unauthorized" }, 401);
-
   console.log(JSON.stringify({ event: "access_request_create", orgSlug: body.orgSlug }));
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/access-requests`, {
+  const r = await callTenantAdmin(env, "/internal/access-requests", {
     method: "POST",
-    headers: { ...idh, "Content-Type": "application/json" },
-    body: JSON.stringify({ org_slug: body.orgSlug }),
+    body: { org_slug: body.orgSlug, user_id: caller.userId },
   });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    return jsonResponse({ error: text }, resp.status);
-  }
-
-  return jsonResponse(await resp.json());
+  return r.status === 201 ? jsonResponse(r.body) : errorResponse(r);
 }
 
-export async function handleAccessRequestList(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const token = extractToken(request);
-  if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
+export async function handleAccessRequestList(request: Request, env: Env): Promise<Response> {
+  const caller = await requireCaller(request, env, { admin: true, write: false });
+  if (caller instanceof Response) return caller;
 
   const body = (await request.json()) as { statusFilter?: string };
+  const query = body.statusFilter ? `?status=${encodeURIComponent(body.statusFilter)}` : "";
 
-  const idh = await alcIdentityHeaders(env, token);
-  if (!idh) return jsonResponse({ error: "Unauthorized" }, 401);
-
-  const url = new URL(`${env.ALC_API_ORIGIN}/api/access-requests`);
-  if (body.statusFilter) {
-    url.searchParams.set("status", body.statusFilter);
-  }
-
-  const resp = await fetch(url.toString(), { headers: idh });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    return jsonResponse({ error: text }, resp.status);
-  }
-
-  return jsonResponse(await resp.json());
+  const r = await callTenantAdmin(env, tenantPath(caller.tenantId, "access-requests") + query);
+  return r.status === 200 ? jsonResponse(r.body) : errorResponse(r);
 }
 
-export async function handleAccessRequestApprove(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const token = extractToken(request);
-  if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
+export async function handleAccessRequestApprove(request: Request, env: Env): Promise<Response> {
+  const caller = await requireCaller(request, env, { admin: true, write: true });
+  if (caller instanceof Response) return caller;
 
   const body = (await request.json()) as { requestId: string; role?: string };
   if (!body.requestId) {
     return jsonResponse({ error: "requestId is required" }, 400);
   }
 
-  const idh = await alcIdentityHeaders(env, token);
-  if (!idh) return jsonResponse({ error: "Unauthorized" }, 401);
-
   console.log(JSON.stringify({ event: "access_request_approve", requestId: body.requestId }));
 
-  const resp = await fetch(
-    `${env.ALC_API_ORIGIN}/api/access-requests/${body.requestId}/approve`,
-    {
-      method: "POST",
-      headers: { ...idh, "Content-Type": "application/json" },
-      body: JSON.stringify({ role: body.role }),
-    },
+  const r = await callTenantAdmin(
+    env,
+    tenantPath(caller.tenantId, "access-requests", body.requestId, "approve"),
+    { method: "POST", body: { role: body.role } },
   );
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    return jsonResponse({ error: text }, resp.status);
-  }
-
-  return jsonResponse({ success: true });
+  return r.status === 204 ? jsonResponse({ success: true }) : errorResponse(r);
 }
 
-export async function handleAccessRequestDecline(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const token = extractToken(request);
-  if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
+export async function handleAccessRequestDecline(request: Request, env: Env): Promise<Response> {
+  const caller = await requireCaller(request, env, { admin: true, write: true });
+  if (caller instanceof Response) return caller;
 
   const body = (await request.json()) as { requestId: string };
   if (!body.requestId) {
     return jsonResponse({ error: "requestId is required" }, 400);
   }
 
-  const idh = await alcIdentityHeaders(env, token);
-  if (!idh) return jsonResponse({ error: "Unauthorized" }, 401);
-
   console.log(JSON.stringify({ event: "access_request_decline", requestId: body.requestId }));
 
-  const resp = await fetch(
-    `${env.ALC_API_ORIGIN}/api/access-requests/${body.requestId}/decline`,
-    {
-      method: "POST",
-      headers: idh,
-    },
+  const r = await callTenantAdmin(
+    env,
+    tenantPath(caller.tenantId, "access-requests", body.requestId, "decline"),
+    { method: "POST" },
   );
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    return jsonResponse({ error: text }, resp.status);
-  }
-
-  return jsonResponse({ success: true });
+  return r.status === 204 ? jsonResponse({ success: true }) : errorResponse(r);
 }

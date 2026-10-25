@@ -178,6 +178,19 @@ branches = true
 path = "src/handlers/api-users.ts"
 branches = true
 
+# 会社の管理の API が alc-auth-worker を呼ぶ部品と、参加の申請・参加ページ (Refs ippoan/rust-alc-api#680)
+[[files]]
+path = "src/lib/alc-tenant-admin.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/api-access-requests.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/join-page.ts"
+branches = true
+
 # --- MCP OAuth Provider (Phase 1+) ---
 
 [[files]]

@@ -1,5 +1,11 @@
+/**
+ * 参加ページ `GET /join/:slug` — 会社は alc-auth-worker の `GET /internal/tenant-by-slug/{slug}` で引く
+ * (Refs ippoan/rust-alc-api#680)。
+ */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockEnv } from "../helpers/mock-env";
+import { createFakeAlcAuth, FAKE_ALC_AUTH_SECRET, type FakeAlcAuth } from "../helpers/fake-alc-auth";
+import type { Env } from "../../src/index";
 
 vi.mock("../../src/lib/join-html", () => ({
   renderJoinPage: vi.fn(() => "<html>mock join page</html>"),
@@ -9,136 +15,66 @@ vi.mock("../../src/lib/join-html", () => ({
 import { handleJoinPage } from "../../src/handlers/join-page";
 import { renderJoinPage, renderJoinNotFoundPage } from "../../src/lib/join-html";
 
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function withAlcAuth(respond: (req: Request) => Response, extra: Partial<Env> = {}): { env: Env; alcAuth: FakeAlcAuth } {
+  const alcAuth = createFakeAlcAuth({ override: respond });
+  return {
+    alcAuth,
+    env: createMockEnv({ ALC_AUTH: alcAuth.fetcher, INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET, ...extra }),
+  };
+}
+
+const page = new Request("https://auth.test.example/join/acme");
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("cloud run should not be called", { status: 599 })));
+});
+
 describe("handleJoinPage", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns 404 with renderJoinNotFoundPage when backend returns 404", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("Not Found", { status: 404 })),
-    );
-    const env = createMockEnv();
-    const req = new Request("https://auth.test.example/join/unknown-org");
-
-    const res = await handleJoinPage(req, env, "unknown-org");
-
-    expect(res.status).toBe(404);
-    expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
-    expect(await res.text()).toBe("<html>mock not found</html>");
-    expect(renderJoinNotFoundPage).toHaveBeenCalled();
-  });
-
-  it("returns 500 when backend returns non-404 error", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(new Response("Server Error", { status: 500 })),
-    );
-    const env = createMockEnv();
-    const req = new Request("https://auth.test.example/join/some-org");
-
-    const res = await handleJoinPage(req, env, "some-org");
-
-    expect(res.status).toBe(500);
-    expect(await res.text()).toBe("Internal Server Error");
-  });
-
-  it("returns 404 when backend returns found: false", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ found: false, name: "" }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ),
-    );
-    const env = createMockEnv();
-    const req = new Request("https://auth.test.example/join/inactive-org");
-
-    const res = await handleJoinPage(req, env, "inactive-org");
-
-    expect(res.status).toBe(404);
-    expect(await res.text()).toBe("<html>mock not found</html>");
-    expect(renderJoinNotFoundPage).toHaveBeenCalled();
-  });
-
-  it("returns 200 with renderJoinPage on success", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ found: true, name: "Test Org" }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ),
-    );
-    const env = createMockEnv();
-    const req = new Request("https://auth.test.example/join/test-org");
-
-    const res = await handleJoinPage(req, env, "test-org");
-
+  it("会社が在れば名前と slug でページを出す (Google が設定されていればボタンも)", async () => {
+    const { env, alcAuth } = withAlcAuth(() => json(200, { found: true, id: "t", name: "Acme", slug: "acme" }));
+    const res = await handleJoinPage(page, env, "acme");
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
     expect(await res.text()).toBe("<html>mock join page</html>");
     expect(renderJoinPage).toHaveBeenCalledWith({
-      orgName: "Test Org",
-      orgSlug: "test-org",
+      orgName: "Acme",
+      orgSlug: "acme",
       googleEnabled: true,
       authWorkerOrigin: "https://auth.test.example",
     });
+    expect(new URL(alcAuth.calls[0]!.url).pathname).toBe("/internal/tenant-by-slug/acme");
   });
 
-  it("passes googleEnabled: false when GOOGLE_CLIENT_ID is empty", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ found: true, name: "No Google Org" }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ),
-    );
-    const env = createMockEnv({ GOOGLE_CLIENT_ID: "" });
-    const req = new Request("https://auth.test.example/join/no-google");
-
-    const res = await handleJoinPage(req, env, "no-google");
-
-    expect(res.status).toBe(200);
-    expect(renderJoinPage).toHaveBeenCalledWith(
-      expect.objectContaining({ googleEnabled: false }),
-    );
+  it("slug は URL エンコードして引く。Google が無ければボタンを出さない", async () => {
+    const { env, alcAuth } = withAlcAuth(() => json(200, { found: true, id: "t", name: "A", slug: "a b" }), {
+      GOOGLE_CLIENT_ID: undefined as never,
+    });
+    await handleJoinPage(page, env, "a b");
+    expect(new URL(alcAuth.calls[0]!.url).pathname).toBe("/internal/tenant-by-slug/a%20b");
+    expect(renderJoinPage).toHaveBeenCalledWith(expect.objectContaining({ googleEnabled: false }));
   });
 
-  it("returns 500 on fetch exception", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValueOnce(new Error("network error")),
-    );
-    const env = createMockEnv();
-    const req = new Request("https://auth.test.example/join/err-org");
-
-    const res = await handleJoinPage(req, env, "err-org");
-
-    expect(res.status).toBe(500);
-    expect(await res.text()).toBe("Internal Server Error");
+  it("会社が無ければ 404 のページ", async () => {
+    const { env } = withAlcAuth(() => json(404, { error: "tenant_not_found" }));
+    const res = await handleJoinPage(page, env, "nope");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("<html>mock not found</html>");
+    expect(renderJoinNotFoundPage).toHaveBeenCalled();
   });
 
-  it("encodes slug in the backend URL", async () => {
-    const mockFetch = vi.fn().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ found: true, name: "Slug Org" }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-    vi.stubGlobal("fetch", mockFetch);
-    const env = createMockEnv();
-    const req = new Request("https://auth.test.example/join/my%20org");
-
-    await handleJoinPage(req, env, "my org");
-
-    const calledUrl = mockFetch.mock.calls[0]![0] as string;
-    expect(calledUrl).toContain("/api/tenants/by-slug/my%20org");
+  it("alc-auth-worker の失敗・binding 無しは 500", async () => {
+    for (const env of [
+      withAlcAuth(() => json(500, { error: "internal_error" })).env,
+      createMockEnv({ ALC_AUTH: undefined }),
+    ]) {
+      const res = await handleJoinPage(page, env, "acme");
+      expect(res.status).toBe(500);
+      expect(await res.text()).toBe("Internal Server Error");
+    }
   });
 });

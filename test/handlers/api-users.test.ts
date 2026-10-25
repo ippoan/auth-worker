@@ -1,15 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import {
-  stubOrReal,
-  testEnv,
-  authRequest,
-  authJsonRequest,
-  noAuthRequest,
-  noAuthJsonRequest,
-  restoreFetch,
-  waitIfLive,
-  isLive,
-} from "../helpers/stub-or-real";
+/**
+ * `/api/users/*` (会社のユーザー・招待) — alc-auth-worker (`ALC_AUTH`) の内部口を叩く (Refs ippoan/rust-alc-api#680)。
+ * 認可 (`requireCaller`) の細部は test/lib/alc-tenant-admin.test.ts。ロールの口は api-users-roles.test.ts。
+ */
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
+import { makeJwt, TEST_TENANT_ID, TEST_USER_ID } from "../helpers/live-env";
+import { createFakeAlcAuth, FAKE_ALC_AUTH_SECRET, type FakeAlcAuth } from "../helpers/fake-alc-auth";
 import {
   handleUsersList,
   handleInvitationsList,
@@ -17,434 +13,164 @@ import {
   handleDeleteInvitation,
   handleDeleteUser,
 } from "../../src/handlers/api-users";
+import type { Env } from "../../src/index";
 
-afterAll(() => restoreFetch());
-waitIfLive();
+const OTHER = "33333333-3333-3333-3333-333333333333";
 
-// ---------- handleUsersList ----------
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
 
-describe("handleUsersList", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
+function withAlcAuth(respond: (req: Request) => Response): { env: Env; alcAuth: FakeAlcAuth } {
+  const alcAuth = createFakeAlcAuth({ override: respond });
+  return {
+    alcAuth,
+    env: createMockEnv({ ALC_AUTH: alcAuth.fetcher, INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET }),
+  };
+}
 
-  it("returns 401 without token", async () => {
-    const res = await handleUsersList(noAuthRequest("/x", "GET"), env);
-    expect(res.status).toBe(401);
+function req(body?: unknown, token: string | null = makeJwt(TEST_JWT_SECRET)): Request {
+  return new Request("https://auth.test.example/api/users/x", {
+    method: body === undefined ? "GET" : "POST",
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json" },
+    body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
   });
+}
 
-  it("returns 401 with non-Bearer auth header", async () => {
-    const req = new Request("https://auth.test.example/x", {
-      headers: { Authorization: "Basic abc" },
+const path = (a: FakeAlcAuth, i = 0) => new URL(a.calls[i]!.url).pathname;
+
+beforeEach(() => {
+  // Cloud Run (global fetch) へは行かない。行ったら落とす
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("cloud run should not be called", { status: 599 })));
+});
+
+describe("認可", () => {
+  const handlers = [
+    ["list", (t: string | null, env: Env) => handleUsersList(req(undefined, t), env)],
+    ["invitations", (t: string | null, env: Env) => handleInvitationsList(req(undefined, t), env)],
+    ["invite", (t: string | null, env: Env) => handleInviteUser(req({ email: "a@example.test" }, t), env)],
+    ["invite/delete", (t: string | null, env: Env) => handleDeleteInvitation(req({ id: OTHER }, t), env)],
+    ["delete", (t: string | null, env: Env) => handleDeleteUser(req({ id: OTHER }, t), env)],
+  ] as const;
+
+  for (const [name, call] of handlers) {
+    it(`${name}: token 無しは 401・admin でなければ 403 (alc-auth-worker を呼ばない)`, async () => {
+      const { env, alcAuth } = withAlcAuth(() => json(200, {}));
+      expect((await call(null, env)).status).toBe(401);
+      expect((await call(makeJwt(TEST_JWT_SECRET, { role: "viewer" }), env)).status).toBe(403);
+      expect(alcAuth.calls).toHaveLength(0);
     });
-    const res = await handleUsersList(req, env);
-    expect(res.status).toBe(401);
-  });
+  }
 
-  it("returns users list on success", async () => {
-    stubOrReal(
-      new Response(
-        JSON.stringify({
-          users: [
-            {
-              id: "u1",
-              email: "a@b.com",
-              name: "Test",
-              role: "admin",
-              created_at: "2025-01-01",
-            },
-          ],
-        }),
-        { status: 200 },
-      ),
-    );
-    const res = await handleUsersList(
-      authRequest("/x", { method: "GET" }),
-      env,
-    );
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as {
-      users: Array<Record<string, unknown>>;
-    };
-    expect(Array.isArray(data.users)).toBe(true);
-    expect(data.users.length).toBeGreaterThanOrEqual(1);
-    const u = data.users[0]!;
-    expect(typeof u.id).toBe("string");
-    expect(typeof u.email).toBe("string");
-    expect(typeof u.name).toBe("string");
-    expect(typeof u.role).toBe("string");
-    expect(typeof u.created_at).toBe("string");
+  it("書き込みの 3 口は開発用の token なら 403", async () => {
+    const { env, alcAuth } = withAlcAuth(() => new Response(null, { status: 204 }));
+    const t = makeJwt(TEST_JWT_SECRET, { token_kind: "dev" });
+    expect((await handleInviteUser(req({ email: "a@example.test" }, t), env)).status).toBe(403);
+    expect((await handleDeleteInvitation(req({ id: OTHER }, t), env)).status).toBe(403);
+    expect((await handleDeleteUser(req({ id: OTHER }, t), env)).status).toBe(403);
+    expect(alcAuth.calls).toHaveLength(0);
   });
-
-  it("passes through error status from backend", async () => {
-    stubOrReal(new Response("forbidden", { status: 403 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "GET",
-          headers: { Authorization: "Bearer invalid-token-value" },
-        })
-      : authRequest("/x", { method: "GET" });
-    const res = await handleUsersList(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    const data = (await res.json()) as { error: string };
-    expect(typeof data.error).toBe("string");
-  });
-
 });
 
-// ---------- handleInvitationsList ----------
-
-describe("handleInvitationsList", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns 401 without token", async () => {
-    const res = await handleInvitationsList(noAuthRequest("/x", "GET"), env);
-    expect(res.status).toBe(401);
-  });
-
-  it("returns invitations list on success", async () => {
-    stubOrReal(
-      new Response(
-        JSON.stringify({
-          invitations: [
-            {
-              id: "i1",
-              email: "a@b.com",
-              tenant_id: "t1",
-              role: "admin",
-              created_at: "2025-01-01",
-            },
-          ],
-        }),
-        { status: 200 },
-      ),
+describe("一覧", () => {
+  it("JWT の会社の users / invitations を引いてそのまま返す", async () => {
+    const users = { users: [{ id: OTHER, email: "a@example.test", name: "A", role: "viewer", created_at: "t" }] };
+    const invitations = { invitations: [] };
+    const { env, alcAuth } = withAlcAuth((r) =>
+      json(200, new URL(r.url).pathname.endsWith("/users") ? users : invitations),
     );
-    const res = await handleInvitationsList(
-      authRequest("/x", { method: "GET" }),
-      env,
-    );
+    let res = await handleUsersList(req(), env);
     expect(res.status).toBe(200);
-    const data = (await res.json()) as {
-      invitations: Array<Record<string, unknown>>;
-    };
-    expect(Array.isArray(data.invitations)).toBe(true);
-    expect(data.invitations.length).toBeGreaterThanOrEqual(1);
+    expect(await res.json()).toEqual(users);
+    res = await handleInvitationsList(req(), env);
+    expect(await res.json()).toEqual(invitations);
+    expect(path(alcAuth, 0)).toBe(`/internal/tenants/${TEST_TENANT_ID}/users`);
+    expect(path(alcAuth, 1)).toBe(`/internal/tenants/${TEST_TENANT_ID}/invitations`);
+    expect(alcAuth.calls.every((c) => c.method === "GET")).toBe(true);
   });
 
-  it("passes through error status from backend", async () => {
-    stubOrReal(new Response("forbidden", { status: 403 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "GET",
-          headers: { Authorization: "Bearer invalid-token-value" },
-        })
-      : authRequest("/x", { method: "GET" });
-    const res = await handleInvitationsList(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
+  it("alc-auth-worker の失敗は 502", async () => {
+    const { env } = withAlcAuth(() => json(500, { error: "internal_error" }));
+    for (const h of [handleUsersList, handleInvitationsList]) {
+      const res = await h(req(), env);
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual({ error: "upstream_error" });
+    }
   });
-
 });
-
-// ---------- handleInviteUser ----------
 
 describe("handleInviteUser", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns 401 without token", async () => {
-    const res = await handleInviteUser(
-      noAuthJsonRequest("/x", { email: "a@b.com" }),
-      env,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 400 when email is missing", async () => {
-    const res = await handleInviteUser(
-      authJsonRequest("/x", {}),
-      env,
-    );
-    expect(res.status).toBe(400);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("email is required");
-  });
-
-  it("returns invitation on success", async () => {
-    const email = isLive
-      ? `live-invite-${Date.now()}@example.com`
-      : "invite@example.com";
-
-    stubOrReal(
-      new Response(
-        JSON.stringify({
-          id: "i1",
-          email: "invite@example.com",
-          tenant_id: "t1",
-          role: "admin",
-          created_at: "2025-01-01",
-        }),
-        { status: 200 },
-      ),
-    );
-    const res = await handleInviteUser(
-      authJsonRequest("/x", { email, role: "admin" }),
-      env,
-    );
+  it("email と role (省略は admin) を JWT の会社に送り、招待の 1 行を返す", async () => {
+    const row = { id: OTHER, tenant_id: TEST_TENANT_ID, email: "a@example.test", role: "admin", created_at: "t" };
+    const { env, alcAuth } = withAlcAuth(() => json(200, row));
+    const res = await handleInviteUser(req({ email: "a@example.test" }), env);
     expect(res.status).toBe(200);
-    const data = (await res.json()) as {
-      id: string;
-      email: string;
-      role: string;
-    };
-    expect(typeof data.id).toBe("string");
-    expect(data.email).toBe(isLive ? email : "invite@example.com");
-    expect(data.role).toBe("admin");
+    expect(await res.json()).toEqual(row);
+    expect(path(alcAuth)).toBe(`/internal/tenants/${TEST_TENANT_ID}/invitations`);
+    expect(alcAuth.calls[0]!.method).toBe("POST");
+    expect(JSON.parse(alcAuth.calls[0]!.body)).toEqual({ email: "a@example.test", role: "admin" });
 
-    // Cleanup
-    stubOrReal(new Response("ok", { status: 200 }));
-    await handleDeleteInvitation(
-      authJsonRequest("/x", { id: data.id || "i1" }),
-      env,
-    );
+    await handleInviteUser(req({ email: "b@example.test", role: "payroll" }), env);
+    expect(JSON.parse(alcAuth.calls[1]!.body)).toEqual({ email: "b@example.test", role: "payroll" });
   });
 
-  it("sends default role 'admin' when role is not provided", async () => {
-    const email = isLive
-      ? `live-default-role-${Date.now()}@example.com`
-      : "default-role@example.com";
-
-    const mockFetchFn = vi.fn().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "i1",
-          email: "default-role@example.com",
-          role: "admin",
-        }),
-        { status: 200 },
-      ),
-    );
-    if (!isLive) vi.stubGlobal("fetch", mockFetchFn);
-
-    const res = await handleInviteUser(
-      authJsonRequest("/x", { email }),
-      env,
-    );
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { id: string; role: string };
-    expect(data.role).toBe("admin");
-
-    // Verify sent body (mock-only)
-    if (!isLive) {
-      const sentBody = JSON.parse(
-        mockFetchFn.mock.calls[0]![1].body as string,
-      );
-      expect(sentBody.role).toBe("admin");
+  it("email 無し・JSON でない body は 400 (alc-auth-worker を呼ばない)", async () => {
+    const { env, alcAuth } = withAlcAuth(() => json(200, {}));
+    for (const b of [{}, { email: "" }, { email: 1 }, "{"]) {
+      const res = await handleInviteUser(req(b), env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "email is required" });
     }
-
-    // Cleanup
-    stubOrReal(new Response("ok", { status: 200 }));
-    await handleDeleteInvitation(
-      authJsonRequest("/x", { id: data.id || "i1" }),
-      env,
-    );
+    expect(alcAuth.calls).toHaveLength(0);
   });
 
-  it("sends provided role when specified", async () => {
-    const email = isLive
-      ? `live-viewer-role-${Date.now()}@example.com`
-      : "viewer-role@example.com";
-
-    const mockFetchFn = vi.fn().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "i2",
-          email: "viewer-role@example.com",
-          role: "viewer",
-        }),
-        { status: 200 },
-      ),
-    );
-    if (!isLive) vi.stubGlobal("fetch", mockFetchFn);
-
-    const res = await handleInviteUser(
-      authJsonRequest("/x", { email, role: "viewer" }),
-      env,
-    );
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { id: string; role: string };
-    expect(data.role).toBe("viewer");
-
-    // Verify sent body (mock-only)
-    if (!isLive) {
-      const sentBody = JSON.parse(
-        mockFetchFn.mock.calls[0]![1].body as string,
-      );
-      expect(sentBody.role).toBe("viewer");
-    }
-
-    // Cleanup
-    stubOrReal(new Response("ok", { status: 200 }));
-    await handleDeleteInvitation(
-      authJsonRequest("/x", { id: data.id || "i2" }),
-      env,
-    );
+  it("alc-auth-worker の 4xx はそのまま返す", async () => {
+    const { env } = withAlcAuth(() => json(409, { error: "email_taken" }));
+    const res = await handleInviteUser(req({ email: "a@example.test" }), env);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "email_taken" });
   });
-
-  it("passes through error status from backend", async () => {
-    stubOrReal(new Response("conflict", { status: 409 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer invalid-token",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ email: "error@example.com" }),
-        })
-      : authJsonRequest("/x", { email: "a@b.com" });
-    const res = await handleInviteUser(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
-  });
-
 });
 
-// ---------- handleDeleteInvitation ----------
-
-describe("handleDeleteInvitation", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns 401 without token", async () => {
-    const res = await handleDeleteInvitation(
-      noAuthJsonRequest("/x", { id: "i1" }),
-      env,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 400 when id is missing", async () => {
-    const res = await handleDeleteInvitation(
-      authJsonRequest("/x", {}),
-      env,
-    );
-    expect(res.status).toBe(400);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("id is required");
-  });
-
-  it("returns success on delete", async () => {
-    // Setup: create invitation then delete
-    const email = isLive
-      ? `live-del-inv-${Date.now()}@example.com`
-      : "del-inv@example.com";
-
-    stubOrReal(
-      new Response(
-        JSON.stringify({
-          id: "del-inv-id",
-          email: "del-inv@example.com",
-          role: "admin",
-        }),
-        { status: 200 },
-      ),
-    );
-    const invRes = await handleInviteUser(
-      authJsonRequest("/x", { email }),
-      env,
-    );
-    const inv = (await invRes.json()) as { id: string };
-    const deleteId = inv.id || "del-inv-id";
-
-    // Act: delete
-    stubOrReal(new Response("ok", { status: 200 }));
-    const res = await handleDeleteInvitation(
-      authJsonRequest("/x", { id: deleteId }),
-      env,
-    );
+describe("削除", () => {
+  it("招待と user を JWT の会社の path で消し、{success:true} を返す", async () => {
+    const { env, alcAuth } = withAlcAuth(() => new Response(null, { status: 204 }));
+    let res = await handleDeleteInvitation(req({ id: OTHER }), env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
+    res = await handleDeleteUser(req({ id: OTHER }), env);
+    expect(await res.json()).toEqual({ success: true });
+    expect(path(alcAuth, 0)).toBe(`/internal/tenants/${TEST_TENANT_ID}/invitations/${OTHER}`);
+    expect(path(alcAuth, 1)).toBe(`/internal/tenants/${TEST_TENANT_ID}/users/${OTHER}`);
+    expect(alcAuth.calls.every((c) => c.method === "DELETE")).toBe(true);
   });
 
-  it("passes through error status from backend", async () => {
-    stubOrReal(new Response("not found", { status: 404 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer invalid-token",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            id: "00000000-0000-0000-0000-000000000000",
-          }),
-        })
-      : authJsonRequest("/x", { id: "i1" });
-    const res = await handleDeleteInvitation(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
-  });
-
-});
-
-// ---------- handleDeleteUser ----------
-
-describe("handleDeleteUser", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns 401 without token", async () => {
-    const res = await handleDeleteUser(
-      noAuthJsonRequest("/x", { id: "u1" }),
-      env,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 400 when id is missing", async () => {
-    const res = await handleDeleteUser(
-      authJsonRequest("/x", {}),
-      env,
-    );
-    expect(res.status).toBe(400);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("id is required");
-  });
-
-  it("returns success on delete", async () => {
-    // Use a valid UUID for live mode (non-existent user returns 404, which is acceptable)
-    const userId = "00000000-0000-0000-0000-000000000099";
-    stubOrReal(new Response("ok", { status: 200 }));
-    const res = await handleDeleteUser(
-      authJsonRequest("/x", { id: userId }),
-      env,
-    );
-    // mock: 200, live: 200 or 404 (user may not exist)
-    if (isLive) {
-      expect([200, 404]).toContain(res.status);
-      if (res.status === 200) {
-        expect(await res.json()).toEqual({ success: true });
+  it("id 無し・JSON でない body は 400", async () => {
+    const { env, alcAuth } = withAlcAuth(() => new Response(null, { status: 204 }));
+    for (const h of [handleDeleteInvitation, handleDeleteUser]) {
+      for (const b of [{}, { id: "" }, { id: 1 }, "{"]) {
+        const res = await h(req(b), env);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "id is required" });
       }
-    } else {
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ success: true });
     }
+    expect(alcAuth.calls).toHaveLength(0);
   });
 
-  it("passes through error status from backend", async () => {
-    stubOrReal(new Response("not found", { status: 404 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer invalid-token",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            id: "00000000-0000-0000-0000-000000000000",
-          }),
-        })
-      : authJsonRequest("/x", { id: "u1" });
-    const res = await handleDeleteUser(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
+  it("自分自身は消せない (400、alc-auth-worker を呼ばない)", async () => {
+    const { env, alcAuth } = withAlcAuth(() => new Response(null, { status: 204 }));
+    const res = await handleDeleteUser(req({ id: TEST_USER_ID }), env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "cannot_delete_self" });
+    expect(alcAuth.calls).toHaveLength(0);
   });
 
+  it("alc-auth-worker の失敗はそのまま (4xx) / 502 (5xx)", async () => {
+    const { env } = withAlcAuth(() => json(400, { error: "invalid_id" }));
+    const res = await handleDeleteInvitation(req({ id: "x" }), env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_id" });
+    const failing = withAlcAuth(() => json(500, { error: "internal_error" })).env;
+    expect((await handleDeleteUser(req({ id: OTHER }), failing)).status).toBe(502);
+  });
 });

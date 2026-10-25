@@ -1,298 +1,126 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import {
-  stubOrReal,
-  testEnv,
-  authJsonRequest,
-  noAuthJsonRequest,
-  noAuthRequest,
-  restoreFetch,
-  waitIfLive,
-  isLive,
-} from "../helpers/stub-or-real";
-import { TEST_TENANT_ID, TEST_USER_ID } from "../helpers/live-env";
-
-// #434 lockdown: handler は alcIdentityHeaders で browser JWT 検証 → OIDC mint +
-// X-Tenant-ID/X-User-* 注入してから rust を叩く。OIDC mint (Google token endpoint) は
-// CI で実行できないので helper を mock し、検証済み identity 相当の header を返す
-// (helper 本体の検証は test/lib/alc-data-fetch.test.ts)。live でも有効な値を返すため
-// seed の TEST_TENANT_ID / TEST_USER_ID を使う。
-vi.mock("../../src/lib/alc-data-fetch", () => ({
-  alcIdentityHeaders: vi.fn(async () => ({
-    Authorization: "Bearer test-oidc",
-    "X-Tenant-ID": TEST_TENANT_ID,
-    "X-User-ID": TEST_USER_ID,
-    "X-User-Email": "test@example.com",
-    "X-User-Role": "admin",
-  })),
-}));
-
+/**
+ * `/api/access-requests/*` (参加の申請) — alc-auth-worker (`ALC_AUTH`) の内部口を叩く (Refs ippoan/rust-alc-api#680)。
+ * 申請はログイン中の誰でも (申請者は JWT の sub)、一覧・承認・却下は申請先の会社の管理者だけ。
+ */
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
+import { makeJwt, TEST_TENANT_ID, TEST_USER_ID } from "../helpers/live-env";
+import { createFakeAlcAuth, FAKE_ALC_AUTH_SECRET, type FakeAlcAuth } from "../helpers/fake-alc-auth";
 import {
   handleAccessRequestCreate,
   handleAccessRequestList,
   handleAccessRequestApprove,
   handleAccessRequestDecline,
 } from "../../src/handlers/api-access-requests";
+import type { Env } from "../../src/index";
 
-afterAll(() => restoreFetch());
-waitIfLive();
+const REQ_ID = "44444444-4444-4444-4444-444444444444";
 
-// ---------- handleAccessRequestCreate ----------
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function withAlcAuth(respond: (req: Request) => Response): { env: Env; alcAuth: FakeAlcAuth } {
+  const alcAuth = createFakeAlcAuth({ override: respond });
+  return {
+    alcAuth,
+    env: createMockEnv({ ALC_AUTH: alcAuth.fetcher, INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET }),
+  };
+}
+
+function req(body: unknown, token: string | null = makeJwt(TEST_JWT_SECRET)): Request {
+  return new Request("https://auth.test.example/api/access-requests/x", {
+    method: "POST",
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+const url = (a: FakeAlcAuth, i = 0) => new URL(a.calls[i]!.url);
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("cloud run should not be called", { status: 599 })));
+});
 
 describe("handleAccessRequestCreate", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns 401 without token", async () => {
-    const res = await handleAccessRequestCreate(
-      noAuthJsonRequest("/x", { orgSlug: "test" }),
-      env,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 401 with non-Bearer auth header", async () => {
-    const req = new Request("https://auth.test.example/x", {
-      method: "POST",
-      headers: { Authorization: "Basic abc", "Content-Type": "application/json" },
-      body: JSON.stringify({ orgSlug: "test" }),
-    });
-    const res = await handleAccessRequestCreate(req, env);
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 400 when orgSlug is missing", async () => {
-    const res = await handleAccessRequestCreate(
-      authJsonRequest("/x", {}),
-      env,
-    );
-    expect(res.status).toBe(400);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("orgSlug is required");
-  });
-
-  it("returns success on create", async () => {
-    stubOrReal(
-      new Response(
-        JSON.stringify({ id: "req-1", status: "pending" }),
-        { status: 200 },
-      ),
-    );
-    const res = await handleAccessRequestCreate(
-      authJsonRequest("/x", { orgSlug: "test-org" }),
-      env,
-    );
+  it("slug と JWT の sub で申請し、申請の 1 行を返す (admin でなくてよい)", async () => {
+    const row = { id: REQ_ID, tenant_id: "t", user_id: TEST_USER_ID, status: "pending", role: "viewer", org_name: "Org", created_at: "c" };
+    const { env, alcAuth } = withAlcAuth(() => json(201, row));
+    const res = await handleAccessRequestCreate(req({ orgSlug: "acme" }, makeJwt(TEST_JWT_SECRET, { role: "viewer" })), env);
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { id: string };
-    expect(typeof data.id).toBe("string");
+    expect(await res.json()).toEqual(row);
+    expect(url(alcAuth).pathname).toBe("/internal/access-requests");
+    expect(alcAuth.calls[0]!.method).toBe("POST");
+    expect(JSON.parse(alcAuth.calls[0]!.body)).toEqual({ org_slug: "acme", user_id: TEST_USER_ID });
   });
 
-  it("passes through error from backend", async () => {
-    stubOrReal(new Response("conflict", { status: 409 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer invalid-token",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ orgSlug: "test" }),
-        })
-      : authJsonRequest("/x", { orgSlug: "test" });
-    const res = await handleAccessRequestCreate(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    const data = (await res.json()) as { error: string };
-    expect(typeof data.error).toBe("string");
+  it("token 無しは 401・開発用の token は 403・orgSlug 無しは 400 (alc-auth-worker を呼ばない)", async () => {
+    const { env, alcAuth } = withAlcAuth(() => json(201, {}));
+    expect((await handleAccessRequestCreate(req({ orgSlug: "acme" }, null), env)).status).toBe(401);
+    const dev = makeJwt(TEST_JWT_SECRET, { token_kind: "dev" });
+    expect((await handleAccessRequestCreate(req({ orgSlug: "acme" }, dev), env)).status).toBe(403);
+    expect((await handleAccessRequestCreate(req({}), env)).status).toBe(400);
+    expect(alcAuth.calls).toHaveLength(0);
+  });
+
+  it("無い slug の 404 はそのまま返す", async () => {
+    const { env } = withAlcAuth(() => json(404, { error: "tenant_not_found" }));
+    const res = await handleAccessRequestCreate(req({ orgSlug: "nope" }), env);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "tenant_not_found" });
   });
 });
-
-// ---------- handleAccessRequestList ----------
 
 describe("handleAccessRequestList", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns 401 without token", async () => {
-    const res = await handleAccessRequestList(
-      noAuthJsonRequest("/x", {}),
-      env,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("returns list on success (no filter)", async () => {
-    stubOrReal(
-      new Response(JSON.stringify([{ id: "req-1", status: "pending" }]), {
-        status: 200,
-      }),
-    );
-    const res = await handleAccessRequestList(
-      authJsonRequest("/x", {}),
-      env,
-    );
+  it("JWT の会社の申請を引く (statusFilter は query に)", async () => {
+    const { env, alcAuth } = withAlcAuth(() => json(200, { requests: [] }));
+    let res = await handleAccessRequestList(req({}), env);
     expect(res.status).toBe(200);
-    const data = (await res.json()) as unknown[];
-    expect(Array.isArray(data)).toBe(true);
+    expect(await res.json()).toEqual({ requests: [] });
+    expect(url(alcAuth, 0).pathname).toBe(`/internal/tenants/${TEST_TENANT_ID}/access-requests`);
+    expect(url(alcAuth, 0).search).toBe("");
+    res = await handleAccessRequestList(req({ statusFilter: "pending" }), env);
+    expect(url(alcAuth, 1).searchParams.get("status")).toBe("pending");
   });
 
-  it("returns list on success (with statusFilter)", async () => {
-    const mockFetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify([]), { status: 200 }),
-    );
-    if (!isLive) vi.stubGlobal("fetch", mockFetch);
-
-    const res = await handleAccessRequestList(
-      authJsonRequest("/x", { statusFilter: "approved" }),
-      env,
-    );
-    expect(res.status).toBe(200);
-
-    // Verify query parameter was set (mock-only)
-    if (!isLive) {
-      const calledUrl = mockFetch.mock.calls[0]![0] as string;
-      expect(calledUrl).toContain("status=approved");
-    }
-  });
-
-  it("passes through error from backend", async () => {
-    stubOrReal(new Response("forbidden", { status: 403 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer invalid-token",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({}),
-        })
-      : authJsonRequest("/x", {});
-    const res = await handleAccessRequestList(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
+  it("admin でなければ 403、失敗は 502", async () => {
+    const { env, alcAuth } = withAlcAuth(() => json(500, {}));
+    expect((await handleAccessRequestList(req({}, makeJwt(TEST_JWT_SECRET, { role: "viewer" })), env)).status).toBe(403);
+    expect(alcAuth.calls).toHaveLength(0);
+    expect((await handleAccessRequestList(req({}), env)).status).toBe(502);
   });
 });
 
-// ---------- handleAccessRequestApprove ----------
-
-describe("handleAccessRequestApprove", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns 401 without token", async () => {
-    const res = await handleAccessRequestApprove(
-      noAuthJsonRequest("/x", { requestId: "r1" }),
-      env,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 400 when requestId is missing", async () => {
-    const res = await handleAccessRequestApprove(
-      authJsonRequest("/x", {}),
-      env,
-    );
-    expect(res.status).toBe(400);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("requestId is required");
-  });
-
-  it("returns success on approve", async () => {
-    stubOrReal(new Response("ok", { status: 200 }));
-    const res = await handleAccessRequestApprove(
-      authJsonRequest("/x", { requestId: "req-1" }),
-      env,
-    );
+describe("承認・却下", () => {
+  it("JWT の会社の path で承認 (role を送る)・却下し {success:true}", async () => {
+    const { env, alcAuth } = withAlcAuth(() => new Response(null, { status: 204 }));
+    let res = await handleAccessRequestApprove(req({ requestId: REQ_ID, role: "payroll" }), env);
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { success: boolean };
-    expect(data.success).toBe(true);
+    expect(await res.json()).toEqual({ success: true });
+    res = await handleAccessRequestDecline(req({ requestId: REQ_ID }), env);
+    expect(await res.json()).toEqual({ success: true });
+    expect(url(alcAuth, 0).pathname).toBe(`/internal/tenants/${TEST_TENANT_ID}/access-requests/${REQ_ID}/approve`);
+    expect(JSON.parse(alcAuth.calls[0]!.body)).toEqual({ role: "payroll" });
+    expect(url(alcAuth, 1).pathname).toBe(`/internal/tenants/${TEST_TENANT_ID}/access-requests/${REQ_ID}/decline`);
+    expect(alcAuth.calls.every((c) => c.method === "POST")).toBe(true);
   });
 
-  it("sends role when provided", async () => {
-    const mockFetch = vi.fn().mockResolvedValueOnce(
-      new Response("ok", { status: 200 }),
-    );
-    if (!isLive) vi.stubGlobal("fetch", mockFetch);
-
-    const res = await handleAccessRequestApprove(
-      authJsonRequest("/x", { requestId: "req-1", role: "admin" }),
-      env,
-    );
-    expect(res.status).toBe(200);
-
-    // Verify role was sent (mock-only)
-    if (!isLive) {
-      const sentBody = JSON.parse(mockFetch.mock.calls[0]![1].body as string);
-      expect(sentBody.role).toBe("admin");
+  it("requestId 無しは 400・admin でなければ 403 (alc-auth-worker を呼ばない)", async () => {
+    const { env, alcAuth } = withAlcAuth(() => new Response(null, { status: 204 }));
+    const viewer = makeJwt(TEST_JWT_SECRET, { role: "viewer" });
+    for (const h of [handleAccessRequestApprove, handleAccessRequestDecline]) {
+      expect((await h(req({}), env)).status).toBe(400);
+      expect((await h(req({ requestId: REQ_ID }, viewer), env)).status).toBe(403);
     }
+    expect(alcAuth.calls).toHaveLength(0);
   });
 
-  it("passes through error from backend", async () => {
-    stubOrReal(new Response("not found", { status: 404 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer invalid-token",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ requestId: "r1" }),
-        })
-      : authJsonRequest("/x", { requestId: "r1" });
-    const res = await handleAccessRequestApprove(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    const data = (await res.json()) as { error: string };
-    expect(typeof data.error).toBe("string");
-  });
-});
-
-// ---------- handleAccessRequestDecline ----------
-
-describe("handleAccessRequestDecline", () => {
-  const env = testEnv();
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns 401 without token", async () => {
-    const res = await handleAccessRequestDecline(
-      noAuthJsonRequest("/x", { requestId: "r1" }),
-      env,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 400 when requestId is missing", async () => {
-    const res = await handleAccessRequestDecline(
-      authJsonRequest("/x", {}),
-      env,
-    );
-    expect(res.status).toBe(400);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("requestId is required");
-  });
-
-  it("returns success on decline", async () => {
-    stubOrReal(new Response("ok", { status: 200 }));
-    const res = await handleAccessRequestDecline(
-      authJsonRequest("/x", { requestId: "req-1" }),
-      env,
-    );
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { success: boolean };
-    expect(data.success).toBe(true);
-  });
-
-  it("passes through error from backend", async () => {
-    stubOrReal(new Response("forbidden", { status: 403 }));
-    const req = isLive
-      ? new Request("https://auth.test.example/x", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer invalid-token",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ requestId: "r1" }),
-        })
-      : authJsonRequest("/x", { requestId: "r1" });
-    const res = await handleAccessRequestDecline(req, env);
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    const data = (await res.json()) as { error: string };
-    expect(typeof data.error).toBe("string");
+  it("無い・pending でない申請の 404 はそのまま返す", async () => {
+    const { env } = withAlcAuth(() => json(404, { error: "request_not_found" }));
+    for (const h of [handleAccessRequestApprove, handleAccessRequestDecline]) {
+      const res = await h(req({ requestId: REQ_ID }), env);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "request_not_found" });
+    }
   });
 });

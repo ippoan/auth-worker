@@ -1,6 +1,10 @@
 /**
- * SSO Settings API endpoints
- * Client JS → auth-worker API → rust-alc-api REST API
+ * SSO 設定の API (管理画面が呼ぶ)。
+ * Client JS → auth-worker → alc-auth-worker の内部口 (`ALC_AUTH`、Refs ippoan/rust-alc-api#680)。
+ * 以前は rust-alc-api の `/api/admin/sso/configs` を叩いていた。認可 (管理者か) はここで行う。
+ *
+ * client secret はここで `SSO_ENCRYPTION_KEY` を使って暗号化し (AES-256-GCM。rust-alc-api の `encrypt_secret` と
+ * 同じ形式で、ログインの `lineworks-callback.ts` が同じ鍵で復号する)、alc-auth-worker には暗号文だけを渡す。
  */
 
 import type { Env } from "../index";
@@ -9,52 +13,24 @@ import type {
   SsoConfigRow as SsoConfig,
 } from "../types/alc-api";
 import {
-  buildAdminForwardHeaders,
-  debugRustResponse,
-} from "../lib/admin-proxy";
+  callTenantAdmin,
+  errorResponse,
+  jsonResponse,
+  requireCaller,
+  tenantPath,
+} from "../lib/alc-tenant-admin";
+import { encryptWithKey } from "../lib/mcp-crypto";
+import { resolveSecret } from "../lib/secret";
 
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-function extractToken(request: Request): string | null {
-  const auth = request.headers.get("Authorization");
-  if (auth?.startsWith("Bearer ")) {
-    return auth.slice(7);
-  }
-  return null;
-}
-
-export async function handleSsoList(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const token = extractToken(request);
-  if (!token) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
+export async function handleSsoList(request: Request, env: Env): Promise<Response> {
+  const caller = await requireCaller(request, env, { admin: true, write: false });
+  if (caller instanceof Response) return caller;
 
   console.log(JSON.stringify({ event: "sso_list" }));
 
-  const headers = await buildAdminForwardHeaders(token, env, "sso_list");
-  if (!headers) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
-
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/sso/configs`, {
-    headers,
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    debugRustResponse(env, "sso_list", resp.status, text);
-    return jsonResponse({ error: text }, resp.status);
-  }
-
-  const data = (await resp.json()) as SsoConfigListResponse;
+  const r = await callTenantAdmin(env, tenantPath(caller.tenantId, "sso-configs"));
+  if (r.status !== 200) return errorResponse(r);
+  const data = r.body as SsoConfigListResponse;
 
   return jsonResponse({
     configs: data.configs.map((c) => ({
@@ -70,14 +46,9 @@ export async function handleSsoList(
   });
 }
 
-export async function handleSsoUpsert(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const token = extractToken(request);
-  if (!token) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
+export async function handleSsoUpsert(request: Request, env: Env): Promise<Response> {
+  const caller = await requireCaller(request, env, { admin: true, write: true });
+  if (caller instanceof Response) return caller;
 
   const body = (await request.json()) as {
     provider: string;
@@ -103,33 +74,26 @@ export async function handleSsoUpsert(
     }),
   );
 
-  const headers = await buildAdminForwardHeaders(token, env, "sso_upsert", {
-    "Content-Type": "application/json",
-  });
-  if (!headers) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
+  // 空の secret は「変えない」(既存の行の更新だけ。新規なら alc-auth-worker が 400 secret_required)
+  let encrypted: string | null = null;
+  if (body.clientSecret) {
+    const key = await resolveSecret(env.SSO_ENCRYPTION_KEY);
+    if (!key) return jsonResponse({ error: "sso_encryption_key_missing" }, 500);
+    encrypted = await encryptWithKey(body.clientSecret, key);
   }
 
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/sso/configs`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      provider: body.provider,
+  const r = await callTenantAdmin(env, tenantPath(caller.tenantId, "sso-configs", body.provider), {
+    method: "PUT",
+    body: {
       client_id: body.clientId,
-      client_secret: body.clientSecret || null,
+      client_secret_encrypted: encrypted,
       external_org_id: body.externalOrgId,
       woff_id: body.woffId || null,
       enabled: body.enabled ?? true,
-    }),
+    },
   });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    debugRustResponse(env, "sso_upsert", resp.status, text);
-    return jsonResponse({ error: text }, resp.status);
-  }
-
-  const c = (await resp.json()) as SsoConfig;
+  if (r.status !== 200) return errorResponse(r);
+  const c = r.body as SsoConfig;
 
   return jsonResponse({
     provider: c.provider,
@@ -141,14 +105,9 @@ export async function handleSsoUpsert(
   });
 }
 
-export async function handleSsoDelete(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const token = extractToken(request);
-  if (!token) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
+export async function handleSsoDelete(request: Request, env: Env): Promise<Response> {
+  const caller = await requireCaller(request, env, { admin: true, write: true });
+  if (caller instanceof Response) return caller;
 
   const body = (await request.json()) as { provider: string };
   if (!body.provider) {
@@ -157,24 +116,8 @@ export async function handleSsoDelete(
 
   console.log(JSON.stringify({ event: "sso_delete", provider: body.provider }));
 
-  const headers = await buildAdminForwardHeaders(token, env, "sso_delete", {
-    "Content-Type": "application/json",
-  });
-  if (!headers) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
-
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/admin/sso/configs`, {
+  const r = await callTenantAdmin(env, tenantPath(caller.tenantId, "sso-configs", body.provider), {
     method: "DELETE",
-    headers,
-    body: JSON.stringify({ provider: body.provider }),
   });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    debugRustResponse(env, "sso_delete", resp.status, text);
-    return jsonResponse({ error: text }, resp.status);
-  }
-
-  return jsonResponse({ success: true });
+  return r.status === 204 ? jsonResponse({ success: true }) : errorResponse(r);
 }
