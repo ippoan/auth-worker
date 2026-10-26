@@ -464,3 +464,55 @@ describe("InternalEntrypoint#forwardAlcTenantData (issue #483)", () => {
     expect(Object.keys(out).sort()).toEqual(["body", "contentType", "status"]);
   });
 });
+
+describe("InternalEntrypoint#forwardAlcTenantData → ALC_PEOPLE (W4d-a、Refs ippoan/rust-alc-api#680)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  function people() {
+    return {
+      fetch: vi.fn(
+        async (_url: string, _init?: RequestInit) =>
+          new Response(JSON.stringify({ created: 1 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    };
+  }
+
+  it("カード台帳の同期 (bulk-by-code・delete-by-card) は alc-people へ渡す (OIDC は作らず Cloud Run も呼ばない)", async () => {
+    for (const path of ["/api/timecard/cards/bulk-by-code", "/api/timecard/cards/delete-by-card"]) {
+      const fetchMock = mockFetch();
+      const binding = people();
+      const out = await rpc({ ALC_PEOPLE: binding as unknown as Fetcher }).forwardAlcTenantData({
+        tenantId: TENANT,
+        path,
+        method: "post",
+        body: "{}",
+        contentType: "application/json",
+      });
+      expect(out.status, path).toBe(200);
+      const [url, init] = binding.fetch.mock.calls[0]!;
+      expect(url).toBe(`https://alc-people${path}`);
+      expect(init!.method).toBe("POST");
+      expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("社員の一括取り込みは W4d-b まで Cloud Run のまま", async () => {
+    const fetchMock = mockFetch();
+    const binding = people();
+    const out = await rpc({ ALC_PEOPLE: binding as unknown as Fetcher }).forwardAlcTenantData({
+      tenantId: TENANT,
+      path: "/api/employees/bulk-by-code",
+      method: "PUT",
+      body: "{}",
+      contentType: "application/json",
+    });
+    expect(out.status).toBe(200);
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+

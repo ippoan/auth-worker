@@ -65,6 +65,10 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 車検証の登録 (`/api/files`) と期限の照合 (`/api/car-inspections/lookup`。どちらも device-data-proxy の role の表で絞る)。
  * RPC は smb Worker の取り込み (SmbIngest の `/api/files`)。`/api/files` は下位の口が別なので完全一致・個別の行にし、
  * worker に無い下位の口 (`not-attached`・`{uuid}` の取得・削除・復元) と `/api/car-inspection-files/` は Cloud Run に残す。
+ * タイムカード (`/api/timecard/`) は `alc-people` へ回す (W4d-a、Refs ippoan/rust-alc-api#680)。worker が rust の口を全部持つので
+ * prefix。画面用 (alc-app の管理画面)・端末用 (キオスク・運行管理者席など。device-data-proxy の role の表で絞る)・RPC
+ * (InternalEntrypoint の `bulk-by-code`・`delete-by-card` = カード台帳の同期。`FORWARDABLE_PATHS` で絞る)。
+ * 社員 (`/api/employees/`) は W4d-b まで Cloud Run に残す。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -167,6 +171,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   },
   { match: "prefix", path: "/api/nfc-tags/", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser"] },
   { match: "prefix", path: "/api/maintenance/", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser"] },
+  { match: "prefix", path: "/api/timecard/", binding: "ALC_PEOPLE", host: "alc-people", proxies: ["browser", "device", "rpc"] },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */

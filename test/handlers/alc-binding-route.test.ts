@@ -2039,3 +2039,64 @@ describe("物品・携行品・伝達事項・指導記録の口 → ALC_RECORDS
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("タイムカードの口 → ALC_PEOPLE binding (W4d-a、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = [8, 4, 4, 4, 12].map((n) => "e".repeat(n)).join("-");
+  /** worker (ippoan/alc-people-worker の crates/people) の router に在る口 (rust の口と同じ集合) */
+  const PATHS = [
+    "/api/timecard/cards",
+    `/api/timecard/cards/${ID}`,
+    "/api/timecard/cards/bulk-by-code",
+    "/api/timecard/cards/delete-by-card",
+    "/api/timecard/cards/lookup",
+    "/api/timecard/punches",
+    "/api/timecard/punches/csv",
+  ];
+
+  function setupPeople() {
+    const people = makeBinding();
+    return { people, ...setup({ ALC_PEOPLE: people as unknown as Fetcher }) };
+  }
+
+  it("画面用・端末用・RPC は回り、内部用・管理画面用は回らない。社員の口と近い名前は回らない", () => {
+    const { people, env } = setupPeople();
+    const target = { fetcher: people, host: "alc-people" };
+    for (const path of PATHS) {
+      for (const proxy of ["browser", "device", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(target);
+      }
+      for (const proxy of ["internal", "admin"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    for (const path of ["/api/timecardx", "/api/employees", "/api/employees/bulk-by-code"]) {
+      for (const proxy of ["browser", "device", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding("/api/timecard/cards", env, "browser")).toBeNull();
+    expect(resolveAlcBinding("/api/timecard/cards/bulk-by-code", env, "rpc")).toBeNull();
+  });
+
+  it("device-data-proxy のキオスクのカード一覧は binding に届く", async () => {
+    const { people, cloudRun, env } = setupPeople();
+    const res = await handleDeviceDataProxy(await kioskReq("/device-data-proxy/api/timecard/cards", "GET"), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = people.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-people/api/timecard/cards");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-proxy の打刻の一覧は binding に届く", async () => {
+    const { people, cloudRun, env } = setupPeople();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/timecard/punches?page=2", { method: "GET" }), env);
+    expect(await res.text()).toBe("from-binding");
+    expect(people.fetch.mock.calls[0]![0]).toBe("https://alc-people/api/timecard/punches?page=2");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
