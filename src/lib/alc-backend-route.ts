@@ -71,6 +71,10 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 社員 (`/api/employees/`) も `alc-people` へ回す (W4d-b)。worker が rust の口を全部持つので prefix。経路はタイムカードと同じ 3 つ
  * (画面用・端末用 = キオスク・運行管理者席・測定台の照会と顔データ。role の表で絞る・RPC = 乗務員マスタの同期 `bulk-by-code`)。
  * `/api/notify/employees` (宛先の画面の社員の選択肢) は別の口で `alc-notify` のまま。
+ * 機械の取り込み (W5a、Refs ippoan/rust-alc-api#680) も `alc-dtako` へ回す。車両の現在地のログ `/api/dtako-logs/bulk` (完全一致。
+ * 同じ prefix の読み取り `current`・`by-date` などは Cloud Run に残る) は端末用 (dtako 取り込みの端末 role) と RPC
+ * (InternalEntrypoint の `FORWARDABLE_PATHS`、dtako-scraper-relay)。DVR の動画通知 `/api/dvr/notifications` (完全一致) と実体
+ * `/api/dvr/files/{uuid}` (UUID に固定。alc-internal-proxy の分類と同じ形) は内部用の proxy (shared-secret のクラス) だけ。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -85,6 +89,15 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/recalculate-driver", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/recalculate-drivers", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/recalculate-pending", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "internal"] },
+  { match: "exact", path: "/api/dtako-logs/bulk", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["device", "rpc"] },
+  { match: "exact", path: "/api/dvr/notifications", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["internal"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/dvr\/files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_DTAKO",
+    host: "alc-dtako",
+    proxies: ["internal"],
+  },
   { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
   { match: "prefix", path: "/api/fuel/", binding: "FUEL_WORKER", host: "rust-fuel-worker", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },

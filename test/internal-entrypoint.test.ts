@@ -518,3 +518,33 @@ describe("InternalEntrypoint#forwardAlcTenantData → ALC_PEOPLE (W4d-a、Refs i
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("InternalEntrypoint#forwardAlcTenantData → ALC_DTAKO (W5a、Refs ippoan/rust-alc-api#680)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("車両の現在地のログ (dtako-logs/bulk) は alc-dtako へ渡す (OIDC は作らず Cloud Run も呼ばない)", async () => {
+    const fetchMock = mockFetch();
+    const binding = {
+      fetch: vi.fn(
+        async (_url: string, _init?: RequestInit) =>
+          new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    };
+    const out = await rpc({ ALC_DTAKO: binding as unknown as Fetcher }).forwardAlcTenantData({
+      tenantId: TENANT,
+      path: "/api/dtako-logs/bulk",
+      method: "POST",
+      body: "[]",
+      contentType: "application/json",
+    });
+    expect(out.status).toBe(200);
+    const [url, init] = binding.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/dtako-logs/bulk");
+    expect(init!.method).toBe("POST");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
