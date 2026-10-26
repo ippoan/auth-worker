@@ -259,8 +259,8 @@ export interface Env {
    *  予約の発火 `/api/internal/trouble/schedules/{id}/fire` を alc-internal-proxy (内部用) が Cloud Run でなくここへ流す
    *  (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
   ALC_TROUBLE?: Fetcher;
-  /** 測定の worker (`alc-measurements`) への service binding。定義されている時だけ、`/api/measurements` 系の 7 口を
-   *  alc-proxy (画面用) と device-data-proxy (端末用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+  /** 測定の worker (`alc-measurements`) への service binding。定義されている時だけ、`/api/measurements` 系の 7 口と
+   *  `/api/upload/{face-photo,blow-video,report-audio}` を alc-proxy (画面用) と device-data-proxy (端末用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
   ALC_MEASUREMENTS?: Fetcher;
   /** 拠点カメラの SD 録画の切り出しの worker (`alc-cam-sd-ingest`、ippoan/alc-cam の ingest/) への service binding。
    *  定義されている時だけ、`/api/cam-clips/*` を alc-proxy (画面用) がここへ流す (`lib/alc-backend-route.ts`)。

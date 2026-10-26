@@ -54,6 +54,9 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * (内部用の proxy は /api/measurements を 403 で通さないので入れない)。一覧・登録 (`/api/measurements`)・開始 (`/api/measurements/start`) は完全一致、
  * 1 件の取得・更新 (`/{id}`) と顔写真・動画 (`/{id}/face-photo`・`/{id}/video`) は id を UUID に固定した pattern。prefix は足さない
  * (UUID に固定するので `GET /api/measurements/start` や他の下位 path は Cloud Run に残る)。
+ * `/api/upload/face-photo`・`/api/upload/blow-video`・`/api/upload/report-audio` は顔写真・吹きかけ動画・運行報告の音声を R2 に
+ * 置く 3 口 (完全一致)。`alc-measurements` へ回す (Refs ippoan/rust-alc-api#680)。画面用と端末用 (キオスクの `KIOSK_ROUTES` の 3 行)。
+ * `/api/upload` (完全一致、dtako の取り込み) とは別の口なので prefix にしない。
  * 車検証 (`/api/car-inspections/`・`/api/files`・`/api/nfc-tags/`) と車両整備 (`/api/maintenance/`) は `alc-carins` へ回す
  * (Refs ippoan/rust-alc-api#680)。画面用は nuxt-pwa-carins・nuxt-trouble・nuxt-vehicle-maintenance・alc-app。端末用は
  * 車検証の登録 (`/api/files`) と期限の照合 (`/api/car-inspections/lookup`。どちらも device-data-proxy の role の表で絞る)。
@@ -140,6 +143,9 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-measurements",
     proxies: ["browser", "device"],
   },
+  { match: "exact", path: "/api/upload/face-photo", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
+  { match: "exact", path: "/api/upload/blow-video", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
+  { match: "exact", path: "/api/upload/report-audio", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "prefix", path: "/api/car-inspections/", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/files", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser", "device", "rpc"] },
   { match: "exact", path: "/api/files/recent", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser"] },

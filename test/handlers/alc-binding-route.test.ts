@@ -1922,3 +1922,46 @@ describe("車検証・車両整備の口 → ALC_CARINS binding (Refs ippoan/rus
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("upload の 3 口 → ALC_MEASUREMENTS binding (Refs ippoan/rust-alc-api#680)", () => {
+  const UPLOADS = ["/api/upload/face-photo", "/api/upload/blow-video", "/api/upload/report-audio"];
+
+  function setupMeasurements() {
+    const measurements = makeBinding();
+    return { measurements, ...setup({ ALC_MEASUREMENTS: measurements as unknown as Fetcher }) };
+  }
+
+  it("3 口は画面用と端末用だけ ALC_MEASUREMENTS へ。/api/upload (dtako の取り込み) と近い名前は回らない", () => {
+    const { measurements, dtako, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    for (const path of UPLOADS) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "device"), path).toEqual(target);
+      for (const proxy of ["internal", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    expect(resolveAlcBinding("/api/upload", env, "browser")).toEqual({ fetcher: dtako, host: "alc-dtako" });
+    for (const path of ["/api/upload/face-photo/x", "/api/upload/other", "/api/upload/"]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
+  });
+
+  it("device-data-proxy のキオスクの吹きかけ動画の upload は binding に届く (Cloud Run を呼ばない)", async () => {
+    const { measurements, cloudRun, env } = setupMeasurements();
+    const res = await handleDeviceDataProxy(await kioskReq("/device-data-proxy/api/upload/blow-video", "POST"), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = measurements.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-measurements/api/upload/blow-video");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-proxy の顔写真の upload は binding に届く", async () => {
+    const { measurements, cloudRun, env } = setupMeasurements();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/upload/face-photo"), env);
+    expect(await res.text()).toBe("from-binding");
+    expect(measurements.fetch.mock.calls[0]![0]).toBe("https://alc-measurements/api/upload/face-photo");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
