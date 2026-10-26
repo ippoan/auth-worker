@@ -556,3 +556,54 @@ describe("handleAlcProxy: X-User-Developer は開発者の Google session にだ
     expect(Object.keys(h).map((k) => k.toLowerCase())).not.toContain("x-user-developer");
   });
 });
+
+describe("handleAlcProxy: dev_axis の検証用 token は X-Device-Dev: 1 を付ける (Refs ippoan/rust-alc-api#680)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function forwardedHeaders(token: string, headers: Record<string, string> = {}) {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("ok", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcProxy(req("/alc-proxy/api/measurements", { token, headers }), env());
+    expect(res.status).toBe(200);
+    return (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+  }
+
+  const lower = (h: Record<string, string>) => Object.keys(h).map((k) => k.toLowerCase());
+
+  it("token_kind が dev で dev_axis が true → X-Device-Dev: 1", async () => {
+    const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, { token_kind: "dev", dev_axis: true }));
+    expect(h["X-Device-Dev"]).toBe("1");
+  });
+
+  it("dev_axis が無い・true でない・dev の token でない → 付かない", async () => {
+    for (const extra of [
+      { token_kind: "dev" },
+      { token_kind: "dev", dev_axis: "true" },
+      { dev_axis: true },
+      { token_kind: "device-key", dev_axis: true },
+    ]) {
+      const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, extra));
+      expect(lower(h)).not.toContain("x-device-dev");
+    }
+  });
+
+  it("クライアントが X-Device-Dev: 1 を付けても届かない", async () => {
+    const h = await forwardedHeaders(makeJwt(TEST_JWT_SECRET, { token_kind: "dev" }), { "X-Device-Dev": "1" });
+    expect(lower(h)).not.toContain("x-device-dev");
+  });
+
+  it("dev_axis でも書き込みは今までどおり 403", async () => {
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    const res = await handleAlcProxy(
+      req("/alc-proxy/api/measurements", {
+        method: "POST",
+        token: makeJwt(TEST_JWT_SECRET, { token_kind: "dev", dev_axis: true }),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+  });
+});

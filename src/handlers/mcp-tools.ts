@@ -208,6 +208,23 @@ function asString(v: unknown): string | null {
   return typeof v === "string" && v ? v : null;
 }
 
+/** `verify_eval` / `verify_screenshot` の `dev_axis` (開発の軸 = dev端末の行を見る。Refs ippoan/rust-alc-api#680) */
+const DEV_AXIS_SCHEMA = {
+  type: "boolean",
+  description:
+    "read the development axis (rows written by dev-marked devices, X-Device-Dev) instead of " +
+    "production rows. Default false. Writes stay forbidden as for any dev session.",
+} as const;
+
+/** `dev_axis` を読む (省略は false、boolean 以外は 400) */
+function devAxisArg(args: Record<string, unknown>): boolean {
+  const v = args["dev_axis"];
+  if (v !== undefined && typeof v !== "boolean") {
+    throw new VerifyShotError(400, "dev_axis must be a boolean");
+  }
+  return v === true;
+}
+
 function scopeIncludes(scope: string, required: "mcp.read" | "mcp.write"): boolean {
   const tokens = scope.split(/\s+/).filter(Boolean);
   if (required === "mcp.read") return tokens.includes("mcp.read") || tokens.includes("mcp.write");
@@ -467,6 +484,7 @@ const TOOLS: ToolDef[] = [
             "Browser Run engine. Default chromium (full browser). kitesurf is " +
             "Cloudflare's lighter agent browser (beta).",
         },
+        dev_axis: DEV_AXIS_SCHEMA,
       },
       required: ["urls"],
       additionalProperties: false,
@@ -495,11 +513,12 @@ const TOOLS: ToolDef[] = [
         throw new VerifyShotError(400, "engine must be 'chromium' or 'kitesurf'");
       }
       const engine: VerifyEngine = engineRaw === "kitesurf" ? "kitesurf" : "chromium";
+      const devAxis = devAxisArg(args);
       // ブラウザ未 bind は dev JWT を mint する前に落とす (無駄な upsert を避ける)。
       if (!ctx.env.BROWSER) {
         throw new VerifyShotError(503, "browser_binding_not_configured");
       }
-      const minted = await mintDevToken(ctx.env, ctx.payload);
+      const minted = await mintDevToken(ctx.env, ctx.payload, { devAxis });
       if (minted.kind === "error") throw new DevLoginError(minted.status, minted.error);
       return await runVerifyShots(ctx.env, {
         urls: rawUrls,
@@ -530,6 +549,7 @@ const TOOLS: ToolDef[] = [
             "IIFE; the resolved value is returned)",
         },
         engine: { type: "string", enum: ["chromium", "kitesurf"] },
+        dev_axis: DEV_AXIS_SCHEMA,
         screenshot: {
           type: "boolean",
           description: "also return shot_url of the post-evaluation viewport",
@@ -560,10 +580,11 @@ const TOOLS: ToolDef[] = [
       if (screenshotRaw !== undefined && typeof screenshotRaw !== "boolean") {
         throw new VerifyShotError(400, "screenshot must be a boolean");
       }
+      const devAxis = devAxisArg(args);
       if (!ctx.env.BROWSER) {
         throw new VerifyShotError(503, "browser_binding_not_configured");
       }
-      const minted = await mintDevToken(ctx.env, ctx.payload);
+      const minted = await mintDevToken(ctx.env, ctx.payload, { devAxis });
       if (minted.kind === "error") throw new DevLoginError(minted.status, minted.error);
       return await runVerifyEval(ctx.env, {
         url,

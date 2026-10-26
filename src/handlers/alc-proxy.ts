@@ -260,6 +260,10 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   ) {
     fwdHeaders["X-User-Developer"] = "1";
   }
+  // 開発の軸 (dev端末の行) を見る検証用 token (MCP `verify_eval` / `verify_screenshot` の `dev_axis`)。
+  // 印は auth-worker 自身が署名した claim だけから読み、`token_kind: "dev"` (上で読み取り専用に絞った token) に限る。
+  // fwdHeaders は毎回作り直すのでクライアントの同名ヘッダは届かない
+  if (tokenKind === "dev" && payload.dev_axis === true) fwdHeaders["X-Device-Dev"] = "1";
   const perms = permissionsHeaderValue(payload.perms);
   if (perms) fwdHeaders["X-User-Permissions"] = perms;
   const contentType = request.headers.get("content-type");

@@ -167,6 +167,19 @@ describe("mintDevToken", () => {
     expect((verified?.exp as number) - (verified?.iat as number)).toBe(DEV_TOKEN_TTL_SEC);
   });
 
+  it("adds dev_axis only when asked (Refs ippoan/rust-alc-api#680)", async () => {
+    const { env, kv } = envWithKv();
+    kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
+    // 呼ぶたびに新しい Response (本文は 1 回しか読めない)
+    globalThis.fetch = vi.fn().mockImplementation(async () => internalUserResponse());
+    const plain = await mintDevToken(env, payload());
+    const dev = await mintDevToken(env, payload(), { devAxis: true });
+    if (plain.kind !== "ok" || dev.kind !== "ok") throw new Error("unreachable");
+    expect(decodeJwtPayload(plain.token)?.dev_axis).toBeUndefined();
+    expect(decodeJwtPayload(dev.token)?.dev_axis).toBe(true);
+    expect(decodeJwtPayload(dev.token)?.token_kind).toBe("dev");
+  });
+
   it("omits org_slug when the user has no tenant slug", async () => {
     const { env, kv } = envWithKv();
     kv._data["google_sub:dev@example.com"] = "google-sub-xyz";

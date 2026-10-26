@@ -1002,6 +1002,17 @@ describe("POST /mcp/tools — verify_eval", () => {
     expect(badEngine.content[0]!.text).toContain("engine must be");
   });
 
+  it("rejects a non-boolean dev_axis (Refs ippoan/rust-alc-api#680)", async () => {
+    const { env } = envWithKv();
+    const result = await callEval(env, {
+      url: "https://dtako.ippoan.org/",
+      expression: "1",
+      dev_axis: "yes",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("dev_axis must be a boolean");
+  });
+
   it("503s when the browser binding is not configured", async () => {
     const { env } = envWithKv();
     const result = await callEval(env, {

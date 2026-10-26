@@ -150,6 +150,7 @@ export async function resolveTenantId(
 export async function mintDevToken(
   env: Env,
   payload: McpJwtPayload,
+  opts: { devAxis?: boolean } = {},
 ): Promise<MintDevTokenResult> {
   const jwtSecret = await resolveSecret(env.JWT_SECRET);
   if (!jwtSecret) {
@@ -171,6 +172,9 @@ export async function mintDevToken(
     exp: now + DEV_TOKEN_TTL_SEC,
   };
   if (user.slug) claims.org_slug = user.slug;
+  // 開発の軸 (dev端末の行) を見る印。`/alc-proxy` が `token_kind: "dev"` のときだけ `X-Device-Dev: 1` に写す
+  // (`verify_eval` / `verify_screenshot` の `dev_axis`。書き込み禁止はそのまま効く)。false では claim 自体を付けない
+  if (opts.devAxis) claims.dev_axis = true;
   const token = await signJwt(claims, jwtSecret);
   return { kind: "ok", token, expires_in: DEV_TOKEN_TTL_SEC };
 }
