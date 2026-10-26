@@ -321,3 +321,35 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
     expect(INTERNAL_ENTRYPOINT_FORWARDABLE_PATHS.has("/api/dtako/events")).toBe(false);
   });
 });
+
+describe("KintaiAlcEntrypoint → ALC_DTAKO (W5b、Refs ippoan/rust-alc-api#680)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ["dtakoEvents", "date_from=2026-10-01&date_to=2026-10-31&page_size=25", "/api/dtako/events"],
+    ["dtakoEtags", "date_from=2026-10-01&date_to=2026-10-31", "/api/dtako/events/etags"],
+  ] as const)("%s は alc-dtako へ渡す (OIDC は作らず Cloud Run も呼ばない)", async (m, search, path) => {
+    const fetchMock = mockFetch();
+    const binding = {
+      fetch: vi.fn(
+        async (_url: string, _init?: RequestInit) =>
+          new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    };
+    const out = await rpc(env({}, { ALC_DTAKO: binding as unknown as Fetcher }))[m](search);
+    expect(out.status).toBe(200);
+    expect(out.body).toBe(JSON.stringify({ items: [] }));
+    const [url, init] = binding.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-dtako${path}?${search}`);
+    expect(init!.method).toBe("GET");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+  });
+});
