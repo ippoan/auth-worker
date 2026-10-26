@@ -2165,3 +2165,87 @@ describe("社員の口 → ALC_PEOPLE binding (W4d-b、Refs ippoan/rust-alc-api#
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("機械の取り込み → ALC_DTAKO binding (W5a、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = "0f0e0d0c-0b0a-4908-8706-050403020100";
+  beforeEach(() => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
+  });
+
+  it("dtako-logs/bulk は端末用・RPC だけ、dvr の 2 口は内部用だけ。近い名前と同じ prefix の読み取りは回らない", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    const rows: Array<[string, ReadonlyArray<"browser" | "internal" | "device" | "admin" | "rpc">]> = [
+      ["/api/dtako-logs/bulk", ["device", "rpc"]],
+      ["/api/dvr/notifications", ["internal"]],
+      [`/api/dvr/files/${ID}`, ["internal"]],
+    ];
+    for (const [path, allowed] of rows) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        const want = allowed.includes(proxy) ? target : null;
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(want);
+      }
+    }
+    for (const path of [
+      "/api/dtako-logs/current",
+      "/api/dtako-logs/by-date",
+      "/api/dtako-logs/bulk/x",
+      "/api/dvr/files/not-a-uuid",
+      `/api/dvr/files/${ID}/x`,
+      "/api/dvr/notificationsx",
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_DTAKO: undefined });
+    expect(resolveAlcBinding("/api/dtako-logs/bulk", env, "rpc")).toBeNull();
+    expect(resolveAlcBinding("/api/dvr/notifications", env, "internal")).toBeNull();
+  });
+
+  it("alc-internal-proxy の dvr の 2 口は binding に届き、token は作らない", async () => {
+    const { dtako, cloudRun, env } = setup();
+    vi.mocked(mintGoogleIdToken).mockRejectedValue(new Error("boom"));
+    for (const path of ["/api/dvr/notifications", `/api/dvr/files/${ID}`]) {
+      const res = await handleAlcInternalProxy(
+        internalReq(`/alc-internal-proxy${path}`, { "content-type": "application/octet-stream" }, "vdf-bytes"),
+        env,
+      );
+      expect(await res.text(), path).toBe("from-binding");
+    }
+    expect(dtako.fetch.mock.calls.map((c) => c[0])).toEqual([
+      "https://alc-dtako/api/dvr/notifications",
+      `https://alc-dtako/api/dvr/files/${ID}`,
+    ]);
+    const init = dtako.fetch.mock.calls[1]![1]!;
+    expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe("vdf-bytes");
+    expect((init.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("端末用 (dtako 取り込みの端末 role) の dtako-logs/bulk は binding に届く", async () => {
+    const { dtako, cloudRun, env } = setup();
+    const token = await signTestJwt(
+      { sub: "device-ingest-1", tenant_id: TENANT, role: DEVICE_ROLE_DTAKO_INGEST },
+      TEST_JWT_SECRET,
+    );
+    const res = await handleDeviceDataProxy(
+      new Request("https://auth.test.example/device-data-proxy/api/dtako-logs/bulk", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: "[]",
+      }),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/dtako-logs/bulk");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
