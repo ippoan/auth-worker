@@ -216,13 +216,15 @@ const DEV_AXIS_SCHEMA = {
     "production rows. Default false. Writes stay forbidden as for any dev session.",
 } as const;
 
-/** `dev_axis` を読む (省略は false、boolean 以外は 400) */
+/**
+ * `dev_axis` を読む (省略は false)。boolean のほか、文字列の `"true"` / `"false"` も受ける —
+ * ツールの一覧を古いまま持つ MCP クライアントは、知らない引数を文字列で送るため。それ以外は 400
+ */
 function devAxisArg(args: Record<string, unknown>): boolean {
   const v = args["dev_axis"];
-  if (v !== undefined && typeof v !== "boolean") {
-    throw new VerifyShotError(400, "dev_axis must be a boolean");
-  }
-  return v === true;
+  if (v === undefined || v === false || v === "false") return false;
+  if (v === true || v === "true") return true;
+  throw new VerifyShotError(400, "dev_axis must be a boolean");
 }
 
 function scopeIncludes(scope: string, required: "mcp.read" | "mcp.write"): boolean {

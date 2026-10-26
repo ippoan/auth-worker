@@ -1002,15 +1002,22 @@ describe("POST /mcp/tools — verify_eval", () => {
     expect(badEngine.content[0]!.text).toContain("engine must be");
   });
 
-  it("rejects a non-boolean dev_axis (Refs ippoan/rust-alc-api#680)", async () => {
+  it("rejects a dev_axis that is neither a boolean nor \"true\" / \"false\" (Refs ippoan/rust-alc-api#680)", async () => {
     const { env } = envWithKv();
-    const result = await callEval(env, {
-      url: "https://dtako.ippoan.org/",
-      expression: "1",
-      dev_axis: "yes",
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toContain("dev_axis must be a boolean");
+    for (const dev_axis of ["yes", "TRUE", 1, null]) {
+      const result = await callEval(env, { url: "https://dtako.ippoan.org/", expression: "1", dev_axis });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("dev_axis must be a boolean");
+    }
+  });
+
+  it("accepts dev_axis as a boolean or the strings \"true\" / \"false\" (stale MCP clients send strings)", async () => {
+    const { env } = envWithKv();
+    for (const dev_axis of [true, false, "true", "false"]) {
+      const result = await callEval(env, { url: "https://dtako.ippoan.org/", expression: "1", dev_axis });
+      // 引数の検査は通り、その先のブラウザの binding 無しで落ちる
+      expect(result.content[0]!.text).toContain("browser_binding_not_configured");
+    }
   });
 
   it("503s when the browser binding is not configured", async () => {
