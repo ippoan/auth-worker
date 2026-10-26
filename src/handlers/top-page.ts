@@ -263,7 +263,6 @@ export async function handleTopPage(
   const html = renderTopPage(visibleApps, requestOrigin, {
     workerEnv: env.WORKER_ENV,
     alcApiOrigin: env.ALC_API_ORIGIN,
-    tenantId,
   });
   const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   // 正常描画 = 往復が終わったので計数をリセット (Refs #526)

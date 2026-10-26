@@ -20,7 +20,6 @@ AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
 # (Refs #477)。prod / staging とも同じ team なので同値。未設定なら chain しない。
 ACCESS_TEAM_DOMAIN = "mtamaramu.cloudflareaccess.com"
 ALC_API_ORIGIN = "https://alc-api.ippoan.org"
-ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 # flip 前 preview override (Refs ippoan/ci-dashboard#472) が許可する rust-alc-api
 # prod service の Cloud Run host suffix。/alc-proxy は X-Alc-Preview-Api-Base の
 # host が `<tag>---<この suffix>` (同一 service の tagged revision URL) の時だけ
@@ -552,7 +551,6 @@ AUTH_WORKER_ORIGIN = "https://auth-staging.ippoan.org"
 # (Refs #477)。prod / staging とも同じ team なので同値。未設定なら chain しない。
 ACCESS_TEAM_DOMAIN = "mtamaramu.cloudflareaccess.com"
 ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
-ALC_API_STAGING_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "staging"
 # 機械用資格情報の KV key の環境名 (top-level の "prod" と分ける。Refs ohishi-exp/rust-leave-worker#1)。
 MACHINE_CRED_ENV = "staging"
@@ -728,13 +726,6 @@ secret_name = "GOOGLE_CLIENT_SECRET"
 binding = "JWT_SECRET"
 store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
 secret_name = "JWT_SECRET"
-
-# Bot Config Import (developer 専用) が staging の /api/staging/import を叩く際の
-# X-Staging-Key (rust-alc-api#391)。GCP ALC_STAGING_API_KEY から sync 済み。staging 専用。
-[[env.staging.secrets_store_secrets]]
-binding = "ALC_STAGING_API_KEY"
-store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
-secret_name = "ALC_STAGING_API_KEY"
 
 # rust-alc-api#434 step 3 (方式 B): run.invoker SA key (staging。3a で staging の
 # backend/gateway に run.invoker 付与 + ALC_API_PROXY_SA_KEY を GCP/CF 投入済み)。

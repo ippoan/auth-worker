@@ -12,7 +12,6 @@ vi.mock("../../src/handlers/api-bot-config", () => ({
   handleBotConfigUpsert: vi.fn(() => new Response("bot-upsert")),
   handleBotConfigDelete: vi.fn(() => new Response("bot-delete")),
   handleBotConfigExport: vi.fn(() => new Response("bot-export")),
-  handleBotConfigImport: vi.fn(() => new Response("bot-import")),
 }));
 vi.mock("../../src/handlers/api-users", () => ({
   handleUsersList: vi.fn(() => new Response("users-list")),
@@ -451,7 +450,6 @@ describe("Router (index.ts)", () => {
     ["/api/bot-config/list", "bot-list"],
     ["/api/bot-config/upsert", "bot-upsert"],
     ["/api/bot-config/delete", "bot-delete"],
-    ["/api/bot-config/import", "bot-import"],
     ["/api/users/list", "users-list"],
     ["/api/users/invitations", "inv-list"],
     ["/api/users/invite", "invite"],

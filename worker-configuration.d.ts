@@ -17,7 +17,6 @@ declare namespace Cloudflare {
 		GOOGLE_CLIENT_ID: SecretsStoreSecret;
 		GOOGLE_CLIENT_SECRET: SecretsStoreSecret;
 		JWT_SECRET: SecretsStoreSecret;
-		ALC_STAGING_API_KEY: SecretsStoreSecret;
 		ALC_API_PROXY_SA_KEY: SecretsStoreSecret;
 		GITHUB_MCP_CLIENT_ID: SecretsStoreSecret;
 		GITHUB_MCP_CLIENT_SECRET: SecretsStoreSecret;
@@ -32,7 +31,6 @@ declare namespace Cloudflare {
 		AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org";
 		ACCESS_TEAM_DOMAIN: "mtamaramu.cloudflareaccess.com";
 		ALC_API_ORIGIN: "https://rust-alc-api-staging-566bls5vfq-an.a.run.app";
-		ALC_API_STAGING_ORIGIN: "https://rust-alc-api-staging-566bls5vfq-an.a.run.app";
 		WORKER_ENV: "staging";
 		INTERNAL_AUTH_OIDC: "1";
 		DEBUG: "true";
@@ -59,7 +57,6 @@ declare namespace Cloudflare {
 		GOOGLE_CLIENT_ID: SecretsStoreSecret;
 		GOOGLE_CLIENT_SECRET: SecretsStoreSecret;
 		JWT_SECRET: SecretsStoreSecret;
-		ALC_STAGING_API_KEY?: SecretsStoreSecret;
 		ALC_API_PROXY_SA_KEY: SecretsStoreSecret;
 		GITHUB_MCP_CLIENT_ID: SecretsStoreSecret;
 		GITHUB_MCP_CLIENT_SECRET: SecretsStoreSecret;
@@ -74,7 +71,6 @@ declare namespace Cloudflare {
 		AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org" | "https://auth.ippoan.org";
 		ACCESS_TEAM_DOMAIN: "mtamaramu.cloudflareaccess.com";
 		ALC_API_ORIGIN: "https://rust-alc-api-staging-566bls5vfq-an.a.run.app" | "https://alc-api.ippoan.org";
-		ALC_API_STAGING_ORIGIN: "https://rust-alc-api-staging-566bls5vfq-an.a.run.app";
 		WORKER_ENV: "staging" | "prod";
 		INTERNAL_AUTH_OIDC: "1";
 		DEBUG?: "true";
