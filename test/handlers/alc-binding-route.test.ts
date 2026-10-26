@@ -19,7 +19,12 @@ import { handleDeviceDataProxy } from "../../src/handlers/device-data-proxy";
 import { handleAlcInternalProxy } from "../../src/handlers/alc-internal-proxy";
 import { mintGoogleIdToken } from "../../src/lib/oidc";
 import { resolveAlcBinding } from "../../src/lib/alc-backend-route";
-import { DEVICE_ROLE_BP_STATION, DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_KIOSK } from "../../src/lib/device";
+import {
+  DEVICE_ROLE_BP_STATION,
+  DEVICE_ROLE_DTAKO_INGEST,
+  DEVICE_ROLE_DTAKO_RELAY,
+  DEVICE_ROLE_KIOSK,
+} from "../../src/lib/device";
 import { internalAuthToken } from "../../src/lib/alc-internal";
 import { sendDeviceNotify } from "../../src/lib/device-notify-send";
 import { handleAdminNotifyApi } from "../../src/handlers/admin-notify-api";
@@ -2245,6 +2250,67 @@ describe("機械の取り込み → ALC_DTAKO binding (W5a、Refs ippoan/rust-al
     expect(await res.text()).toBe("from-binding");
     const [url, init] = dtako.fetch.mock.calls[0]!;
     expect(url).toBe("https://alc-dtako/api/dtako-logs/bulk");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("勤怠向けの読み取り → ALC_DTAKO binding (W5b、Refs ippoan/rust-alc-api#680)", () => {
+  it("dtako/events は RPC だけ、dtako/events/etags は RPC・画面用・端末用。近い名前と dtako の他の口は回らない", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    const rows: Array<[string, ReadonlyArray<"browser" | "internal" | "device" | "admin" | "rpc">]> = [
+      ["/api/dtako/events", ["rpc"]],
+      ["/api/dtako/events/etags", ["rpc", "browser", "device"]],
+    ];
+    for (const [path, allowed] of rows) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        const want = allowed.includes(proxy) ? target : null;
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(want);
+      }
+    }
+    for (const path of ["/api/dtako/events/", "/api/dtako/events/etags/x", "/api/dtako/eventsx", "/api/dtako/tickets"]) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_DTAKO: undefined });
+    expect(resolveAlcBinding("/api/dtako/events", env, "rpc")).toBeNull();
+    expect(resolveAlcBinding("/api/dtako/events/etags", env, "browser")).toBeNull();
+  });
+
+  it("alc-proxy の etags は binding に届く (query もそのまま)", async () => {
+    const { dtako, cloudRun, env } = setup();
+    const res = await handleAlcProxy(
+      alcReq("/alc-proxy/api/dtako/events/etags?date_from=2026-10-01&date_to=2026-10-31", { method: "GET" }),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    expect(dtako.fetch.mock.calls[0]![0]).toBe(
+      "https://alc-dtako/api/dtako/events/etags?date_from=2026-10-01&date_to=2026-10-31",
+    );
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("端末用 (dtako relay の端末 role) の etags は binding に届く", async () => {
+    const { dtako, cloudRun, env } = setup();
+    const token = await signTestJwt(
+      { sub: "device-relay-1", tenant_id: TENANT, role: DEVICE_ROLE_DTAKO_RELAY },
+      TEST_JWT_SECRET,
+    );
+    const res = await handleDeviceDataProxy(
+      new Request("https://auth.test.example/device-data-proxy/api/dtako/events/etags?date_from=2026-10-01&date_to=2026-10-31", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/dtako/events/etags?date_from=2026-10-01&date_to=2026-10-31");
     expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
     expect(cloudRun).not.toHaveBeenCalled();
   });

@@ -75,6 +75,10 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 同じ prefix の読み取り `current`・`by-date` などは Cloud Run に残る) は端末用 (dtako 取り込みの端末 role) と RPC
  * (InternalEntrypoint の `FORWARDABLE_PATHS`、dtako-scraper-relay)。DVR の動画通知 `/api/dvr/notifications` (完全一致) と実体
  * `/api/dvr/files/{uuid}` (UUID に固定。alc-internal-proxy の分類と同じ形) は内部用の proxy (shared-secret のクラス) だけ。
+ * 勤怠向けの読み取り (W5b、Refs ippoan/rust-alc-api#680) も `alc-dtako` へ回す (どちらも完全一致)。`/api/dtako/events` は RPC だけ
+ * (rust-ichibanboshi の勤怠 Worker = `KintaiAlcEntrypoint`)。`/api/dtako/events/etags` は RPC (`KintaiAlcEntrypoint` と
+ * `InternalEntrypoint` の `FORWARDABLE_PATHS` = dtako-scraper-relay)・画面用 (nuxt-dtako-admin の取り込み後の答え合わせ)・
+ * 端末用 (dtako relay の端末 role)。etags の ETag は呼び手の月の指紋の入力で、worker も同じ形 (引用符の無い MD5) を返す。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -98,6 +102,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-dtako",
     proxies: ["internal"],
   },
+  { match: "exact", path: "/api/dtako/events", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["rpc"] },
+  { match: "exact", path: "/api/dtako/events/etags", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["rpc", "browser", "device"] },
   { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
   { match: "prefix", path: "/api/fuel/", binding: "FUEL_WORKER", host: "rust-fuel-worker", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },
