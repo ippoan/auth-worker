@@ -270,6 +270,11 @@ export interface Env {
    *  `/api/car-inspections/`・`/api/files`・`/api/nfc-tags/`・`/api/maintenance/` を alc-proxy (画面用)・device-data-proxy
    *  (端末用)・SmbIngest (RPC) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
   ALC_CARINS?: Fetcher;
+  /** 物品・携行品・伝達事項・指導記録の worker (`alc-records`、ippoan/alc-records-worker) への service binding。定義されている時だけ、
+   *  `/api/items/`・`/api/item-files/`・`/api/carrying-items/`・`/api/communication-items/`・`/api/guidance-records/` を
+   *  alc-proxy (画面用) が、`/api/carrying-items` を device-data-proxy (端末用) も Cloud Run でなくここへ流す
+   *  (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+  ALC_RECORDS?: Fetcher;
   /** 燃料の worker (`rust-fuel-worker`、Refs yhonda-ohishi/nginx#814) への service binding。定義されている時だけ、
    *  `/api/fuel/*` を alc-proxy (画面用) が Cloud Run でなくここへ流し (`lib/alc-backend-route.ts`)、機械の入口
    *  `/m/fuel-utran/*` (`handlers/machine-relay.ts`) が Basic を照合したあと `/machine/fuel-utran/*` へ中継する。

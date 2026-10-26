@@ -1965,3 +1965,77 @@ describe("upload の 3 口 → ALC_MEASUREMENTS binding (Refs ippoan/rust-alc-ap
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("物品・携行品・伝達事項・指導記録の口 → ALC_RECORDS binding (Refs ippoan/rust-alc-api#680)", () => {
+  const uuidOf = (c: string) => [8, 4, 4, 4, 12].map((n) => c.repeat(n)).join("-");
+  const ID = uuidOf("d");
+  /** worker (ippoan/alc-records-worker の crates/records) の router に在る口 (rust の口と同じ集合) */
+  const BROWSER_ONLY = [
+    "/api/items",
+    "/api/items/search",
+    `/api/items/${ID}`,
+    `/api/items/${ID}/move`,
+    `/api/items/${ID}/ownership`,
+    `/api/items/${ID}/convert`,
+    "/api/item-files",
+    `/api/item-files/${ID}`,
+    "/api/communication-items",
+    "/api/communication-items/active",
+    `/api/communication-items/${ID}`,
+    "/api/guidance-records",
+    `/api/guidance-records/${ID}`,
+    `/api/guidance-records/${ID}/attachments`,
+    `/api/guidance-records/${ID}/attachments/${ID}`,
+  ];
+  const BROWSER_AND_DEVICE = ["/api/carrying-items", `/api/carrying-items/${ID}`];
+
+  function setupRecords() {
+    const records = makeBinding();
+    return { records, ...setup({ ALC_RECORDS: records as unknown as Fetcher }) };
+  }
+
+  it("表の行と proxy の組み合わせ (携行品だけ端末用も)。近い名前は回らない", () => {
+    const { records, env } = setupRecords();
+    const target = { fetcher: records, host: "alc-records" };
+    for (const path of BROWSER_ONLY) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      for (const proxy of ["internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    for (const path of BROWSER_AND_DEVICE) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "device"), path).toEqual(target);
+      for (const proxy of ["internal", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    for (const path of ["/api/itemsx", "/api/item-filesx", "/api/carrying-itemsx", "/api/guidance-recordsx"]) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding("/api/items", env, "browser")).toBeNull();
+    expect(resolveAlcBinding("/api/carrying-items", env, "device")).toBeNull();
+  });
+
+  it("device-data-proxy のキオスクの携行品の一覧は binding に届く", async () => {
+    const { records, cloudRun, env } = setupRecords();
+    const res = await handleDeviceDataProxy(await kioskReq("/device-data-proxy/api/carrying-items", "GET"), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = records.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-records/api/carrying-items");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-proxy の物品の一覧は binding に届く", async () => {
+    const { records, cloudRun, env } = setupRecords();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/items?owner_type=org", { method: "GET" }), env);
+    expect(await res.text()).toBe("from-binding");
+    expect(records.fetch.mock.calls[0]![0]).toBe("https://alc-records/api/items?owner_type=org");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
