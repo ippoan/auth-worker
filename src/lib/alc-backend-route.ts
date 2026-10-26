@@ -79,6 +79,15 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * (rust-ichibanboshi の勤怠 Worker = `KintaiAlcEntrypoint`)。`/api/dtako/events/etags` は RPC (`KintaiAlcEntrypoint` と
  * `InternalEntrypoint` の `FORWARDABLE_PATHS` = dtako-scraper-relay)・画面用 (nuxt-dtako-admin の取り込み後の答え合わせ)・
  * 端末用 (dtako relay の端末 role)。etags の ETag は呼び手の月の指紋の入力で、worker も同じ形 (引用符の無い MD5) を返す。
+ * 画面向けの読み取りと分類の更新 (W5c-1、Refs ippoan/rust-alc-api#680) も `alc-dtako` へ回す。画面用の proxy だけ:
+ * 乗務員・車両・セグメント (`/api/drivers`・`/api/vehicles`・`/api/work-times`、完全一致)、日別 (`/api/daily-hours/`、
+ * 1 日ぶんのセグメントを含む prefix)、運行 (`/api/operations/`、一覧・カレンダー・1 件の取得と削除・CSV を含む prefix)、
+ * 変更記録 (`/api/dtako/operation-changes`)、イベントの分類 (`/api/event-classifications/`、更新を含む prefix)、
+ * 車両の現在地のログの読み取り 4 口 (`/api/dtako-logs/current`・`current/select`・`by-date`・`by-date-range`、完全一致。
+ * `bulk` は上の行のまま)。nuxt-dtako-admin・nuxt_dtako_logs・alc-app の管理画面が /alc-proxy 経由で呼ぶ。
+ * `/api/internal/operations` (完全一致) は内部用の proxy (shared-secret のクラス。nuxt-dtako-admin の server route) だけ。
+ * `/api/scraper/history` (完全一致、GET と POST) は画面用・RPC (`InternalEntrypoint` の `FORWARDABLE_PATHS` = dtako-scraper-relay)・
+ * 端末用 (dtako relay の端末 role) の 3 つ。どの prefix も rust-alc-api の他の口と重ならない (worker が下位の口を全部持つ)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -104,6 +113,20 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   },
   { match: "exact", path: "/api/dtako/events", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["rpc"] },
   { match: "exact", path: "/api/dtako/events/etags", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["rpc", "browser", "device"] },
+  // 画面向けの読み取りと分類の更新 (W5c-1)。画面用だけ (内部用の operations と、relay も呼ぶ scraper/history を除く)
+  { match: "exact", path: "/api/drivers", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/vehicles", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/work-times", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "prefix", path: "/api/daily-hours/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "prefix", path: "/api/operations/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/dtako/operation-changes", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "prefix", path: "/api/event-classifications/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/dtako-logs/current", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/dtako-logs/current/select", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/dtako-logs/by-date", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/dtako-logs/by-date-range", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/internal/operations", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["internal"] },
+  { match: "exact", path: "/api/scraper/history", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "rpc", "device"] },
   { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
   { match: "prefix", path: "/api/fuel/", binding: "FUEL_WORKER", host: "rust-fuel-worker", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },
