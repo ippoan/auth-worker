@@ -2193,8 +2193,6 @@ describe("機械の取り込み → ALC_DTAKO binding (W5a、Refs ippoan/rust-al
       }
     }
     for (const path of [
-      "/api/dtako-logs/current",
-      "/api/dtako-logs/by-date",
       "/api/dtako-logs/bulk/x",
       "/api/dvr/files/not-a-uuid",
       `/api/dvr/files/${ID}/x`,
@@ -2311,6 +2309,131 @@ describe("勤怠向けの読み取り → ALC_DTAKO binding (W5b、Refs ippoan/r
     expect(await res.text()).toBe("from-binding");
     const [url, init] = dtako.fetch.mock.calls[0]!;
     expect(url).toBe("https://alc-dtako/api/dtako/events/etags?date_from=2026-10-01&date_to=2026-10-31");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("画面向けの読み取りと分類の更新 → ALC_DTAKO binding (W5c-1、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
+  const SCREEN_PATHS = [
+    "/api/drivers",
+    "/api/vehicles",
+    "/api/work-times",
+    "/api/daily-hours",
+    `/api/daily-hours/${ID}/2026-10-01/segments`,
+    "/api/operations",
+    "/api/operations/calendar",
+    "/api/operations/2610010800000000001",
+    "/api/operations/2610010800000000001/csv/kudgivt",
+    "/api/dtako/operation-changes",
+    "/api/event-classifications",
+    `/api/event-classifications/${ID}`,
+    "/api/dtako-logs/current",
+    "/api/dtako-logs/current/select",
+    "/api/dtako-logs/by-date",
+    "/api/dtako-logs/by-date-range",
+  ];
+
+  it("画面の口は画面用だけ、internal/operations は内部用だけ、scraper/history は画面用・RPC・端末用", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    const rows: Array<[string, ReadonlyArray<"browser" | "internal" | "device" | "admin" | "rpc">]> = [
+      ...SCREEN_PATHS.map((p): [string, ReadonlyArray<"browser">] => [p, ["browser"]]),
+      ["/api/internal/operations", ["internal"]],
+      ["/api/scraper/history", ["browser", "rpc", "device"]],
+    ];
+    for (const [path, allowed] of rows) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        const want = allowed.includes(proxy) ? target : null;
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(want);
+      }
+    }
+  });
+
+  it("近い名前と完全一致の口の下位は回らない", () => {
+    const { env } = setup();
+    for (const path of [
+      "/api/driversx",
+      "/api/drivers/x",
+      "/api/vehicles/x",
+      "/api/vehicle-settings",
+      "/api/work-times/x",
+      "/api/daily-hoursx",
+      "/api/operationsx",
+      "/api/dtako/operation-changes/x",
+      "/api/event-classificationsx",
+      "/api/dtako-logs/current/x",
+      "/api/dtako-logs/by-date/x",
+      "/api/dtako-logs/latest",
+      "/api/internal/operations/x",
+      "/api/scraper/history/x",
+      "/api/scraper",
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_DTAKO: undefined });
+    expect(resolveAlcBinding("/api/operations", env, "browser")).toBeNull();
+    expect(resolveAlcBinding("/api/internal/operations", env, "internal")).toBeNull();
+    expect(resolveAlcBinding("/api/scraper/history", env, "rpc")).toBeNull();
+  });
+
+  it("alc-proxy の画面の口は binding に届く (method・query もそのまま)", async () => {
+    const { dtako, cloudRun, env } = setup();
+    for (const [path, method] of [
+      ["/api/operations?date_from=2026-10-01&page=2", "GET"],
+      ["/api/operations/2610010800000000001", "DELETE"],
+      ["/api/dtako-logs/by-date-range?start_date_time=2026-10-01&end_date_time=2026-10-02", "GET"],
+    ] as const) {
+      const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { method }), env);
+      expect(await res.text(), path).toBe("from-binding");
+    }
+    expect(dtako.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      ["https://alc-dtako/api/operations?date_from=2026-10-01&page=2", "GET"],
+      ["https://alc-dtako/api/operations/2610010800000000001", "DELETE"],
+      ["https://alc-dtako/api/dtako-logs/by-date-range?start_date_time=2026-10-01&end_date_time=2026-10-02", "GET"],
+    ]);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-internal-proxy の internal/operations は binding に届き、token は作らない", async () => {
+    const { dtako, cloudRun, env } = setup();
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockRejectedValue(new Error("boom"));
+    const req = new Request("https://auth.test.example/alc-internal-proxy/api/internal/operations?date_from=2026-10-01", {
+      method: "GET",
+      headers: { "X-Alc-Proxy-Secret": PROXY_SECRET, "X-Tenant-ID": TENANT },
+    });
+    const res = await handleAlcInternalProxy(req, env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/internal/operations?date_from=2026-10-01");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("端末用 (dtako relay の端末 role) の scraper/history は binding に届く", async () => {
+    const { dtako, cloudRun, env } = setup();
+    const token = await signTestJwt(
+      { sub: "device-relay-1", tenant_id: TENANT, role: DEVICE_ROLE_DTAKO_RELAY },
+      TEST_JWT_SECRET,
+    );
+    const res = await handleDeviceDataProxy(
+      new Request("https://auth.test.example/device-data-proxy/api/scraper/history?limit=5", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/scraper/history?limit=5");
     expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
     expect(cloudRun).not.toHaveBeenCalled();
   });
