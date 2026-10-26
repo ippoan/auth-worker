@@ -182,6 +182,12 @@ service = "alc-trouble"
 binding = "ALC_CARINS"
 service = "alc-carins"
 
+# alc-records (ippoan/alc-records-worker、ippoan/rust-alc-api#680)。物品・携行品・伝達事項・指導記録の口 (画面用、携行品は端末用も) を回す
+# (src/lib/alc-backend-route.ts)。alc-records は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-records-staging。
+[[services]]
+binding = "ALC_RECORDS"
+service = "alc-records"
+
 # alc-measurements (ippoan/alc-measurements-worker、ippoan/alc-app#436)。/api/measurements 系の 7 口 (画面用・端末用) を回す
 # (src/lib/alc-backend-route.ts)。alc-measurements は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-measurements-staging。
 [[services]]
@@ -653,6 +659,11 @@ service = "alc-trouble-staging"
 [[env.staging.services]]
 binding = "ALC_CARINS"
 service = "alc-carins-staging"
+
+# alc-records staging (ippoan/alc-records-worker、ippoan/rust-alc-api#680)。
+[[env.staging.services]]
+binding = "ALC_RECORDS"
+service = "alc-records-staging"
 
 # alc-measurements staging (ippoan/alc-measurements-worker、ippoan/alc-app#436)。
 [[env.staging.services]]
