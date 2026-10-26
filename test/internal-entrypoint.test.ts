@@ -500,7 +500,7 @@ describe("InternalEntrypoint#forwardAlcTenantData → ALC_PEOPLE (W4d-a、Refs i
     }
   });
 
-  it("社員の一括取り込みは W4d-b まで Cloud Run のまま", async () => {
+  it("乗務員マスタの同期 (employees/bulk-by-code) も alc-people へ渡す (W4d-b)", async () => {
     const fetchMock = mockFetch();
     const binding = people();
     const out = await rpc({ ALC_PEOPLE: binding as unknown as Fetcher }).forwardAlcTenantData({
@@ -511,8 +511,10 @@ describe("InternalEntrypoint#forwardAlcTenantData → ALC_PEOPLE (W4d-a、Refs i
       contentType: "application/json",
     });
     expect(out.status).toBe(200);
-    expect(binding.fetch).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = binding.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-people/api/employees/bulk-by-code");
+    expect(init!.method).toBe("PUT");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
-

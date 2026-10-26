@@ -2058,7 +2058,7 @@ describe("タイムカードの口 → ALC_PEOPLE binding (W4d-a、Refs ippoan/r
     return { people, ...setup({ ALC_PEOPLE: people as unknown as Fetcher }) };
   }
 
-  it("画面用・端末用・RPC は回り、内部用・管理画面用は回らない。社員の口と近い名前は回らない", () => {
+  it("画面用・端末用・RPC は回り、内部用・管理画面用は回らない。近い名前は回らない", () => {
     const { people, env } = setupPeople();
     const target = { fetcher: people, host: "alc-people" };
     for (const path of PATHS) {
@@ -2069,7 +2069,7 @@ describe("タイムカードの口 → ALC_PEOPLE binding (W4d-a、Refs ippoan/r
         expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
       }
     }
-    for (const path of ["/api/timecardx", "/api/employees", "/api/employees/bulk-by-code"]) {
+    for (const path of ["/api/timecardx"]) {
       for (const proxy of ["browser", "device", "rpc"] as const) {
         expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
       }
@@ -2097,6 +2097,71 @@ describe("タイムカードの口 → ALC_PEOPLE binding (W4d-a、Refs ippoan/r
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/timecard/punches?page=2", { method: "GET" }), env);
     expect(await res.text()).toBe("from-binding");
     expect(people.fetch.mock.calls[0]![0]).toBe("https://alc-people/api/timecard/punches?page=2");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("社員の口 → ALC_PEOPLE binding (W4d-b、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = [8, 4, 4, 4, 12].map((n) => "e".repeat(n)).join("-");
+  /** worker (ippoan/alc-people-worker の crates/people/src/employees.rs) の router に在る口 (rust の口と同じ集合) */
+  const PATHS = [
+    "/api/employees",
+    `/api/employees/${ID}`,
+    `/api/employees/${ID}/face`,
+    `/api/employees/${ID}/nfc`,
+    `/api/employees/${ID}/license`,
+    `/api/employees/${ID}/face/approve`,
+    `/api/employees/${ID}/face/reject`,
+    "/api/employees/face-data",
+    "/api/employees/lookup",
+    "/api/employees/by-code/E001",
+    "/api/employees/bulk-by-code",
+  ];
+
+  function setupPeople() {
+    const people = makeBinding();
+    return { people, ...setup({ ALC_PEOPLE: people as unknown as Fetcher }) };
+  }
+
+  it("画面用・端末用・RPC は回り、内部用・管理画面用は回らない。近い名前と通知の社員の選択肢は回らない", () => {
+    const { people, env } = setupPeople();
+    const target = { fetcher: people, host: "alc-people" };
+    for (const path of PATHS) {
+      for (const proxy of ["browser", "device", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(target);
+      }
+      for (const proxy of ["internal", "admin"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    for (const path of ["/api/employeesx", "/api/notify/employees"]) {
+      for (const proxy of ["browser", "device", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy)?.host, `${proxy} ${path}`).not.toBe("alc-people");
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding("/api/employees", env, "browser")).toBeNull();
+    expect(resolveAlcBinding("/api/employees/bulk-by-code", env, "rpc")).toBeNull();
+  });
+
+  it("device-data-proxy のキオスクの NFC 照会は binding に届く", async () => {
+    const { people, cloudRun, env } = setupPeople();
+    const res = await handleDeviceDataProxy(await kioskReq("/device-data-proxy/api/employees/lookup", "POST"), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = people.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-people/api/employees/lookup");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-proxy の社員の一覧は binding に届く", async () => {
+    const { people, cloudRun, env } = setupPeople();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/employees", { method: "GET" }), env);
+    expect(await res.text()).toBe("from-binding");
+    expect(people.fetch.mock.calls[0]![0]).toBe("https://alc-people/api/employees");
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
