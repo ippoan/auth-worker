@@ -107,7 +107,6 @@ describe("renderTopPage", () => {
       const result = renderTopPage([], "https://auth.example.com", {
         workerEnv: "prod",
         alcApiOrigin: "https://alc.example.com",
-        tenantId: "tid-1",
       });
       expect(result).not.toContain("staging-footer");
     });
@@ -123,7 +122,6 @@ describe("renderTopPage", () => {
       const result = renderTopPage([], "https://auth.example.com", {
         workerEnv: "staging",
         alcApiOrigin: "https://alc-staging.example.com",
-        tenantId: "tid-1",
       });
       expect(result).toContain("staging-footer");
       expect(result).toContain("STAGING");
@@ -294,37 +292,21 @@ describe("renderTopPage", () => {
 });
 
 describe("renderStagingFooter", () => {
-  it("embeds the alc api origin via JSON.stringify", () => {
-    const html = renderStagingFooter("https://alc.example.com", "tid-1");
+  it("embeds the alc api origin via JSON.stringify and reads the backend version from /api/health", () => {
+    const html = renderStagingFooter("https://alc.example.com");
     expect(html).toContain(JSON.stringify("https://alc.example.com"));
+    expect(html).toContain("/api/health");
+    expect(html).toContain("staging-backend-info");
   });
 
-  it("embeds the tenant_id via JSON.stringify", () => {
-    const html = renderStagingFooter("https://alc.example.com", "tid-xyz");
-    expect(html).toContain(JSON.stringify("tid-xyz"));
+  it("safely escapes an origin that contains a quote", () => {
+    const html = renderStagingFooter('https://a";alert(1);//');
+    expect(html).toContain(JSON.stringify('https://a";alert(1);//'));
   });
 
-  it("uses /api/staging/export with URL-encoded tenant_id", () => {
-    const html = renderStagingFooter("https://alc.example.com", "tid-xyz");
-    expect(html).toContain("/api/staging/export");
-    expect(html).toContain("encodeURIComponent(TENANT_ID)");
-  });
-
-  it("uses POST /api/staging/import", () => {
-    const html = renderStagingFooter("https://alc.example.com", "tid-xyz");
-    expect(html).toContain("/api/staging/import");
-    expect(html).toContain("method: 'POST'");
-  });
-
-  it("contains Export and Import buttons", () => {
-    const html = renderStagingFooter("https://alc.example.com", "tid-xyz");
-    expect(html).toContain("staging-btn-export");
-    expect(html).toContain("staging-btn-import");
-  });
-
-  it("safely escapes a tenant_id that contains a quote", () => {
-    const html = renderStagingFooter("https://alc.example.com", 'tid\";alert(1);//');
-    expect(html).toContain(JSON.stringify('tid\";alert(1);//'));
-    expect(html).not.toContain('"tid";alert(1);//"');
+  it("has no export / import (removed with the rust staging export / import)", () => {
+    const html = renderStagingFooter("https://alc.example.com");
+    expect(html).not.toContain("/api/staging/");
+    expect(html).not.toContain("staging-btn-");
   });
 });

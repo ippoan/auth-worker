@@ -198,53 +198,6 @@ export async function handleBotConfigExport(
   });
 }
 
-export async function handleBotConfigImport(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const token = extractToken(request);
-  if (!token) return jsonResponse({ error: "Unauthorized" }, 401);
-
-  const body = await request.text();
-  if (!body) return jsonResponse({ error: "body is empty" }, 400);
-
-  console.log(
-    JSON.stringify({ event: "bot_config_import", bytes: body.length }),
-  );
-
-  // staging endpoint は STAGING_MODE=true でガードされた public route。Authorization は
-  // 付けない (JWT 検証経路ではない) が、rust-alc-api#391 で `X-Staging-Key` が必須化された
-  // ので ALC_STAGING_API_KEY を付ける (未設定だと rust が 401)。
-  const importHeaders: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  const stagingKey = await resolveSecret(env.ALC_STAGING_API_KEY);
-  if (stagingKey) importHeaders["X-Staging-Key"] = stagingKey;
-  else if (env.DEBUG === "true") {
-    console.log(
-      JSON.stringify({
-        debug: "bot_config_import",
-        stage: "staging_key",
-        present: false,
-      }),
-    );
-  }
-
-  const resp = await fetch(`${env.ALC_API_STAGING_ORIGIN}/api/staging/import`, {
-    method: "POST",
-    headers: importHeaders,
-    body,
-  });
-
-  const text = await resp.text();
-  return new Response(text, {
-    status: resp.status,
-    headers: {
-      "Content-Type": resp.headers.get("Content-Type") ?? "application/json",
-    },
-  });
-}
-
 export async function handleBotConfigDelete(
   request: Request,
   env: Env,

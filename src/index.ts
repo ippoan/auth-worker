@@ -16,7 +16,7 @@ import { handleAdminUsersPage, handleAdminUsersCallback } from "./handlers/admin
 import { handleSsoList, handleSsoUpsert, handleSsoDelete } from "./handlers/api-sso";
 import { handleAdminLineUsersPage, handleAdminLineUsersCallback } from "./handlers/admin-line-users";
 import { handleLineUsersList, handleLineUserDelete } from "./handlers/api-line-users";
-import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete, handleBotConfigExport, handleBotConfigImport } from "./handlers/api-bot-config";
+import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete, handleBotConfigExport } from "./handlers/api-bot-config";
 import { handleWoffAuth, handleWoffConfig } from "./handlers/woff-auth";
 import { handleMyOrgs } from "./handlers/api-my-orgs";
 import { handleAlcProxy } from "./handlers/alc-proxy";
@@ -190,13 +190,6 @@ export interface Env {
    *  source of truth — consumer 側 (`@ippoan/auth-client` の
    *  `devLoginWriteAllowlist`) は将来的に冗長になる想定。 */
   ALC_PROXY_DEV_WRITE_ALLOWLIST?: string;
-  /** staging Cloud Run の rust-alc-api。Bot Config Import (developer 専用) 用 proxy 先。
-   *  未設定なら handler 内で本番 staging URL に fallback する。 */
-  ALC_API_STAGING_ORIGIN?: string;
-  /** staging `/api/staging/import` の `X-Staging-Key` (rust-alc-api#391)。
-   *  GCP `ALC_STAGING_API_KEY` から sync した Secrets Store binding (staging 専用)。
-   *  未設定なら Bot Config Import は key 無しで投げ rust が 401 を返す。 */
-  ALC_STAGING_API_KEY?: SecretBinding;
   VERSION: string;
   WORKER_ENV: string;
   /** `"true"` のとき admin proxy 等が網羅ログ (verify 結果 / 注入 claims / rust 応答) を
@@ -980,8 +973,6 @@ export default {
             return await handleBotConfigUpsert(request, env);
           case "/api/bot-config/delete":
             return await handleBotConfigDelete(request, env);
-          case "/api/bot-config/import":
-            return await handleBotConfigImport(request, env);
           // User Management API
           case "/api/users/list":
             return await handleUsersList(request, env);
