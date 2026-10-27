@@ -606,7 +606,7 @@ MCP_RESOURCE_ORIGINS_ALLOWLIST = "https://security-inventory.ippoan.org,https://
 # kyuyo-mcp が最初の利用者: 給与比較データへのアクセスを google-mcp-user-allowlist KV
 # (email ベース ACL) で絞るため、GitHub でなく Google に redirect させる。
 # Refs ippoan/auth-worker#414, ohishi-exp/nuxt-dtako-admin#376。
-MCP_RESOURCE_GOOGLE_ORIGINS = "https://kyuyo-mcp.ippoan.org"
+MCP_RESOURCE_GOOGLE_ORIGINS = "https://kyuyo-mcp.ippoan.org,https://security-inventory.ippoan.org"
 # hcreader-worker origin — `/oauth/ghapi/callback` から refresh_token を
 # 内部 POST する宛先 (`${HCREADER_WORKER_ORIGIN}/api/ghapi/store-tokens`)。
 # hcreader-worker は single-env (staging = prod = hcreader.ippoan.org)。
