@@ -7,7 +7,7 @@ import type { Env } from "../index";
 import type {
   BotConfigListResponse,
   BotConfigResponse,
-} from "../types/alc-api";
+} from "../types/admin-api";
 import {
   buildAdminForwardHeaders,
   debugRustResponse,

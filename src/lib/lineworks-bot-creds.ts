@@ -15,7 +15,7 @@
  */
 
 import type { Env } from "../index";
-import type { BotConfigListResponse } from "../types/alc-api";
+import type { BotConfigListResponse } from "../types/admin-api";
 import type { BotAccess } from "./lineworks-bot-api";
 import { buildAdminForwardHeaders, fetchAdminBackend } from "./admin-proxy";
 import { verifyJwt } from "./jwt";
