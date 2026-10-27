@@ -92,7 +92,8 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 完全一致) も `alc-dtako` へ回す。画面用の proxy だけ (nuxt-dtako-admin の server route が /alc-proxy 経由で呼ぶ)。
  * 拘束時間の帳票 (W5c-3、Refs ippoan/rust-alc-api#680) の 2 口 (`GET /api/restraint-report`・`POST /api/restraint-report/compare-csv`、
  * 完全一致) も `alc-dtako` へ回す。画面用の proxy だけ (nuxt-dtako-admin の画面が /alc-proxy 経由で呼ぶ)。
- * PDF (`/api/restraint-report/pdf*`) は回さない (まだ rust-alc-api。W5c-4)。
+ * その PDF (W5c-4) の 2 口 (`GET /api/restraint-report/pdf`・`GET /api/restraint-report/pdf-stream`、完全一致。
+ * pdf-stream の応答は event-stream で、binding の応答をそのまま返すので進み具合は届いた順に画面へ流れる) も同じ。画面用の proxy だけ。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -138,6 +139,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   // 拘束時間の帳票 (W5c-3)。画面用だけ。PDF は回さない
   { match: "exact", path: "/api/restraint-report", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/restraint-report/compare-csv", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/restraint-report/pdf", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/restraint-report/pdf-stream", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
   { match: "prefix", path: "/api/fuel/", binding: "FUEL_WORKER", host: "rust-fuel-worker", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },
