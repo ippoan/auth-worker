@@ -184,7 +184,11 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
     if (binding) {
       if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
       const bindingHeaders: Record<string, string> = {};
-      if (pathClass === "shared-secret") bindingHeaders["X-Tenant-ID"] = tenantId;
+      if (pathClass === "shared-secret") {
+        bindingHeaders["X-Tenant-ID"] = tenantId;
+        // 開発用の鍵の印は Cloud Run 経路 (⑤) と同じく、値がちょうど "1" のときだけ渡す (dev の行と本番の行を分ける)
+        if (request.headers.get("X-Device-Dev") === "1") bindingHeaders["X-Device-Dev"] = "1";
+      }
       const bindingContentType = request.headers.get("content-type");
       if (bindingContentType) bindingHeaders["Content-Type"] = bindingContentType;
       const bindingHasBody = request.method !== "GET" && request.method !== "HEAD";

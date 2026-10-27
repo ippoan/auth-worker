@@ -728,7 +728,7 @@ describe("alc-internal-proxy → ALC_DTAKO binding", () => {
     vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
   });
 
-  it("(a) /api/upload は binding に届き、ヘッダは X-Tenant-ID と Content-Type の 2 つだけ。token は作らない", async () => {
+  it("(a) /api/upload は binding に届き、ヘッダは X-Tenant-ID と Content-Type (と dev端末の印) だけ。token は作らない", async () => {
     const { binding, dtako, cloudRun, env } = setup();
     // token を作る処理が失敗するようにしておく (binding 経路は呼ばないので 502 にならない)
     vi.mocked(mintGoogleIdToken).mockRejectedValue(new Error("boom"));
@@ -752,10 +752,19 @@ describe("alc-internal-proxy → ALC_DTAKO binding", () => {
     expect(init!.headers).toEqual({
       "X-Tenant-ID": TENANT,
       "Content-Type": "multipart/form-data; boundary=x",
+      "X-Device-Dev": "1",
     });
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
     expect(cloudRun).not.toHaveBeenCalled();
     expect(binding.fetch).not.toHaveBeenCalled();
+  });
+
+  it("(a) dev端末の印は値がちょうど 1 のときだけ binding に渡す", async () => {
+    for (const value of ["true", "0", ""]) {
+      const { dtako, env } = setup();
+      await handleAlcInternalProxy(internalReq("/alc-internal-proxy/api/upload", { "X-Device-Dev": value }), env);
+      expect((dtako.fetch.mock.calls[0]![1]!.headers as Record<string, string>)["X-Device-Dev"], value).toBeUndefined();
+    }
   });
 
   it("(a) Content-Type が無ければ X-Tenant-ID だけ。GET は body を付けない", async () => {
@@ -2168,6 +2177,67 @@ describe("社員の口 → ALC_PEOPLE binding (W4d-b、Refs ippoan/rust-alc-api#
     expect(await res.text()).toBe("from-binding");
     expect(people.fetch.mock.calls[0]![0]).toBe("https://alc-people/api/employees");
     expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("端末の測定・打刻 → ALC_PEOPLE binding (W6a、Refs ippoan/rust-alc-api#680)", () => {
+  const PATH = "/api/hub/measurements";
+
+  function setupPeople() {
+    const people = makeBinding();
+    return { people, ...setup({ ALC_PEOPLE: people as unknown as Fetcher }) };
+  }
+
+  it("取り込みは内部用の POST、一覧は画面用・RPC の GET だけ", () => {
+    const { people, env } = setupPeople();
+    const target = { fetcher: people, host: "alc-people" };
+    expect(resolveAlcBinding(PATH, env, "internal", "POST")).toEqual(target);
+    expect(resolveAlcBinding(PATH, env, "browser", "GET")).toEqual(target);
+    expect(resolveAlcBinding(PATH, env, "rpc", "GET")).toEqual(target);
+    expect(resolveAlcBinding(PATH, env, "internal", "GET")).toBeNull();
+    for (const proxy of ["browser", "rpc"] as const) {
+      expect(resolveAlcBinding(PATH, env, proxy, "POST"), proxy).toBeNull();
+    }
+    for (const proxy of ["device", "admin"] as const) {
+      expect(resolveAlcBinding(PATH, env, proxy, "GET"), proxy).toBeNull();
+    }
+    for (const path of ["/api/hub/measurementsx", "/api/hub/measurements/x", "/api/hub/"]) {
+      expect(resolveAlcBinding(path, env, "internal", "POST"), path).toBeNull();
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding(PATH, env, "internal", "POST")).toBeNull();
+  });
+
+  it("alc-internal-proxy の取り込みは binding に届き、dev端末の印も渡す", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    const { people, cloudRun, env } = setupPeople();
+    const res = await handleAlcInternalProxy(
+      internalReq(`/alc-internal-proxy${PATH}`, { "content-type": "application/json", "X-Device-Dev": "1" }, "[]"),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = people.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-people${PATH}`);
+    expect(init!.method).toBe("POST");
+    expect(init!.headers).toEqual({ "X-Tenant-ID": TENANT, "Content-Type": "application/json", "X-Device-Dev": "1" });
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-proxy の一覧は binding に届き、取り込みの POST は届かない", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
+    const { people, cloudRun, env } = setupPeople();
+    const res = await handleAlcProxy(alcReq(`/alc-proxy${PATH}?kind=alcohol`, { method: "GET" }), env);
+    expect(await res.text()).toBe("from-binding");
+    expect(people.fetch.mock.calls[0]![0]).toBe(`https://alc-people${PATH}?kind=alcohol`);
+    const post = await handleAlcProxy(alcReq(`/alc-proxy${PATH}`, { method: "POST", body: "[]" }), env);
+    expect(await post.text()).toBe("from-cloud-run");
+    expect(people.fetch).toHaveBeenCalledTimes(1);
+    expect(cloudRun).toHaveBeenCalledTimes(1);
   });
 });
 
