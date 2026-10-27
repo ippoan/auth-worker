@@ -108,6 +108,12 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 端末の測定・打刻 (`/api/hub/measurements`、完全一致。W6a、Refs ippoan/rust-alc-api#680) も `alc-people` へ回す。
  * 取り込み (POST) は内部用の proxy (shared-secret のクラス = cf-alc-recorder) だけ、一覧 (GET) は画面用 (alc-app) と
  * RPC (MCP の試験記録) だけ (method を proxy ごとに絞る。画面から取り込みを打てないようにする)。
+ * 端末の登録・管理・報告 (W6b-a、Refs ippoan/rust-alc-api#680) は `alc-devices` へ回す。1 口ずつ exact か id を固定した pattern で
+ * (prefix にしない — 着信の設定 `/api/devices/{id}/call-settings` は FCM の通知が W6b-c まで無いので Cloud Run に残し、
+ * FCM の 7 口と再ペアリング (`re-pair`・`authorize-repair`) も残す)。管理画面の口は画面用、一覧・承認待ちは dev の鍵のキオスクの
+ * GET (端末用) も、設定・最終ログインは端末の JWT (alc-proxy = 画面用) とキオスク (端末用)、FCM token・版・watchdog の報告は
+ * 端末の JWT (画面用)、登録の受け取りは内部用の public-ingest、`pairing-tenant` は auth-worker 自身 (`lib/alc-internal.ts`)。
+ * 登録の申請・状態 (`register/request`・`register/status/{code}`) は内部用の許可リストに無く、今どの経路からも届かないので足さない。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -277,6 +283,71 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-people",
     proxies: ["browser", "internal", "rpc"],
     methods: { browser: ["GET"], internal: ["POST"], rpc: ["GET"] },
+  },
+  // 端末の登録・管理・報告 (W6b-a)。着信の設定 (`/{id}/call-settings`)・FCM の 7 口・再ペアリングは回さない (W6b-b・c)。
+  // 一覧・承認待ちは画面用と dev の鍵のキオスク (端末用) の GET。設定・最終ログインは画面用 (端末の JWT) とキオスク (端末用)
+  {
+    match: "exact",
+    path: "/api/devices",
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser", "device"],
+    methods: { browser: ["GET"], device: ["GET"] },
+  },
+  {
+    match: "exact",
+    path: "/api/devices/pending",
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser", "device"],
+    methods: { browser: ["GET"], device: ["GET"] },
+  },
+  { match: "exact", path: "/api/devices/register/create-token", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"] },
+  { match: "exact", path: "/api/devices/register/create-permanent-qr", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"] },
+  { match: "exact", path: "/api/devices/register/create-device-owner-token", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/devices\/(approve|reject|disable|enable)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser"],
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/devices\/approve-by-code\/[A-Za-z0-9_-]{1,64}$/,
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser"],
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/devices\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser"],
+    methods: { browser: ["DELETE"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/devices\/settings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser", "device"],
+  },
+  { match: "exact", path: "/api/devices/update-last-login", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser", "device"] },
+  { match: "exact", path: "/api/devices/register-fcm-token", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"] },
+  { match: "exact", path: "/api/devices/report-version", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"] },
+  { match: "exact", path: "/api/devices/report-watchdog", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"] },
+  // 登録の受け取り (端末、ペアリング前)。内部用の proxy の public-ingest のクラスだけ
+  { match: "exact", path: "/api/devices/register/claim", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["internal"] },
+  // auth-worker 自身の pairing-tenant の問い合わせ (lib/alc-internal.ts。proxy の種別は internal として引く)
+  {
+    match: "pattern",
+    pattern: /^\/api\/internal\/devices\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/pairing-tenant$/i,
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["internal"],
+    methods: { internal: ["GET"] },
   },
 ];
 

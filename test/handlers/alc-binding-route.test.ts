@@ -2746,3 +2746,153 @@ describe("車両のエラーの起票 → ALC_DTAKO binding (W5c-5、Refs ippoan
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
+  type Proxy = "browser" | "internal" | "device" | "admin" | "rpc";
+  const PROXIES: ReadonlyArray<Proxy> = ["browser", "internal", "device", "admin", "rpc"];
+
+  function setupDevices() {
+    const devices = makeBinding();
+    return { devices, ...setup({ ALC_DEVICES: devices as unknown as Fetcher }) };
+  }
+
+  /** [path, method, binding に回す proxy] */
+  const ROWS: Array<[string, string, ReadonlyArray<Proxy>]> = [
+    ["/api/devices", "GET", ["browser", "device"]],
+    ["/api/devices/pending", "GET", ["browser", "device"]],
+    ["/api/devices/register/create-token", "POST", ["browser"]],
+    ["/api/devices/register/create-permanent-qr", "POST", ["browser"]],
+    ["/api/devices/register/create-device-owner-token", "POST", ["browser"]],
+    [`/api/devices/approve/${ID}`, "POST", ["browser"]],
+    ["/api/devices/approve-by-code/ABC123", "POST", ["browser"]],
+    [`/api/devices/reject/${ID}`, "POST", ["browser"]],
+    [`/api/devices/disable/${ID}`, "POST", ["browser"]],
+    [`/api/devices/enable/${ID}`, "POST", ["browser"]],
+    [`/api/devices/${ID}`, "DELETE", ["browser"]],
+    [`/api/devices/settings/${ID}`, "GET", ["browser", "device"]],
+    ["/api/devices/update-last-login", "PUT", ["browser", "device"]],
+    ["/api/devices/register-fcm-token", "PUT", ["browser"]],
+    ["/api/devices/report-version", "PUT", ["browser"]],
+    ["/api/devices/report-watchdog", "PUT", ["browser"]],
+    ["/api/devices/register/claim", "POST", ["internal"]],
+    [`/api/internal/devices/${ID}/pairing-tenant`, "GET", ["internal"]],
+  ];
+
+  it("口ごとに、今通っている proxy だけが binding を引く", () => {
+    const { devices, env } = setupDevices();
+    const target = { fetcher: devices, host: "alc-devices" };
+    for (const [path, method, allowed] of ROWS) {
+      for (const proxy of PROXIES) {
+        const want = allowed.includes(proxy) ? target : null;
+        expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toEqual(want);
+      }
+    }
+  });
+
+  it("method を絞った口は、ほかの method を回さない", () => {
+    const { env } = setupDevices();
+    for (const method of ["POST", "PUT", "DELETE"]) {
+      for (const proxy of ["browser", "device"] as const) {
+        expect(resolveAlcBinding("/api/devices", env, proxy, method), `${proxy} ${method}`).toBeNull();
+        expect(resolveAlcBinding("/api/devices/pending", env, proxy, method), `${proxy} ${method}`).toBeNull();
+      }
+    }
+    expect(resolveAlcBinding(`/api/devices/${ID}`, env, "browser", "GET")).toBeNull();
+    expect(resolveAlcBinding(`/api/internal/devices/${ID}/pairing-tenant`, env, "internal", "POST")).toBeNull();
+  });
+
+  it("回さない口 (着信の設定・FCM・再ペアリング・登録の申請と状態)・近い path・UUID でない id は Cloud Run", () => {
+    const { env } = setupDevices();
+    for (const path of [
+      `/api/devices/${ID}/call-settings`,
+      `/api/devices/${ID}/test-fcm`,
+      "/api/devices/test-fcm-all",
+      "/api/devices/test-fcm-all-exclude",
+      "/api/devices/fcm-notify-call",
+      "/api/devices/fcm-dismiss-test",
+      "/api/devices/trigger-update",
+      "/api/devices/trigger-update-dev",
+      "/api/devices/re-pair",
+      `/api/devices/${ID}/authorize-repair`,
+      "/api/devices/register/request",
+      "/api/devices/register/status/ABC123",
+      "/api/devices/registration-requests",
+      "/api/devicesx",
+      "/api/devices/",
+      "/api/devices/approve/not-a-uuid",
+      "/api/devices/settings/not-a-uuid",
+      "/api/devices/approve-by-code/a/b",
+      `/api/devices/settings/${ID}/x`,
+      "/api/internal/devices/not-a-uuid/pairing-tenant",
+    ]) {
+      for (const proxy of PROXIES) {
+        for (const method of ["GET", "POST", "PUT", "DELETE"]) {
+          expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toBeNull();
+        }
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding("/api/devices", env, "browser", "GET")).toBeNull();
+    expect(resolveAlcBinding("/api/devices/register/claim", env, "internal", "POST")).toBeNull();
+  });
+
+  it("alc-proxy の一覧と削除は binding に届き、着信の設定は Cloud Run", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
+    const { devices, cloudRun, env } = setupDevices();
+    expect(await (await handleAlcProxy(alcReq("/alc-proxy/api/devices", { method: "GET" }), env)).text()).toBe("from-binding");
+    expect(await (await handleAlcProxy(alcReq(`/alc-proxy/api/devices/${ID}`, { method: "DELETE" }), env)).text()).toBe(
+      "from-binding",
+    );
+    expect(devices.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      ["https://alc-devices/api/devices", "GET"],
+      [`https://alc-devices/api/devices/${ID}`, "DELETE"],
+    ]);
+    const call = await handleAlcProxy(alcReq(`/alc-proxy/api/devices/${ID}/call-settings`, { method: "PUT", body: "{}" }), env);
+    expect(await call.text()).toBe("from-cloud-run");
+    expect(cloudRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("device-data-proxy のキオスクの設定の取得と最終ログインは binding に届く", async () => {
+    const { devices, cloudRun, env } = setupDevices();
+    const settings = await handleDeviceDataProxy(await kioskReq(`/device-data-proxy/api/devices/settings/${ID}`, "GET"), env);
+    expect(await settings.text()).toBe("from-binding");
+    const login = await handleDeviceDataProxy(await kioskReq("/device-data-proxy/api/devices/update-last-login", "PUT"), env);
+    expect(await login.text()).toBe("from-binding");
+    expect(devices.fetch.mock.calls.map((c) => c[0])).toEqual([
+      `https://alc-devices/api/devices/settings/${ID}`,
+      "https://alc-devices/api/devices/update-last-login",
+    ]);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-internal-proxy の登録の受け取り (public-ingest) は binding に届き、ヘッダは Content-Type だけ", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    const { devices, cloudRun, env } = setupDevices();
+    const res = await handleAlcInternalProxy(
+      internalReq("/alc-internal-proxy/api/devices/register/claim", { "content-type": "application/json", "X-Device-Dev": "1" }, "{}"),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = devices.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-devices/api/devices/register/claim");
+    expect(init!.method).toBe("POST");
+    expect(init!.headers).toEqual({ "Content-Type": "application/json" });
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-internal-proxy の再ペアリング (public-ingest) は binding に届かず Cloud Run", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
+    const { devices, cloudRun, env } = setupDevices();
+    const res = await handleAlcInternalProxy(internalReq("/alc-internal-proxy/api/devices/re-pair", {}, "{}"), env);
+    expect(await res.text()).toBe("from-cloud-run");
+    expect(devices.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).toHaveBeenCalledTimes(1);
+  });
+});

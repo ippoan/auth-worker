@@ -197,6 +197,13 @@ service = "alc-records"
 binding = "ALC_PEOPLE"
 service = "alc-people"
 
+# alc-devices (ippoan/alc-devices-worker、ippoan/rust-alc-api#680)。端末の登録・管理・報告の口 (W6b-a。画面用・端末用・
+# 登録の受け取り) と pairing-tenant の問い合わせを回す (src/lib/alc-backend-route.ts・src/lib/alc-internal.ts)。
+# alc-devices は workers_dev = false・route なしで、届く経路はこの binding だけ。本番だけ (staging は Cloud Run の staging のまま)。
+[[services]]
+binding = "ALC_DEVICES"
+service = "alc-devices"
+
 # alc-measurements (ippoan/alc-measurements-worker、ippoan/alc-app#436)。/api/measurements 系の 7 口 (画面用・端末用) を回す
 # (src/lib/alc-backend-route.ts)。alc-measurements は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-measurements-staging。
 [[services]]

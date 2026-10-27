@@ -614,3 +614,46 @@ describe("buildVerifyRlsResult (Refs #605)", () => {
     expect(trueCount).toBe(4);
   });
 });
+
+describe("resolveActiveDeviceTenant → ALC_DEVICES binding (W6b-a、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("binding があれば worker に聞き、token を作らない", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const binding = {
+      fetch: vi.fn(async (url: string, init: RequestInit) => {
+        expect(url).toBe(`https://alc-devices/api/internal/devices/${ID}/pairing-tenant`);
+        expect(init.method).toBe("GET");
+        expect(init.headers).toEqual({});
+        return new Response(JSON.stringify({ tenant_id: "tenant-9" }), { status: 200 });
+      }),
+    };
+    const res = await resolveActiveDeviceTenant(env({ ALC_DEVICES: binding }), ID);
+    expect(res).toEqual({ ok: true, tenantId: "tenant-9" });
+    expect(binding.fetch).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(signInternalJWT).not.toHaveBeenCalled();
+  });
+
+  it("binding の 404 は not_found、例外は unavailable", async () => {
+    const notFound = { fetch: vi.fn(async () => new Response("", { status: 404 })) };
+    expect(await resolveActiveDeviceTenant(env({ ALC_DEVICES: notFound }), ID)).toEqual({ ok: false, reason: "not_found" });
+    const broken = { fetch: vi.fn(async () => { throw new Error("down"); }) };
+    expect(await resolveActiveDeviceTenant(env({ ALC_DEVICES: broken }), ID)).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("UUID でない id は binding があっても Cloud Run", async () => {
+    const binding = { fetch: vi.fn() };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ tenant_id: "t" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await resolveActiveDeviceTenant(env({ ALC_DEVICES: binding }), "dev-1");
+    expect(res).toEqual({ ok: true, tenantId: "t" });
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
