@@ -2778,6 +2778,11 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
     ["/api/devices/register/claim", "POST", ["internal"]],
     ["/api/devices/re-pair", "POST", ["internal"]],
     [`/api/devices/${ID}/authorize-repair`, "POST", ["browser"]],
+    [`/api/devices/${ID}/call-settings`, "PUT", ["browser"]],
+    [`/api/devices/${ID}/test-fcm`, "POST", ["browser"]],
+    ["/api/devices/test-fcm-all", "POST", ["browser"]],
+    ["/api/devices/trigger-update", "POST", ["browser"]],
+    ["/api/devices/fcm-dismiss-test", "POST", ["internal"]],
     [`/api/internal/devices/${ID}/pairing-tenant`, "GET", ["internal"]],
   ];
 
@@ -2804,16 +2809,16 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
     expect(resolveAlcBinding(`/api/internal/devices/${ID}/pairing-tenant`, env, "internal", "POST")).toBeNull();
   });
 
-  it("回さない口 (着信の設定・FCM・登録の申請と状態)・近い path・UUID でない id は Cloud Run", () => {
+  it("回さない口 (共有の秘密の FCM の 3 口・登録の申請と状態)・近い path・UUID でない id は Cloud Run", () => {
     const { env } = setupDevices();
     for (const path of [
-      `/api/devices/${ID}/call-settings`,
-      `/api/devices/${ID}/test-fcm`,
-      "/api/devices/test-fcm-all",
+      "/api/devices/not-a-uuid/call-settings",
+      `/api/devices/${ID}/call-settingsx`,
+      "/api/devices/not-a-uuid/test-fcm",
+      "/api/devices/test-fcm-allx",
       "/api/devices/test-fcm-all-exclude",
       "/api/devices/fcm-notify-call",
-      "/api/devices/fcm-dismiss-test",
-      "/api/devices/trigger-update",
+      "/api/devices/trigger-updatex",
       "/api/devices/trigger-update-dev",
       "/api/devices/re-pairx",
       "/api/devices/not-a-uuid/authorize-repair",
@@ -2843,7 +2848,7 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
     expect(resolveAlcBinding("/api/devices/register/claim", env, "internal", "POST")).toBeNull();
   });
 
-  it("alc-proxy の一覧と削除は binding に届き、着信の設定は Cloud Run", async () => {
+  it("alc-proxy の一覧と削除は binding に届く", async () => {
     vi.mocked(mintGoogleIdToken).mockReset();
     vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
     const { devices, cloudRun, env } = setupDevices();
@@ -2855,9 +2860,7 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
       ["https://alc-devices/api/devices", "GET"],
       [`https://alc-devices/api/devices/${ID}`, "DELETE"],
     ]);
-    const call = await handleAlcProxy(alcReq(`/alc-proxy/api/devices/${ID}/call-settings`, { method: "PUT", body: "{}" }), env);
-    expect(await call.text()).toBe("from-cloud-run");
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
   it("device-data-proxy のキオスクの設定の取得と最終ログインは binding に届く", async () => {
@@ -2902,6 +2905,36 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
     expect(init!.method).toBe("POST");
     expect(init!.headers).toEqual({ "Content-Type": "application/json" });
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("FCM の口は決めた method だけを回す", () => {
+    const { env } = setupDevices();
+    for (const [path, proxy, method] of [
+      [`/api/devices/${ID}/call-settings`, "browser", "GET"],
+      [`/api/devices/${ID}/test-fcm`, "browser", "GET"],
+      ["/api/devices/test-fcm-all", "browser", "GET"],
+      ["/api/devices/trigger-update", "browser", "GET"],
+      ["/api/devices/fcm-dismiss-test", "internal", "GET"],
+    ] as const) {
+      expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toBeNull();
+    }
+  });
+
+  it("alc-proxy の着信の設定と alc-internal-proxy の dismiss の試し送りは binding に届く", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    const { devices, cloudRun, env } = setupDevices();
+    const put = await handleAlcProxy(alcReq(`/alc-proxy/api/devices/${ID}/call-settings`, { method: "PUT", body: "{}" }), env);
+    expect(await put.text()).toBe("from-binding");
+    const dismiss = await handleAlcInternalProxy(
+      internalReq("/alc-internal-proxy/api/devices/fcm-dismiss-test", { "content-type": "application/json" }, "{}"),
+      env,
+    );
+    expect(await dismiss.text()).toBe("from-binding");
+    expect(devices.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      [`https://alc-devices/api/devices/${ID}/call-settings`, "PUT"],
+      ["https://alc-devices/api/devices/fcm-dismiss-test", "POST"],
+    ]);
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
