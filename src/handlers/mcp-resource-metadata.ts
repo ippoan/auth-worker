@@ -27,6 +27,7 @@ import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
 import {
   MCP_GOOGLE_SURFACE_PATH,
+  mcpIdpForResourceOrigin,
   mcpRelayOrigin,
   resourceOriginBySlug,
 } from "../lib/mcp-origins";
@@ -73,6 +74,7 @@ export function handleMcpResourceMetadata(request: Request, env: Env): Response 
   const slug = m[1] ?? null;
 
   let resource: string;
+  let authorizationServer = issuer;
   if (slug === null) {
     resource = mcpRelayOrigin(env);
   } else {
@@ -84,12 +86,18 @@ export function handleMcpResourceMetadata(request: Request, env: Env): Response 
       return corsJsonResponse({ error: `unknown resource slug: ${slug}` }, 404);
     }
     resource = found;
+    // claude.ai の custom connector は /mcp/authorize に `resource` を送らないので、
+    // MCP_RESOURCE_GOOGLE_ORIGINS だけでは Google に振れない。PRM の段階で
+    // Google surface の AS を案内し、client を /mcp/google/authorize に向ける。
+    if (mcpIdpForResourceOrigin(resource, env) === "google") {
+      authorizationServer = `${issuer}${MCP_GOOGLE_SURFACE_PATH}`;
+    }
   }
 
   const res = corsJsonResponse({
     // resource: 本 metadata document が記述する RS の base URL。
     resource,
-    authorization_servers: [issuer],
+    authorization_servers: [authorizationServer],
     // Bearer token は Authorization header で受ける (binary も Web も同様)。
     bearer_methods_supported: ["header"],
     // AS metadata と同じ scope セットを advertise (一貫性のため)。
