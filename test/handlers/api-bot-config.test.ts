@@ -23,7 +23,9 @@ waitIfLive();
 
 // ---------- handleBotConfigList ----------
 
-describe("handleBotConfigList", () => {
+// 一覧・保存・削除の口は ippoan/alc-lineworks-worker へ移り、rust-alc-api から消えた (W2c、Refs ippoan/rust-alc-api#680)。
+// live (rust のコンテナが相手、binding 無し) では Cloud Run の口に落ちて 404 になるので、mock だけで回す。export は rust に残る
+describe.skipIf(isLive)("handleBotConfigList", () => {
   const env = testEnv();
   beforeEach(() => vi.restoreAllMocks());
 
@@ -156,7 +158,7 @@ describe("handleBotConfigList", () => {
 
 // ---------- handleBotConfigUpsert ----------
 
-describe("handleBotConfigUpsert", () => {
+describe.skipIf(isLive)("handleBotConfigUpsert", () => {
   const env = testEnv();
   beforeEach(() => vi.restoreAllMocks());
 
@@ -390,7 +392,7 @@ describe("handleBotConfigUpsert", () => {
 
 // ---------- handleBotConfigDelete ----------
 
-describe("handleBotConfigDelete", () => {
+describe.skipIf(isLive)("handleBotConfigDelete", () => {
   const env = testEnv();
   beforeEach(() => vi.restoreAllMocks());
 

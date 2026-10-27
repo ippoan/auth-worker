@@ -37,7 +37,9 @@ describe("handleMyOrgs", () => {
     expect(data.error).toBe("Unauthorized");
   });
 
-  it("returns organizations on success", async () => {
+  // rust-alc-api の /api/my-orgs は消えた (W2b、Refs ippoan/rust-alc-api#680。本番は ALC_AUTH_SESSION=1 で alc-auth-worker から組む)。
+  // live (ALC_AUTH 無しの testEnv) では Cloud Run の口に落ちて 404 になるので、成功の形は mock だけで確かめる
+  it.skipIf(isLive)("returns organizations on success", async () => {
     stubOrReal(
       new Response(
         JSON.stringify({
