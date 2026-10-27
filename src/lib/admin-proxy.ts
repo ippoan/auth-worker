@@ -110,7 +110,7 @@ export function fetchAdminBackend(
   search: string,
   init: { method: string; headers: Record<string, string>; body?: string },
 ): Promise<Response> {
-  const binding = resolveAlcBinding(backendPath, env, "admin");
+  const binding = resolveAlcBinding(backendPath, env, "admin", init.method);
   if (binding) {
     if (isUnsafeBackendPath(backendPath)) {
       return Promise.resolve(

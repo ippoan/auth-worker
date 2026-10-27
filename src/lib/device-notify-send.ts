@@ -98,7 +98,7 @@ export async function sendDeviceNotify(
 
 /** binding があれば binding へ、無ければ token を mint して rust へ。mint に失敗したら null。 */
 async function sendUpstream(env: Env, apiOrigin: string, body: string): Promise<Response | null> {
-  const binding = resolveAlcBinding(SEND_PATH, env, "internal");
+  const binding = resolveAlcBinding(SEND_PATH, env, "internal", "POST");
   if (binding) {
     return forwardViaAlcBinding(binding, SEND_PATH, "", {
       method: "POST",

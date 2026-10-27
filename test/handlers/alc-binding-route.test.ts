@@ -2559,11 +2559,40 @@ describe("拘束時間の帳票と PDF → ALC_DTAKO binding (W5c-3・W5c-4、Re
 describe("車両のエラーの起票 → ALC_DTAKO binding (W5c-5、Refs ippoan/rust-alc-api#680)", () => {
   const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
 
-  it("一覧と起票は画面用・内部用、結果の反映は内部用、1 件と close は画面用", () => {
+  it("一覧は画面用の GET、起票は内部用の POST だけ。ほかの method は Cloud Run", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    const path = "/api/dtako/tickets";
+    expect(resolveAlcBinding(path, env, "browser", "GET")).toEqual(target);
+    expect(resolveAlcBinding(path, env, "browser", "get")).toEqual(target);
+    expect(resolveAlcBinding(path, env, "internal", "POST")).toEqual(target);
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      expect(resolveAlcBinding(path, env, "browser", method), `browser ${method}`).toBeNull();
+    }
+    for (const method of ["GET", "PUT", "PATCH", "DELETE"]) {
+      expect(resolveAlcBinding(path, env, "internal", method), `internal ${method}`).toBeNull();
+    }
+    // method を渡さない呼び手は、method を絞った行を引けない
+    expect(resolveAlcBinding(path, env, "browser")).toBeNull();
+    for (const proxy of ["device", "admin", "rpc"] as const) {
+      expect(resolveAlcBinding(path, env, proxy, "GET"), proxy).toBeNull();
+    }
+  });
+
+  it("alc-proxy からの起票の POST は binding に届かず Cloud Run へ", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
+    const { dtako, cloudRun, env } = setup();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/dtako/tickets", { method: "POST", body: "{}" }), env);
+    expect(await res.text()).toBe("from-cloud-run");
+    expect(dtako.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("1 件と close は画面用、結果の反映は内部用", () => {
     const { dtako, env } = setup();
     const target = { fetcher: dtako, host: "alc-dtako" };
     const rows: Array<[string, ReadonlyArray<"browser" | "internal" | "device" | "admin" | "rpc">]> = [
-      ["/api/dtako/tickets", ["browser", "internal"]],
       ["/api/dtako/tickets/close", ["browser"]],
       [`/api/dtako/tickets/${ID}`, ["browser"]],
       [`/api/dtako/tickets/${ID.toUpperCase()}`, ["browser"]],
@@ -2598,7 +2627,7 @@ describe("車両のエラーの起票 → ALC_DTAKO binding (W5c-5、Refs ippoan
 
   it("binding が未定義なら null (= Cloud Run)", () => {
     const { env } = setup({ ALC_DTAKO: undefined });
-    expect(resolveAlcBinding("/api/dtako/tickets", env, "browser")).toBeNull();
+    expect(resolveAlcBinding("/api/dtako/tickets", env, "browser", "GET")).toBeNull();
     expect(resolveAlcBinding(`/api/dtako/tickets/${ID}/scraped`, env, "internal")).toBeNull();
   });
 

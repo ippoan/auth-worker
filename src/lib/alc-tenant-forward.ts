@@ -101,7 +101,7 @@ export async function forwardAlcTenantRequest(
 
   // ── ⓪ domain worker (Service Binding) への振り分け ────────────────────────
   // path は entrypoint の定数・allowlist のもの (この関数は検査しない。冒頭の注)
-  const binding = resolveAlcBinding(input.path, env, "rpc");
+  const binding = resolveAlcBinding(input.path, env, "rpc", method);
   if (binding) {
     const res = await forwardViaAlcBinding(binding, input.path, search, { method, headers, body });
     return { status: res.status, body: await res.text(), contentType: res.headers.get("content-type") };

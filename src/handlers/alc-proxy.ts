@@ -286,7 +286,7 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
     const session = await handleSessionPath(env, backendPath, method, { tenantId, sub, email, role });
     if (session) return session;
   }
-  const binding = previewBase ? null : resolveAlcBinding(backendPath, env, "browser");
+  const binding = previewBase ? null : resolveAlcBinding(backendPath, env, "browser", method);
   if (binding) {
     if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
     return forwardViaAlcBinding(binding, backendPath, url.search, {
