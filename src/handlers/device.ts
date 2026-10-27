@@ -124,6 +124,39 @@ export async function handleDevicePair(request: Request, env: Env): Promise<Resp
   );
 }
 
+/** [`mintPairedCredential`] の入力 (呼び手の申告。tenant は申告を使わず device_id から引く)。 */
+export interface PairCredentialInput {
+  deviceId: string;
+  /** 申告の tenant (空なら見ない)。引いた tenant と食い違えば発行しない */
+  requestedTenantId: string;
+  label: string;
+  role: unknown;
+  siteId: string | undefined;
+  /** true なら同じ (tenant, label) の旧 credential を失効してから発行する (kiosk の再ペアリング) */
+  replaceLabel: boolean;
+}
+
+export type PairCredentialResult =
+  | { ok: true; cred: Awaited<ReturnType<typeof createDeviceCredential>> }
+  | { ok: false; reason: "not_found" | "tenant_mismatch" | "upstream" };
+
+/**
+ * device credential の server-to-server の発行 (`POST /device/pair-internal` と `DevicePairEntrypoint` の共通部分)。
+ * tenant は `resolveActiveDeviceTenant` (登録済みで有効な端末の記録) から決める (fail-closed)。
+ */
+export async function mintPairedCredential(env: Env, input: PairCredentialInput): Promise<PairCredentialResult> {
+  const resolved = await resolveActiveDeviceTenant(env, input.deviceId);
+  if (!resolved.ok) return { ok: false, reason: resolved.reason === "not_found" ? "not_found" : "upstream" };
+  const tenantId = resolved.tenantId;
+  if (input.requestedTenantId && input.requestedTenantId !== tenantId) return { ok: false, reason: "tenant_mismatch" };
+  const role = normalizeDeviceRole(input.role);
+  const now = Math.floor(Date.now() / 1000);
+  const cred = input.replaceLabel
+    ? await createDeviceCredentialReplacingLabel(env, tenantId, input.label, now, role, input.siteId)
+    : await createDeviceCredential(env, tenantId, input.label, now, role, input.siteId);
+  return { ok: true, cred };
+}
+
 /**
  * POST /device/pair-internal — **server-to-server** で device credential を発行する
  * (rust-alc-api#434 caller #5、AlcoholChecker provisioning。#495 PR2 で
@@ -159,27 +192,20 @@ export async function handleDevicePairInternal(request: Request, env: Env): Prom
   const deviceId = typeof body.device_id === "string" ? body.device_id : "";
   if (!deviceId) return jsonNoStore({ error: "device_id required" }, 400);
 
-  const resolved = await resolveActiveDeviceTenant(env, deviceId);
-  if (!resolved.ok) {
-    return resolved.reason === "not_found"
-      ? jsonNoStore({ error: "forbidden" }, 403)
-      : jsonNoStore({ error: "upstream error" }, 502);
+  const minted = await mintPairedCredential(env, {
+    deviceId,
+    requestedTenantId: typeof body.tenant_id === "string" ? body.tenant_id : "",
+    label: typeof body.label === "string" && body.label ? body.label : "device",
+    role: body.role,
+    siteId: typeof body.site_id === "string" && body.site_id ? body.site_id : undefined,
+    replaceLabel: body.replace_label === true,
+  });
+  if (!minted.ok) {
+    return minted.reason === "upstream"
+      ? jsonNoStore({ error: "upstream error" }, 502)
+      : jsonNoStore({ error: "forbidden" }, 403);
   }
-  const tenantId = resolved.tenantId;
-  const requestedTenantId = typeof body.tenant_id === "string" ? body.tenant_id : "";
-  if (requestedTenantId && requestedTenantId !== tenantId) {
-    return jsonNoStore({ error: "forbidden" }, 403);
-  }
-
-  const label = typeof body.label === "string" && body.label ? body.label : "device";
-  const role = normalizeDeviceRole(body.role);
-  const siteId = typeof body.site_id === "string" && body.site_id ? body.site_id : undefined;
-  const replaceLabel = body.replace_label === true;
-
-  const now = Math.floor(Date.now() / 1000);
-  const cred = replaceLabel
-    ? await createDeviceCredentialReplacingLabel(env, tenantId, label, now, role, siteId)
-    : await createDeviceCredential(env, tenantId, label, now, role, siteId);
+  const cred = minted.cred;
 
   return jsonNoStore(
     {

@@ -167,6 +167,9 @@ export { MachineCredentialEntrypoint } from "./machine-credential-entrypoint";
 // issue #691: /mcp/google-gcp でログインした人の GCP アクセストークンを consumer
 // (secrets-inventory) に渡す口 (`accessToken`)。binding_jwt だけで取れる公開口にしないため RPC。
 export { GoogleGcpTokenEntrypoint } from "./google-gcp-token-entrypoint";
+// ippoan/rust-alc-api#680 (W6b-b): alc-devices-worker の kiosk 端末の再ペアリングが credential を発行する口 (`pairInternal`)。
+// 共有の秘密を持たない binding だけが呼べるよう別 class。
+export { DevicePairEntrypoint } from "./device-pair-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
 import type { BrowserWorker } from "@cloudflare/puppeteer";
