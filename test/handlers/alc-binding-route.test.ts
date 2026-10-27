@@ -2438,3 +2438,57 @@ describe("画面向けの読み取りと分類の更新 → ALC_DTAKO binding (W
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("Y時間 export → ALC_DTAKO binding (W5c-2、Refs ippoan/rust-alc-api#680)", () => {
+  const PATHS = ["/api/dtako/y-time-export", "/api/dtako/y-time-rows"];
+
+  it("2 口は画面用だけ", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    for (const path of PATHS) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        const want = proxy === "browser" ? target : null;
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(want);
+      }
+    }
+  });
+
+  it("近い名前と完全一致の口の下位は回らない", () => {
+    const { env } = setup();
+    for (const path of [
+      "/api/dtako/y-time-exportx",
+      "/api/dtako/y-time-export/x",
+      "/api/dtako/y-time-rowsx",
+      "/api/dtako/y-time-rows/x",
+      "/api/dtako/y-time",
+      "/api/dtako/tickets",
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_DTAKO: undefined });
+    for (const path of PATHS) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
+  });
+
+  it("alc-proxy の 2 口は binding に届く (method・query もそのまま)", async () => {
+    const { dtako, cloudRun, env } = setup();
+    for (const [path, method] of [
+      ["/api/dtako/y-time-export?driver_cd=1001&from=2026-09-01&to=2026-09-30", "GET"],
+      ["/api/dtako/y-time-rows", "POST"],
+    ] as const) {
+      const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { method }), env);
+      expect(await res.text(), path).toBe("from-binding");
+    }
+    expect(dtako.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      ["https://alc-dtako/api/dtako/y-time-export?driver_cd=1001&from=2026-09-01&to=2026-09-30", "GET"],
+      ["https://alc-dtako/api/dtako/y-time-rows", "POST"],
+    ]);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
