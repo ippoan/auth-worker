@@ -180,7 +180,7 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   // 明示された tenant (shared-secret だけ。internal-jwt は Cloud Run 経路と同じく tenant を渡さない) と
   // Content-Type だけで、呼び手のほかのヘッダと Cloud Run 用の認証は渡さない。
   if (pathClass === "shared-secret" || pathClass === "internal-jwt") {
-    const binding = resolveAlcBinding(backendPath, env, "internal");
+    const binding = resolveAlcBinding(backendPath, env, "internal", request.method);
     if (binding) {
       if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
       const bindingHeaders: Record<string, string> = {};
