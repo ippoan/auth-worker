@@ -788,9 +788,9 @@ describe("alc-internal-proxy → ALC_DTAKO binding", () => {
 
   it("(c) 許可リストのほかの path は binding があっても今までどおり Cloud Run", async () => {
     const { binding, dtako, cloudRun, env } = setup();
-    const res = await handleAlcInternalProxy(internalReq("/alc-internal-proxy/api/dtako/tickets"), env);
+    const res = await handleAlcInternalProxy(internalReq("/alc-internal-proxy/api/hub/measurements"), env);
     expect(await res.text()).toBe("from-cloud-run");
-    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/dtako/tickets");
+    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/hub/measurements");
     expect(dtako.fetch).not.toHaveBeenCalled();
     expect(binding.fetch).not.toHaveBeenCalled();
   });
@@ -2267,7 +2267,7 @@ describe("勤怠向けの読み取り → ALC_DTAKO binding (W5b、Refs ippoan/r
         expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(want);
       }
     }
-    for (const path of ["/api/dtako/events/", "/api/dtako/events/etags/x", "/api/dtako/eventsx", "/api/dtako/tickets"]) {
+    for (const path of ["/api/dtako/events/", "/api/dtako/events/etags/x", "/api/dtako/eventsx", "/api/dtako/ticketsx"]) {
       for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
         expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
       }
@@ -2461,7 +2461,7 @@ describe("Y時間 export → ALC_DTAKO binding (W5c-2、Refs ippoan/rust-alc-api
       "/api/dtako/y-time-rowsx",
       "/api/dtako/y-time-rows/x",
       "/api/dtako/y-time",
-      "/api/dtako/tickets",
+      "/api/dtako/ticketsx",
     ]) {
       for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
         expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
@@ -2552,6 +2552,98 @@ describe("拘束時間の帳票と PDF → ALC_DTAKO binding (W5c-3・W5c-4、Re
       ["https://alc-dtako/api/restraint-report/pdf?year=2026&month=2&driver_id=0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a", "GET"],
       ["https://alc-dtako/api/restraint-report/pdf-stream?year=2026&month=2", "GET"],
     ]);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("車両のエラーの起票 → ALC_DTAKO binding (W5c-5、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
+
+  it("一覧と起票は画面用・内部用、結果の反映は内部用、1 件と close は画面用", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    const rows: Array<[string, ReadonlyArray<"browser" | "internal" | "device" | "admin" | "rpc">]> = [
+      ["/api/dtako/tickets", ["browser", "internal"]],
+      ["/api/dtako/tickets/close", ["browser"]],
+      [`/api/dtako/tickets/${ID}`, ["browser"]],
+      [`/api/dtako/tickets/${ID.toUpperCase()}`, ["browser"]],
+      [`/api/dtako/tickets/${ID}/scraped`, ["internal"]],
+    ];
+    for (const [path, allowed] of rows) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        const want = allowed.includes(proxy) ? target : null;
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(want);
+      }
+    }
+  });
+
+  it("近い名前・UUID でない id・下位の口は回らない", () => {
+    const { env } = setup();
+    for (const path of [
+      "/api/dtako/tickets/",
+      "/api/dtako/ticketsx",
+      "/api/dtako/tickets/closex",
+      "/api/dtako/tickets/close/x",
+      "/api/dtako/tickets/ticket-1",
+      "/api/dtako/tickets/ticket-1/scraped",
+      `/api/dtako/tickets/${ID}x`,
+      `/api/dtako/tickets/${ID}/scrapedx`,
+      `/api/dtako/tickets/${ID}/scraped/x`,
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_DTAKO: undefined });
+    expect(resolveAlcBinding("/api/dtako/tickets", env, "browser")).toBeNull();
+    expect(resolveAlcBinding(`/api/dtako/tickets/${ID}/scraped`, env, "internal")).toBeNull();
+  });
+
+  it("alc-proxy の一覧・1 件・close は binding に届く (method・query もそのまま)", async () => {
+    const { dtako, cloudRun, env } = setup();
+    for (const [path, method] of [
+      ["/api/dtako/tickets?status=open", "GET"],
+      [`/api/dtako/tickets/${ID}`, "GET"],
+      ["/api/dtako/tickets/close", "POST"],
+    ] as const) {
+      const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { method }), env);
+      expect(await res.text(), path).toBe("from-binding");
+    }
+    expect(dtako.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      ["https://alc-dtako/api/dtako/tickets?status=open", "GET"],
+      [`https://alc-dtako/api/dtako/tickets/${ID}`, "GET"],
+      ["https://alc-dtako/api/dtako/tickets/close", "POST"],
+    ]);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-internal-proxy の起票・結果の反映は binding に届き、ヘッダは X-Tenant-ID と Content-Type だけ", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    const { dtako, cloudRun, env } = setup();
+    for (const [path, method] of [
+      ["/api/dtako/tickets", "POST"],
+      [`/api/dtako/tickets/${ID}/scraped`, "PATCH"],
+    ] as const) {
+      const req = new Request(`https://auth.test.example/alc-internal-proxy${path}`, {
+        method,
+        headers: { "X-Alc-Proxy-Secret": PROXY_SECRET, "X-Tenant-ID": TENANT, "content-type": "application/json" },
+        body: "{}",
+      });
+      const res = await handleAlcInternalProxy(req, env);
+      expect(await res.text(), path).toBe("from-binding");
+    }
+    expect(dtako.fetch.mock.calls.map((c) => [c[0], c[1]!.method, c[1]!.headers])).toEqual([
+      ["https://alc-dtako/api/dtako/tickets", "POST", { "X-Tenant-ID": TENANT, "Content-Type": "application/json" }],
+      [
+        `https://alc-dtako/api/dtako/tickets/${ID}/scraped`,
+        "PATCH",
+        { "X-Tenant-ID": TENANT, "Content-Type": "application/json" },
+      ],
+    ]);
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
