@@ -403,6 +403,7 @@ describe("handleMcpAuthorize — Google IdP branch (MCP OAuth に Google IdP を
     );
     expect(loc.searchParams.get("response_type")).toBe("code");
     expect(loc.searchParams.get("scope")).toBe("openid email");
+    expect(loc.searchParams.get("prompt")).toBe("select_account");
     expect(loc.searchParams.get("state")).toBeTruthy();
     const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
     const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };
@@ -464,6 +465,7 @@ describe("handleMcpAuthorize — Google IdP branch (MCP OAuth に Google IdP を
       const loc = new URL(res.headers.get("Location")!);
       expect(loc.host).toBe("accounts.google.com");
       expect(loc.searchParams.get("scope")).toBe("openid email");
+      expect(loc.searchParams.get("prompt")).toBe("select_account");
       // resource 未指定なので auth request record にも resource は積まれない
       const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
       const stored = JSON.parse(kv._data[reqKey]!) as { resource?: string };

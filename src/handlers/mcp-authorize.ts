@@ -214,6 +214,9 @@ export async function handleMcpAuthorize(
     googleAuthorize.searchParams.set("redirect_uri", callbackUri);
     googleAuthorize.searchParams.set("response_type", "code");
     googleAuthorize.searchParams.set("scope", "openid email");
+    // 付けないと Google がブラウザでログイン中のアカウントを黙って選び、
+    // MCP を別の Google アカウントで繋ぎ直せない (google-redirect.ts と揃える)。
+    googleAuthorize.searchParams.set("prompt", "select_account");
     googleAuthorize.searchParams.set("state", googleState);
     return Response.redirect(googleAuthorize.toString(), 302);
   }
