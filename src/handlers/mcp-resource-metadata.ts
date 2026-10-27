@@ -26,7 +26,9 @@
 import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
 import {
+  MCP_GOOGLE_GCP_SURFACE_PATH,
   MCP_GOOGLE_SURFACE_PATH,
+  isGoogleGcpResourceOrigin,
   mcpIdpForResourceOrigin,
   mcpRelayOrigin,
   resourceOriginBySlug,
@@ -89,7 +91,10 @@ export function handleMcpResourceMetadata(request: Request, env: Env): Response 
     // claude.ai の custom connector は /mcp/authorize に `resource` を送らないので、
     // MCP_RESOURCE_GOOGLE_ORIGINS だけでは Google に振れない。PRM の段階で
     // Google surface の AS を案内し、client を /mcp/google/authorize に向ける。
-    if (mcpIdpForResourceOrigin(resource, env) === "google") {
+    if (isGoogleGcpResourceOrigin(resource, env)) {
+      // GCP 委譲 surface (issue #691) が優先: ログインした人の GCP 権限で RS が動く
+      authorizationServer = `${issuer}${MCP_GOOGLE_GCP_SURFACE_PATH}`;
+    } else if (mcpIdpForResourceOrigin(resource, env) === "google") {
       authorizationServer = `${issuer}${MCP_GOOGLE_SURFACE_PATH}`;
     }
   }

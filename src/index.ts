@@ -164,6 +164,9 @@ export { KintaiAlcEntrypoint } from "./kintai-alc-entrypoint";
 // ohishi-exp/rust-leave-worker#1: 機械用資格情報 (複合機の Basic) のチケットの口
 // (`issueTicket` / `verifyTicket`)。nuxt-leave と rust-leave-worker の binding だけが呼ぶので別 class。
 export { MachineCredentialEntrypoint } from "./machine-credential-entrypoint";
+// issue #691: /mcp/google-gcp でログインした人の GCP アクセストークンを consumer
+// (secrets-inventory) に渡す口 (`accessToken`)。binding_jwt だけで取れる公開口にしないため RPC。
+export { GoogleGcpTokenEntrypoint } from "./google-gcp-token-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
 import type { BrowserWorker } from "@cloudflare/puppeteer";
@@ -839,6 +842,12 @@ export default {
           case "/.well-known/openid-configuration/mcp/google":
           case "/mcp/google/.well-known/openid-configuration":
             return handleMcpAsMetadata(request, env, "google");
+          // issue #691: GCP 委譲 surface (issuer `<origin>/mcp/google-gcp`)。alias は上と同じ 4 形
+          case "/.well-known/oauth-authorization-server/mcp/google-gcp":
+          case "/mcp/google-gcp/.well-known/oauth-authorization-server":
+          case "/.well-known/openid-configuration/mcp/google-gcp":
+          case "/mcp/google-gcp/.well-known/openid-configuration":
+            return handleMcpAsMetadata(request, env, "google-gcp");
           // MCP OAuth Provider — Protected Resource metadata (RFC 9728, Phase 4 / issue #126)
           // client は MCP relay URL の 401 応答 `WWW-Authenticate.resource_metadata`
           // 経由で本 endpoint を踏み、authorization_servers から AS metadata を発見する
@@ -895,6 +904,10 @@ export default {
           // 既定 surface (`/mcp/authorize`) の GitHub 既定は不変 (既存 consumer 保護)。
           case "/mcp/google/authorize":
             return await handleMcpAuthorize(request, env, { idpDefault: "google" });
+          // issue #691: GCP 委譲 surface の authorize。Google に cloud-platform + offline も求める。
+          // callback は /mcp/auth_callback_google を共有 (auth request の issuer で区別)
+          case "/mcp/google-gcp/authorize":
+            return await handleMcpAuthorize(request, env, { idpDefault: "google-gcp" });
           // MCP OAuth Provider — Authorization Code GitHub OAuth callback (Phase 5)
           case "/mcp/auth_callback":
             return await handleMcpAuthCallback(request, env);

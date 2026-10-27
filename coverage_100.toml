@@ -455,3 +455,17 @@ branches = true
 [[files]]
 path = "src/lib/alc-session.ts"
 branches = true
+
+# issue #691: MCP の Google ログインした人の GCP 権限を consumer に渡す口。refresh token の
+# 保管・交換と、その口の認可。判定が緩むと他人の GCP トークンが渡るので 100% を維持する。
+[[files]]
+path = "src/lib/google-gcp-token.ts"
+branches = true
+
+[[files]]
+path = "src/google-gcp-token-entrypoint.ts"
+branches = true
+
+[[files]]
+path = "src/handlers/mcp-auth-callback-google.ts"
+branches = true

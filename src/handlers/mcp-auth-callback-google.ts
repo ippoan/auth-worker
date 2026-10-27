@@ -36,6 +36,8 @@ import {
   putAuthCode,
 } from "../lib/mcp-authcode";
 import { getGoogleMcpUserAllowlist } from "../lib/config";
+import { storeGcpRefreshToken } from "../lib/google-gcp-token";
+import { GOOGLE_CLOUD_PLATFORM_SCOPE, MCP_GOOGLE_GCP_SURFACE_PATH } from "../lib/mcp-origins";
 import { jsonResponse } from "../lib/errors";
 import { decodeJwtPayload } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
@@ -119,6 +121,8 @@ export async function handleMcpAuthCallbackGoogle(
   }
   // RFC 9207 (issue #449): 旧 record (iss 未記録) は既定 surface の issuer に fallback
   const issForResponse = reqRec.iss ?? env.AUTH_WORKER_ORIGIN;
+  // GCP 委譲 surface (issue #691) から来たか。/authorize が記録した surface issuer で判定する
+  const gcpDelegation = reqRec.iss === `${env.AUTH_WORKER_ORIGIN}${MCP_GOOGLE_GCP_SURFACE_PATH}`;
 
   // ── Google 側 user キャンセル ──
   if (googleError) {
@@ -139,6 +143,8 @@ export async function handleMcpAuthCallbackGoogle(
   const issuer = env.AUTH_WORKER_ORIGIN;
   const callbackUri = `${issuer}/mcp/auth_callback_google`;
   let idToken: string;
+  let refreshToken: string | undefined;
+  let grantedScope = "";
   try {
     const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
@@ -152,11 +158,18 @@ export async function handleMcpAuthCallbackGoogle(
       }),
     });
     if (!tokenResp.ok) throw new Error(`token exchange status ${tokenResp.status}`);
-    const tokenBody = (await tokenResp.json()) as { id_token?: string; error?: string };
+    const tokenBody = (await tokenResp.json()) as {
+      id_token?: string;
+      refresh_token?: string;
+      scope?: string;
+      error?: string;
+    };
     if (!tokenBody.id_token) {
       throw new Error(tokenBody.error ?? "no id_token in response");
     }
     idToken = tokenBody.id_token;
+    refreshToken = tokenBody.refresh_token;
+    grantedScope = tokenBody.scope ?? "";
   } catch {
     await deleteAuthRequest(env, reqRec.id);
     return redirectError(
@@ -210,7 +223,32 @@ export async function handleMcpAuthCallbackGoogle(
     });
   }
 
-  // ── success: auth code 発行 (github_token 相当の保存は無い) ──
+  // ── GCP 委譲 (issue #691): cloud-platform に同意したことと refresh token を確かめて保管 ──
+  // Google の同意画面はスコープごとに外せるので、付与されたかを scope で確かめる。
+  if (gcpDelegation) {
+    if (!grantedScope.split(" ").includes(GOOGLE_CLOUD_PLATFORM_SCOPE) || !refreshToken) {
+      await deleteAuthRequest(env, reqRec.id);
+      return redirectError(
+        reqRec.redirect_uri,
+        "access_denied",
+        "Google Cloud (cloud-platform) access was not granted",
+        reqRec.client_state,
+        issForResponse,
+      );
+    }
+    if (!(await storeGcpRefreshToken(env, email, refreshToken))) {
+      await deleteAuthRequest(env, reqRec.id);
+      return redirectError(
+        reqRec.redirect_uri,
+        "server_error",
+        "Failed to store Google Cloud credentials",
+        reqRec.client_state,
+        issForResponse,
+      );
+    }
+  }
+
+  // ── success: auth code 発行 (GCP 委譲以外では github_token 相当の保存は無い) ──
   const code = crypto.randomUUID();
   const codeRec: AuthCodeRecord = {
     code,

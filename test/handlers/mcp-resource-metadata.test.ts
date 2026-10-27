@@ -143,6 +143,21 @@ describe("GET /.well-known/oauth-protected-resource/<slug>", () => {
     expect(github.authorization_servers).toEqual(["https://auth-staging.ippoan.org"]);
   });
 
+  it("GCP 委譲の RS は /mcp/google-gcp を案内し、MCP_RESOURCE_GOOGLE_ORIGINS より優先する", async () => {
+    const env = createMockEnv({
+      AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org",
+      MCP_RESOURCE_ORIGINS_ALLOWLIST: "https://security-inventory.ippoan.org",
+      MCP_RESOURCE_GOOGLE_ORIGINS: "https://security-inventory.ippoan.org",
+      MCP_RESOURCE_GOOGLE_GCP_ORIGINS: "https://security-inventory.ippoan.org",
+    } as unknown as Partial<Env>);
+    const body = (await callPath(env, "/.well-known/oauth-protected-resource/security-inventory").json()) as {
+      resource: string;
+      authorization_servers: string[];
+    };
+    expect(body.resource).toBe("https://security-inventory.ippoan.org");
+    expect(body.authorization_servers).toEqual(["https://auth-staging.ippoan.org/mcp/google-gcp"]);
+  });
+
   it("returns 404 for unknown slug (not in MCP_RESOURCE_ORIGINS_ALLOWLIST)", async () => {
     const env = createMockEnv({
       MCP_RESOURCE_ORIGINS_ALLOWLIST: "https://security-inventory.ippoan.org",
