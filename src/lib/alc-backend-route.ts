@@ -94,6 +94,10 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 完全一致) も `alc-dtako` へ回す。画面用の proxy だけ (nuxt-dtako-admin の画面が /alc-proxy 経由で呼ぶ)。
  * その PDF (W5c-4) の 2 口 (`GET /api/restraint-report/pdf`・`GET /api/restraint-report/pdf-stream`、完全一致。
  * pdf-stream の応答は event-stream で、binding の応答をそのまま返すので進み具合は届いた順に画面へ流れる) も同じ。画面用の proxy だけ。
+ * 車両のエラーの起票 (W5c-5、Refs ippoan/rust-alc-api#680) の 5 口も `alc-dtako` へ回す。`/api/dtako/tickets` (完全一致) は
+ * 一覧 (GET、画面用 = nuxt_dtako_logs) と起票 (POST、内部用の proxy の shared-secret のクラス = email-receiver) の両方。
+ * 結果の反映 `/api/dtako/tickets/{uuid}/scraped` (UUID に固定) は内部用だけ。1 件 `/api/dtako/tickets/{uuid}` (UUID に固定) と
+ * close_token で閉じる `/api/dtako/tickets/close` (完全一致) は画面用だけ。prefix は足さない。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -141,6 +145,23 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/restraint-report/compare-csv", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/restraint-report/pdf", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/restraint-report/pdf-stream", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  // 車両のエラーの起票 (W5c-5)。一覧と起票は同じ path (画面用・内部用)、結果の反映は内部用、1 件と close は画面用
+  { match: "exact", path: "/api/dtako/tickets", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "internal"] },
+  { match: "exact", path: "/api/dtako/tickets/close", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/dtako\/tickets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_DTAKO",
+    host: "alc-dtako",
+    proxies: ["browser"],
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/dtako\/tickets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/scraped$/i,
+    binding: "ALC_DTAKO",
+    host: "alc-dtako",
+    proxies: ["internal"],
+  },
   { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
   { match: "prefix", path: "/api/fuel/", binding: "FUEL_WORKER", host: "rust-fuel-worker", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },
