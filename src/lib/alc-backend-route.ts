@@ -105,6 +105,9 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * method を proxy ごとに絞る (画面からの POST は worker に渡さない。rust でも画面の経路は GET しか受けなかった)。
  * 結果の反映 `/api/dtako/tickets/{uuid}/scraped` (UUID に固定) は内部用だけ。1 件 `/api/dtako/tickets/{uuid}` (UUID に固定) と
  * close_token で閉じる `/api/dtako/tickets/close` (完全一致) は画面用だけ。prefix は足さない。
+ * 端末の測定・打刻 (`/api/hub/measurements`、完全一致。W6a、Refs ippoan/rust-alc-api#680) も `alc-people` へ回す。
+ * 取り込み (POST) は内部用の proxy (shared-secret のクラス = cf-alc-recorder) だけ、一覧 (GET) は画面用 (alc-app) と
+ * RPC (MCP の試験記録) だけ (method を proxy ごとに絞る。画面から取り込みを打てないようにする)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -266,6 +269,15 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/maintenance/", binding: "ALC_CARINS", host: "alc-carins", proxies: ["browser"] },
   { match: "prefix", path: "/api/timecard/", binding: "ALC_PEOPLE", host: "alc-people", proxies: ["browser", "device", "rpc"] },
   { match: "prefix", path: "/api/employees/", binding: "ALC_PEOPLE", host: "alc-people", proxies: ["browser", "device", "rpc"] },
+  // 端末の測定・打刻 (W6a)。取り込みは内部用の POST、一覧は画面用・RPC の GET
+  {
+    match: "exact",
+    path: "/api/hub/measurements",
+    binding: "ALC_PEOPLE",
+    host: "alc-people",
+    proxies: ["browser", "internal", "rpc"],
+    methods: { browser: ["GET"], internal: ["POST"], rpc: ["GET"] },
+  },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */
