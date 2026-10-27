@@ -94,13 +94,7 @@ find "$TMPDIR/bindings" -name "*.ts" -print0 | sort -z | xargs -0 awk '
   in_type && /;[ \t]*$/ { in_type = 0; skip = 0 }
 ' >> "$OUTPUT"
 
-echo "" >> "$OUTPUT"
-cat >> "$OUTPUT" << 'WRAPPERS'
-// List response wrappers
-export type SsoConfigListResponse = { configs: SsoConfigRow[] };
-export type BotConfigListResponse = { configs: BotConfigResponse[] };
-export type UsersListResponse = { users: UserResponse[] };
-export type InvitationsListResponse = { invitations: TenantAllowedEmail[] };
-WRAPPERS
+# 会社の管理の口の応答の形 (SSO 設定・Bot 設定・ユーザー・招待の一覧) は rust から消えたので、
+# ここで足さずに src/types/admin-api.ts に持つ (W2c、Refs ippoan/rust-alc-api#680)
 
 echo "✅ $OUTPUT (SHA: ${SHA:0:12})"

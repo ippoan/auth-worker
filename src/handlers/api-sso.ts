@@ -11,7 +11,7 @@ import type { Env } from "../index";
 import type {
   SsoConfigListResponse,
   SsoConfigRow as SsoConfig,
-} from "../types/alc-api";
+} from "../types/admin-api";
 import {
   callTenantAdmin,
   errorResponse,
