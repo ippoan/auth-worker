@@ -179,7 +179,8 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   // binding 経路では token を mint しない (Cloud Run 用。mint 失敗で 502 にしない)。渡すヘッダは
   // 明示された tenant (shared-secret だけ。internal-jwt は Cloud Run 経路と同じく tenant を渡さない) と
   // Content-Type だけで、呼び手のほかのヘッダと Cloud Run 用の認証は渡さない。
-  if (pathClass === "shared-secret" || pathClass === "internal-jwt") {
+  // public-ingest (登録の受け取り等。rust でも認証なし・tenant は body/lookup で解決) は Content-Type だけを渡す。
+  if (pathClass === "shared-secret" || pathClass === "internal-jwt" || pathClass === "public-ingest") {
     const binding = resolveAlcBinding(backendPath, env, "internal", request.method);
     if (binding) {
       if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");

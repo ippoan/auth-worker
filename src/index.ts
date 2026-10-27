@@ -282,6 +282,11 @@ export interface Env {
    *  `/api/timecard/` を alc-proxy (画面用)・device-data-proxy (端末用)・InternalEntrypoint (RPC) が Cloud Run でなく
    *  ここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
   ALC_PEOPLE?: Fetcher;
+  /** 端末の登録・管理の worker (`alc-devices`、ippoan/alc-devices-worker) への service binding (本番だけ)。定義されている時だけ、
+   *  端末の管理・登録・報告の口 (W6b-a) を alc-proxy・device-data-proxy・alc-internal-proxy (登録の受け取り) が、
+   *  `pairing-tenant` の問い合わせ (`lib/alc-internal.ts`) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。
+   *  未定義なら従来どおり Cloud Run。 */
+  ALC_DEVICES?: Fetcher;
   /** 燃料の worker (`rust-fuel-worker`、Refs yhonda-ohishi/nginx#814) への service binding。定義されている時だけ、
    *  `/api/fuel/*` を alc-proxy (画面用) が Cloud Run でなくここへ流し (`lib/alc-backend-route.ts`)、機械の入口
    *  `/m/fuel-utran/*` (`handlers/machine-relay.ts`) が Basic を照合したあと `/machine/fuel-utran/*` へ中継する。

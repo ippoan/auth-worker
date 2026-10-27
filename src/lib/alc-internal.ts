@@ -11,6 +11,7 @@
  */
 import type { Env } from "../index";
 import { fetchAlcAuth } from "./alc-auth-fetch";
+import { forwardViaAlcBinding, resolveAlcBinding } from "./alc-backend-route";
 import { signInternalJWT } from "./internal-jwt";
 import { resolveSecret, type SecretBinding } from "./secret";
 import { mintGoogleIdToken } from "./oidc";
@@ -202,12 +203,15 @@ export async function resolveActiveDeviceTenant(
   env: Env,
   deviceId: string,
 ): Promise<ResolveDeviceTenantResult> {
+  const path = `/api/internal/devices/${encodeURIComponent(deviceId)}/pairing-tenant`;
+  // alc-devices-worker (W6b-a) に binding があればそちら (内部の口でテナントも認証も要らない。token は作らない)、
+  // 無ければ (または id が UUID でなければ) 従来どおり Cloud Run
+  const binding = resolveAlcBinding(path, env, "internal", "GET");
   let res: Response;
   try {
-    res = await internalFetch(
-      env,
-      `/api/internal/devices/${encodeURIComponent(deviceId)}/pairing-tenant`,
-    );
+    res = binding
+      ? await forwardViaAlcBinding(binding, path, "", { method: "GET", headers: {}, body: undefined })
+      : await internalFetch(env, path);
   } catch {
     return { ok: false, reason: "unavailable" };
   }
