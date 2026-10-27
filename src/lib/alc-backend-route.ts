@@ -88,6 +88,8 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * `/api/internal/operations` (完全一致) は内部用の proxy (shared-secret のクラス。nuxt-dtako-admin の server route) だけ。
  * `/api/scraper/history` (完全一致、GET と POST) は画面用・RPC (`InternalEntrypoint` の `FORWARDABLE_PATHS` = dtako-scraper-relay)・
  * 端末用 (dtako relay の端末 role) の 3 つ。どの prefix も rust-alc-api の他の口と重ならない (worker が下位の口を全部持つ)。
+ * Y時間 export (W5c-2、Refs ippoan/rust-alc-api#680) の 2 口 (`GET /api/dtako/y-time-export`・`POST /api/dtako/y-time-rows`、
+ * 完全一致) も `alc-dtako` へ回す。画面用の proxy だけ (nuxt-dtako-admin の server route が /alc-proxy 経由で呼ぶ)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -127,6 +129,9 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/dtako-logs/by-date-range", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/operations", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["internal"] },
   { match: "exact", path: "/api/scraper/history", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "rpc", "device"] },
+  // Y時間 export (W5c-2)。画面用だけ
+  { match: "exact", path: "/api/dtako/y-time-export", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "exact", path: "/api/dtako/y-time-rows", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "prefix", path: "/api/leave/", binding: "ALC_LEAVE", host: "rust-leave", proxies: ["browser"] },
   { match: "prefix", path: "/api/fuel/", binding: "FUEL_WORKER", host: "rust-fuel-worker", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/lineworks/send", binding: "ALC_LINEWORKS", host: "alc-lineworks", proxies: ["internal"] },
