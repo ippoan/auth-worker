@@ -372,6 +372,11 @@ describe("Router (index.ts)", () => {
     ["/mcp/google/.well-known/oauth-authorization-server", "mcp-as-metadata"],
     ["/.well-known/openid-configuration/mcp/google", "mcp-as-metadata"],
     ["/mcp/google/.well-known/openid-configuration", "mcp-as-metadata"],
+    // issue #691: GCP 委譲 surface の AS metadata alias 4 種。
+    ["/.well-known/oauth-authorization-server/mcp/google-gcp", "mcp-as-metadata"],
+    ["/mcp/google-gcp/.well-known/oauth-authorization-server", "mcp-as-metadata"],
+    ["/.well-known/openid-configuration/mcp/google-gcp", "mcp-as-metadata"],
+    ["/mcp/google-gcp/.well-known/openid-configuration", "mcp-as-metadata"],
     ["/.well-known/oauth-protected-resource", "mcp-resource-metadata"],
     // issue #438: Google IdP surface の PRM (path-inserted 形、prefix branch 経由)。
     ["/.well-known/oauth-protected-resource/mcp/google", "mcp-resource-metadata"],
@@ -386,6 +391,8 @@ describe("Router (index.ts)", () => {
     // issue #438: Google IdP surface の authorize (idpDefault: "google" 付き —
     // 引数は下の専用 it で検証)。
     ["/mcp/google/authorize?response_type=code&client_id=x", "mcp-authorize"],
+    // issue #691: GCP 委譲 surface の authorize (idpDefault: "google-gcp")。
+    ["/mcp/google-gcp/authorize?response_type=code&client_id=x", "mcp-authorize"],
     ["/mcp/auth_callback?code=ghc&state=xyz", "mcp-auth-callback"],
     ["/mcp/elevate", "mcp-elevate-start"],
     ["/mcp/elevate?return_to=https%3A%2F%2Fclient.example", "mcp-elevate-start"],
@@ -605,6 +612,30 @@ describe("Router (index.ts)", () => {
       expect.anything(),
       expect.anything(),
       { idpDefault: "google" },
+    );
+  });
+
+  it("GET /mcp/google-gcp/authorize passes { idpDefault: 'google-gcp' } to mcp-authorize", async () => {
+    const { handleMcpAuthorize } = await import("../../src/handlers/mcp-authorize");
+    const req = new Request("https://auth.test.example/mcp/google-gcp/authorize");
+    await worker.fetch(req, env);
+    expect(vi.mocked(handleMcpAuthorize)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { idpDefault: "google-gcp" },
+    );
+  });
+
+  it("GET /.well-known/oauth-authorization-server/mcp/google-gcp passes surface 'google-gcp'", async () => {
+    const { handleMcpAsMetadata } = await import("../../src/handlers/mcp-as-metadata");
+    const req = new Request(
+      "https://auth.test.example/.well-known/oauth-authorization-server/mcp/google-gcp",
+    );
+    await worker.fetch(req, env);
+    expect(vi.mocked(handleMcpAsMetadata)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "google-gcp",
     );
   });
 

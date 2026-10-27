@@ -79,6 +79,21 @@ describe("GET /.well-known/oauth-authorization-server", () => {
 
 // issue #438: Google IdP surface variant — issuer は `<origin>/mcp/google`、
 // authorize だけ専用 path。他 endpoint は既定 surface と共有。
+describe("GET AS metadata — google-gcp surface (issue #691)", () => {
+  it("issuer と authorization_endpoint だけ /mcp/google-gcp、token 等は共有", async () => {
+    const env = createMockEnv({ AUTH_WORKER_ORIGIN: "https://issuer.example" });
+    const req = new Request("https://auth.test.example/.well-known/oauth-authorization-server/mcp/google-gcp");
+    const body = (await handleMcpAsMetadata(req, env, "google-gcp").json()) as {
+      issuer: string;
+      authorization_endpoint: string;
+      token_endpoint: string;
+    };
+    expect(body.issuer).toBe("https://issuer.example/mcp/google-gcp");
+    expect(body.authorization_endpoint).toBe("https://issuer.example/mcp/google-gcp/authorize");
+    expect(body.token_endpoint).toBe("https://issuer.example/mcp/token");
+  });
+});
+
 describe("GET AS metadata — google surface (issue #438)", () => {
   function callGoogle(env: Env): Response {
     const req = new Request(

@@ -40,6 +40,8 @@ import {
 import { fetchCimdClient, isCimdClientId } from "../lib/mcp-cimd";
 import { getDcrClient } from "../lib/mcp-dcr";
 import {
+  GOOGLE_CLOUD_PLATFORM_SCOPE,
+  MCP_GOOGLE_GCP_SURFACE_PATH,
   MCP_GOOGLE_SURFACE_PATH,
   isAllowedResourceOrigin,
   mcpIdpForResourceOrigin,
@@ -76,8 +78,10 @@ export async function handleMcpAuthorize(
      * resource 未指定時 (および resource origin が MCP_RESOURCE_GOOGLE_ORIGINS に
      * 無い時) に使う既定 IdP。省略時 "github" (既存挙動)。Google IdP surface の
      * `/mcp/google/authorize` (issue #438) は "google" を渡す。
+     * `/mcp/google-gcp/authorize` (issue #691) は "google-gcp" を渡す — Google に
+     * `cloud-platform` と offline アクセスも求め、callback で refresh token を保存する。
      */
-    idpDefault?: "github" | "google";
+    idpDefault?: "github" | "google" | "google-gcp";
   },
 ): Promise<Response> {
   // ── env guard (IdP 非依存分のみ。GitHub/Google の client id は resource から
@@ -124,7 +128,9 @@ export async function handleMcpAuthorize(
   const issForResponse =
     opts?.idpDefault === "google"
       ? `${env.AUTH_WORKER_ORIGIN}${MCP_GOOGLE_SURFACE_PATH}`
-      : env.AUTH_WORKER_ORIGIN;
+      : opts?.idpDefault === "google-gcp"
+        ? `${env.AUTH_WORKER_ORIGIN}${MCP_GOOGLE_GCP_SURFACE_PATH}`
+        : env.AUTH_WORKER_ORIGIN;
 
   // ── ここから後の error は redirect_uri 経由で返す ──
   if (response_type !== "code") {
@@ -177,8 +183,12 @@ export async function handleMcpAuthorize(
   //    (`/mcp/google/authorize`) は resource 未指定 (claude.ai custom connector が
   //    `resource` を送らない実挙動) でも google に振れる。──
   const issuer = env.AUTH_WORKER_ORIGIN;
+  // GCP 委譲 (issue #691) は surface が google-gcp のときだけ。resource から暗黙に
+  // cloud-platform を求めることはしない (同意する権限が surface の URL で決まるように)。
+  const gcpDelegation = opts?.idpDefault === "google-gcp";
   const idp: "github" | "google" =
     opts?.idpDefault === "google" ||
+    gcpDelegation ||
     (resource !== undefined &&
       mcpIdpForResourceOrigin(new URL(resource).origin, env) === "google")
       ? "google"
@@ -213,10 +223,20 @@ export async function handleMcpAuthorize(
     googleAuthorize.searchParams.set("client_id", googleClientId);
     googleAuthorize.searchParams.set("redirect_uri", callbackUri);
     googleAuthorize.searchParams.set("response_type", "code");
-    googleAuthorize.searchParams.set("scope", "openid email");
-    // 付けないと Google がブラウザでログイン中のアカウントを黙って選び、
-    // MCP を別の Google アカウントで繋ぎ直せない (google-redirect.ts と揃える)。
-    googleAuthorize.searchParams.set("prompt", "select_account");
+    googleAuthorize.searchParams.set(
+      "scope",
+      gcpDelegation ? `openid email ${GOOGLE_CLOUD_PLATFORM_SCOPE}` : "openid email",
+    );
+    if (gcpDelegation) {
+      // refresh token を確実に受け取るため、毎回同意画面を出す (Google は既に同意済みの
+      // client には refresh token を返さないことがある)。
+      googleAuthorize.searchParams.set("access_type", "offline");
+      googleAuthorize.searchParams.set("prompt", "consent select_account");
+    } else {
+      // 付けないと Google がブラウザでログイン中のアカウントを黙って選び、
+      // MCP を別の Google アカウントで繋ぎ直せない (google-redirect.ts と揃える)。
+      googleAuthorize.searchParams.set("prompt", "select_account");
+    }
     googleAuthorize.searchParams.set("state", googleState);
     return Response.redirect(googleAuthorize.toString(), 302);
   }

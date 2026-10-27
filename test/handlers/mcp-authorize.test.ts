@@ -451,6 +451,41 @@ describe("handleMcpAuthorize — Google IdP branch (MCP OAuth に Google IdP を
   // issue #438: Google IdP surface (`/mcp/google/authorize` → idpDefault: "google")。
   // claude.ai custom connector は resource を送らないため、resource 無しでも
   // Google に振れることを検証する。既定 surface (opts 無し) は GitHub のまま。
+  describe("idpDefault: 'google-gcp' (issue #691 GCP 委譲 surface)", () => {
+    it("Google に cloud-platform と offline を求め、毎回同意画面を出す", async () => {
+      const { env, kv, client_id } = await envWithGoogleOrigin({
+        MCP_RESOURCE_GOOGLE_ORIGINS: "",
+      } as unknown as Partial<Env>);
+      const res = await handleMcpAuthorize(authorizeReq(validParams(client_id)), env, {
+        idpDefault: "google-gcp",
+      });
+      expect(res.status).toBe(302);
+      const loc = new URL(res.headers.get("Location")!);
+      expect(loc.host).toBe("accounts.google.com");
+      expect(loc.searchParams.get("scope")).toBe(
+        "openid email https://www.googleapis.com/auth/cloud-platform",
+      );
+      expect(loc.searchParams.get("access_type")).toBe("offline");
+      expect(loc.searchParams.get("prompt")).toBe("consent select_account");
+      // callback はこの issuer で GCP 委譲かを判定する
+      const reqKey = Object.keys(kv._data).find((k) => k.startsWith("auth:request:"))!;
+      const stored = JSON.parse(kv._data[reqKey]!) as { iss?: string };
+      expect(stored.iss).toBe("https://auth.test.example/mcp/google-gcp");
+    });
+
+    it("/mcp/google では cloud-platform を求めない", async () => {
+      const { env, client_id } = await envWithGoogleOrigin({
+        MCP_RESOURCE_GOOGLE_ORIGINS: "",
+      } as unknown as Partial<Env>);
+      const res = await handleMcpAuthorize(authorizeReq(validParams(client_id)), env, {
+        idpDefault: "google",
+      });
+      const loc = new URL(res.headers.get("Location")!);
+      expect(loc.searchParams.get("scope")).toBe("openid email");
+      expect(loc.searchParams.get("access_type")).toBeNull();
+    });
+  });
+
   describe("idpDefault: 'google' (issue #438 Google IdP surface)", () => {
     it("redirects to accounts.google.com without any resource parameter", async () => {
       const { env, kv, client_id } = await envWithGoogleOrigin({

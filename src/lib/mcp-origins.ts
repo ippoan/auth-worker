@@ -35,6 +35,33 @@ import type { Env } from "../index";
  */
 export const MCP_GOOGLE_SURFACE_PATH = "/mcp/google";
 
+/**
+ * Google IdP + GCP 委譲 surface の path prefix (issue #691)。
+ *
+ * `/mcp/google` と同じ作りだが、Google に `cloud-platform` と offline アクセスも求め、
+ * refresh token を暗号化して保存する。consumer (secrets-inventory) は
+ * `GoogleGcpTokenEntrypoint` から、ログインした人の短命アクセストークンを受け取り、
+ * その人の GCP 権限で動く。`/mcp/google` は変えない (kyuyo-mcp 等に cloud-platform の
+ * 同意を求めないため)。
+ */
+export const MCP_GOOGLE_GCP_SURFACE_PATH = "/mcp/google-gcp";
+
+/** GCP 委譲 surface が Google に追加で求める scope。callback は付与されたかを確かめる。 */
+export const GOOGLE_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
+
+/**
+ * `MCP_RESOURCE_GOOGLE_GCP_ORIGINS` (comma-sep) に列挙された RS か。PRM はこの RS の
+ * AS を `<issuer>/mcp/google-gcp` として案内する。`MCP_RESOURCE_GOOGLE_ORIGINS` より優先。
+ */
+export function isGoogleGcpResourceOrigin(origin: string, env: Env): boolean {
+  return ((env as Env & { MCP_RESOURCE_GOOGLE_GCP_ORIGINS?: string })
+    .MCP_RESOURCE_GOOGLE_GCP_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .includes(origin);
+}
+
 /** AS origin から MCP relay (RS) origin を導出。env 追加なしで prod / staging 両対応。 */
 export function mcpRelayOrigin(env: Env): string {
   const auth = env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";

@@ -60,7 +60,7 @@ import { resolveSecret, type SecretBinding } from "../lib/secret";
  * として要求してくる。許容する URL origin を env で明示的に絞り込むことで
  * confused-deputy を防ぐ。
  */
-function audPredicate(env: Env): (aud: string) => boolean {
+export function audPredicate(env: Env): (aud: string) => boolean {
   const relayOrigin = mcpRelayOrigin(env);
   const extra = ((env as Env & { MCP_RESOURCE_ORIGINS_ALLOWLIST?: string })
     .MCP_RESOURCE_ORIGINS_ALLOWLIST ?? "")
