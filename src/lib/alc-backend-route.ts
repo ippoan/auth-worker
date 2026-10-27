@@ -109,7 +109,7 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 取り込み (POST) は内部用の proxy (shared-secret のクラス = cf-alc-recorder) だけ、一覧 (GET) は画面用 (alc-app) と
  * RPC (MCP の試験記録) だけ (method を proxy ごとに絞る。画面から取り込みを打てないようにする)。
  * 端末の登録・管理・報告 (W6b-a、Refs ippoan/rust-alc-api#680) は `alc-devices` へ回す。1 口ずつ exact か id を固定した pattern で
- * (prefix にしない — 着信の設定 `/api/devices/{id}/call-settings` は FCM の通知が W6b-c まで無いので Cloud Run に残し、
+ * (prefix にしない — 着信の設定 `/api/devices/{id}/call-settings` は FCM の通知を足した W6b-c で回し、
  * FCM の 7 口と再ペアリング (`re-pair`・`authorize-repair`) も残す)。管理画面の口は画面用、一覧・承認待ちは dev の鍵のキオスクの
  * GET (端末用) も、設定・最終ログインは端末の JWT (alc-proxy = 画面用) とキオスク (端末用)、FCM token・版・watchdog の報告は
  * 端末の JWT (画面用)、登録の受け取りは内部用の public-ingest、`pairing-tenant` は auth-worker 自身 (`lib/alc-internal.ts`)。
@@ -117,6 +117,12 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * kiosk の再ペアリング (W6b-b) も `alc-devices` へ回す。`/api/devices/re-pair` (完全一致) は内部用の public-ingest、
  * 管理画面の許可 `/api/devices/{uuid}/authorize-repair` (UUID に固定) は画面用。worker は発行を auth-worker の
  * `DevicePairEntrypoint` に Service Binding で頼む (共有の秘密を持たない)。
+ * FCM で端末に送る口と着信の設定 (W6b-c) も `alc-devices` へ回す (worker は既存の FCM の送信専用の鍵を共有する)。
+ * 画面用は着信の設定 `PUT /api/devices/{uuid}/call-settings`・試し送り `POST /api/devices/{uuid}/test-fcm`・
+ * `POST /api/devices/test-fcm-all`・OTA の通知 `POST /api/devices/trigger-update`、内部用 (public-ingest) は
+ * `POST /api/devices/fcm-dismiss-test`。共有の秘密 (`X-Internal-Secret`) を照合する 3 口 (`fcm-notify-call`・
+ * `test-fcm-all-exclude`・`trigger-update-dev`) は足さない (本番にその秘密が無く今も使えない。前の 2 つは cf-alc-signaling が
+ * Cloud Run を直接呼び、この表を通らない)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -287,7 +293,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     proxies: ["browser", "internal", "rpc"],
     methods: { browser: ["GET"], internal: ["POST"], rpc: ["GET"] },
   },
-  // 端末の登録・管理・報告 (W6b-a)。着信の設定 (`/{id}/call-settings`)・FCM の 7 口・再ペアリングは回さない (W6b-b・c)。
+  // 端末の登録・管理・報告 (W6b-a)。着信の設定と FCM の口は下の W6b-c、再ペアリングは W6b-b の行。
   // 一覧・承認待ちは画面用と dev の鍵のキオスク (端末用) の GET。設定・最終ログインは画面用 (端末の JWT) とキオスク (端末用)
   {
     match: "exact",
@@ -352,6 +358,26 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-devices",
     proxies: ["browser"],
   },
+  // FCM で端末に送る口と着信の設定 (W6b-c)。画面用 4 口と内部用 (public-ingest) の dismiss の試し送り
+  {
+    match: "pattern",
+    pattern: /^\/api\/devices\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/call-settings$/i,
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser"],
+    methods: { browser: ["PUT"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/devices\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/test-fcm$/i,
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser"],
+    methods: { browser: ["POST"] },
+  },
+  { match: "exact", path: "/api/devices/test-fcm-all", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"], methods: { browser: ["POST"] } },
+  { match: "exact", path: "/api/devices/trigger-update", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"], methods: { browser: ["POST"] } },
+  { match: "exact", path: "/api/devices/fcm-dismiss-test", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["internal"], methods: { internal: ["POST"] } },
   // auth-worker 自身の pairing-tenant の問い合わせ (lib/alc-internal.ts。proxy の種別は internal として引く)
   {
     match: "pattern",
