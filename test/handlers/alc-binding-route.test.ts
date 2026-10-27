@@ -2492,3 +2492,56 @@ describe("Y時間 export → ALC_DTAKO binding (W5c-2、Refs ippoan/rust-alc-api
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("拘束時間の帳票 → ALC_DTAKO binding (W5c-3、Refs ippoan/rust-alc-api#680)", () => {
+  const PATHS = ["/api/restraint-report", "/api/restraint-report/compare-csv"];
+
+  it("2 口は画面用だけ", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    for (const path of PATHS) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        const want = proxy === "browser" ? target : null;
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(want);
+      }
+    }
+  });
+
+  it("PDF・近い名前・完全一致の口の下位は回らない", () => {
+    const { env } = setup();
+    for (const path of [
+      "/api/restraint-report/pdf",
+      "/api/restraint-report/pdf-stream",
+      "/api/restraint-reportx",
+      "/api/restraint-report/compare-csvx",
+      "/api/restraint-report/compare-csv/x",
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup({ ALC_DTAKO: undefined });
+    for (const path of PATHS) {
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+    }
+  });
+
+  it("alc-proxy の 2 口は binding に届く (method・query もそのまま)", async () => {
+    const { dtako, cloudRun, env } = setup();
+    for (const [path, method] of [
+      ["/api/restraint-report?driver_id=0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a&year=2026&month=2", "GET"],
+      ["/api/restraint-report/compare-csv?driver_cd=1001", "POST"],
+    ] as const) {
+      const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { method }), env);
+      expect(await res.text(), path).toBe("from-binding");
+    }
+    expect(dtako.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      ["https://alc-dtako/api/restraint-report?driver_id=0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a&year=2026&month=2", "GET"],
+      ["https://alc-dtako/api/restraint-report/compare-csv?driver_cd=1001", "POST"],
+    ]);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
