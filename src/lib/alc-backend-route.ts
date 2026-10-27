@@ -114,6 +114,9 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * GET (端末用) も、設定・最終ログインは端末の JWT (alc-proxy = 画面用) とキオスク (端末用)、FCM token・版・watchdog の報告は
  * 端末の JWT (画面用)、登録の受け取りは内部用の public-ingest、`pairing-tenant` は auth-worker 自身 (`lib/alc-internal.ts`)。
  * 登録の申請・状態 (`register/request`・`register/status/{code}`) は内部用の許可リストに無く、今どの経路からも届かないので足さない。
+ * kiosk の再ペアリング (W6b-b) も `alc-devices` へ回す。`/api/devices/re-pair` (完全一致) は内部用の public-ingest、
+ * 管理画面の許可 `/api/devices/{uuid}/authorize-repair` (UUID に固定) は画面用。worker は発行を auth-worker の
+ * `DevicePairEntrypoint` に Service Binding で頼む (共有の秘密を持たない)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -340,6 +343,15 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/devices/report-watchdog", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["browser"] },
   // 登録の受け取り (端末、ペアリング前)。内部用の proxy の public-ingest のクラスだけ
   { match: "exact", path: "/api/devices/register/claim", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["internal"] },
+  // kiosk の再ペアリング (W6b-b)。端末からは内部用の public-ingest、許可は管理画面
+  { match: "exact", path: "/api/devices/re-pair", binding: "ALC_DEVICES", host: "alc-devices", proxies: ["internal"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/devices\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/authorize-repair$/i,
+    binding: "ALC_DEVICES",
+    host: "alc-devices",
+    proxies: ["browser"],
+  },
   // auth-worker 自身の pairing-tenant の問い合わせ (lib/alc-internal.ts。proxy の種別は internal として引く)
   {
     match: "pattern",

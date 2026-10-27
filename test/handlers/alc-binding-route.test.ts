@@ -2776,6 +2776,8 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
     ["/api/devices/report-version", "PUT", ["browser"]],
     ["/api/devices/report-watchdog", "PUT", ["browser"]],
     ["/api/devices/register/claim", "POST", ["internal"]],
+    ["/api/devices/re-pair", "POST", ["internal"]],
+    [`/api/devices/${ID}/authorize-repair`, "POST", ["browser"]],
     [`/api/internal/devices/${ID}/pairing-tenant`, "GET", ["internal"]],
   ];
 
@@ -2802,7 +2804,7 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
     expect(resolveAlcBinding(`/api/internal/devices/${ID}/pairing-tenant`, env, "internal", "POST")).toBeNull();
   });
 
-  it("回さない口 (着信の設定・FCM・再ペアリング・登録の申請と状態)・近い path・UUID でない id は Cloud Run", () => {
+  it("回さない口 (着信の設定・FCM・登録の申請と状態)・近い path・UUID でない id は Cloud Run", () => {
     const { env } = setupDevices();
     for (const path of [
       `/api/devices/${ID}/call-settings`,
@@ -2813,8 +2815,9 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
       "/api/devices/fcm-dismiss-test",
       "/api/devices/trigger-update",
       "/api/devices/trigger-update-dev",
-      "/api/devices/re-pair",
-      `/api/devices/${ID}/authorize-repair`,
+      "/api/devices/re-pairx",
+      "/api/devices/not-a-uuid/authorize-repair",
+      `/api/devices/${ID}/authorize-repairx`,
       "/api/devices/register/request",
       "/api/devices/register/status/ABC123",
       "/api/devices/registration-requests",
@@ -2886,13 +2889,27 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("alc-internal-proxy の再ペアリング (public-ingest) は binding に届かず Cloud Run", async () => {
+  it("alc-internal-proxy の再ペアリング (public-ingest) は binding に届き、tenant・dev の印は渡さない", async () => {
     vi.mocked(mintGoogleIdToken).mockReset();
-    vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
     const { devices, cloudRun, env } = setupDevices();
-    const res = await handleAlcInternalProxy(internalReq("/alc-internal-proxy/api/devices/re-pair", {}, "{}"), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(devices.fetch).not.toHaveBeenCalled();
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    const res = await handleAlcInternalProxy(
+      internalReq("/alc-internal-proxy/api/devices/re-pair", { "content-type": "application/json", "X-Device-Dev": "1" }, "{}"),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = devices.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-devices/api/devices/re-pair");
+    expect(init!.method).toBe("POST");
+    expect(init!.headers).toEqual({ "Content-Type": "application/json" });
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-proxy の再ペアリングの許可は binding に届く", async () => {
+    const { devices, cloudRun, env } = setupDevices();
+    const res = await handleAlcProxy(alcReq(`/alc-proxy/api/devices/${ID}/authorize-repair`, { method: "POST", body: "{}" }), env);
+    expect(await res.text()).toBe("from-binding");
+    expect(devices.fetch.mock.calls[0]![0]).toBe(`https://alc-devices/api/devices/${ID}/authorize-repair`);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 });
