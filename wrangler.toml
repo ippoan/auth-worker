@@ -20,6 +20,7 @@ AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
 # (Refs #477)。prod / staging とも同じ team なので同値。未設定なら chain しない。
 ACCESS_TEAM_DOMAIN = "mtamaramu.cloudflareaccess.com"
 ALC_API_ORIGIN = "https://alc-api.ippoan.org"
+# ALC_REDACT_ORIGIN (alc-redact の Cloud Run、AlcRedactEntrypoint の宛先) は deploy の --var で入る (.github/workflows/test.yml、repo variables)。ここに値を書かない
 # flip 前 preview override (Refs ippoan/ci-dashboard#472) が許可する rust-alc-api
 # prod service の Cloud Run host suffix。/alc-proxy は X-Alc-Preview-Api-Base の
 # host が `<tag>---<この suffix>` (同一 service の tagged revision URL) の時だけ
