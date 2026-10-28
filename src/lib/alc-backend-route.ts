@@ -54,10 +54,13 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 文書とメールの閲覧 (W8c-1、Refs ippoan/rust-alc-api#680) も `alc-notify` へ回す: 文書の一覧 `/api/notify/documents` と
  * メールの一覧 `/api/notify/emails` (完全一致)、文書の 1 件・preview・download (`/api/notify/documents/{uuid}`・`/preview`・
  * `/download`) とメールの 1 件 (`/api/notify/emails/{uuid}`) (UUID に固定した pattern)。画面用 (nuxt-notify の /api/proxy →
- * /alc-proxy) だけで、**method は GET だけ** — 同じ path の文書の削除 (DELETE `/api/notify/documents/{uuid}`) と、upload・
- * redact-recompute・extract-recompute (POST) は Cloud Run に残る (W8c-2)。`/api/notify/documents/search` は入れない (rust から消す)。
- * `/api/notify/documents/` と `/api/notify/lineworks/` の prefix は足さない (文書の書きの口・ingest・viewer・LINE の webhook・
- * 既読の記録は Cloud Run に残る)。
+ * /alc-proxy) だけで、閲覧の口は method を GET に絞る。
+ * 文書の書きの口 (W8c-2) も画面用だけ `alc-notify` へ回す: 文書の削除 (DELETE `/api/notify/documents/{uuid}`。1 件の GET と同じ行)、
+ * upload (POST `/api/notify/documents/upload`、完全一致。multipart の本文と Content-Type はそのまま渡る)、やり直し
+ * (POST `/api/notify/documents/{uuid}/redact-recompute`・`/extract-recompute`)。`/api/notify/documents/search` は入れない (rust から消す)。
+ * **メールの取り込み `/api/notify/ingest` は載せない** — worker の ingest は tenant の検査の外で Service Binding だけを信頼する口なので、
+ * ここに載せると外からどの tenant にも書ける (届くのは nuxt-notify の email-receiver の binding `NOTIFY` だけ。テストで固定)。
+ * `/api/notify/documents/` と `/api/notify/lineworks/` の prefix は足さない (ingest・viewer・LINE の webhook・既読の記録を拾わない)。
  * `/api/trouble/` は trouble の全部の口 (prefix)。worker が rust の口を全部持つので丸ごと `alc-trouble` へ回す。画面用の proxy だけ
  * (nuxt-trouble は /alc-proxy 経由)。予約の発火 (`/api/internal/trouble/schedules/{id}/fire`) は id を UUID に固定した pattern で、
  * 内部用の proxy (internal-jwt クラス。大小文字は alc-internal-proxy の分類と揃える) だけ。
@@ -232,7 +235,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/notify/test-distribute", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
   // 宛先の画面の社員の選択肢 (宛先と社員の結び付け、Refs ippoan/alc-app#436)。alc-notify-worker v0.1.5 から
   { match: "exact", path: "/api/notify/employees", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
-  // 文書とメールの閲覧 (W8c-1)。画面用の GET だけ (同じ path の DELETE・POST は Cloud Run)
+  // 文書とメールの閲覧 (W8c-1) と文書の書きの口 (W8c-2)。画面用だけ。行ごとに method を絞る (表は最初に当たった行で決まる)。
+  // /api/notify/ingest は載せない (上の注)
   {
     match: "exact",
     path: "/api/notify/documents",
@@ -243,11 +247,35 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   },
   {
     match: "pattern",
-    pattern: /^\/api\/notify\/documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\/preview|\/download)?$/i,
+    pattern: /^\/api\/notify\/documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_NOTIFY",
+    host: "alc-notify",
+    proxies: ["browser"],
+    methods: { browser: ["GET", "DELETE"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/notify\/documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(preview|download)$/i,
     binding: "ALC_NOTIFY",
     host: "alc-notify",
     proxies: ["browser"],
     methods: { browser: ["GET"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/notify\/documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(redact|extract)-recompute$/i,
+    binding: "ALC_NOTIFY",
+    host: "alc-notify",
+    proxies: ["browser"],
+    methods: { browser: ["POST"] },
+  },
+  {
+    match: "exact",
+    path: "/api/notify/documents/upload",
+    binding: "ALC_NOTIFY",
+    host: "alc-notify",
+    proxies: ["browser"],
+    methods: { browser: ["POST"] },
   },
   {
     match: "exact",
