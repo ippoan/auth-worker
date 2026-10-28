@@ -24,6 +24,7 @@ import {
   DEVICE_ROLE_DTAKO_INGEST,
   DEVICE_ROLE_DTAKO_RELAY,
   DEVICE_ROLE_KIOSK,
+  DEVICE_ROLE_TENKO_MANAGER,
 } from "../../src/lib/device";
 import { internalAuthToken } from "../../src/lib/alc-internal";
 import { sendDeviceNotify } from "../../src/lib/device-notify-send";
@@ -3005,14 +3006,9 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
     }
   });
 
-  it("点呼のセッション (W7b)・近い path・UUID でない id は Cloud Run", () => {
+  it("近い path・UUID でない id・消した口は Cloud Run", () => {
     const { env } = setupTenko();
     for (const path of [
-      "/api/tenko/sessions",
-      `/api/tenko/sessions/${ID}`,
-      "/api/tenko/sessions/start",
-      `/api/tenko/sessions/${ID}/judgment`,
-      `/api/tenko/sessions/${ID}/alcohol`,
       `/api/tenko/records/${ID}`,
       "/api/tenko/recordsx",
       "/api/tenko/schedules/not-a-uuid",
@@ -3077,6 +3073,155 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
     expect(init!.method).toBe("POST");
     expect(init!.headers).toEqual({ "Content-Type": "application/json" });
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
+  type Proxy = "browser" | "internal" | "device" | "admin" | "rpc";
+  const PROXIES: ReadonlyArray<Proxy> = ["browser", "internal", "device", "admin", "rpc"];
+  const PUT_STEPS = ["alcohol", "medical", "self-declaration", "daily-inspection", "instruction-confirm", "report", "carrying-items"];
+  const POST_STEPS = ["cancel", "interrupt", "self-resume", "judgment"];
+
+  function setupTenko() {
+    const tenko = makeBinding();
+    return { tenko, ...setup({ ALC_TENKO: tenko as unknown as Fetcher }) };
+  }
+
+  /** [path, method, binding に回す proxy] */
+  const ROWS: Array<[string, string, ReadonlyArray<Proxy>]> = [
+    ["/api/tenko/sessions", "GET", ["browser", "device"]],
+    ["/api/tenko/sessions/start", "POST", ["browser", "device"]],
+    [`/api/tenko/sessions/${ID}`, "GET", ["browser", "device"]],
+    ...PUT_STEPS.map((s): [string, string, ReadonlyArray<Proxy>] => [`/api/tenko/sessions/${ID}/${s}`, "PUT", ["browser", "device"]]),
+    ...POST_STEPS.map((s): [string, string, ReadonlyArray<Proxy>] => [`/api/tenko/sessions/${ID}/${s}`, "POST", ["browser", "device"]]),
+    [`/api/tenko/sessions/${ID}/escalate-remote`, "PUT", ["browser"]],
+    [`/api/tenko/sessions/${ID}/resume`, "POST", ["browser"]],
+  ];
+
+  it("口ごとに、今通っている proxy だけが binding を引く (16 口)", () => {
+    const { tenko, env } = setupTenko();
+    const target = { fetcher: tenko, host: "alc-tenko" };
+    expect(ROWS).toHaveLength(16);
+    for (const [path, method, allowed] of ROWS) {
+      for (const proxy of PROXIES) {
+        const want = allowed.includes(proxy) ? target : null;
+        expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toEqual(want);
+      }
+    }
+  });
+
+  it("ほかの method は回さない", () => {
+    const { env } = setupTenko();
+    for (const [path, method] of ROWS) {
+      for (const other of ["GET", "POST", "PUT", "DELETE"].filter((m) => m !== method)) {
+        for (const proxy of ["browser", "device"] as const) {
+          expect(resolveAlcBinding(path, env, proxy, other), `${proxy} ${other} ${path}`).toBeNull();
+        }
+      }
+    }
+  });
+
+  it("近い path・UUID でない id・知らない段は Cloud Run", () => {
+    const { env } = setupTenko();
+    for (const [path, method] of [
+      ["/api/tenko/sessionsx", "GET"],
+      ["/api/tenko/sessions/", "GET"],
+      ["/api/tenko/sessions/startx", "POST"],
+      ["/api/tenko/sessions/not-a-uuid", "GET"],
+      ["/api/tenko/sessions/not-a-uuid/alcohol", "PUT"],
+      [`/api/tenko/sessions/${ID}/unknown`, "PUT"],
+      [`/api/tenko/sessions/${ID}/alcohol/x`, "PUT"],
+      [`/api/tenko/sessions/${ID}/judgmentx`, "POST"],
+      [`/api/tenko/sessions/${ID}x`, "GET"],
+    ] as const) {
+      for (const proxy of PROXIES) {
+        expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding("/api/tenko/sessions", env, "browser", "GET")).toBeNull();
+    expect(resolveAlcBinding("/api/tenko/sessions/start", env, "device", "POST")).toBeNull();
+  });
+
+  it("alc-proxy の一覧・管理者の再開は binding に届き、dev の鍵の印も渡す", async () => {
+    const { tenko, cloudRun, env } = setupTenko();
+    expect(
+      await (await handleAlcProxy(alcReq("/alc-proxy/api/tenko/sessions?judgment_pending=true", { method: "GET" }), env)).text(),
+    ).toBe("from-binding");
+    expect(
+      await (await handleAlcProxy(alcReq(`/alc-proxy/api/tenko/sessions/${ID}/resume`, { method: "POST", body: "{}" }), env)).text(),
+    ).toBe("from-binding");
+    const dev = await handleAlcProxy(
+      alcReq("/alc-proxy/api/tenko/sessions", {
+        method: "GET",
+        token: makeJwt(TEST_JWT_SECRET, { token_kind: "dev", dev_axis: true }),
+      }),
+      env,
+    );
+    expect(await dev.text()).toBe("from-binding");
+    expect(tenko.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      ["https://alc-tenko/api/tenko/sessions?judgment_pending=true", "GET"],
+      [`https://alc-tenko/api/tenko/sessions/${ID}/resume`, "POST"],
+      ["https://alc-tenko/api/tenko/sessions", "GET"],
+    ]);
+    expect((tenko.fetch.mock.calls[0]![1]!.headers as Record<string, string>)["X-Device-Dev"]).toBeUndefined();
+    expect((tenko.fetch.mock.calls[2]![1]!.headers as Record<string, string>)["X-Device-Dev"]).toBe("1");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("device-data-proxy のキオスクの開始・段・自己再開は binding に届き、dev の鍵の印も渡す", async () => {
+    const { tenko, cloudRun, env } = setupTenko();
+    for (const [path, method] of [
+      ["/api/tenko/sessions/start", "POST"],
+      [`/api/tenko/sessions/${ID}/alcohol`, "PUT"],
+      [`/api/tenko/sessions/${ID}/self-resume`, "POST"],
+    ] as const) {
+      const res = await handleDeviceDataProxy(await kioskReq(`/device-data-proxy${path}`, method), env);
+      expect(await res.text(), path).toBe("from-binding");
+    }
+    const token = await signTestJwt({ sub: "device-kiosk-dev", tenant_id: TENANT, role: DEVICE_ROLE_KIOSK, dev_device: true }, TEST_JWT_SECRET);
+    const dev = await handleDeviceDataProxy(
+      new Request("https://auth.test.example/device-data-proxy/api/tenko/sessions/start", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: "{}",
+      }),
+      env,
+    );
+    expect(await dev.text()).toBe("from-binding");
+    const calls = tenko.fetch.mock.calls;
+    expect(calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      ["https://alc-tenko/api/tenko/sessions/start", "POST"],
+      [`https://alc-tenko/api/tenko/sessions/${ID}/alcohol`, "PUT"],
+      [`https://alc-tenko/api/tenko/sessions/${ID}/self-resume`, "POST"],
+      ["https://alc-tenko/api/tenko/sessions/start", "POST"],
+    ]);
+    expect((calls[0]![1]!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect((calls[0]![1]!.headers as Record<string, string>)["X-Device-Dev"]).toBeUndefined();
+    expect((calls[3]![1]!.headers as Record<string, string>)["X-Device-Dev"]).toBe("1");
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("device-data-proxy の運行管理者席の判定は binding に届き、端末の role も渡す", async () => {
+    const { tenko, cloudRun, env } = setupTenko();
+    const token = await signTestJwt({ sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role: DEVICE_ROLE_TENKO_MANAGER }, TEST_JWT_SECRET);
+    const res = await handleDeviceDataProxy(
+      new Request(`https://auth.test.example/device-data-proxy/api/tenko/sessions/${ID}/judgment`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: "{}",
+      }),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = tenko.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-tenko/api/tenko/sessions/${ID}/judgment`);
+    expect((init!.headers as Record<string, string>)["X-Device-Role"]).toBe(DEVICE_ROLE_TENKO_MANAGER);
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });

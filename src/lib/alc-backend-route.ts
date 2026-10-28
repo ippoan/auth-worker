@@ -126,7 +126,12 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 点呼の読み取りと管理 (W7a、Refs ippoan/rust-alc-api#680) は `alc-tenko` へ回す。記録の一覧・CSV、予定 (一覧・作成・一括・
  * 1 件・更新・削除・乗務員の未消費の予定)、基準値、機器故障、webhook の設定と配信の記録、ダッシュボード、日々の健康状態、
  * 乗務員情報、点呼の電話の番号・乗務員 (画面用。端末用は device-data-proxy の role の表にある口だけ) と、点呼の電話の
- * 登録・点呼 (内部用 public-ingest)。点呼のセッション (`/api/tenko/sessions*`) は W7b まで Cloud Run に残すので、prefix にしない。
+ * 登録・点呼 (内部用 public-ingest)。
+ * 点呼のセッション (W7b) も `alc-tenko` へ回す。一覧 `GET /api/tenko/sessions`・開始 `POST /api/tenko/sessions/start`・1 件
+ * `GET /api/tenko/sessions/{uuid}` と各段 (`/{uuid}/{段}`)。画面用 (alc-app の管理画面) は rust と同じ method の全部、端末用は
+ * device-data-proxy の role の表にある口 (キオスク = 開始・7 つの段・中止・一覧・1 件・中断・自己再開、運行管理者席 = 一覧・
+ * 1 件・判定)。遠隔への切り替え (`escalate-remote`) と管理者の再開 (`resume`) は画面用だけ。id は UUID に固定 (UUID でない id は
+ * Cloud Run に落ちる)。worker は webhook を応答の後に `wait_until` で送る (dev端末の要求では送らない)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -392,7 +397,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     methods: { internal: ["GET"] },
   },
   // 点呼の読み取りと管理 (W7a)。1 口ずつ exact か id を UUID (電話の番号は数字) に固定した pattern で
-  // (`/api/tenko/` の prefix にしない — 点呼のセッション `/api/tenko/sessions*` は W7b まで Cloud Run に残す)。
+  // (`/api/tenko/` の prefix にしない — 下のセッションの行 (W7b) と同じく口ごとに method まで絞る)。
   // 端末用は device-data-proxy の role の表 (キオスク・運行管理者席・dev の鍵のキオスク) が method まで絞る
   { match: "exact", path: "/api/tenko/records", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
   { match: "exact", path: "/api/tenko/records/csv", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
@@ -462,6 +467,64 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     proxies: ["browser"],
   },
   { match: "exact", path: "/api/tenko-call/drivers", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
+  // 点呼のセッション (W7b)。`start` は固定の path、ほかは id を UUID に固定。method は rust の route と同じだけを通す
+  {
+    match: "exact",
+    path: "/api/tenko/sessions",
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser", "device"],
+    methods: { browser: ["GET"], device: ["GET"] },
+  },
+  {
+    match: "exact",
+    path: "/api/tenko/sessions/start",
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser", "device"],
+    methods: { browser: ["POST"], device: ["POST"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser", "device"],
+    methods: { browser: ["GET"], device: ["GET"] },
+  },
+  {
+    match: "pattern",
+    pattern:
+      /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(alcohol|medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items)$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser", "device"],
+    methods: { browser: ["PUT"], device: ["PUT"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(cancel|interrupt|self-resume|judgment)$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser", "device"],
+    methods: { browser: ["POST"], device: ["POST"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/escalate-remote$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+    methods: { browser: ["PUT"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/resume$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+    methods: { browser: ["POST"] },
+  },
   { match: "exact", path: "/api/tenko-call/register", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["internal"], methods: { internal: ["POST"] } },
   { match: "exact", path: "/api/tenko-call/tenko", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["internal"], methods: { internal: ["POST"] } },
 ];
