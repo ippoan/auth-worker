@@ -982,9 +982,9 @@ export default {
           const botId = url.pathname.slice("/lineworks/refresh/".length);
           return await handleLineworksRefresh(request, env, botId);
         }
-        // LINE Messaging inbound webhook (#434 lockdown): LINE platform → auth-worker
-        // public 受け口 → OIDC mint で rust internal (/api/internal/notify/line/webhook)
-        // へ raw body + x-line-signature を forward。署名検証は rust 側。
+        // LINE Messaging inbound webhook: LINE platform → auth-worker public 受け口 →
+        // Service Binding ALC_NOTIFY で alc-notify-worker (/api/internal/notify/line/webhook)
+        // へ raw body + x-line-signature を渡す (W8b)。署名検証は worker 側。
         if (url.pathname === "/line/webhook" && request.method === "POST") {
           return await handleLineWebhook(request, env);
         }

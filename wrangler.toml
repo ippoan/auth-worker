@@ -165,7 +165,9 @@ binding = "ALC_LINEWORKS"
 service = "alc-lineworks"
 
 # alc-notify (ippoan/alc-notify-worker、ippoan/rust-alc-api#747)。notify の宛先・グループ・LINE の設定・
-# LINE WORKS のトークルームとメンバー・配信の口を回す (src/lib/alc-backend-route.ts)。
+# LINE WORKS のトークルームとメンバー・配信の口を回す (src/lib/alc-backend-route.ts)。LINE の webhook の受け口
+# (src/handlers/line-webhook.ts) と LINE WORKS の webhook の DO (src/durable_objects/lineworks-webhook-do.ts) も
+# この binding で worker を呼ぶ (W8b、ippoan/rust-alc-api#680)。
 # alc-notify は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-notify-staging。
 [[services]]
 binding = "ALC_NOTIFY"

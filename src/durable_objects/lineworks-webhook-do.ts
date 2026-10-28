@@ -8,34 +8,27 @@
  * 3. **イベント逆処理キュー + 再送**: 検証済イベントを storage キューに enqueue し、alarm() で
  *    backend internal route に exponential-backoff 付きで POST する。
  *
+ * backend は alc-notify-worker (Service Binding `ALC_NOTIFY`。W8b、Refs ippoan/rust-alc-api#680。それまでは
+ * rust の internal route へ OIDC 付きで fetch していた)。alc-notify は binding からしか届かないので、内部用の
+ * token は付けない (ほかの `ALC_NOTIFY` の口と同じ)。DO は auth-worker と同じ env の binding を受け取る。
+ *
  * これにより auth-worker は LINE WORKS に対して常に 200 を即返せる (検証失敗以外)。
  * backend が一時ダウンしても LINE WORKS のリトライではなく DO の alarm が再送するため、
  * リトライストームが発生しない。
  */
 
 import { decryptBotSecret, signWebhookBody, constantTimeEqual, base64Decode } from "../lib/lineworks-crypto";
-import { internalAuthToken } from "../lib/alc-internal";
 import { resolveSecret, type SecretBinding } from "../lib/secret";
 
 interface DOEnv {
-  ALC_API_ORIGIN: string;
-  /** Refs #206: Secrets Store binding 化済。HS256 fallback (`signInternalJWT`)
-   *  内部で `resolveSecret()` 経由で string 化される。 */
-  JWT_SECRET: SecretBinding;
-  /** Refs #218: internal JWT の `env` claim 用 ("staging"/"prod")。
-   *  HS256 fallback (`signInternalJWT`) が要求する。 */
-  WORKER_ENV: string;
-  /** Refs ippoan/rust-alc-api#479: internal 呼び出しを `internalAuthToken`
-   *  (OIDC-aware) に統一。lockdown cutover 済み env では OIDC
-   *  (aud=alc-api-internal) を mint し、未設定なら HS256 に fallback する。 */
-  INTERNAL_AUTH_OIDC?: string;
-  ALC_API_PROXY_SA_KEY?: SecretBinding;
+  /** alc-notify-worker への Service Binding (bot-secret と event の口)。無ければ backend を呼ばない */
+  ALC_NOTIFY?: Fetcher;
   /** Refs #206: Secrets Store binding 化済。`getBotSecret()` 内部で
    *  `resolveSecret()` 経由で string 化される。 */
   SSO_ENCRYPTION_KEY: SecretBinding;
 }
 
-/** WebhookEvent: rust-alc-api 側 `InternalEventBody` と互換 */
+/** WebhookEvent: alc-notify-worker の `EventBody` (rust-alc-api の旧 `InternalEventBody`) と互換 */
 interface WebhookEvent {
   bot_id: string;
   event_type: string;
@@ -54,6 +47,7 @@ const STORAGE_KEY_BOT_SECRET = "bot_secret_encrypted";
 const QUEUE_PREFIX = "queue:";
 const MAX_ATTEMPTS = 10;
 const MAX_BACKOFF_MS = 60_000;
+const NOTIFY_ORIGIN = "https://alc-notify";
 
 export class LineworksWebhookDO {
   state: DurableObjectState;
@@ -155,12 +149,10 @@ export class LineworksWebhookDO {
   }
 
   private async fetchBotSecretEncrypted(botId: string): Promise<string> {
-    const jwt = await internalAuthToken(this.env);
-    const url = `${this.env.ALC_API_ORIGIN}/api/internal/lineworks/bot-secret/${encodeURIComponent(botId)}`;
-    const resp = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${jwt}` },
-    });
+    const binding = this.env.ALC_NOTIFY;
+    if (!binding) throw new Error("ALC_NOTIFY not bound");
+    const url = `${NOTIFY_ORIGIN}/api/internal/lineworks/bot-secret/${encodeURIComponent(botId)}`;
+    const resp = await binding.fetch(url, { method: "GET", redirect: "manual" });
     if (!resp.ok) {
       throw new Error(`bot-secret fetch failed: ${resp.status}`);
     }
@@ -202,15 +194,17 @@ export class LineworksWebhookDO {
   }
 
   private async postToBackend(item: QueueItem): Promise<boolean> {
-    const jwt = await internalAuthToken(this.env);
+    const binding = this.env.ALC_NOTIFY;
+    if (!binding) {
+      console.warn("lineworks_webhook_backend_not_bound", { attempts: item.attempts });
+      return false;
+    }
     try {
-      const resp = await fetch(`${this.env.ALC_API_ORIGIN}/api/internal/lineworks/event`, {
+      const resp = await binding.fetch(`${NOTIFY_ORIGIN}/api/internal/lineworks/event`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${jwt}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(item.event),
+        redirect: "manual",
       });
       if (!resp.ok) {
         console.warn("lineworks_webhook_backend_post_failed", {
