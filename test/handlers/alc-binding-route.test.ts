@@ -18,7 +18,7 @@ import { handleAlcProxy } from "../../src/handlers/alc-proxy";
 import { handleDeviceDataProxy } from "../../src/handlers/device-data-proxy";
 import { handleAlcInternalProxy } from "../../src/handlers/alc-internal-proxy";
 import { mintGoogleIdToken } from "../../src/lib/oidc";
-import { resolveAlcBinding } from "../../src/lib/alc-backend-route";
+import { ALC_BINDING_ROUTES, resolveAlcBinding } from "../../src/lib/alc-backend-route";
 import {
   DEVICE_ROLE_BP_STATION,
   DEVICE_ROLE_DTAKO_INGEST,
@@ -1153,11 +1153,22 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     "/api/notify/emails",
     `/api/notify/emails/${RID}`,
   ];
+  /** 文書の書きの口 (W8c-2)。画面用の決まった method だけが worker へ。 */
+  const WRITE_ROUTES: [string, string][] = [
+    ["DELETE", `/api/notify/documents/${DOC}`],
+    ["DELETE", `/api/notify/documents/${DOC.toUpperCase()}`],
+    ["POST", "/api/notify/documents/upload"],
+    ["POST", `/api/notify/documents/${DOC}/redact-recompute`],
+    ["POST", `/api/notify/documents/${DOC}/extract-recompute`],
+  ];
   const CLOUD_RUN_PATHS = [
     "/api/notify/documents/search",
-    "/api/notify/documents/upload",
-    `/api/notify/documents/${DOC}/redact-recompute`,
-    `/api/notify/documents/${DOC}/extract-recompute`,
+    "/api/notify/documents/upload/",
+    "/api/notify/documents/uploadx",
+    `/api/notify/documents/${DOC}/recompute`,
+    `/api/notify/documents/${DOC}/redact-recompute/`,
+    `/api/notify/documents/${DOC}/extract-recomputex`,
+    `/api/notify/documents/not-a-uuid/redact-recompute`,
     "/api/notify/documents/not-a-uuid",
     `/api/notify/documents/${DOC}x`,
     `/api/notify/documents/${DOC}/`,
@@ -1229,7 +1240,7 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     }
   });
 
-  it("Cloud Run に残る notify の口 (文書の書きの口・search・ingest・viewer・webhook・既読・内部の LINE WORKS) は回らない", () => {
+  it("Cloud Run に残る notify の口 (search・ingest・viewer・webhook・既読・内部の LINE WORKS) と近い名前の path は回らない", () => {
     const { env } = setup();
     for (const path of CLOUD_RUN_PATHS) {
       for (const proxy of ["browser", "admin", "internal", "device"] as const) {
@@ -1240,12 +1251,14 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     }
   });
 
-  it("文書とメールの閲覧 (W8c-1) は画面用の GET だけ ALC_NOTIFY へ。DELETE・POST・ほかの proxy は null (= Cloud Run)", () => {
+  it("文書とメールの閲覧 (W8c-1) は画面用の GET だけ ALC_NOTIFY へ。POST・PUT・ほかの proxy は null (= Cloud Run)", () => {
     const { notify, env } = setup();
     for (const path of READ_PATHS) {
       expect(resolveAlcBinding(path, env, "browser", "GET"), path).toEqual({ fetcher: notify, host: "alc-notify" });
       expect(resolveAlcBinding(path, env, "browser", "get"), path).toEqual({ fetcher: notify, host: "alc-notify" });
-      for (const method of ["DELETE", "POST", "PUT", undefined]) {
+      // DELETE を受けるのは文書 1 件の path だけ (書きの口の検査)
+      const deletable = /^\/api\/notify\/documents\/[0-9a-f-]{36}$/i.test(path);
+      for (const method of deletable ? ["POST", "PUT", undefined] : ["DELETE", "POST", "PUT", undefined]) {
         expect(resolveAlcBinding(path, env, "browser", method), `${method} ${path}`).toBeNull();
       }
       for (const proxy of ["admin", "internal", "device", "rpc"] as const) {
@@ -1254,20 +1267,79 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     }
   });
 
-  it("(h) alc-proxy の文書の GET は binding、同じ path の DELETE と upload の POST は Cloud Run", async () => {
+  it("文書の書きの口 (W8c-2) は画面用の決まった method だけ ALC_NOTIFY へ。ほかの method・proxy は null", () => {
+    const { notify, env } = setup();
+    for (const [method, path] of WRITE_ROUTES) {
+      expect(resolveAlcBinding(path, env, "browser", method), `${method} ${path}`).toEqual({
+        fetcher: notify,
+        host: "alc-notify",
+      });
+      expect(resolveAlcBinding(path, env, "browser", method.toLowerCase()), path).toEqual({
+        fetcher: notify,
+        host: "alc-notify",
+      });
+      for (const proxy of ["admin", "internal", "device", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    // upload と recompute は POST だけ
+    for (const path of ["/api/notify/documents/upload", `/api/notify/documents/${DOC}/redact-recompute`]) {
+      for (const method of ["GET", "DELETE", "PUT", undefined]) {
+        expect(resolveAlcBinding(path, env, "browser", method), `${method} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("メールの取り込み /api/notify/ingest は、どの proxy・method でも振り分けない (外からどの tenant にも書けないように)", () => {
+    const { env } = setup();
+    for (const path of ["/api/notify/ingest", "/api/notify/ingest/", "/api/notify/ingest?x=1", "/api/notify/INGEST"]) {
+      for (const proxy of ["browser", "admin", "internal", "device", "rpc"] as const) {
+        for (const method of ["GET", "POST", "PUT", "DELETE", undefined]) {
+          expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toBeNull();
+        }
+      }
+    }
+    // 表のどの行も ingest を拾わない
+    for (const route of ALC_BINDING_ROUTES) {
+      const hit =
+        route.match === "pattern"
+          ? route.pattern.test("/api/notify/ingest")
+          : route.match === "prefix"
+            ? "/api/notify/ingest".startsWith(route.path)
+            : route.path === "/api/notify/ingest";
+      expect(hit, JSON.stringify(route.match === "pattern" ? String(route.pattern) : route.path)).toBe(false);
+    }
+  });
+
+  it("(h) alc-proxy の文書の GET・DELETE・upload・recompute は binding。upload の multipart の本文と Content-Type はそのまま", async () => {
     const { notify, cloudRun, env } = setup();
     const res = await handleAlcProxy(alcReq(`/alc-proxy/api/notify/documents/${DOC}/preview?original=true`, { method: "GET" }), env);
     expect(await res.text()).toBe("from-binding");
     expect(notify.fetch.mock.calls[0]![0]).toBe(`https://alc-notify/api/notify/documents/${DOC}/preview?original=true`);
-    expect(cloudRun).not.toHaveBeenCalled();
 
     await handleAlcProxy(alcReq(`/alc-proxy/api/notify/documents/${DOC}`, { method: "DELETE" }), env);
-    await handleAlcProxy(alcReq("/alc-proxy/api/notify/documents/upload", { body: "x" }), env);
-    expect(notify.fetch).toHaveBeenCalledTimes(1);
-    expect(cloudRun).toHaveBeenCalledTimes(2);
-    expect(String(cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example/api/notify/documents/${DOC}`);
-    expect((cloudRun.mock.calls[0]![1] as RequestInit).method).toBe("DELETE");
-    expect(String(cloudRun.mock.calls[1]![0])).toBe("https://alc-api.test.example/api/notify/documents/upload");
+    expect(notify.fetch.mock.calls[1]![0]).toBe(`https://alc-notify/api/notify/documents/${DOC}`);
+    expect((notify.fetch.mock.calls[1]![1] as RequestInit).method).toBe("DELETE");
+
+    const multipart = "--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.pdf\"\r\n\r\n%PDF\r\n--b--\r\n";
+    await handleAlcProxy(
+      alcReq("/alc-proxy/api/notify/documents/upload", {
+        body: multipart,
+        headers: { "Content-Type": "multipart/form-data; boundary=b" },
+      }),
+      env,
+    );
+    const [url, init] = notify.fetch.mock.calls[2]!;
+    expect(url).toBe("https://alc-notify/api/notify/documents/upload");
+    expect((init as RequestInit).method).toBe("POST");
+    expect(((init as RequestInit).headers as Record<string, string>)["Content-Type"]).toBe(
+      "multipart/form-data; boundary=b",
+    );
+    expect(new TextDecoder().decode((init as RequestInit).body as ArrayBuffer)).toBe(multipart);
+
+    await handleAlcProxy(alcReq(`/alc-proxy/api/notify/documents/${DOC}/extract-recompute`, { body: "" }), env);
+    expect(notify.fetch.mock.calls[3]![0]).toBe(`https://alc-notify/api/notify/documents/${DOC}/extract-recompute`);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
   it("binding が未定義なら、どの行も null (= Cloud Run)", () => {
