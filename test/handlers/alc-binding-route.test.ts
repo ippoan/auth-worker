@@ -1143,17 +1143,31 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     "/api/notify/recipients/link-employees-by-name",
   ];
   /** Cloud Run に残る notify の口と、近い名前の path (表が拾ってはいけない)。 */
-  const CLOUD_RUN_PATHS = [
+  /** 文書とメールの閲覧 (W8c-1)。画面用の GET だけが worker へ (同じ path の DELETE・POST は Cloud Run)。 */
+  const READ_PATHS = [
     "/api/notify/documents",
-    "/api/notify/documents/search",
-    "/api/notify/documents/upload",
     `/api/notify/documents/${DOC}`,
     `/api/notify/documents/${DOC}/preview`,
     `/api/notify/documents/${DOC}/download`,
+    `/api/notify/documents/${DOC.toUpperCase()}`,
+    "/api/notify/emails",
+    `/api/notify/emails/${RID}`,
+  ];
+  const CLOUD_RUN_PATHS = [
+    "/api/notify/documents/search",
+    "/api/notify/documents/upload",
     `/api/notify/documents/${DOC}/redact-recompute`,
     `/api/notify/documents/${DOC}/extract-recompute`,
+    "/api/notify/documents/not-a-uuid",
+    `/api/notify/documents/${DOC}x`,
+    `/api/notify/documents/${DOC}/`,
+    `/api/notify/documents/${DOC}/previewx`,
+    `/api/notify/documents/${DOC}/download/x`,
+    "/api/notify/documents/",
+    "/api/notify/emails/",
+    "/api/notify/emails/not-a-uuid",
+    `/api/notify/emails/${RID}/x`,
     "/api/notify/ingest",
-    "/api/notify/emails",
     "/api/notify/line/webhook",
     "/api/notify/read/tok",
     "/api/notify/v/tok",
@@ -1215,13 +1229,45 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     }
   });
 
-  it("Cloud Run に残る notify の口 (文書の他の口・ingest・viewer・webhook・既読・内部の LINE WORKS) は回らない", () => {
+  it("Cloud Run に残る notify の口 (文書の書きの口・search・ingest・viewer・webhook・既読・内部の LINE WORKS) は回らない", () => {
     const { env } = setup();
     for (const path of CLOUD_RUN_PATHS) {
       for (const proxy of ["browser", "admin", "internal", "device"] as const) {
-        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
+        for (const method of ["GET", "POST", "DELETE"]) {
+          expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toBeNull();
+        }
       }
     }
+  });
+
+  it("文書とメールの閲覧 (W8c-1) は画面用の GET だけ ALC_NOTIFY へ。DELETE・POST・ほかの proxy は null (= Cloud Run)", () => {
+    const { notify, env } = setup();
+    for (const path of READ_PATHS) {
+      expect(resolveAlcBinding(path, env, "browser", "GET"), path).toEqual({ fetcher: notify, host: "alc-notify" });
+      expect(resolveAlcBinding(path, env, "browser", "get"), path).toEqual({ fetcher: notify, host: "alc-notify" });
+      for (const method of ["DELETE", "POST", "PUT", undefined]) {
+        expect(resolveAlcBinding(path, env, "browser", method), `${method} ${path}`).toBeNull();
+      }
+      for (const proxy of ["admin", "internal", "device", "rpc"] as const) {
+        expect(resolveAlcBinding(path, env, proxy, "GET"), `${proxy} ${path}`).toBeNull();
+      }
+    }
+  });
+
+  it("(h) alc-proxy の文書の GET は binding、同じ path の DELETE と upload の POST は Cloud Run", async () => {
+    const { notify, cloudRun, env } = setup();
+    const res = await handleAlcProxy(alcReq(`/alc-proxy/api/notify/documents/${DOC}/preview?original=true`, { method: "GET" }), env);
+    expect(await res.text()).toBe("from-binding");
+    expect(notify.fetch.mock.calls[0]![0]).toBe(`https://alc-notify/api/notify/documents/${DOC}/preview?original=true`);
+    expect(cloudRun).not.toHaveBeenCalled();
+
+    await handleAlcProxy(alcReq(`/alc-proxy/api/notify/documents/${DOC}`, { method: "DELETE" }), env);
+    await handleAlcProxy(alcReq("/alc-proxy/api/notify/documents/upload", { body: "x" }), env);
+    expect(notify.fetch).toHaveBeenCalledTimes(1);
+    expect(cloudRun).toHaveBeenCalledTimes(2);
+    expect(String(cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example/api/notify/documents/${DOC}`);
+    expect((cloudRun.mock.calls[0]![1] as RequestInit).method).toBe("DELETE");
+    expect(String(cloudRun.mock.calls[1]![0])).toBe("https://alc-api.test.example/api/notify/documents/upload");
   });
 
   it("binding が未定義なら、どの行も null (= Cloud Run)", () => {
@@ -1244,9 +1290,9 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(b) alc-proxy の Cloud Run に残る口 (文書の一覧) は binding があっても Cloud Run", async () => {
+  it("(b) alc-proxy の Cloud Run に残る口 (文書の search) は binding があっても Cloud Run", async () => {
     const { notify, cloudRun, env } = setup();
-    const res = await handleAlcProxy(alcReq("/alc-proxy/api/notify/documents", { method: "GET" }), env);
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/notify/documents/search", { method: "GET" }), env);
     expect(await res.text()).toBe("from-cloud-run");
     expect(cloudRun).toHaveBeenCalledTimes(1);
     expect(notify.fetch).not.toHaveBeenCalled();

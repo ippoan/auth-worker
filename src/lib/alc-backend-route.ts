@@ -51,7 +51,12 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * method はこの表では絞らない (worker 側が GET しか受けない)。
  * `/api/notify/` の宛先・グループ・LINE の設定・LINE WORKS のトークルームとメンバー・試し配信は `alc-notify` へ回す
  * (画面用と、Cloud Run を直に叩いていた管理画面用の 2 つ)。文書の配信は id を UUID に固定した pattern で、画面用だけ。
- * `/api/notify/documents/` と `/api/notify/lineworks/` の prefix は足さない (文書の他の口・ingest・viewer・LINE の webhook・
+ * 文書とメールの閲覧 (W8c-1、Refs ippoan/rust-alc-api#680) も `alc-notify` へ回す: 文書の一覧 `/api/notify/documents` と
+ * メールの一覧 `/api/notify/emails` (完全一致)、文書の 1 件・preview・download (`/api/notify/documents/{uuid}`・`/preview`・
+ * `/download`) とメールの 1 件 (`/api/notify/emails/{uuid}`) (UUID に固定した pattern)。画面用 (nuxt-notify の /api/proxy →
+ * /alc-proxy) だけで、**method は GET だけ** — 同じ path の文書の削除 (DELETE `/api/notify/documents/{uuid}`) と、upload・
+ * redact-recompute・extract-recompute (POST) は Cloud Run に残る (W8c-2)。`/api/notify/documents/search` は入れない (rust から消す)。
+ * `/api/notify/documents/` と `/api/notify/lineworks/` の prefix は足さない (文書の書きの口・ingest・viewer・LINE の webhook・
  * 既読の記録は Cloud Run に残る)。
  * `/api/trouble/` は trouble の全部の口 (prefix)。worker が rust の口を全部持つので丸ごと `alc-trouble` へ回す。画面用の proxy だけ
  * (nuxt-trouble は /alc-proxy 経由)。予約の発火 (`/api/internal/trouble/schedules/{id}/fire`) は id を UUID に固定した pattern で、
@@ -227,6 +232,39 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/notify/test-distribute", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
   // 宛先の画面の社員の選択肢 (宛先と社員の結び付け、Refs ippoan/alc-app#436)。alc-notify-worker v0.1.5 から
   { match: "exact", path: "/api/notify/employees", binding: "ALC_NOTIFY", host: "alc-notify", proxies: ["browser", "admin"] },
+  // 文書とメールの閲覧 (W8c-1)。画面用の GET だけ (同じ path の DELETE・POST は Cloud Run)
+  {
+    match: "exact",
+    path: "/api/notify/documents",
+    binding: "ALC_NOTIFY",
+    host: "alc-notify",
+    proxies: ["browser"],
+    methods: { browser: ["GET"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/notify\/documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\/preview|\/download)?$/i,
+    binding: "ALC_NOTIFY",
+    host: "alc-notify",
+    proxies: ["browser"],
+    methods: { browser: ["GET"] },
+  },
+  {
+    match: "exact",
+    path: "/api/notify/emails",
+    binding: "ALC_NOTIFY",
+    host: "alc-notify",
+    proxies: ["browser"],
+    methods: { browser: ["GET"] },
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/notify\/emails\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_NOTIFY",
+    host: "alc-notify",
+    proxies: ["browser"],
+    methods: { browser: ["GET"] },
+  },
   {
     match: "pattern",
     pattern: /^\/api\/notify\/documents\/[0-9a-f-]{36}\/distribute$/,
