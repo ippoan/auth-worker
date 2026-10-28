@@ -469,3 +469,9 @@ branches = true
 [[files]]
 path = "src/handlers/mcp-auth-callback-google.ts"
 branches = true
+
+# ippoan/rust-alc-api#680 (W8c-2): notify-worker が alc-redact (Cloud Run) を呼ぶ口。
+# SA key で mint した ID token を持って外へ出る口なので、path の固定と fail-closed を 100% で守る。
+[[files]]
+path = "src/alc-redact-entrypoint.ts"
+branches = true

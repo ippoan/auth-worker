@@ -170,6 +170,9 @@ export { GoogleGcpTokenEntrypoint } from "./google-gcp-token-entrypoint";
 // ippoan/rust-alc-api#680 (W6b-b): alc-devices-worker の kiosk 端末の再ペアリングが credential を発行する口 (`pairInternal`)。
 // 共有の秘密を持たない binding だけが呼べるよう別 class。
 export { DevicePairEntrypoint } from "./device-pair-entrypoint";
+// ippoan/rust-alc-api#680 (W8c-2): alc-notify-worker が alc-redact (Cloud Run) の黒塗りと抽出を呼ぶ口 (`redact` / `extract`)。
+// ID token を作る SA の鍵を notify-worker に配らないため。body が ArrayBuffer なので既存の class と分ける。
+export { AlcRedactEntrypoint } from "./alc-redact-entrypoint";
 
 import type { SecretBinding } from "./lib/secret";
 import type { BrowserWorker } from "@cloudflare/puppeteer";
@@ -222,6 +225,10 @@ export interface Env {
    *  ohishi-exp/ohishi-logi#1。新規 GCP project 確定後に投入する (2026-07-08
    *  時点は未デプロイのため未設定)。 */
   OHISHI_LOGI_ORIGIN?: string;
+  /** alc-redact (Cloud Run、IAM の invoker で守る) の service URL。`AlcRedactEntrypoint` が
+   *  aud = この値の ID token を `ALC_API_PROXY_SA_KEY` で mint して呼ぶ。未設定なら 503
+   *  `redact_unconfigured` (fail-closed)。Refs ippoan/rust-alc-api#680 (W8c-2)。 */
+  ALC_REDACT_ORIGIN?: string;
   /** `/ohishi-logi-proxy/*` が Google OIDC ID token を mint して Cloud Run IAM
    *  lockdown 後の ohishi-logi に到達するための run.invoker SA key (JSON)。
    *  ALC_API_PROXY_SA_KEY とは別の SA (ohishi-logi service 限定の run.invoker
