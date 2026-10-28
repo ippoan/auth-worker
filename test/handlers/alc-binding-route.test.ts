@@ -2946,3 +2946,137 @@ describe("端末の登録・管理・報告 → ALC_DEVICES binding (W6b-a、Ref
     expect(cloudRun).not.toHaveBeenCalled();
   });
 });
+
+describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoan/rust-alc-api#680)", () => {
+  const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
+  type Proxy = "browser" | "internal" | "device" | "admin" | "rpc";
+  const PROXIES: ReadonlyArray<Proxy> = ["browser", "internal", "device", "admin", "rpc"];
+
+  function setupTenko() {
+    const tenko = makeBinding();
+    return { tenko, ...setup({ ALC_TENKO: tenko as unknown as Fetcher }) };
+  }
+
+  /** [path, method, binding に回す proxy] */
+  const ROWS: Array<[string, string, ReadonlyArray<Proxy>]> = [
+    ["/api/tenko/records", "GET", ["browser", "device"]],
+    ["/api/tenko/records/csv", "GET", ["browser", "device"]],
+    ["/api/tenko/schedules", "GET", ["browser", "device"]],
+    ["/api/tenko/schedules", "POST", ["browser", "device"]],
+    ["/api/tenko/schedules/batch", "POST", ["browser", "device"]],
+    [`/api/tenko/schedules/${ID}`, "PUT", ["browser", "device"]],
+    [`/api/tenko/schedules/pending/${ID}`, "GET", ["device"]],
+    ["/api/tenko/health-baselines", "GET", ["browser"]],
+    [`/api/tenko/health-baselines/${ID}`, "DELETE", ["browser"]],
+    ["/api/tenko/equipment-failures", "POST", ["browser"]],
+    ["/api/tenko/equipment-failures/csv", "GET", ["browser"]],
+    [`/api/tenko/equipment-failures/${ID}`, "PUT", ["browser"]],
+    ["/api/tenko/webhooks", "GET", ["browser"]],
+    [`/api/tenko/webhooks/${ID}`, "DELETE", ["browser"]],
+    [`/api/tenko/webhooks/${ID}/deliveries`, "GET", ["browser"]],
+    ["/api/tenko/dashboard", "GET", ["browser", "device"]],
+    ["/api/tenko/daily-health-status", "GET", ["browser"]],
+    [`/api/tenko/driver-info/${ID}`, "GET", ["browser", "device"]],
+    ["/api/tenko-call/numbers", "POST", ["browser"]],
+    ["/api/tenko-call/numbers/12", "DELETE", ["browser"]],
+    ["/api/tenko-call/drivers", "GET", ["browser", "device"]],
+    ["/api/tenko-call/register", "POST", ["internal"]],
+    ["/api/tenko-call/tenko", "POST", ["internal"]],
+  ];
+
+  it("口ごとに、今通っている proxy だけが binding を引く", () => {
+    const { tenko, env } = setupTenko();
+    const target = { fetcher: tenko, host: "alc-tenko" };
+    for (const [path, method, allowed] of ROWS) {
+      for (const proxy of PROXIES) {
+        const want = allowed.includes(proxy) ? target : null;
+        expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toEqual(want);
+      }
+    }
+  });
+
+  it("端末用の読み取りの口と点呼の電話の登録・点呼は、決めた method だけを回す", () => {
+    const { env } = setupTenko();
+    for (const path of ["/api/tenko/records", "/api/tenko/records/csv", "/api/tenko/dashboard", "/api/tenko-call/drivers"]) {
+      expect(resolveAlcBinding(path, env, "device", "POST"), path).toBeNull();
+    }
+    for (const path of ["/api/tenko-call/register", "/api/tenko-call/tenko"]) {
+      expect(resolveAlcBinding(path, env, "internal", "GET"), path).toBeNull();
+    }
+  });
+
+  it("点呼のセッション (W7b)・近い path・UUID でない id は Cloud Run", () => {
+    const { env } = setupTenko();
+    for (const path of [
+      "/api/tenko/sessions",
+      `/api/tenko/sessions/${ID}`,
+      "/api/tenko/sessions/start",
+      `/api/tenko/sessions/${ID}/judgment`,
+      `/api/tenko/sessions/${ID}/alcohol`,
+      `/api/tenko/records/${ID}`,
+      "/api/tenko/recordsx",
+      "/api/tenko/schedules/not-a-uuid",
+      "/api/tenko/schedules/pending/not-a-uuid",
+      `/api/tenko/schedules/${ID}/x`,
+      "/api/tenko/driver-info/emp-1",
+      "/api/tenko/webhooks/not-a-uuid",
+      "/api/tenko-call/numbers/abc",
+      "/api/tenko-callx",
+      "/api/tenko/",
+      "/api/tenko/x",
+    ]) {
+      for (const proxy of PROXIES) {
+        for (const method of ["GET", "POST", "PUT", "DELETE"]) {
+          expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toBeNull();
+        }
+      }
+    }
+  });
+
+  it("binding が未定義なら null (= Cloud Run)", () => {
+    const { env } = setup();
+    expect(resolveAlcBinding("/api/tenko/records", env, "browser", "GET")).toBeNull();
+    expect(resolveAlcBinding("/api/tenko-call/register", env, "internal", "POST")).toBeNull();
+  });
+
+  it("alc-proxy の記録の一覧と予定の更新は binding に届く (method・query もそのまま)", async () => {
+    const { tenko, cloudRun, env } = setupTenko();
+    expect(await (await handleAlcProxy(alcReq("/alc-proxy/api/tenko/records?page=2", { method: "GET" }), env)).text()).toBe(
+      "from-binding",
+    );
+    expect(
+      await (await handleAlcProxy(alcReq(`/alc-proxy/api/tenko/schedules/${ID}`, { method: "PUT", body: "{}" }), env)).text(),
+    ).toBe("from-binding");
+    expect(tenko.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
+      ["https://alc-tenko/api/tenko/records?page=2", "GET"],
+      [`https://alc-tenko/api/tenko/schedules/${ID}`, "PUT"],
+    ]);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("device-data-proxy のキオスクのダッシュボードは binding に届く", async () => {
+    const { tenko, cloudRun, env } = setupTenko();
+    const res = await handleDeviceDataProxy(await kioskReq("/device-data-proxy/api/tenko/dashboard", "GET"), env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = tenko.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-tenko/api/tenko/dashboard");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-internal-proxy の点呼の電話の登録 (public-ingest) は binding に届き、tenant・dev の印は渡さない", async () => {
+    vi.mocked(mintGoogleIdToken).mockReset();
+    const { tenko, cloudRun, env } = setupTenko();
+    const res = await handleAlcInternalProxy(
+      internalReq("/alc-internal-proxy/api/tenko-call/register", { "content-type": "application/json", "X-Device-Dev": "1" }, "{}"),
+      env,
+    );
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = tenko.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-tenko/api/tenko-call/register");
+    expect(init!.method).toBe("POST");
+    expect(init!.headers).toEqual({ "Content-Type": "application/json" });
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+});

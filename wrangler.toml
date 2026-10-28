@@ -204,6 +204,13 @@ service = "alc-people"
 binding = "ALC_DEVICES"
 service = "alc-devices"
 
+# alc-tenko (ippoan/alc-tenko-worker、ippoan/rust-alc-api#680)。点呼の読み取りと管理の口 (W7a。画面用・端末用・
+# 点呼の電話の登録と点呼) を回す (src/lib/alc-backend-route.ts)。点呼のセッション (W7b) は回さない。
+# alc-tenko は workers_dev = false・route なしで、届く経路はこの binding だけ。本番だけ (staging は Cloud Run の staging のまま)。
+[[services]]
+binding = "ALC_TENKO"
+service = "alc-tenko"
+
 # alc-measurements (ippoan/alc-measurements-worker、ippoan/alc-app#436)。/api/measurements 系の 7 口 (画面用・端末用) を回す
 # (src/lib/alc-backend-route.ts)。alc-measurements は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-measurements-staging。
 [[services]]

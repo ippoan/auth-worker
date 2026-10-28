@@ -290,6 +290,10 @@ export interface Env {
    *  `pairing-tenant` の問い合わせ (`lib/alc-internal.ts`) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。
    *  未定義なら従来どおり Cloud Run。 */
   ALC_DEVICES?: Fetcher;
+  /** 点呼の worker (`alc-tenko`、ippoan/alc-tenko-worker) への service binding (本番だけ)。定義されている時だけ、
+   *  点呼の読み取りと管理の口 (W7a) を alc-proxy・device-data-proxy・alc-internal-proxy (点呼の電話の登録・点呼) が
+   *  Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。点呼のセッション (W7b) は回さない。未定義なら従来どおり Cloud Run。 */
+  ALC_TENKO?: Fetcher;
   /** 燃料の worker (`rust-fuel-worker`、Refs yhonda-ohishi/nginx#814) への service binding。定義されている時だけ、
    *  `/api/fuel/*` を alc-proxy (画面用) が Cloud Run でなくここへ流し (`lib/alc-backend-route.ts`)、機械の入口
    *  `/m/fuel-utran/*` (`handlers/machine-relay.ts`) が Basic を照合したあと `/machine/fuel-utran/*` へ中継する。

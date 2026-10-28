@@ -123,6 +123,10 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * `POST /api/devices/fcm-dismiss-test`。共有の秘密 (`X-Internal-Secret`) を照合する 3 口 (`fcm-notify-call`・
  * `test-fcm-all-exclude`・`trigger-update-dev`) は足さない (本番にその秘密が無く今も使えない。前の 2 つは cf-alc-signaling が
  * Cloud Run を直接呼び、この表を通らない)。
+ * 点呼の読み取りと管理 (W7a、Refs ippoan/rust-alc-api#680) は `alc-tenko` へ回す。記録の一覧・CSV、予定 (一覧・作成・一括・
+ * 1 件・更新・削除・乗務員の未消費の予定)、基準値、機器故障、webhook の設定と配信の記録、ダッシュボード、日々の健康状態、
+ * 乗務員情報、点呼の電話の番号・乗務員 (画面用。端末用は device-data-proxy の role の表にある口だけ) と、点呼の電話の
+ * 登録・点呼 (内部用 public-ingest)。点呼のセッション (`/api/tenko/sessions*`) は W7b まで Cloud Run に残すので、prefix にしない。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
@@ -387,6 +391,79 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     proxies: ["internal"],
     methods: { internal: ["GET"] },
   },
+  // 点呼の読み取りと管理 (W7a)。1 口ずつ exact か id を UUID (電話の番号は数字) に固定した pattern で
+  // (`/api/tenko/` の prefix にしない — 点呼のセッション `/api/tenko/sessions*` は W7b まで Cloud Run に残す)。
+  // 端末用は device-data-proxy の role の表 (キオスク・運行管理者席・dev の鍵のキオスク) が method まで絞る
+  { match: "exact", path: "/api/tenko/records", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
+  { match: "exact", path: "/api/tenko/records/csv", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
+  { match: "exact", path: "/api/tenko/schedules", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"] },
+  { match: "exact", path: "/api/tenko/schedules/batch", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/schedules\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser", "device"],
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/schedules\/pending\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["device"],
+  },
+  { match: "exact", path: "/api/tenko/health-baselines", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/health-baselines\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+  },
+  { match: "exact", path: "/api/tenko/equipment-failures", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  { match: "exact", path: "/api/tenko/equipment-failures/csv", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/equipment-failures\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+  },
+  { match: "exact", path: "/api/tenko/webhooks", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/webhooks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+  },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/webhooks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/deliveries$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+  },
+  { match: "exact", path: "/api/tenko/dashboard", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
+  { match: "exact", path: "/api/tenko/daily-health-status", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/driver-info\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser", "device"],
+  },
+  { match: "exact", path: "/api/tenko-call/numbers", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko-call\/numbers\/[0-9]+$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+  },
+  { match: "exact", path: "/api/tenko-call/drivers", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
+  { match: "exact", path: "/api/tenko-call/register", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["internal"], methods: { internal: ["POST"] } },
+  { match: "exact", path: "/api/tenko-call/tenko", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["internal"], methods: { internal: ["POST"] } },
 ];
 
 /** 転送先 (Service Binding と、URL に使うダミーの host)。 */
