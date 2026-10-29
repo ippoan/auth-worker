@@ -25,9 +25,10 @@ jobs:
     with:
       install_command: 'npm install'
       typecheck_command: 'npx tsc --noEmit && npx tsc -p test/tsconfig.json --noEmit'
+      # rust-alc-api の ts-rs の型 (scripts/export-ts-bindings.sh) は取らない。rust の撤収で artifact が無くなり、
+      # 生成物 src/types/alc-api.ts の使い手も無かった (Refs ippoan/rust-alc-api#680)
       post_install_script: |
         npx wrangler types
-        bash scripts/export-ts-bindings.sh src/types
       deploy_staging_script: 'npx wrangler deploy --env staging --var VERSION:${{ github.sha }} --var ALC_REDACT_ORIGIN:${{ vars.ALC_REDACT_ORIGIN_STAGING }}'
       # release は frontend-ci の release_no_traffic=true (default) により
       # `wrangler deploy` が `wrangler versions upload` (no-traffic) に置換される。
