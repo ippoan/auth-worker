@@ -11,9 +11,9 @@ import { renderAdminCallbackPage } from "../lib/admin-callback-html";
 
 export async function handleAdminNotifyPage(
   _request: Request,
-  env: Env,
+  _env: Env,
 ): Promise<Response> {
-  const html = renderAdminNotifyPage(env.ALC_API_ORIGIN);
+  const html = renderAdminNotifyPage();
   return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });

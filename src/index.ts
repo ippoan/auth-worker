@@ -1,5 +1,4 @@
 import { handleLoginPage } from "./handlers/login-page";
-import { handleAuthLogin } from "./handlers/login-api";
 import { handleGoogleRedirect } from "./handlers/google-redirect";
 import { handleGoogleCallback } from "./handlers/google-callback";
 import { handleEgovRedirect } from "./handlers/egov-redirect";
@@ -17,7 +16,6 @@ import { handleSsoList, handleSsoUpsert, handleSsoDelete } from "./handlers/api-
 import { handleAdminLineUsersPage, handleAdminLineUsersCallback } from "./handlers/admin-line-users";
 import { handleLineUsersList, handleLineUserDelete } from "./handlers/api-line-users";
 import { handleBotConfigList, handleBotConfigUpsert, handleBotConfigDelete, handleBotConfigExport } from "./handlers/api-bot-config";
-import { handleWoffAuth, handleWoffConfig } from "./handlers/woff-auth";
 import { handleMyOrgs } from "./handlers/api-my-orgs";
 import { handleAlcProxy } from "./handlers/alc-proxy";
 import { handleAlcInternalProxy } from "./handlers/alc-internal-proxy";
@@ -38,7 +36,6 @@ import { handleAuthCallback } from "./handlers/auth-callback";
 import { handleHealthProxy } from "./handlers/health";
 import { handleHealthOAuth } from "./handlers/health-oauth";
 import { handleSecretFingerprint } from "./handlers/health-fingerprints";
-import { handleHealthWif } from "./handlers/health-wif";
 import {
   handleUsersList, handleInvitationsList, handleInviteUser,
   handleDeleteInvitation, handleDeleteUser, handleUserRolesList, handleUserRoleSet,
@@ -190,13 +187,6 @@ export interface Env {
   GOOGLE_CLIENT_SECRET: SecretBinding;
   OAUTH_STATE_SECRET: string;
   AUTH_WORKER_ORIGIN: string;
-  ALC_API_ORIGIN: string;
-  /** flip 前 preview override (Refs ippoan/ci-dashboard#472) が許可する
-   *  rust-alc-api の Cloud Run host suffix。`/alc-proxy/*` は
-   *  `X-Alc-Preview-Api-Base` header の host が `<tag>---<この suffix>`
-   *  (= 同一 service の tagged revision URL) に一致する時だけ forward 先と
-   *  OIDC aud を差し替える。未設定なら override 要求は 400 (fail-closed)。 */
-  ALC_API_PREVIEW_HOST_SUFFIX?: string;
   /** issue #433: JWT の `token_kind` claim が `"dev"` (dev-login、issue #423)
    *  の token で `/alc-proxy` に非 GET/HEAD/OPTIONS が来た時に許可する backend
    *  path prefix (comma-sep)。空/未設定 = 非GET全拒否 (fail-closed)。唯一の
@@ -211,7 +201,7 @@ export interface Env {
   /** 機械用資格情報 (`lib/machine-credential.ts`) の KV の key に入れる環境名 (top-level `"prod"` /
    *  `[env.staging.vars]` `"staging"`)。`AUTH_CONFIG` は両 env で同じ namespace なので、これで分ける。
    *  未設定なら資格情報の発行・照合・チケットは全部失敗側に倒れ、管理 API は 503
-   *  (Refs ohishi-exp/rust-leave-worker#1)。 */
+   *  (Cloud Run 退避は W9 で撤去。Refs ohishi-exp/rust-leave-worker#1)。 */
   MACHINE_CRED_ENV?: string;
   AUTH_CONFIG: KVNamespace;
   /** HS256 JWT secret, shared with rust-alc-api. Used by /top to verify the
@@ -248,15 +238,15 @@ export interface Env {
   CF_FLICKR_CAM_WORKER?: Fetcher;
   /** rust-alc-api 移行先 vein worker (`alc-vein`) への service binding。定義されている時だけ
    *  `/api/vein/*` を alc-proxy / device-data-proxy が Cloud Run でなくここへ流す
-   *  (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+   *  (`lib/alc-backend-route.ts`)。未定義なら 404。 */
   ALC_VEIN?: Fetcher;
   /** rust-alc-api 移行先 dtako worker (`alc-dtako`) への service binding。定義されている時だけ
    *  `lib/alc-backend-route.ts` の表の行 (zip のアップロードと CSV の分割の口) を Cloud Run でなく
-   *  ここへ流す。未定義なら従来どおり Cloud Run。 */
+   *  ここへ流す。未定義なら 404。 */
   ALC_DTAKO?: Fetcher;
   /** 勤怠申請の worker (`rust-leave-worker`) への service binding。定義されている時だけ
    *  `/api/leave/*` を alc-proxy (画面用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。
-   *  未定義なら従来どおり Cloud Run。 */
+   *  未定義なら 404。 */
   ALC_LEAVE?: Fetcher;
   /** 休暇申請の画面 (`nuxt-leave`) への service binding。機械の入口 `/m/leave-scan/*`
    *  (`handlers/machine-relay.ts`) が、機械用資格情報の Basic を照合したあと `/dav/*` へ中継する。
@@ -265,50 +255,50 @@ export interface Env {
   /** LINE WORKS の worker (`alc-lineworks`) への service binding。Client Secret と Private Key を扱うのは
    *  この worker だけ。`/api/internal/lineworks/send` (alc-internal-proxy と端末通知) を Cloud Run でなく
    *  ここへ流し (`lib/alc-backend-route.ts`)、Rich Menu と MCP の `lineworks_get` は access token を
-   *  ここから取る (`lib/lineworks-bot-creds.ts`)。未定義なら送信は従来どおり Cloud Run、token は取れない。 */
+   *  ここから取る (`lib/lineworks-bot-creds.ts`)。未定義なら送信は 404、token は取れない。 */
   ALC_LINEWORKS?: Fetcher;
   /** notify の worker (`alc-notify`) への service binding。定義されている時だけ、`/api/notify/` の宛先・グループ・
    *  LINE の設定・LINE WORKS のトークルームとメンバー・配信の口を、alc-proxy (画面用) と admin-notify-api・
    *  api-line-users (管理画面用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。
-   *  未定義なら従来どおり Cloud Run。 */
+   *  未定義なら 404。 */
   ALC_NOTIFY?: Fetcher;
   /** trouble の worker (`alc-trouble`) への service binding。定義されている時だけ、`/api/trouble/` の全部の口を alc-proxy (画面用) が、
    *  予約の発火 `/api/internal/trouble/schedules/{id}/fire` を alc-internal-proxy (内部用) が Cloud Run でなくここへ流す
-   *  (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+   *  (`lib/alc-backend-route.ts`)。未定義なら 404。 */
   ALC_TROUBLE?: Fetcher;
   /** 測定の worker (`alc-measurements`) への service binding。定義されている時だけ、`/api/measurements` 系の 7 口と
-   *  `/api/upload/{face-photo,blow-video,report-audio}` を alc-proxy (画面用) と device-data-proxy (端末用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+   *  `/api/upload/{face-photo,blow-video,report-audio}` を alc-proxy (画面用) と device-data-proxy (端末用) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら 404。 */
   ALC_MEASUREMENTS?: Fetcher;
   /** 拠点カメラの SD 録画の切り出しの worker (`alc-cam-sd-ingest`、ippoan/alc-cam の ingest/) への service binding。
    *  定義されている時だけ、`/api/cam-clips/*` を alc-proxy (画面用) がここへ流す (`lib/alc-backend-route.ts`)。
-   *  未定義なら従来どおり Cloud Run (= 404)。 */
+   *  未定義なら 404。 */
   ALC_CAM_CLIPS?: Fetcher;
   /** 車検証・車両整備の worker (`alc-carins`、ippoan/alc-carins-worker) への service binding。定義されている時だけ、
    *  `/api/car-inspections/`・`/api/files`・`/api/nfc-tags/`・`/api/maintenance/` を alc-proxy (画面用)・device-data-proxy
-   *  (端末用)・SmbIngest (RPC) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+   *  (端末用)・SmbIngest (RPC) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。未定義なら 404。 */
   ALC_CARINS?: Fetcher;
   /** 物品・携行品・伝達事項・指導記録の worker (`alc-records`、ippoan/alc-records-worker) への service binding。定義されている時だけ、
    *  `/api/items/`・`/api/item-files/`・`/api/carrying-items/`・`/api/communication-items/`・`/api/guidance-records/` を
    *  alc-proxy (画面用) が、`/api/carrying-items` を device-data-proxy (端末用) も Cloud Run でなくここへ流す
-   *  (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+   *  (`lib/alc-backend-route.ts`)。未定義なら 404。 */
   ALC_RECORDS?: Fetcher;
   /** 社員・タイムカードの worker (`alc-people`、ippoan/alc-people-worker) への service binding。定義されている時だけ、
    *  `/api/timecard/` を alc-proxy (画面用)・device-data-proxy (端末用)・InternalEntrypoint (RPC) が Cloud Run でなく
-   *  ここへ流す (`lib/alc-backend-route.ts`)。未定義なら従来どおり Cloud Run。 */
+   *  ここへ流す (`lib/alc-backend-route.ts`)。未定義なら 404。 */
   ALC_PEOPLE?: Fetcher;
   /** 端末の登録・管理の worker (`alc-devices`、ippoan/alc-devices-worker) への service binding (本番だけ)。定義されている時だけ、
    *  端末の管理・登録・報告の口 (W6b-a) を alc-proxy・device-data-proxy・alc-internal-proxy (登録の受け取り) が、
    *  `pairing-tenant` の問い合わせ (`lib/alc-internal.ts`) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。
-   *  未定義なら従来どおり Cloud Run。 */
+   *  未定義なら 404。 */
   ALC_DEVICES?: Fetcher;
   /** 点呼の worker (`alc-tenko`、ippoan/alc-tenko-worker) への service binding (本番だけ)。定義されている時だけ、
    *  点呼の読み取りと管理の口 (W7a) を alc-proxy・device-data-proxy・alc-internal-proxy (点呼の電話の登録・点呼) が
-   *  Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。点呼のセッション (W7b) は回さない。未定義なら従来どおり Cloud Run。 */
+   *  Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。点呼のセッション (W7b) は回さない。未定義なら 404。 */
   ALC_TENKO?: Fetcher;
   /** 燃料の worker (`rust-fuel-worker`、Refs yhonda-ohishi/nginx#814) への service binding。定義されている時だけ、
    *  `/api/fuel/*` を alc-proxy (画面用) が Cloud Run でなくここへ流し (`lib/alc-backend-route.ts`)、機械の入口
    *  `/m/fuel-utran/*` (`handlers/machine-relay.ts`) が Basic を照合したあと `/machine/fuel-utran/*` へ中継する。
-   *  未定義なら `/api/fuel/*` は Cloud Run、`/m/fuel-utran/*` は Basic が通っても 503。 */
+   *  未定義なら `/api/fuel/*` は 404、`/m/fuel-utran/*` は Basic が通っても 503。 */
   FUEL_WORKER?: Fetcher;
   /** alc-auth-worker (`ippoan/alc-auth-worker`) への service binding。機械用資格情報
    *  (`lib/machine-credential.ts`) の表 `alc_api.machine_credentials` を内部口
@@ -317,11 +307,11 @@ export interface Env {
   ALC_AUTH?: Fetcher;
   /** `"1"` で、ログインの内部口 (`lib/alc-internal.ts` の sso-config・user の upsert・refresh-token・
    *  LINE の受信者) を Cloud Run でなく alc-auth-worker (`ALC_AUTH`) へ向ける。`ALC_AUTH` か
-   *  `INTERNAL_SHARED_SECRET` が無ければ Cloud Run のまま (Refs ohishi-exp/rust-leave-worker#1)。 */
+   *  `INTERNAL_SHARED_SECRET` が無ければ 404 (Cloud Run 退避は W9 で撤去。Refs ohishi-exp/rust-leave-worker#1)。 */
   ALC_AUTH_LOGIN?: string;
   /** `"1"` で、`/api/auth/me`・`/api/auth/logout`・`/api/my-orgs` を alc-auth-worker (`ALC_AUTH`) の内部口から
-   *  組んで答える (`lib/alc-session.ts`)。本番・staging の両方に置く。無い・`ALC_AUTH`/secret が無ければ Cloud Run
-   *  (Refs ohishi-exp/rust-leave-worker#1)。 */
+   *  組んで答える (`lib/alc-session.ts`)。本番・staging の両方に置く。無い・`ALC_AUTH`/secret が無ければ 404
+   *  (Cloud Run 退避は W9 で撤去。Refs ohishi-exp/rust-leave-worker#1)。 */
   ALC_AUTH_SESSION?: string;
   /** cf-alc-recorder (CoreS3 測定データ WS 受口) への service binding。
    *  `/device/setup` の OTA トリガ/進捗ポーリングが recorder の内部 HTTP API
@@ -758,11 +748,6 @@ export default {
           // drift-check.yml) が GCP SM 値の hash を投げてくる入口。
           case "/health/secret-fingerprint":
             return await handleSecretFingerprint(request, env);
-          // Refs ippoan/rust-alc-api#434 step 3: OIDC mint (run.invoker SA key)
-          // が生きているかの死活チェック (Bearer JWT 必須)。Cloud Run IAM
-          // lockdown 後に data-proxy が backend へ到達できるかと等価。
-          case "/health/wif":
-            return await handleHealthWif(request, env);
           // ロールの一覧 (POST は付け外し。Refs ohishi-exp/rust-leave-worker#1)
           case "/api/users/roles":
             return await handleUserRolesList(request, env);
@@ -803,8 +788,6 @@ export default {
             return await handleLineCallback(request, env);
           case "/oauth/line/select-tenant":
             return await handleLineSelectTenant(request, env);
-          case "/auth/woff-config":
-            return await handleWoffConfig(request, env);
           case "/admin/sso":
             return await handleAdminSsoPage(request, env);
           case "/admin/sso/callback":
@@ -1037,12 +1020,6 @@ export default {
           // ロールの付け外し (持ち主は alc-auth-worker。Refs ohishi-exp/rust-leave-worker#1)
           case "/api/users/roles":
             return await handleUserRoleSet(request, env);
-          // WOFF Auth
-          case "/auth/woff":
-            return await handleWoffAuth(request, env);
-          // Password login
-          case "/auth/login":
-            return await handleAuthLogin(request, env);
           // Browser JWT introspection (issue #290) — server-proxy consumer 用に
           // 署名検証 + APP_TENANT_ACL 判定を auth-worker に集約する。
           case "/auth/introspect":

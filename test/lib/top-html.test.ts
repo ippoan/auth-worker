@@ -106,25 +106,17 @@ describe("renderTopPage", () => {
     it("omits the staging footer when workerEnv is prod", () => {
       const result = renderTopPage([], "https://auth.example.com", {
         workerEnv: "prod",
-        alcApiOrigin: "https://alc.example.com",
       });
       expect(result).not.toContain("staging-footer");
     });
 
-    it("omits the footer when alcApiOrigin is missing", () => {
+    it("renders the footer (STAGING の印だけ。backend の版は読まない) when workerEnv is staging", () => {
       const result = renderTopPage([], "https://auth.example.com", {
         workerEnv: "staging",
-      });
-      expect(result).not.toContain("staging-footer");
-    });
-
-    it("renders the footer when workerEnv is staging and alcApiOrigin is set", () => {
-      const result = renderTopPage([], "https://auth.example.com", {
-        workerEnv: "staging",
-        alcApiOrigin: "https://alc-staging.example.com",
       });
       expect(result).toContain("staging-footer");
       expect(result).toContain("STAGING");
+      expect(result).not.toContain("/api/health");
     });
 
     it("defaults to no footer when stagingOpts is omitted", () => {
@@ -292,20 +284,16 @@ describe("renderTopPage", () => {
 });
 
 describe("renderStagingFooter", () => {
-  it("embeds the alc api origin via JSON.stringify and reads the backend version from /api/health", () => {
-    const html = renderStagingFooter("https://alc.example.com");
-    expect(html).toContain(JSON.stringify("https://alc.example.com"));
-    expect(html).toContain("/api/health");
-    expect(html).toContain("staging-backend-info");
-  });
-
-  it("safely escapes an origin that contains a quote", () => {
-    const html = renderStagingFooter('https://a";alert(1);//');
-    expect(html).toContain(JSON.stringify('https://a";alert(1);//'));
+  it("STAGING の印だけを出し、backend の版 (rust /api/health) は読まない (W9)", () => {
+    const html = renderStagingFooter();
+    expect(html).toContain("STAGING");
+    expect(html).toContain("staging-footer");
+    expect(html).not.toContain("/api/health");
+    expect(html).not.toContain("<script");
   });
 
   it("has no export / import (removed with the rust staging export / import)", () => {
-    const html = renderStagingFooter("https://alc.example.com");
+    const html = renderStagingFooter();
     expect(html).not.toContain("/api/staging/");
     expect(html).not.toContain("staging-btn-");
   });

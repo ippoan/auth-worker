@@ -2,18 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
 import { makeJwt } from "../helpers/live-env";
 
-// ACL / OIDC mint は別ユニットでテスト済み。ここでは handler の flow
+// ACL は別ユニットでテスト済み。ここでは handler の flow
 // (token 抽出 → 検証 → origin 必須 → identity 注入 → forward) を固定する。
+// 振り分け表は「どの path にも binding がある」fake に差し替える (W9 で Cloud Run 退避を撤去。
+// 表に無い path が 404 になることは alc-binding-route.test.ts が本物の表で確認する)。
 vi.mock("../../src/lib/acl", () => ({
   checkOrgAccess: vi.fn(async () => true),
   checkAppTenant: vi.fn(() => true),
 }));
-vi.mock("../../src/lib/oidc", () => ({
-  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
-}));
+vi.mock("../../src/lib/alc-backend-route", async (orig) =>
+  (await import("../helpers/fake-alc-route")).fakeAlcRouteFactory(await orig<object>()),
+);
 
-import { handleAlcProxy, validatePreviewBase } from "../../src/handlers/alc-proxy";
-import { mintGoogleIdToken } from "../../src/lib/oidc";
+import { handleAlcProxy } from "../../src/handlers/alc-proxy";
 import { DEVICE_ROLES, mintDeviceJwt } from "../../src/lib/device";
 
 const ORIGIN = "https://alc.ippoan.org";
@@ -25,7 +26,6 @@ afterAll(() => {
 
 function env(overrides: Record<string, unknown> = {}) {
   return createMockEnv({
-    ALC_API_PROXY_SA_KEY: "{}", // resolveSecret が非空を返せばよい (oidc は mock)
     INTERNAL_SHARED_SECRET: PROXY_SECRET, // consumer worker proof 用 (resolveAllSharedSecrets)
     ...overrides,
   });
@@ -88,14 +88,6 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("ALC_API_PROXY_SA_KEY 未設定は 503", async () => {
-    const res = await handleAlcProxy(
-      req("/alc-proxy/api/employees"),
-      env({ ALC_API_PROXY_SA_KEY: undefined }),
-    );
-    expect(res.status).toBe(503);
-  });
-
   it("署名不正な token は 401", async () => {
     const res = await handleAlcProxy(
       req("/alc-proxy/api/employees", { token: makeJwt("wrong-secret") }),
@@ -104,7 +96,7 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("正常: OIDC Bearer + X-Tenant-ID/X-User-* を注入して ALC_API_ORIGIN に forward", async () => {
+  it("正常: X-Tenant-ID/X-User-* を注入して binding に forward (Authorization は付けない)", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
@@ -116,69 +108,40 @@ describe("handleAlcProxy (rust-alc-api#434 step 3, 方式 B)", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    // ALC_API_ORIGIN (mock env) + /alc-proxy 以降の path + query
+    // /alc-proxy 以降の path + query
     expect(String(url)).toBe("https://alc-api.test.example/api/employees?x=1");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
     expect(h["X-Tenant-ID"]).toBe("11111111-1111-1111-1111-111111111111");
     expect(h["X-User-ID"]).toBe("22222222-2222-2222-2222-222222222222");
     expect(h["X-User-Email"]).toBe("test@example.com");
     expect(h["X-User-Role"]).toBe("admin");
   });
 
-  it("preview override: 妥当な tagged revision URL は forward 先 + OIDC aud を差し替える (Refs ippoan/ci-dashboard#472)", async () => {
+  it("X-Alc-Preview-Api-Base は無視する (W9 で flip 前 preview override を撤去)", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    const previewBase = "https://v1-2-3---rust-alc-api-747065218280.asia-northeast1.run.app";
-    const res = await handleAlcProxy(
-      req("/alc-proxy/api/employees", {
-        headers: { "X-Alc-Preview-Api-Base": previewBase },
-      }),
-      env({
-        ALC_API_PREVIEW_HOST_SUFFIX: "rust-alc-api-747065218280.asia-northeast1.run.app",
-      }),
-    );
-    expect(res.status).toBe(200);
-    const [url] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe(`${previewBase}/api/employees`);
-    // OIDC aud も preview origin に切り替わる
-    expect(vi.mocked(mintGoogleIdToken)).toHaveBeenLastCalledWith("{}", previewBase);
-  });
-
-  it("preview override: suffix 不一致 / 非 https / tag 無しは 400 (prod への silent fallback をしない)", async () => {
-    const suffixEnv = env({
-      ALC_API_PREVIEW_HOST_SUFFIX: "rust-alc-api-747065218280.asia-northeast1.run.app",
-    });
-    for (const bad of [
+    for (const previewBase of [
+      "https://v1-2-3---rust-alc-api-747065218280.asia-northeast1.run.app",
       "https://evil.example/",
-      "https://v1---other-service-123.asia-northeast1.run.app",
-      "http://v1---rust-alc-api-747065218280.asia-northeast1.run.app",
-      "https://rust-alc-api-747065218280.asia-northeast1.run.app", // tag 無し (= prod と同じ)
       "not a url",
     ]) {
+      fetchMock.mockClear();
       const res = await handleAlcProxy(
-        req("/alc-proxy/api/employees", { headers: { "X-Alc-Preview-Api-Base": bad } }),
-        suffixEnv,
+        req("/alc-proxy/api/employees", {
+          headers: { "X-Alc-Preview-Api-Base": previewBase },
+        }),
+        env(),
       );
-      expect(res.status, bad).toBe(400);
+      // 400 にならず、forward 先も preview に変わらない (binding の転送先のまま)
+      expect(res.status, previewBase).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/employees");
     }
-  });
-
-  it("preview override: ALC_API_PREVIEW_HOST_SUFFIX 未設定なら override 要求は 400 (fail-closed)", async () => {
-    const res = await handleAlcProxy(
-      req("/alc-proxy/api/employees", {
-        headers: {
-          "X-Alc-Preview-Api-Base":
-            "https://v1---rust-alc-api-747065218280.asia-northeast1.run.app",
-        },
-      }),
-      env(),
-    );
-    expect(res.status).toBe(400);
   });
 
   it("token_kind=dev + POST は 403 dev_token_write_forbidden (issue #433)", async () => {
@@ -406,32 +369,6 @@ describe("handleAlcProxy: device 系 token を弾く (issue #482)", () => {
     const res = await handleAlcProxy(req("/alc-proxy/api/employees"), env());
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("validatePreviewBase (pure)", () => {
-  const SUFFIX = "rust-alc-api-747065218280.asia-northeast1.run.app";
-
-  it("`<tag>---<suffix>` の https URL だけ origin を返す", () => {
-    expect(validatePreviewBase(`https://v1-42-0---${SUFFIX}/api/x`, SUFFIX)).toBe(
-      `https://v1-42-0---${SUFFIX}`,
-    );
-  });
-
-  it("suffix 空 (未設定) は常に null", () => {
-    expect(validatePreviewBase(`https://v1---${SUFFIX}`, "")).toBeNull();
-  });
-
-  it("tag が空 / 不正文字なら null", () => {
-    expect(validatePreviewBase(`https://---${SUFFIX}`, SUFFIX)).toBeNull();
-    expect(validatePreviewBase(`https://V1.x---${SUFFIX}`, SUFFIX)).toBeNull();
-  });
-
-  it("suffix を欺く host (evil.example?---suffix 等) は null", () => {
-    expect(
-      validatePreviewBase(`https://evil.example/?x=---${SUFFIX}`, SUFFIX),
-    ).toBeNull();
-    expect(validatePreviewBase(`https://v1---${SUFFIX}.evil.example`, SUFFIX)).toBeNull();
   });
 });
 

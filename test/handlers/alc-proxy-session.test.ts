@@ -10,9 +10,6 @@ vi.mock("../../src/lib/acl", () => ({
   checkOrgAccess: vi.fn(async () => true),
   checkAppTenant: vi.fn(() => true),
 }));
-vi.mock("../../src/lib/oidc", () => ({
-  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
-}));
 
 import { handleAlcProxy } from "../../src/handlers/alc-proxy";
 import { handleMyOrgs } from "../../src/handlers/api-my-orgs";
@@ -40,9 +37,7 @@ function setup() {
   const cloudRun = vi.fn(async (..._a: unknown[]) => json(200, { organizations: [] }));
   globalThis.fetch = cloudRun as unknown as typeof fetch;
   const env = createMockEnv({
-    ALC_API_PROXY_SA_KEY: "{}",
     INTERNAL_SHARED_SECRET: PROXY_SECRET,
-    ALC_API_PREVIEW_HOST_SUFFIX: "rust-alc-api-747065218280.asia-northeast1.run.app",
     ALC_AUTH: alcAuth,
     ALC_AUTH_SESSION: "1",
   });
@@ -80,7 +75,7 @@ describe("alc-proxy → handleSessionPath", () => {
     expect(alcCalls[0]).toMatch(/^DELETE \/internal\/tenants\/.+\/users\/.+\/refresh-token$/);
   });
 
-  it("preview override 付きの me は helper に流れず従来の経路 (Cloud Run の preview 宛)", async () => {
+  it("preview override ヘッダは無視する (W9 で撤去)。me は helper が答え、どこへも流さない", async () => {
     const { alcCalls, cloudRun, env } = setup();
     const previewBase = "https://v1-2-3---rust-alc-api-747065218280.asia-northeast1.run.app";
     const res = await handleAlcProxy(
@@ -88,8 +83,8 @@ describe("alc-proxy → handleSessionPath", () => {
       env,
     );
     expect(res.status).toBe(200);
-    expect(alcCalls).toHaveLength(0);
-    expect(String(cloudRun.mock.calls[0]![0])).toBe(`${previewBase}/api/auth/me`);
+    expect(alcCalls).toHaveLength(1);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
   it("JWT が無効なら helper に届く前に 401", async () => {
@@ -99,11 +94,13 @@ describe("alc-proxy → handleSessionPath", () => {
     expect(alcCalls).toHaveLength(0);
   });
 
-  it("対象外の path は従来どおり Cloud Run へ", async () => {
+  it("対象外の path (表に無い) は 404 で、どこへも流さない", async () => {
     const { alcCalls, cloudRun, env } = setup();
-    await handleAlcProxy(req("/alc-proxy/api/employees", "GET"), env);
+    const res = await handleAlcProxy(req("/alc-proxy/api/not-in-table", "GET"), env);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not_found" });
     expect(alcCalls).toHaveLength(0);
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 });
 

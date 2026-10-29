@@ -21,7 +21,7 @@ const PAGES: Array<[string, () => string]> = [
   ["/admin/rich-menu", () => renderAdminRichMenuPage()],
   ["/admin/requests", () => renderAdminRequestsPage()],
   ["/admin/line-users", () => renderAdminLineUsersPage(["https://app.example"], "https://auth.example", "/top")],
-  ["/admin/notify", () => renderAdminNotifyPage("https://alc-api.example")],
+  ["/admin/notify", () => renderAdminNotifyPage()],
 ];
 
 describe("admin ページ共通の門番 (#474)", () => {

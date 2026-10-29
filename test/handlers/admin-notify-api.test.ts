@@ -23,6 +23,12 @@ function req(
   });
 }
 
+/** alc-notify-worker (ALC_NOTIFY) の Service Binding の偽物。呼ばれた (url, init) を記録する。 */
+function notifyBinding(respond: () => Response) {
+  const fetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => respond());
+  return { fetch, fetcher: { fetch } as unknown as Fetcher };
+}
+
 describe("handleAdminNotifyApi (rust-alc-api#434 admin/notify forward)", () => {
   beforeEach(() => vi.restoreAllMocks());
 
@@ -50,36 +56,46 @@ describe("handleAdminNotifyApi (rust-alc-api#434 admin/notify forward)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("正常 GET: X-Tenant-ID/X-User-* を注入して ALC_API_ORIGIN/api/notify/* に forward", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+  it("正常 GET: X-Tenant-ID/X-User-* を注入して ALC_NOTIFY binding の /api/notify/* に forward (Authorization は付けない)", async () => {
+    const notify = notifyBinding(
+      () =>
         new Response(JSON.stringify([{ id: "u1" }]), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
     );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const globalFetch = vi.fn();
+    globalThis.fetch = globalFetch as unknown as typeof fetch;
 
     const res = await handleAdminNotifyApi(
       req("/admin/notify/api/notify/lineworks/users?x=1"),
-      createMockEnv(),
+      createMockEnv({ ALC_NOTIFY: notify.fetcher }),
     );
     expect(res.status).toBe(200);
 
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe(
-      "https://alc-api.test.example/api/notify/lineworks/users?x=1",
-    );
+    expect(notify.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = notify.fetch.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-notify/api/notify/lineworks/users?x=1");
     const h = (init as RequestInit).headers as Record<string, string>;
     expect(h["X-Tenant-ID"]).toBe("11111111-1111-1111-1111-111111111111");
     expect(h["X-User-Role"]).toBe("admin");
+    expect(h["Authorization"]).toBeUndefined();
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it("ALC_NOTIFY が無ければ fetch せず 404 (fail-closed)", async () => {
+    const globalFetch = vi.fn();
+    globalThis.fetch = globalFetch as unknown as typeof fetch;
+    const res = await handleAdminNotifyApi(
+      req("/admin/notify/api/notify/lineworks/users"),
+      createMockEnv(),
+    );
+    expect(res.status).toBe(404);
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 
   it("POST は method/body/Content-Type を forward する", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => new Response("{}", { status: 200 }),
-    );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const notify = notifyBinding(() => new Response("{}", { status: 200 }));
 
     await handleAdminNotifyApi(
       req("/admin/notify/api/notify/recipients/bulk", {
@@ -87,24 +103,21 @@ describe("handleAdminNotifyApi (rust-alc-api#434 admin/notify forward)", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ users: [] }),
       }),
-      createMockEnv(),
+      createMockEnv({ ALC_NOTIFY: notify.fetcher }),
     );
-    const [, init] = fetchMock.mock.calls[0]!;
+    const [, init] = notify.fetch.mock.calls[0]!;
     expect((init as RequestInit).method).toBe("POST");
     const h = (init as RequestInit).headers as Record<string, string>;
     expect(h["Content-Type"]).toBe("application/json");
     expect((init as RequestInit).body).toBe(JSON.stringify({ users: [] }));
   });
 
-  it("rust が非 2xx を返したら status を透過する", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => new Response("nope", { status: 404 }),
-    );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  it("backend が非 2xx を返したら status を透過する", async () => {
+    const notify = notifyBinding(() => new Response("nope", { status: 404 }));
 
     const res = await handleAdminNotifyApi(
       req("/admin/notify/api/notify/recipients"),
-      createMockEnv(),
+      createMockEnv({ ALC_NOTIFY: notify.fetcher }),
     );
     expect(res.status).toBe(404);
   });

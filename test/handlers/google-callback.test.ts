@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createMockEnv } from "../helpers/mock-env";
+import { FAKE_ALC_AUTH_SECRET } from "../helpers/fake-alc-auth";
+import type { Env } from "../../src/index";
 
 vi.mock("../../src/lib/security", () => ({
   verifyOAuthState: vi.fn(),
@@ -43,20 +45,38 @@ function mockUser(overrides: Partial<InternalUserWithSlug> = {}): InternalUserWi
   };
 }
 
-/** 1st fetch = Google token 交換 (id_token) / 2nd fetch = internal upsert-google。 */
+/** alc-auth-worker (ALC_AUTH) が次に返す応答と、受けた要求の記録 (internal upsert-google はここを通る)。 */
+let alcAuthResponse: Response = new Response("unset", { status: 599 });
+let alcAuthCalls: Request[] = [];
+
+/** alc-auth-worker のログイン口スイッチ (ALC_AUTH_LOGIN=1 + ALC_AUTH + 共有 secret) を入れた env。 */
+function loginEnv(overrides: Partial<Env> = {}): Env {
+  return createMockEnv({
+    ALC_AUTH_LOGIN: "1",
+    ALC_AUTH: {
+      fetch: async (req: Request) => {
+        alcAuthCalls.push(req);
+        return alcAuthResponse;
+      },
+    } as unknown as Fetcher,
+    INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET,
+    ...overrides,
+  });
+}
+
+/** global fetch = Google token 交換 (id_token) の 1 回だけ / internal upsert-google は ALC_AUTH が `secondResponse` を返す。 */
 function stubLoginFetches(
   secondResponse: Response,
   idToken: string = GOOGLE_ID_TOKEN,
 ): ReturnType<typeof vi.fn> {
-  const mockFetch = vi
-    .fn()
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ id_token: idToken }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    )
-    .mockResolvedValueOnce(secondResponse);
+  alcAuthResponse = secondResponse;
+  alcAuthCalls = [];
+  const mockFetch = vi.fn().mockResolvedValueOnce(
+    new Response(JSON.stringify({ id_token: idToken }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
   vi.stubGlobal("fetch", mockFetch);
   return mockFetch;
 }
@@ -69,7 +89,7 @@ function userResponse(user: InternalUserWithSlug = mockUser()): Response {
 }
 
 describe("handleGoogleCallback", () => {
-  const env = createMockEnv();
+  const env = loginEnv();
   let originalFetch: typeof globalThis.fetch;
 
   beforeEach(() => {
@@ -355,13 +375,14 @@ describe("handleGoogleCallback", () => {
     expect(body.get("client_secret")).toBe("test-google-client-secret");
     expect(body.get("redirect_uri")).toBe("https://auth.test.example/oauth/google/callback");
 
-    // Second call: internal upsert-google (旧 /api/auth/google は撤去済み)
-    const alcCall = mockFetch.mock.calls[1]!;
-    const [alcUrl, alcOpts] = alcCall;
-    expect(alcUrl).toBe("https://alc-api.test.example/api/internal/auth/users/upsert-google");
-    const headers = new Headers(alcOpts.headers);
-    expect(headers.get("Authorization")).toContain("Bearer ");
-    expect(JSON.parse(alcOpts.body as string)).toEqual({
+    // internal upsert-google は alc-auth-worker (ALC_AUTH) へ (global fetch は Google の 1 回だけ)
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(alcAuthCalls).toHaveLength(1);
+    const alcReq = alcAuthCalls[0]!;
+    expect(alcReq.url).toBe("https://alc-auth/internal/auth/users/upsert-google");
+    expect(alcReq.headers.get("X-Internal-Shared-Secret")).toBe(FAKE_ALC_AUTH_SECRET);
+    expect(alcReq.headers.get("Authorization")).toBeNull();
+    expect(await alcReq.json()).toEqual({
       google_sub: "google-sub-1",
       email: "user@example.com",
       name: "Test User",
@@ -369,7 +390,7 @@ describe("handleGoogleCallback", () => {
   });
 
   it("returns 403 when tenant is not in TENANT_ACL for an ohishi-exp redirect target", async () => {
-    const aclEnv = createMockEnv({
+    const aclEnv = loginEnv({
       AUTH_CONFIG: (await import("../helpers/mock-env")).createMockKV({
         "origins:prod": "https://dtako-admin.example",
         "app-orgs": JSON.stringify({ "dtako-admin": "ohishi-exp" }),
@@ -386,7 +407,7 @@ describe("handleGoogleCallback", () => {
   });
 
   it("403 when APP_TENANT_ACL denies the tenant for this app (finishLogin's per-app ACL layer)", async () => {
-    const appAclEnv = createMockEnv({
+    const appAclEnv = loginEnv({
       APP_TENANT_ACL: JSON.stringify({
         apps: { "https://app1.test.example": ["some-other-tenant"] },
       }),
@@ -401,7 +422,7 @@ describe("handleGoogleCallback", () => {
   });
 
   it("allows redirect when tenant IS in TENANT_ACL for an ohishi-exp target", async () => {
-    const aclEnv = createMockEnv({
+    const aclEnv = loginEnv({
       AUTH_CONFIG: (await import("../helpers/mock-env")).createMockKV({
         "origins:prod": "https://dtako-admin.example",
         "app-orgs": JSON.stringify({ "dtako-admin": "ohishi-exp" }),
@@ -418,7 +439,7 @@ describe("handleGoogleCallback", () => {
   });
 
   it("wt origin bypasses ACL even with no tenant_id", async () => {
-    const aclEnv = createMockEnv({
+    const aclEnv = loginEnv({
       AUTH_CONFIG: (await import("../helpers/mock-env")).createMockKV({
         "origins:prod": "https://a.example",
         "origins:wt": "https://vast.trycloudflare.com",

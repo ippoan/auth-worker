@@ -71,7 +71,7 @@ function claimsFromPayload(payload: JwtPayload | null): {
 }
 
 /**
- * rust /api/my-orgs で所属組織数を引く (api-my-orgs.ts と同じ前段 proxy 形)。
+ * 所属組織数を引く (api-my-orgs.ts と同じ前段 proxy 形)。
  * 判定不能 (identity claim 不足 / fetch 失敗 / 非 200 / 応答形不正) は null を
  * 返し、caller は fail-open で /top 表示を続行する — rust 障害やレスポンス変化で
  * ポータル全体を巻き添えにしない。
@@ -262,7 +262,6 @@ export async function handleTopPage(
 
   const html = renderTopPage(visibleApps, requestOrigin, {
     workerEnv: env.WORKER_ENV,
-    alcApiOrigin: env.ALC_API_ORIGIN,
   });
   const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   // 正常描画 = 往復が終わったので計数をリセット (Refs #526)

@@ -2,15 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { createMockEnv, createMockKV } from "./helpers/mock-env";
 import type { Env } from "../src/index";
 
-// OIDC の mint は別ユニットでテスト済み。ここでは RPC メソッドの flow
-// (query の鍵検査 → KV 固定の tenant → 固定 path / GET で forward) を固定する。
-vi.mock("../src/lib/oidc", () => ({
-  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
-}));
+// ここでは RPC メソッドの flow (query の鍵検査 → KV 固定の tenant → 固定 path / GET で
+// Service Binding (ALC_DTAKO) へ forward) を固定する。W9: Cloud Run への fallback は撤去済み。
 
 import { KintaiAlcEntrypoint } from "../src/kintai-alc-entrypoint";
 import { INTERNAL_ENTRYPOINT_FORWARDABLE_PATHS } from "../src/internal-entrypoint";
-import { mintGoogleIdToken } from "../src/lib/oidc";
 
 /** テスト固有のダミー UUID (本番の値ではない)。 */
 const TENANT = "66666666-6666-6666-6666-666666666666";
@@ -24,9 +20,12 @@ afterAll(() => {
   globalThis.fetch = originalFetch;
 });
 
+/** `mockFetch` が挿す ALC_DTAKO の fake (無ければ binding 無し)。 */
+let currentBinding: { fetch: ReturnType<typeof vi.fn> } | undefined;
+
 function env(kv: Record<string, string> = {}, overrides: Record<string, unknown> = {}): Env {
   return createMockEnv({
-    ALC_API_PROXY_SA_KEY: "{}", // resolveSecret が非空を返せばよい (oidc は mock)
+    ...(currentBinding ? { ALC_DTAKO: currentBinding as unknown as Fetcher } : {}),
     AUTH_CONFIG: createMockKV({ "kintai-alc-tenant": TENANT, ...kv }),
     ...overrides,
   });
@@ -37,21 +36,32 @@ function rpc(e: Env = env()): KintaiAlcEntrypoint {
   return new KintaiAlcEntrypoint({} as unknown as ExecutionContext, e);
 }
 
+/** ALC_DTAKO の fake binding を用意して、その fetch の mock を返す (global fetch は呼ばれない)。 */
 function mockFetch(res: Response = new Response("{}", { status: 200 })) {
   const fetchMock = vi.fn(
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => res,
   );
-  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  currentBinding = { fetch: fetchMock };
   return fetchMock;
 }
 
 type Method = "dtakoEtags" | "dtakoEvents";
-const ORIGIN = "https://alc-api.test.example";
+const ORIGIN = "https://alc-dtako";
 
 describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.clearAllMocks(); // mock factory の vi.fn の呼び出し回数を毎回 0 に戻す
+    vi.clearAllMocks();
+    currentBinding = undefined;
+  });
+
+  it("ALC_DTAKO の binding が無ければ 404 (転送しない、global fetch も呼ばない)", async () => {
+    const globalFetch = vi.fn();
+    globalThis.fetch = globalFetch as unknown as typeof fetch;
+    const out = await rpc().dtakoEvents("date_from=2026-06-01");
+    expect(out.status).toBe(404);
+    expect(JSON.parse(out.body).error).toBe("not_found");
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 
   it("RPC で呼べるメソッドは dtakoEtags / dtakoEvents の 2 つだけ", () => {
@@ -107,7 +117,7 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
     expect((init as RequestInit).method).toBe("GET");
     expect((init as RequestInit).body).toBeUndefined();
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["Authorization"]).toBeUndefined();
     expect(h["X-Tenant-ID"]).toBe(TENANT);
   });
 
@@ -154,13 +164,12 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
     ["大文字違いの鍵", "dtakoEvents", "Date_From=2026-06-01"],
     ["鍵の重複", "dtakoEvents", "driver_cd=1&driver_cd=2"],
     ["鍵の重複 (etags)", "dtakoEtags", "date_from=2026-06-01&date_from=2026-07-01"],
-  ])("%s → 400 で Cloud Run を呼ばない", async (_l, m, search) => {
+  ])("%s → 400 で転送しない", async (_l, m, search) => {
     const fetchMock = mockFetch();
     const out = await rpc()[m](search);
     expect(out.status).toBe(400);
     expect(JSON.parse(out.body).error).toBe("query_not_allowed");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 
   it("search が文字列でなければ 400 (RPC 越しに何が来ても throw しない)", async () => {
@@ -237,7 +246,7 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
       ["前後に空白", ` ${OTHER}`],
       ["文字列でない", { tenantId: OTHER }],
       ["数値", 1],
-    ])("%s → 403 で Cloud Run を呼ばない", async (_l, t) => {
+    ])("%s → 403 で転送しない", async (_l, t) => {
       const fetchMock = mockFetch();
       const out = await rpc(env({ "kintai-alc-tenants": LIST })).dtakoEvents(
         "date_from=2026-06-01",
@@ -246,8 +255,7 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
       expect(out.status).toBe(403);
       expect(JSON.parse(out.body).error).toBe("kintai_alc_tenant_forbidden");
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(mintGoogleIdToken).not.toHaveBeenCalled();
-    });
+      });
 
     it("許可リストの UUID でない要素は載っていない扱い", async () => {
       const fetchMock = mockFetch();
@@ -265,7 +273,7 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
       ["JSON 配列でない (object)", JSON.stringify({ tenants: [TENANT] })],
       ["空の配列", "[]"],
       ["UUID の要素が 0 個", JSON.stringify(["not-a-uuid", 1, null])],
-    ])("許可リストが%sなら 503 で Cloud Run を呼ばない", async (_l, value) => {
+    ])("許可リストが%sなら 503 で転送しない", async (_l, value) => {
       const fetchMock = mockFetch();
       const out = await rpc(
         env(value === undefined ? {} : { "kintai-alc-tenants": value }),
@@ -273,8 +281,7 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
       expect(out.status).toBe(503);
       expect(JSON.parse(out.body).error).toBe("kintai_alc_tenants_unset");
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(mintGoogleIdToken).not.toHaveBeenCalled();
-    });
+      });
 
     it("query の検査は tenant より先 (許可リストにあっても不正な query は 400)", async () => {
       const fetchMock = mockFetch();
@@ -291,14 +298,13 @@ describe("KintaiAlcEntrypoint (ohishi-exp/rust-ichibanboshi#322)", () => {
     ["空", "", "dtakoEvents"],
     ["UUID でない", "not-a-uuid", "dtakoEvents"],
     ["UUID の前方一致", `${TENANT}x`, "dtakoEtags"],
-  ])("KV の tenant が%sなら 503 で Cloud Run を呼ばない (%s / %s)", async (_l, value, m) => {
+  ])("KV の tenant が%sなら 503 で転送しない (%s / %s)", async (_l, value, m) => {
     const fetchMock = mockFetch();
     const kv = createMockKV(value === undefined ? {} : { "kintai-alc-tenant": value });
     const out = await rpc(env({}, { AUTH_CONFIG: kv }))[m]("date_from=2026-06-01");
     expect(out.status).toBe(503);
     expect(JSON.parse(out.body).error).toBe("kintai_alc_tenant_unset");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 
   it("上流のエラーはそのまま status / body を返す (throw しない)", async () => {
@@ -326,12 +332,13 @@ describe("KintaiAlcEntrypoint → ALC_DTAKO (W5b、Refs ippoan/rust-alc-api#680)
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    currentBinding = undefined;
   });
 
   it.each([
     ["dtakoEvents", "date_from=2026-10-01&date_to=2026-10-31&page_size=25", "/api/dtako/events"],
     ["dtakoEtags", "date_from=2026-10-01&date_to=2026-10-31", "/api/dtako/events/etags"],
-  ] as const)("%s は alc-dtako へ渡す (OIDC は作らず Cloud Run も呼ばない)", async (m, search, path) => {
+  ] as const)("%s は alc-dtako へ渡す (global fetch は呼ばない)", async (m, search, path) => {
     const fetchMock = mockFetch();
     const binding = {
       fetch: vi.fn(
@@ -350,6 +357,5 @@ describe("KintaiAlcEntrypoint → ALC_DTAKO (W5b、Refs ippoan/rust-alc-api#680)
     expect(init!.method).toBe("GET");
     expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 });

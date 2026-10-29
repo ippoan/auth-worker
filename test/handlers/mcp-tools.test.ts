@@ -31,6 +31,12 @@ function envWithKv(overrides: Partial<Env> = {}): { env: Env; kv: MockKV } {
     MCP_JWT_SECRET: TEST_MCP_JWT_SECRET,
     SSO_ENCRYPTION_KEY: TEST_SSO_KEY,
     INTERNAL_SHARED_SECRET: TEST_INTERNAL_SECRET,
+    // ログインの内部口 (upsert-google 等) は alc-auth-worker (ALC_AUTH) へ行く (W9、Cloud Run 退避は撤去)。
+    // 各テストは従来どおり globalThis.fetch を差し替えるので、ALC_AUTH はそれへ素通しする。
+    ALC_AUTH_LOGIN: "1",
+    ALC_AUTH: {
+      fetch: (req: Request) => globalThis.fetch(req),
+    } as unknown as Fetcher,
     ...overrides,
   });
   return { env, kv };
@@ -1730,7 +1736,10 @@ describe("POST /mcp/tools — get_device_log", () => {
     /** tenant 解決は既存の応答、backend の一覧は `lists` を順に返す (尽きたら最後を繰り返す)。 */
     function trEnv(recorder: unknown, lists: Array<() => Response>) {
       const env = logEnv(recorder);
-      env.ALC_API_PROXY_SA_KEY = "{}" as Env["ALC_API_PROXY_SA_KEY"];
+      // 一覧 (`GET /api/hub/measurements`、表の rpc の行) は alc-people の binding へ行く (W9、Cloud Run 退避は撤去)。
+      env.ALC_PEOPLE = {
+        fetch: (input: RequestInfo, init?: RequestInit) => globalThis.fetch(input, init),
+      } as unknown as Fetcher;
       const backend: Array<{ url: string; headers: Headers }> = [];
       globalThis.fetch = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
         const req = new Request(input as string, init);
@@ -1766,7 +1775,7 @@ describe("POST /mcp/tools — get_device_log", () => {
       expect(url.searchParams.get("kind")).toBe("test");
       expect(backend[0]!.headers.get("X-Device-Dev")).toBe("1");
       expect(backend[0]!.headers.get("X-Tenant-ID")).toBe(TENANT_ID);
-      expect(backend[0]!.headers.get("Authorization")).toBe("Bearer fake-oidc-token");
+      expect(backend[0]!.headers.get("Authorization")).toBeNull();
     });
 
     it("command_id を渡すと読み返すだけ (機体へ送らない)。行がまだなら pending", async () => {
@@ -1965,12 +1974,6 @@ describe("POST /mcp/tools — get_device_log", () => {
 // vi.hoisted / vi.mock はファイル先頭へ巻き上げられるので、この位置でも全体に効く
 // (他の describe は worksApiGet を使わない)。
 // ────────────────────────────────────────────────────────────────────────
-// create_test_record が backend を読むときの OIDC (Cloud Run 用) だけ差し替える (他の describe は mint を使わない)
-vi.mock("../../src/lib/oidc", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../src/lib/oidc")>()),
-  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
-}));
-
 const worksApiGetMock = vi.hoisted(() => vi.fn());
 vi.mock("../../src/lib/lineworks-bot-api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/lineworks-bot-api")>()),
@@ -1981,7 +1984,7 @@ describe("POST /mcp/tools — lineworks_get", () => {
   const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
   const ACCESS_TOKEN = "ACCESS-TOKEN-XYZ";
   const origFetch = globalThis.fetch;
-  /** Bot 設定の一覧の口 (ALC_LINEWORKS の `/api/admin/bot/configs`) と、一覧以外の bot config の口 (Cloud Run) に届いた URL */
+  /** Bot 設定の一覧の口 (ALC_LINEWORKS の `/api/admin/bot/configs`) と、一覧以外の bot config の口 (叩かない) に届いた URL */
   let rustUrls: string[] = [];
   /** ALC_LINEWORKS の Bot 設定の一覧が返す行 */
   let botConfigs: unknown[] = [];

@@ -2,18 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { createMockEnv, createMockKV } from "./helpers/mock-env";
 import type { Env } from "../src/index";
 
-// OIDC / internal JWT の mint は別ユニットでテスト済み。ここでは RPC メソッドの flow
-// (入力検査 → KV 固定の tenant / 宛先 → forward) を固定する。
-vi.mock("../src/lib/oidc", () => ({
-  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
-}));
-vi.mock("../src/lib/alc-internal", () => ({
-  internalAuthToken: vi.fn(async () => "fake-internal-jwt"),
-}));
+// ここでは RPC メソッドの flow (入力検査 → KV 固定の tenant / 宛先 → Service Binding へ forward) を固定する。
+// W9: Cloud Run への fallback は撤去済み。登録は ALC_CARINS、通知は ALC_LINEWORKS の binding、無ければ 404。
 
 import { SmbIngestEntrypoint } from "../src/smb-ingest-entrypoint";
-import { mintGoogleIdToken } from "../src/lib/oidc";
-import { internalAuthToken } from "../src/lib/alc-internal";
 
 /** テスト固有のダミー UUID (本番の値ではない)。 */
 const TENANT = "33333333-3333-3333-3333-333333333333";
@@ -24,9 +16,17 @@ afterAll(() => {
   globalThis.fetch = originalFetch;
 });
 
+/** `mockFetch` が ALC_CARINS / ALC_LINEWORKS に挿す fake (無ければ binding 無し)。 */
+let currentBinding: { fetch: ReturnType<typeof vi.fn> } | undefined;
+
 function env(kv: Record<string, string> = {}, overrides: Record<string, unknown> = {}): Env {
   return createMockEnv({
-    ALC_API_PROXY_SA_KEY: "{}", // resolveSecret が非空を返せばよい (oidc は mock)
+    ...(currentBinding
+      ? {
+          ALC_CARINS: currentBinding as unknown as Fetcher,
+          ALC_LINEWORKS: currentBinding as unknown as Fetcher,
+        }
+      : {}),
     AUTH_CONFIG: createMockKV({
       "smb-ingest-tenant": TENANT,
       "device-notify-targets": JSON.stringify({ "smb-ingest": RECIPIENT }),
@@ -41,11 +41,12 @@ function rpc(e: Env = env()): SmbIngestEntrypoint {
   return new SmbIngestEntrypoint({} as unknown as ExecutionContext, e);
 }
 
+/** fake binding を用意して、その fetch の mock を返す (global fetch は呼ばれない)。 */
 function mockFetch(res: Response = new Response("ok", { status: 200 })) {
   const fetchMock = vi.fn(
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => res,
   );
-  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  currentBinding = { fetch: fetchMock };
   return fetchMock;
 }
 
@@ -54,10 +55,11 @@ const FILE = { filename: "shaken.pdf", contentType: "application/pdf", contentBa
 describe("SmbIngestEntrypoint#ingestFile (ohishi-exp/smb-watch#14)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.clearAllMocks(); // mock factory の vi.fn の呼び出し回数を毎回 0 に戻す
+    vi.clearAllMocks();
+    currentBinding = undefined;
   });
 
-  it("正常: 常に POST <origin>/api/files を KV の X-Tenant-ID と OIDC Bearer 付きで呼ぶ", async () => {
+  it("正常: 常に alc-carins の POST /api/files を KV の X-Tenant-ID 付きで呼ぶ", async () => {
     const fetchMock = mockFetch(
       new Response(JSON.stringify({ uuid: "f" }), {
         status: 201,
@@ -72,9 +74,9 @@ describe("SmbIngestEntrypoint#ingestFile (ohishi-exp/smb-watch#14)", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe("https://alc-api.test.example/api/files");
+    expect(String(url)).toBe("https://alc-carins/api/files");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["Authorization"]).toBeUndefined();
     expect(h["X-Tenant-ID"]).toBe(TENANT);
     expect(h["Content-Type"]).toBe("application/json");
     expect((init as RequestInit).method).toBe("POST");
@@ -96,7 +98,7 @@ describe("SmbIngestEntrypoint#ingestFile (ohishi-exp/smb-watch#14)", () => {
     } as unknown as typeof FILE);
 
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe("https://alc-api.test.example/api/files");
+    expect(String(url)).toBe("https://alc-carins/api/files");
     expect((init as RequestInit).method).toBe("POST");
     expect(((init as RequestInit).headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
   });
@@ -114,7 +116,7 @@ describe("SmbIngestEntrypoint#ingestFile (ohishi-exp/smb-watch#14)", () => {
     ["空", ""],
     ["UUID でない", "not-a-uuid"],
     ["UUID の前方一致", `${TENANT}x`],
-  ])("KV の tenant が%sなら 503 で Cloud Run を呼ばない", async (_label, value) => {
+  ])("KV の tenant が%sなら 503 で転送しない", async (_label, value) => {
     const fetchMock = mockFetch();
     const kv = createMockKV({
       "device-notify-targets": JSON.stringify({ "smb-ingest": RECIPIENT }),
@@ -124,11 +126,10 @@ describe("SmbIngestEntrypoint#ingestFile (ohishi-exp/smb-watch#14)", () => {
     expect(out.status).toBe(503);
     expect(JSON.parse(out.body).error).toBe("smb_ingest_tenant_unset");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 
   // ── ★ サイズ上限 ───────────────────────────────────────────────────────────
-  it("contentBase64 が 16 MiB 超なら 413 で Cloud Run を呼ばない", async () => {
+  it("contentBase64 が 16 MiB 超なら 413 で転送しない", async () => {
     const fetchMock = mockFetch();
     const out = await rpc().ingestFile({
       ...FILE,
@@ -164,29 +165,14 @@ describe("SmbIngestEntrypoint#ingestFile (ohishi-exp/smb-watch#14)", () => {
     expect(out.status).toBe(400);
   });
 
-  // ── 共有 forward (lib/alc-tenant-forward.ts) の env guard / mint 失敗 ──────
-  it("ALC_API_PROXY_SA_KEY が無ければ 503 (呼ばない)", async () => {
-    const fetchMock = mockFetch();
-    const out = await rpc(env({}, { ALC_API_PROXY_SA_KEY: undefined })).ingestFile(FILE);
-    expect(out.status).toBe(503);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("ALC_API_ORIGIN が無ければ 503 (呼ばない)", async () => {
-    const fetchMock = mockFetch();
-    const out = await rpc(env({}, { ALC_API_ORIGIN: "" })).ingestFile(FILE);
-    expect(out.status).toBe(503);
-    expect(JSON.parse(out.body).error).toBe("server_error");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("OIDC mint 失敗は 502 (呼ばない)", async () => {
-    vi.mocked(mintGoogleIdToken).mockRejectedValueOnce(new Error("boom"));
-    const fetchMock = mockFetch();
+  // ── binding 無し (W9: Cloud Run fallback 撤去) ──────────────────────────────
+  it("ALC_CARINS の binding が無ければ 404 (登録しない、global fetch も呼ばない)", async () => {
+    const globalFetch = vi.fn();
+    globalThis.fetch = globalFetch as unknown as typeof fetch;
     const out = await rpc().ingestFile(FILE);
-    expect(out.status).toBe(502);
-    expect(JSON.parse(out.body).error).toBe("upstream auth error");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(out.status).toBe(404);
+    expect(JSON.parse(out.body).error).toBe("not_found");
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 
   it("上流のエラーはそのまま status / body を返す (throw しない)", async () => {
@@ -200,10 +186,11 @@ describe("SmbIngestEntrypoint#ingestFile (ohishi-exp/smb-watch#14)", () => {
 describe("SmbIngestEntrypoint#notify (ohishi-exp/smb-watch#14)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.clearAllMocks(); // mock factory の vi.fn の呼び出し回数を毎回 0 に戻す
+    vi.clearAllMocks();
+    currentBinding = undefined;
   });
 
-  it("正常: KV の smb-ingest 宛てに internal token 付きで /api/internal/lineworks/send へ POST", async () => {
+  it("正常: KV の smb-ingest 宛てに alc-lineworks の /api/internal/lineworks/send へ POST (token は付けない)", async () => {
     const fetchMock = mockFetch(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -217,10 +204,10 @@ describe("SmbIngestEntrypoint#notify (ohishi-exp/smb-watch#14)", () => {
     expect(out.contentType).toBe("application/json");
 
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe("https://alc-api.test.example/api/internal/lineworks/send");
+    expect(String(url)).toBe("https://alc-lineworks/api/internal/lineworks/send");
     expect((init as RequestInit).method).toBe("POST");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-internal-jwt");
+    expect(h["Authorization"]).toBeUndefined();
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       recipient_id: RECIPIENT,
       text: "found=3 uploaded=3 failed=0",
@@ -265,20 +252,13 @@ describe("SmbIngestEntrypoint#notify (ohishi-exp/smb-watch#14)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("ALC_API_ORIGIN が無ければ 503 (送らない)", async () => {
-    const fetchMock = mockFetch();
-    const out = await rpc(env({}, { ALC_API_ORIGIN: "" })).notify("hi");
-    expect(out.status).toBe(503);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("internal token の mint 失敗は 502 (送らない)", async () => {
-    vi.mocked(internalAuthToken).mockRejectedValueOnce(new Error("boom"));
-    const fetchMock = mockFetch();
+  it("ALC_LINEWORKS の binding が無ければ 404 (送らない、global fetch も呼ばない)", async () => {
+    const globalFetch = vi.fn();
+    globalThis.fetch = globalFetch as unknown as typeof fetch;
     const out = await rpc().notify("hi");
-    expect(out.status).toBe(502);
-    expect(JSON.parse(out.body).error).toBe("upstream auth error");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(out.status).toBe(404);
+    expect(JSON.parse(out.body).error).toBe("not_found");
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 
   it("上流の失敗は 502 にし、上流の本文は返さない (log にだけ出す)", async () => {
@@ -298,9 +278,10 @@ describe("SmbIngestEntrypoint#ingestFile → ALC_CARINS (Refs ippoan/rust-alc-ap
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    currentBinding = undefined;
   });
 
-  it("binding が在れば alc-carins の POST /api/files へ渡す (X-Tenant-ID と Content-Type だけ。OIDC は作らず Cloud Run も呼ばない)", async () => {
+  it("binding が在れば alc-carins の POST /api/files へ渡す (X-Tenant-ID と Content-Type だけ。global fetch は呼ばない)", async () => {
     const fetchMock = mockFetch();
     const carins = {
       fetch: vi.fn(
@@ -311,7 +292,7 @@ describe("SmbIngestEntrypoint#ingestFile → ALC_CARINS (Refs ippoan/rust-alc-ap
           }),
       ),
     };
-    const out = await rpc(env({}, { ALC_CARINS: carins as unknown as Fetcher, ALC_API_PROXY_SA_KEY: undefined })).ingestFile(FILE);
+    const out = await rpc(env({}, { ALC_CARINS: carins as unknown as Fetcher })).ingestFile(FILE);
     expect(out).toEqual({ status: 201, body: JSON.stringify({ uuid: "w" }), contentType: "application/json" });
     const [url, init] = carins.fetch.mock.calls[0]!;
     expect(url).toBe("https://alc-carins/api/files");
@@ -323,7 +304,6 @@ describe("SmbIngestEntrypoint#ingestFile → ALC_CARINS (Refs ippoan/rust-alc-ap
       type: FILE.contentType,
       content: FILE.contentBase64,
     });
-    expect(mintGoogleIdToken).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

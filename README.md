@@ -18,7 +18,6 @@ nuxt-pwa-carins / nuxt-dtako-logs のログイン画面・JWT 発行・MCP OAuth
 | Path | Method | 説明 |
 |------|--------|------|
 | `/login` | GET | ログイン画面 (HTML) |
-| `/auth/login` | POST | ID/PW ログイン → JWT → リダイレクト |
 | `/oauth/google/redirect` | GET | Google OAuth 開始 |
 | `/oauth/google/callback` | GET | Google OAuth コールバック → JWT → リダイレクト |
 

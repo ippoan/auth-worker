@@ -27,8 +27,7 @@ export const LOGIN_SOURCE_LABELS = {
   board: "掲示板既読",
 } as const;
 
-export function renderAdminNotifyPage(alcApiOrigin: string): string {
-  const apiJson = JSON.stringify(alcApiOrigin);
+export function renderAdminNotifyPage(): string {
   const sourceOptions = Object.entries(LOGIN_SOURCE_LABELS)
     .map(([value, label]) => `<option value="${value}">${label}</option>`)
     .join("");
@@ -148,7 +147,6 @@ export function renderAdminNotifyPage(alcApiOrigin: string): string {
 ${renderAdminAuthScript()}
 <script>
 (function(){
-  var ALC_API = ${apiJson};
   // #474: cookie (logi_auth_token) → sessionStorage の順で解決する共通門番。
   var token = window.__adminAuth.requireToken('/admin/notify/callback');
   if (!token) return;

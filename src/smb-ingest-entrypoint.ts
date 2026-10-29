@@ -99,10 +99,7 @@ export class SmbIngestEntrypoint extends WorkerEntrypoint<Env> {
     const recipientId = await resolveNotifyRecipient(this.env, NOTIFY_KEY);
     if (!recipientId) return alcRpcError(503, "recipient_unset");
 
-    const apiOrigin = this.env.ALC_API_ORIGIN;
-    if (!apiOrigin) return alcRpcError(503, "server_error");
-
-    const res = await sendDeviceNotify(this.env, apiOrigin, recipientId, text, {
+    const res = await sendDeviceNotify(this.env, recipientId, text, {
       event: "smb_ingest_notify_upstream_failed",
     });
     return {

@@ -31,9 +31,6 @@ vi.mock("../../src/handlers/health-oauth", () => ({
 vi.mock("../../src/handlers/login-page", () => ({
   handleLoginPage: vi.fn(() => new Response("login-page")),
 }));
-vi.mock("../../src/handlers/login-api", () => ({
-  handleAuthLogin: vi.fn(() => new Response("auth-login")),
-}));
 vi.mock("../../src/handlers/top-page", () => ({
   handleTopPage: vi.fn(() => new Response("top-page")),
 }));
@@ -60,10 +57,6 @@ vi.mock("../../src/handlers/ghapi-redirect", () => ({
 }));
 vi.mock("../../src/handlers/ghapi-callback", () => ({
   handleGhapiCallback: vi.fn(() => new Response("ghapi-callback")),
-}));
-vi.mock("../../src/handlers/woff-auth", () => ({
-  handleWoffAuth: vi.fn(() => new Response("woff-auth")),
-  handleWoffConfig: vi.fn(() => new Response("woff-config")),
 }));
 vi.mock("../../src/handlers/admin-sso", () => ({
   handleAdminSsoPage: vi.fn(() => new Response("admin-sso")),
@@ -321,7 +314,6 @@ const env = {
   OAUTH_STATE_SECRET: "os",
   JWT_SECRET: TEST_JWT_SECRET,
   AUTH_WORKER_ORIGIN: "https://auth.test.example",
-  ALC_API_ORIGIN: "https://alc-api.test.example",
   VERSION: "test",
   WORKER_ENV: "prod",
   SSO_ENCRYPTION_KEY: "test-encryption-key",
@@ -348,7 +340,6 @@ describe("Router (index.ts)", () => {
     ["/oauth/lineworks/callback", "lw-callback"],
     ["/oauth/egov/redirect", "egov-redirect"],
     ["/oauth/egov/callback", "egov-callback"],
-    ["/auth/woff-config", "woff-config"],
     ["/admin/sso", "admin-sso"],
     ["/admin/sso/callback", "admin-sso-cb"],
     ["/admin/users", "admin-users"],
@@ -465,8 +456,6 @@ describe("Router (index.ts)", () => {
     ["/api/users/invite", "invite"],
     ["/api/users/invite/delete", "del-inv"],
     ["/api/users/delete", "del-user"],
-    ["/auth/login", "auth-login"],
-    ["/auth/woff", "woff-auth"],
     ["/api/richmenu/list", "rm-list"],
     ["/api/richmenu/create", "rm-create"],
     ["/api/richmenu/delete", "rm-delete"],
@@ -911,6 +900,18 @@ describe("Router (index.ts)", () => {
     const req = new Request("https://auth.test.example/unknown", { method: "POST" });
     const res = await worker.fetch(req, env);
     expect(res.status).toBe(404);
+  });
+
+  it("W9 で撤去した rust 依存の口 (/auth/login・/auth/woff・/auth/woff-config・/health/wif) は 404", async () => {
+    for (const [method, path] of [
+      ["POST", "/auth/login"],
+      ["POST", "/auth/woff"],
+      ["GET", "/auth/woff-config"],
+      ["GET", "/health/wif"],
+    ] as const) {
+      const res = await worker.fetch(new Request(`https://auth.test.example${path}`, { method }), env);
+      expect(res.status, path).toBe(404);
+    }
   });
 
   it("OPTIONS returns CORS preflight", async () => {

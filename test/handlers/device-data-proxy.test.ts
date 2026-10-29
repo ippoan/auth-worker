@@ -11,11 +11,12 @@ import {
   DEVICE_ROLE_CAM_HOST,
 } from "../../src/lib/device";
 
-// OIDC mint は別ユニットでテスト済み。ここでは handler の flow
-// (device JWT 検証 → role/path allowlist → OIDC mint → forward) を固定する。
-vi.mock("../../src/lib/oidc", () => ({
-  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
-}));
+// handler の flow (device JWT 検証 → role/path allowlist → binding へ forward) を固定する。
+// 振り分け表は「どの path にも binding がある」fake に差し替える (W9 で Cloud Run 退避を撤去。
+// 表に無い path が 404 になることは alc-binding-route.test.ts が本物の表で確認する)。
+vi.mock("../../src/lib/alc-backend-route", async (orig) =>
+  (await import("../helpers/fake-alc-route")).fakeAlcRouteFactory(await orig<object>()),
+);
 
 import { handleDeviceDataProxy } from "../../src/handlers/device-data-proxy";
 
@@ -27,7 +28,6 @@ afterAll(() => {
 
 function env(overrides: Record<string, unknown> = {}) {
   return createMockEnv({
-    ALC_API_PROXY_SA_KEY: "{}", // resolveSecret が非空を返せばよい (oidc は mock)
     ...overrides,
   });
 }
@@ -72,22 +72,6 @@ describe("handleDeviceDataProxy (rust-alc-api#434 followup, browser-render-rust 
     const res = await handleDeviceDataProxy(
       req("/device-data-proxy/api/dtako-logs/bulk", { token: await deviceToken() }),
       env({ JWT_SECRET: undefined }),
-    );
-    expect(res.status).toBe(503);
-  });
-
-  it("ALC_API_PROXY_SA_KEY 未設定は 503", async () => {
-    const res = await handleDeviceDataProxy(
-      req("/device-data-proxy/api/dtako-logs/bulk", { token: await deviceToken() }),
-      env({ ALC_API_PROXY_SA_KEY: undefined }),
-    );
-    expect(res.status).toBe(503);
-  });
-
-  it("ALC_API_ORIGIN 未設定は 503", async () => {
-    const res = await handleDeviceDataProxy(
-      req("/device-data-proxy/api/dtako-logs/bulk", { token: await deviceToken() }),
-      env({ ALC_API_ORIGIN: undefined }),
     );
     expect(res.status).toBe(503);
   });
@@ -160,7 +144,7 @@ describe("handleDeviceDataProxy (rust-alc-api#434 followup, browser-render-rust 
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe("https://alc-api.test.example/api/dtako-logs/bulk");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
     expect(h["X-Tenant-ID"]).toBe(TENANT);
     expect(h["Content-Type"]).toBe("application/json");
     expect((init as RequestInit).method).toBe("POST");
@@ -187,20 +171,8 @@ describe("handleDeviceDataProxy (rust-alc-api#434 followup, browser-render-rust 
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe("https://alc-api.test.example/api/upload");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
     expect(h["X-Tenant-ID"]).toBe(TENANT);
-  });
-
-  it("OIDC mint 失敗は 502 (詳細は出さない)", async () => {
-    const { mintGoogleIdToken } = await import("../../src/lib/oidc");
-    (mintGoogleIdToken as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("boom"),
-    );
-    const res = await handleDeviceDataProxy(
-      req("/device-data-proxy/api/dtako-logs/bulk", { token: await deviceToken() }),
-      env(),
-    );
-    expect(res.status).toBe(502);
   });
 });
 
@@ -244,7 +216,7 @@ describe("device-dtako-relay role (ohishi-exp/nuxt-dtako-admin#931 / #933)", () 
       // query はそのまま forward される (allowlist は pathname だけ見る)。
       expect(String(url)).toBe("https://alc-api.test.example/api/scraper/history?limit=20");
       const h = (init as RequestInit).headers as Record<string, string>;
-      expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+      expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
       // ★ 呼び手の申告ではなく device record の tenant が入る (詐称不能)。
       expect(h["X-Tenant-ID"]).toBe(TENANT);
     });
@@ -350,7 +322,7 @@ describe("device-uploader role (carins の車検証 upload、Refs ippoan/nuxt-pw
       const [url, init] = fetchMock.mock.calls[0]!;
       expect(String(url)).toBe("https://alc-api.test.example/api/files");
       const h = (init as RequestInit).headers as Record<string, string>;
-      expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+      expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
       // ★ 呼び手の申告ではなく device record の tenant が入る (詐称不能)。
       expect(h["X-Tenant-ID"]).toBe(TENANT);
     });

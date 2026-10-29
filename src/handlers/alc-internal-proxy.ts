@@ -2,6 +2,10 @@
  * `/alc-internal-proxy/*` — rust-alc-api の **internal ingest 経路**向け data-proxy
  * (rust-alc-api#434 step 3d、caller #4 email-receiver / 将来の server-to-server caller)。
  *
+ * W9 (Refs ippoan/rust-alc-api#680): Cloud Run (rust-alc-api) への forward・OIDC mint は撤去した。
+ * ①〜③ を通った path は domain worker (Service Binding、`ALC_BINDING_ROUTES`) へ渡し、
+ * binding 表に当たらない path (`internal-secret` クラス含む) は 404。
+ *
  * `/alc-proxy` (handlers/alc-proxy.ts) は **browser JWT を伴うユーザー経路**だが、
  * email-receiver 等の **server-to-server 内部呼び出しは browser JWT を持たない**。
  * これらは rust の `require_internal_shared_secret` 経路 (`X-Internal-Shared-Secret`)
@@ -14,8 +18,7 @@
  *      forward する。data 経路 (`require_tenant_header`) を通すと shared secret だけで
  *      `X-Tenant-ID` を詐称でき **#434 の脆弱性そのものの再現**になるため、必ず allowlist
  *      で塞ぐ (data 経路は browser JWT 経路 = `/alc-proxy` 専用)。
- *   ③ OIDC mint — `ALC_API_PROXY_SA_KEY` (run.invoker) で aud=service URL を mint。
- *   ④ forward — `ALC_API_ORIGIN` + path に `Authorization: Bearer <OIDC>` (transport) を付与。
+ *   ③ forward — binding 表が返す domain worker へ (明示 tenant + Content-Type のみ渡す)。
  *
  * allowlist は 2 クラスに分かれる (`classifyInternalPath`):
  *
@@ -30,12 +33,9 @@
  *     X-Tenant-ID 欠落で rust 側 `require_tenant_header` が 401 → 詐称不能」という二重の安全に
  *     なる。`X-Internal-Shared-Secret` も forward しない (public route は検証しないため)。
  *
- * 値 (OIDC / SA key / shared secret) は log / response に出さない。
+ * 値 (shared secret) は log / response に出さない。
  */
 import type { Env } from "../index";
-import { resolveSecret } from "../lib/secret";
-import { mintGoogleIdToken } from "../lib/oidc";
-import { internalAuthToken } from "../lib/alc-internal";
 import {
   forwardViaAlcBinding,
   isUnsafeBackendPath,
@@ -142,15 +142,8 @@ function jsonError(status: number, error: string): Response {
 
 export async function handleAlcInternalProxy(request: Request, env: Env): Promise<Response> {
   // ── env guard ────────────────────────────────────────────────────────────
-  const saKey = await resolveSecret(env.ALC_API_PROXY_SA_KEY);
-  if (!saKey) return jsonError(503, "alc-internal-proxy not configured"); // SA key 未設定
-  const apiOrigin = env.ALC_API_ORIGIN;
-  if (!apiOrigin) return jsonError(503, "server_error");
   const sharedSecrets = await resolveAllSharedSecrets(env);
   if (!sharedSecrets) return jsonError(503, "alc-internal-proxy not configured");
-  // rust の require_internal_shared_secret が期待する base secret (forward 用)。
-  const baseSecret = await resolveSecret(env.INTERNAL_SHARED_SECRET);
-  if (!baseSecret) return jsonError(503, "alc-internal-proxy not configured");
 
   // ── ① consumer worker proof ───────────────────────────────────────────────
   const proxySecret = request.headers.get(PROXY_SECRET_HEADER) ?? "";
@@ -174,77 +167,31 @@ export async function handleAlcInternalProxy(request: Request, env: Env): Promis
   if (pathClass === "shared-secret" && !tenantId) return jsonError(400, "X-Tenant-ID required");
 
   // ── domain worker (Service Binding) への振り分け ─────────────────────────
-  // ①〜③ を通った shared-secret / internal-jwt クラスの path のうち、振り分け表がこの proxy に binding を
-  // 返すものだけ。binding 未定義 / 表に無い path は、下の従来の流れ (④ 以降) をそのまま通る。
-  // binding 経路では token を mint しない (Cloud Run 用。mint 失敗で 502 にしない)。渡すヘッダは
-  // 明示された tenant (shared-secret だけ。internal-jwt は Cloud Run 経路と同じく tenant を渡さない) と
-  // Content-Type だけで、呼び手のほかのヘッダと Cloud Run 用の認証は渡さない。
-  // public-ingest (登録の受け取り等。rust でも認証なし・tenant は body/lookup で解決) は Content-Type だけを渡す。
-  if (pathClass === "shared-secret" || pathClass === "internal-jwt" || pathClass === "public-ingest") {
-    const binding = resolveAlcBinding(backendPath, env, "internal", request.method);
-    if (binding) {
-      if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
-      const bindingHeaders: Record<string, string> = {};
-      if (pathClass === "shared-secret") {
-        bindingHeaders["X-Tenant-ID"] = tenantId;
-        // 開発用の鍵の印は Cloud Run 経路 (⑤) と同じく、値がちょうど "1" のときだけ渡す (dev の行と本番の行を分ける)
-        if (request.headers.get("X-Device-Dev") === "1") bindingHeaders["X-Device-Dev"] = "1";
-      }
-      const bindingContentType = request.headers.get("content-type");
-      if (bindingContentType) bindingHeaders["Content-Type"] = bindingContentType;
-      const bindingHasBody = request.method !== "GET" && request.method !== "HEAD";
-      return forwardViaAlcBinding(binding, backendPath, url.search, {
-        method: request.method,
-        headers: bindingHeaders,
-        body: bindingHasBody ? await request.arrayBuffer() : undefined,
-      });
-    }
-  }
-
-  // ── ④ auth token mint ──────────────────────────────────────────────────────
-  //     - internal-jwt: rust の require_internal_jwt 用に aud=alc-api-internal。
-  //       #479 方針どおり internalAuthToken に集約 (OIDC cutover flag / HS256
-  //       fallback 込み)。Cloud Run custom audience (alc-api-internal) 登録済みの
-  //       ため IAM transport も同じ token で通る。
-  //     - それ以外: Cloud Run IAM lockdown 用に aud=service URL を mint。
-  let idToken: string;
-  try {
-    idToken =
-      pathClass === "internal-jwt"
-        ? await internalAuthToken(env)
-        : await mintGoogleIdToken(saKey, apiOrigin);
-  } catch {
-    return jsonError(502, "upstream auth error"); // 詳細は log のみ
-  }
-
-  // ── ⑤ forward ─────────────────────────────────────────────────────────────
-  const target = `${apiOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
-  const fwdHeaders: Record<string, string> = {
-    Authorization: `Bearer ${idToken}`,
-  };
+  // ①〜③ を通った shared-secret / internal-jwt / public-ingest クラスの path のうち、振り分け表がこの proxy に
+  // binding を返すものだけ forward する。binding 未定義 / 表に無い path / internal-secret クラスは 404
+  // (W9 で Cloud Run fallback を撤去、Refs ippoan/rust-alc-api#680)。渡すヘッダは明示された tenant
+  // (shared-secret だけ。internal-jwt は tenant を渡さない) と Content-Type だけで、呼び手のほかのヘッダは渡さない。
+  // public-ingest (登録の受け取り等。tenant は body/lookup で解決) は Content-Type だけを渡す。
+  const binding =
+    pathClass === "internal-secret"
+      ? null
+      : resolveAlcBinding(backendPath, env, "internal", request.method);
+  if (!binding) return jsonError(404, "not_found");
+  if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
+  const bindingHeaders: Record<string, string> = {};
   if (pathClass === "shared-secret") {
-    // rust の app 認証 (require_internal_shared_secret) + 明示 tenant。
-    fwdHeaders["X-Internal-Shared-Secret"] = baseSecret;
-    fwdHeaders["X-Tenant-ID"] = tenantId;
-    // 開発用の鍵の印。caller (cf-alc-recorder、shared secret 認証済み) の申告を X-Tenant-ID と
-    // 同じ信頼水準で通す。値がちょうど "1" のときだけ (true / 0 等は転送しない)。
-    if (request.headers.get("X-Device-Dev") === "1") fwdHeaders["X-Device-Dev"] = "1";
-  } else if (pathClass === "internal-secret") {
-    // rust が caller 由来の X-Internal-Secret (FCM_INTERNAL_SECRET) で自前認証する dev 経路。
-    // caller (alc-app) が中継した値をそのまま pass-through する (無ければ rust 側で 401/403)。
-    const callerSecret = request.headers.get("X-Internal-Secret");
-    if (callerSecret) fwdHeaders["X-Internal-Secret"] = callerSecret;
+    bindingHeaders["X-Tenant-ID"] = tenantId;
+    // 開発用の鍵の印は値がちょうど "1" のときだけ渡す (dev の行と本番の行を分ける)
+    if (request.headers.get("X-Device-Dev") === "1") bindingHeaders["X-Device-Dev"] = "1";
   }
-  // public-ingest / internal-secret は X-Tenant-ID を forward しない (rust は honor しない +
-  // 誤分類時の詐称防止)。public-ingest は OIDC transport だけ。
-  const contentType = request.headers.get("content-type");
-  if (contentType) fwdHeaders["Content-Type"] = contentType;
-
-  const method = request.method;
-  const hasBody = method !== "GET" && method !== "HEAD";
-  const body = hasBody ? await request.arrayBuffer() : undefined;
-
-  return fetch(target, { method, headers: fwdHeaders, body });
+  const bindingContentType = request.headers.get("content-type");
+  if (bindingContentType) bindingHeaders["Content-Type"] = bindingContentType;
+  const bindingHasBody = request.method !== "GET" && request.method !== "HEAD";
+  return forwardViaAlcBinding(binding, backendPath, url.search, {
+    method: request.method,
+    headers: bindingHeaders,
+    body: bindingHasBody ? await request.arrayBuffer() : undefined,
+  });
 }
 
 export { ROUTE_PREFIX as ALC_INTERNAL_PROXY_PREFIX };

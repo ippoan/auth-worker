@@ -1,12 +1,10 @@
 /**
  * Service binding RPC (`InternalEntrypoint` / `SmbIngestEntrypoint` / `KintaiAlcEntrypoint`) から
- * rust-alc-api の tenant data 経路 (`require_tenant_header`) を叩く共通部分。
+ * tenant data 経路 (`require_tenant_header`) を叩く共通部分。
  *
- *   ⓪ path が振り分けの表 (`lib/alc-backend-route.ts`) の `rpc` の行に一致し binding が在れば、domain worker へ
- *      Service Binding で渡す (`X-Tenant-ID` などだけ。OIDC は要らない)
- *   ① env guard (`ALC_API_PROXY_SA_KEY` / `ALC_API_ORIGIN`)
- *   ② OIDC mint (Cloud Run IAM lockdown 用、aud=service URL)
- *   ③ `Authorization: Bearer <OIDC>` + `X-Tenant-ID` を付けて forward
+ *   path が振り分けの表 (`lib/alc-backend-route.ts`) の `rpc` の行に一致し binding が在れば、domain worker へ
+ *   Service Binding で渡す (`X-Tenant-ID` などだけ)。表に無い path / binding 無しは 404。
+ *   W9 (Refs ippoan/rust-alc-api#680): Cloud Run (rust-alc-api) への fallback・OIDC mint は撤去した。
  *
  * ★ **path / tenant の検査はここではしない** — 呼び手 (entrypoint) の責務。
  * 「どの path を・どの tenant で」通すかは entrypoint ごとに決まっていて
@@ -14,11 +12,9 @@
  * 渡されたものをそのまま送る。entrypoint を経由せずにこの関数を呼び足さないこと。
  *
  * 失敗は throw せず `{status, body, contentType}` で返す。
- * 値 (OIDC / SA key) は log / 戻り値に出さない。
+ * 値は log / 戻り値に出さない。
  */
 import type { Env } from "../index";
-import { resolveSecret } from "./secret";
-import { mintGoogleIdToken } from "./oidc";
 import { forwardViaAlcBinding, resolveAlcBinding } from "./alc-backend-route";
 
 /**
@@ -41,7 +37,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /**
  * AUTH_CONFIG KV の `key` に置いた固定 tenant (UUID 文字列) を引く。
- * 無い・空・UUID でない → `null` (呼び手は Cloud Run を呼ばずに 503 で返す = fail-closed)。
+ * 無い・空・UUID でない → `null` (呼び手は転送せずに 503 で返す = fail-closed)。
  * 値はこの repo に入れない。
  */
 export async function resolveKvTenant(env: Env, key: string): Promise<string | null> {
@@ -72,7 +68,7 @@ export async function resolveKvTenantList(env: Env, key: string): Promise<string
 export interface AlcTenantForwardInput {
   /** 転送先に `X-Tenant-ID` として注入する tenant (呼び手が検査済みであること)。 */
   tenantId: string;
-  /** rust-alc-api 側の path (呼び手が検査済みであること)。 */
+  /** 転送先の path (呼び手が検査済みであること)。 */
   path: string;
   method: string;
   /** `?a=1&b=2` (先頭 `?` は有っても無くても良い)。 */
@@ -99,39 +95,11 @@ export async function forwardAlcTenantRequest(
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? input.body : undefined;
 
-  // ── ⓪ domain worker (Service Binding) への振り分け ────────────────────────
-  // path は entrypoint の定数・allowlist のもの (この関数は検査しない。冒頭の注)
+  // ── domain worker (Service Binding) への振り分け ──────────────────────────
+  // path は entrypoint の定数・allowlist のもの (この関数は検査しない。冒頭の注)。
+  // 表に無い path / binding 無しは 404 (W9 で Cloud Run fallback を撤去)。
   const binding = resolveAlcBinding(input.path, env, "rpc", method);
-  if (binding) {
-    const res = await forwardViaAlcBinding(binding, input.path, search, { method, headers, body });
-    return { status: res.status, body: await res.text(), contentType: res.headers.get("content-type") };
-  }
-
-  // ── ① env guard ──────────────────────────────────────────────────────────
-  const saKey = await resolveSecret(env.ALC_API_PROXY_SA_KEY);
-  if (!saKey) return alcRpcError(503, "internal entrypoint not configured");
-  const apiOrigin = env.ALC_API_ORIGIN;
-  if (!apiOrigin) return alcRpcError(503, "server_error");
-
-  // ── ② OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) ──────────────
-  let idToken: string;
-  try {
-    idToken = await mintGoogleIdToken(saKey, apiOrigin);
-  } catch {
-    return alcRpcError(502, "upstream auth error"); // 詳細は log のみ
-  }
-
-  // ── ③ forward ────────────────────────────────────────────────────────────
-  const target = `${apiOrigin.replace(/\/$/, "")}${input.path}${search}`;
-  const res = await fetch(target, {
-    method,
-    headers: { Authorization: `Bearer ${idToken}`, ...headers },
-    body,
-  });
-
-  return {
-    status: res.status,
-    body: await res.text(),
-    contentType: res.headers.get("content-type"),
-  };
+  if (!binding) return alcRpcError(404, "not_found");
+  const res = await forwardViaAlcBinding(binding, input.path, search, { method, headers, body });
+  return { status: res.status, body: await res.text(), contentType: res.headers.get("content-type") };
 }

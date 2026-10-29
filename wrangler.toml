@@ -19,14 +19,7 @@ AUTH_WORKER_ORIGIN = "https://auth.ippoan.org"
 # `https://<team>/cdn-cgi/access/logout?returnTo=...` へ chain するためだけに使う
 # (Refs #477)。prod / staging とも同じ team なので同値。未設定なら chain しない。
 ACCESS_TEAM_DOMAIN = "mtamaramu.cloudflareaccess.com"
-ALC_API_ORIGIN = "https://alc-api.ippoan.org"
 # ALC_REDACT_ORIGIN (alc-redact の Cloud Run、AlcRedactEntrypoint の宛先) は deploy の --var で入る (.github/workflows/test.yml、repo variables)。ここに値を書かない
-# flip 前 preview override (Refs ippoan/ci-dashboard#472) が許可する rust-alc-api
-# prod service の Cloud Run host suffix。/alc-proxy は X-Alc-Preview-Api-Base の
-# host が `<tag>---<この suffix>` (同一 service の tagged revision URL) の時だけ
-# forward 先 + OIDC aud を差し替える。値が実際の tagged URL (backend deploy.yml が
-# pending-release で報告する preview_url) の host と一致するか初回 release で確認する。
-ALC_API_PREVIEW_HOST_SUFFIX = "rust-alc-api-747065218280.asia-northeast1.run.app"
 # issue #433: JWT の `token_kind` claim が `"dev"` (dev-login、issue #423) の
 # tokenで /alc-proxy に非GET/HEAD/OPTIONSが来た時に許可する backend path prefix
 # (comma-sep、例 "/api/vehicle-settings/extract,/api/y-time-export")。
@@ -589,7 +582,6 @@ AUTH_WORKER_ORIGIN = "https://auth-staging.ippoan.org"
 # `https://<team>/cdn-cgi/access/logout?returnTo=...` へ chain するためだけに使う
 # (Refs #477)。prod / staging とも同じ team なので同値。未設定なら chain しない。
 ACCESS_TEAM_DOMAIN = "mtamaramu.cloudflareaccess.com"
-ALC_API_ORIGIN = "https://rust-alc-api-staging-566bls5vfq-an.a.run.app"
 WORKER_ENV = "staging"
 # 機械用資格情報の KV key の環境名 (top-level の "prod" と分ける。Refs ohishi-exp/rust-leave-worker#1)。
 MACHINE_CRED_ENV = "staging"

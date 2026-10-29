@@ -122,7 +122,6 @@ export function createMockEnv(
     OAUTH_STATE_SECRET: "test-oauth-state-secret-32chars!",
     JWT_SECRET: TEST_JWT_SECRET,
     AUTH_WORKER_ORIGIN: "https://auth.test.example",
-    ALC_API_ORIGIN: "https://alc-api.test.example",
     VERSION: "test",
     WORKER_ENV: "prod",
     AUTH_CONFIG: AUTH_CONFIG ?? createMockKV({ "origins:prod": effectiveAllowed }),
