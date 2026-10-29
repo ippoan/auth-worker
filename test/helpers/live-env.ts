@@ -4,17 +4,14 @@
  * ALC_API_URL 設定時 → rust-alc-api に直接 fetch (live)
  * 未設定 → テストスキップ
  *
- * Usage:
- *   docker compose -f docker-compose.test.yml up -d
- *   ALC_API_URL=http://localhost:18081 npm test -- test/live/
- *   docker compose -f docker-compose.test.yml down
+ * 注: live 用の docker-compose.test.yml (rust-alc-api コンテナ) は廃止済み。CI は常に mock で走る。
  */
 import { createHmac } from "node:crypto";
 
 export const ALC_API_URL = process.env.ALC_API_URL || "";
 export const isLive = !!ALC_API_URL;
 
-// seed.sql と一致
+// (旧 seed.sql の値。live は廃止済み)
 export const TEST_TENANT_ID = "11111111-1111-1111-1111-111111111111";
 export const TEST_USER_ID = "22222222-2222-2222-2222-222222222222";
 export const JWT_SECRET = "test-jwt-secret-for-integration";
