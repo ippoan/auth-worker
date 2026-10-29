@@ -3189,7 +3189,8 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
   const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
   type Proxy = "browser" | "internal" | "device" | "admin" | "rpc";
   const PROXIES: ReadonlyArray<Proxy> = ["browser", "internal", "device", "admin", "rpc"];
-  const PUT_STEPS = ["alcohol", "medical", "self-declaration", "daily-inspection", "instruction-confirm", "report", "carrying-items"];
+  // アルコールの段は測定の保存 (`PUT /api/measurements/{id}` の tenko_session_id) で進む。本文で結果を受ける `…/alcohol` は無い
+  const PUT_STEPS = ["medical", "self-declaration", "daily-inspection", "instruction-confirm", "report", "carrying-items"];
   const POST_STEPS = ["cancel", "interrupt", "self-resume", "judgment"];
 
   function setupTenko() {
@@ -3208,10 +3209,10 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
     [`/api/tenko/sessions/${ID}/resume`, "POST", ["browser"]],
   ];
 
-  it("口ごとに、今通っている proxy だけが binding を引く (16 口)", () => {
+  it("口ごとに、今通っている proxy だけが binding を引く (15 口)", () => {
     const { tenko, env } = setupTenko();
     const target = { fetcher: tenko, host: "alc-measurements" };
-    expect(ROWS).toHaveLength(16);
+    expect(ROWS).toHaveLength(15);
     for (const [path, method, allowed] of ROWS) {
       for (const proxy of PROXIES) {
         const want = allowed.includes(proxy) ? target : null;
@@ -3241,6 +3242,7 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
       ["/api/tenko/sessions/not-a-uuid/alcohol", "PUT"],
       [`/api/tenko/sessions/${ID}/unknown`, "PUT"],
       [`/api/tenko/sessions/${ID}/alcohol/x`, "PUT"],
+      [`/api/tenko/sessions/${ID}/alcohol`, "PUT"],
       [`/api/tenko/sessions/${ID}/judgmentx`, "POST"],
       [`/api/tenko/sessions/${ID}x`, "GET"],
     ] as const) {
@@ -3293,7 +3295,7 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
     const { tenko, cloudRun, env } = setupTenko();
     for (const [path, method] of [
       ["/api/tenko/sessions/start", "POST"],
-      [`/api/tenko/sessions/${ID}/alcohol`, "PUT"],
+      [`/api/tenko/sessions/${ID}/medical`, "PUT"],
       [`/api/tenko/sessions/${ID}/self-resume`, "POST"],
     ] as const) {
       const res = await handleDeviceDataProxy(await kioskReq(`/device-data-proxy${path}`, method), env);
@@ -3312,7 +3314,7 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
     const calls = tenko.fetch.mock.calls;
     expect(calls.map((c) => [c[0], c[1]!.method])).toEqual([
       ["https://alc-measurements/api/tenko/sessions/start", "POST"],
-      [`https://alc-measurements/api/tenko/sessions/${ID}/alcohol`, "PUT"],
+      [`https://alc-measurements/api/tenko/sessions/${ID}/medical`, "PUT"],
       [`https://alc-measurements/api/tenko/sessions/${ID}/self-resume`, "POST"],
       ["https://alc-measurements/api/tenko/sessions/start", "POST"],
     ]);
