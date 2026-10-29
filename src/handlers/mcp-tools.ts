@@ -32,6 +32,8 @@
  *     #540 の掲示板既読の調査用) も `mcp.write` + dev-login allowlist
  *   - `run_cam_clips_auto` (拠点カメラ 1 台の自動切り出しを今すぐ回す。dev token は画面用の proxy で
  *     書き込みを止められるので、試験記録の切り出しを確かめる口として MCP に置く) も `mcp.write` + dev-login allowlist
+ *   - `dtako_restore` (R2 に退避した車両の現在地のログの 1 日ぶんを DB に書き戻す。rust-alc-api の archive Job の
+ *     `dtako-restore` を移した、W9 / Refs ippoan/rust-alc-api#680) も `mcp.write` + dev-login allowlist
  */
 
 import type { Env } from "../index";
@@ -87,6 +89,10 @@ const TEST_RECORD_POLL_INTERVAL_MS = 1500;
 const TEST_RECORD_TIMEOUT_MS = 15_000;
 /** `run_cam_clips_auto` — カメラの ID (ingest の cameras.id) の形。 */
 const CAMERA_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `dtako_restore` の日付 (`YYYY-MM-DD`。暦の検査は alc-dtako-worker が 400 で返す)。 */
+const ARCHIVE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** alc-dtako-worker の書き戻しの内部口。振り分けの表には載せない (画面・内部用の proxy からは届かない)。 */
+const DTAKO_RESTORE_URL = "https://alc-dtako/internal/archive/restore";
 /** `create_test_record` が読み返す件数 (試験記録だけの一覧の新しい順。command_id で 1 件を選ぶ)。 */
 const TEST_RECORD_LIST_LIMIT = 20;
 
@@ -1020,6 +1026,60 @@ const TOOLS: ToolDef[] = [
         return { camera_id: cameraId, error: "backend_error", status: res.status, body: text.slice(0, 500) };
       }
       return { camera_id: cameraId, status: res.status, result: body };
+    },
+  },
+  {
+    name: "dtako_restore",
+    description:
+      "Restore one day of archived vehicle location logs (dtakologs) of a tenant from R2 back into the DB " +
+      "(the `dtako-restore` of the old rust-alc-api archive Job; the daily cron of alc-dtako-worker moves " +
+      "rows older than 7 days to R2 and deletes them). Rows are upserted, so running it twice is harmless. " +
+      "Only rows whose tenant_id is the given tenant are written (the whole day is refused otherwise). " +
+      "Returns `{tenant_id, date, restored}` (the number of rows). Errors are returned as " +
+      "`{tenant_id, date, error}`: `not_configured` (no ALC_DTAKO binding), `backend_error` (with `status` " +
+      "and `body`; 404 = no archive for that day, 422 = the archive is unreadable or holds another tenant's rows). " +
+      "Same allowlist gate as issue_dev_token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: { type: "string", description: "Tenant ID (UUID) whose archive to restore" },
+        date: { type: "string", description: "Day to restore (YYYY-MM-DD, UTC date of data_date_time)" },
+      },
+      required: ["tenant_id", "date"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const tenantId = asString(args["tenant_id"]);
+      if (!tenantId || !CAMERA_ID_RE.test(tenantId)) {
+        throw new DevLoginError(400, "tenant_id must be a UUID");
+      }
+      const date = asString(args["date"]);
+      if (!date || !ARCHIVE_DATE_RE.test(date)) throw new DevLoginError(400, "date must be YYYY-MM-DD");
+      // 会社をまたぐ書き戻し (rust の CLI と同じく、会社は引数)。許可リストの判定だけを通す
+      const allowed = await checkDevLoginAllowlist(ctx.env, ctx.payload);
+      if (allowed.kind === "error") throw new DevLoginError(allowed.status, allowed.error);
+      const fetcher = ctx.env.ALC_DTAKO;
+      if (!fetcher) return { tenant_id: tenantId, date, error: "not_configured" };
+
+      const res = await fetcher.fetch(DTAKO_RESTORE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Tenant-ID": tenantId },
+        body: JSON.stringify({ date }),
+      });
+      const text = await res.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = null;
+      }
+      const restored = (body as { restored?: unknown } | null)?.restored;
+      if (!res.ok || typeof restored !== "number") {
+        return { tenant_id: tenantId, date, error: "backend_error", status: res.status, body: text.slice(0, 500) };
+      }
+      return { tenant_id: tenantId, date, restored };
     },
   },
   {

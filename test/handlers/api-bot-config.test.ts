@@ -17,6 +17,8 @@ import {
   handleBotConfigExport,
 } from "../../src/handlers/api-bot-config";
 import { makeJwt } from "../helpers/live-env";
+import { TEST_JWT_SECRET } from "../helpers/mock-env";
+import { DEVELOPER_EMAILS } from "../../src/lib/developer";
 
 afterAll(() => restoreFetch());
 waitIfLive();
@@ -473,57 +475,103 @@ describe.skipIf(isLive)("handleBotConfigDelete", () => {
 
 // ---------- handleBotConfigExport ----------
 
-describe("handleBotConfigExport", () => {
-  const env = testEnv();
+// export も alc-lineworks-worker へ移った (W9、Refs ippoan/rust-alc-api#680)。開発者の判定はここで済ませ、
+// 振り分けの表 (admin proxy) で binding へ回す。live (binding 無し) は Cloud Run に落ちるので mock だけで回す
+describe.skipIf(isLive)("handleBotConfigExport", () => {
+  const TENANT = "11111111-1111-1111-1111-111111111111";
+  const EXPORT_URL = `/api/bot-config/export?tenant_id=${TENANT}`;
+
+  function lineworks(res: Response = new Response(JSON.stringify({ version: 1, tenant_id: TENANT }), { status: 200 })) {
+    return { fetch: vi.fn(async (_url: string, _init?: RequestInit) => res) };
+  }
+
+  function envWith(binding?: ReturnType<typeof lineworks>) {
+    const env = testEnv();
+    if (binding) (env as unknown as { ALC_LINEWORKS: unknown }).ALC_LINEWORKS = binding;
+    return env;
+  }
+
+  function devRequest(path = EXPORT_URL, email = DEVELOPER_EMAILS[0]!): Request {
+    return new Request(`https://auth.test.example${path}`, {
+      headers: { Authorization: `Bearer ${makeJwt(TEST_JWT_SECRET, { email })}` },
+    });
+  }
+
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {
-    const req = noAuthRequest(
-      "/api/bot-config/export?tenant_id=11111111-1111-1111-1111-111111111111",
-      "GET",
-    );
-    const res = await handleBotConfigExport(req, env);
+    const res = await handleBotConfigExport(noAuthRequest(EXPORT_URL, "GET"), envWith(lineworks()));
     expect(res.status).toBe(401);
   });
 
-  it("forwards JSON with Content-Disposition on success", async () => {
-    stubOrReal(
-      new Response(
-        JSON.stringify({
-          version: 1,
-          tenant_id: "abc",
-          data: { bot_configs: [] },
-        }),
-        { status: 200 },
-      ),
-    );
-    const req = authRequest(
-      "/api/bot-config/export?tenant_id=11111111-1111-1111-1111-111111111111",
-      { method: "GET" },
-    );
-    const res = await handleBotConfigExport(req, env);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Disposition") || "").toContain("attachment");
-  });
-
-  it("passes through error status from backend", async () => {
-    stubOrReal(new Response("forbidden", { status: 403 }));
-    const req = authRequest(
-      "/api/bot-config/export?tenant_id=11111111-1111-1111-1111-111111111111",
-      { method: "GET" },
-    );
-    const res = await handleBotConfigExport(req, env);
-    expect(res.status).toBe(403);
-    const data = (await res.json()) as { error: string };
-    expect(typeof data.error).toBe("string");
-  });
-
-  it("returns 400 when tenant_id query param is missing", async () => {
-    const req = authRequest("/api/bot-config/export", { method: "GET" });
-    const res = await handleBotConfigExport(req, env);
+  it("returns 400 when tenant_id query param is missing or not a UUID", async () => {
+    const binding = lineworks();
+    let res = await handleBotConfigExport(devRequest("/api/bot-config/export"), envWith(binding));
     expect(res.status).toBe(400);
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe("tenant_id is required");
+    expect(((await res.json()) as { error: string }).error).toBe("tenant_id is required");
+    res = await handleBotConfigExport(devRequest("/api/bot-config/export?tenant_id=x/../y"), envWith(binding));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("tenant_id must be a UUID");
+    expect(binding.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for a non-developer and never calls the backend", async () => {
+    const binding = lineworks();
+    const cloudRun = vi.fn();
+    vi.stubGlobal("fetch", cloudRun);
+    const res = await handleBotConfigExport(authRequest(EXPORT_URL, { method: "GET" }), envWith(binding));
+    expect(res.status).toBe(403);
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("developer: forwards to alc-lineworks with X-Tenant-ID = the query tenant, and attaches the JSON", async () => {
+    const binding = lineworks();
+    const res = await handleBotConfigExport(devRequest(), envWith(binding));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Disposition") || "").toContain(`bot-configs-${TENANT}-`);
+    expect(await res.json()).toEqual({ version: 1, tenant_id: TENANT });
+
+    expect(binding.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = binding.fetch.mock.calls[0]!;
+    expect(url).toBe(`https://alc-lineworks/api/admin/bot/configs/export?tenant_id=${TENANT}`);
+    expect(init?.method).toBe("GET");
+    const headers = init?.headers as Record<string, string>;
+    expect(headers["X-Tenant-ID"]).toBe(TENANT);
+    expect(headers["X-User-Email"]).toBe(DEVELOPER_EMAILS[0]);
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it("developer: passes through error status from the backend", async () => {
+    const binding = lineworks(new Response("tenant_not_found", { status: 404 }));
+    const res = await handleBotConfigExport(devRequest(), envWith(binding));
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("tenant_not_found");
   });
 });
 
+// 署名の合わない JWT は、どの口も backend を呼ばずに 401 (buildAdminForwardHeaders が null)
+describe.skipIf(isLive)("Bot 設定の口: 検証できない JWT は 401", () => {
+  const bad = (path: string, method: string, body?: unknown) =>
+    new Request(`https://auth.test.example${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${makeJwt("wrong-secret-wrong-secret-wrong!!")}`,
+        "Content-Type": "application/json",
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it.each<[string, () => Promise<Response>]>([
+    ["list", () => handleBotConfigList(bad("/x", "GET"), testEnv())],
+    ["upsert", () => handleBotConfigUpsert(bad("/x", "POST", { name: "n", clientId: "c", serviceAccount: "s", botId: "b" }), testEnv())],
+    ["delete", () => handleBotConfigDelete(bad("/x", "DELETE", { id: "id1" }), testEnv())],
+    ["export", () => handleBotConfigExport(bad("/x?tenant_id=11111111-1111-1111-1111-111111111111", "GET"), testEnv())],
+  ])("%s", async (_label, call) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

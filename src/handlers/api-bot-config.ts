@@ -13,10 +13,15 @@ import {
   debugRustResponse,
   fetchAdminBackend,
 } from "../lib/admin-proxy";
+import { isDeveloperEmail } from "../lib/developer";
 import { resolveSecret } from "../lib/secret";
 
-/** Bot 設定の口 (alc-lineworks-worker。export だけは Cloud Run の `/api/admin/bot/configs/export` のまま) */
+/** Bot 設定の口 (alc-lineworks-worker) */
 const BOT_CONFIGS_PATH = "/api/admin/bot/configs";
+/** 開発者だけの export の口 (alc-lineworks-worker。振り分けの表は admin proxy からだけ回す。W9、Refs ippoan/rust-alc-api#680) */
+const BOT_CONFIGS_EXPORT_PATH = "/api/admin/bot/configs/export";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -163,6 +168,7 @@ export async function handleBotConfigExport(
   const url = new URL(request.url);
   const tenantId = url.searchParams.get("tenant_id");
   if (!tenantId) return jsonResponse({ error: "tenant_id is required" }, 400);
+  if (!UUID_RE.test(tenantId)) return jsonResponse({ error: "tenant_id must be a UUID" }, 400);
 
   console.log(
     JSON.stringify({ event: "bot_config_export", tenant_id: tenantId }),
@@ -174,10 +180,18 @@ export async function handleBotConfigExport(
     "bot_config_export",
   );
   if (!headers) return jsonResponse({ error: "Unauthorized" }, 401);
+  // 開発者だけ (rust-alc-api の DEVELOPER_EMAILS の判定を、ここの DEVELOPER_EMAILS に寄せた)。
+  // export する会社は query の tenant_id で、alc-lineworks-worker はその X-Tenant-ID だけを見る
+  if (!isDeveloperEmail(String(headers["X-User-Email"]))) {
+    return jsonResponse({ error: "Forbidden" }, 403);
+  }
+  headers["X-Tenant-ID"] = tenantId;
 
-  const resp = await fetch(
-    `${env.ALC_API_ORIGIN}/api/admin/bot/configs/export?tenant_id=${encodeURIComponent(tenantId)}`,
-    { headers },
+  const resp = await fetchAdminBackend(
+    env,
+    BOT_CONFIGS_EXPORT_PATH,
+    `?tenant_id=${encodeURIComponent(tenantId)}`,
+    { method: "GET", headers },
   );
 
   if (!resp.ok) {
