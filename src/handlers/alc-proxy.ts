@@ -40,6 +40,7 @@ import {
 import { DEVICE_ROLES } from "../lib/device";
 import { isDeveloperGoogleSession } from "../lib/developer";
 import { handleSessionPath } from "../lib/alc-session";
+import { handleWebhookUrlPath, WEBHOOK_URL_PATH } from "../lib/lineworks-hook-id";
 import { resolveAllSharedSecrets } from "./mcp-introspect";
 
 const ROUTE_PREFIX = "/alc-proxy";
@@ -285,6 +286,15 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   if (!previewBase) {
     const session = await handleSessionPath(env, backendPath, method, { tenantId, sub, email, role });
     if (session) return session;
+    // LINE WORKS の callback URL (tenant を暗号化した識別子) も auth-worker が答える (鍵はここにしか無い)
+    const hookUrl = await handleWebhookUrlPath(
+      backendPath === WEBHOOK_URL_PATH ? await resolveSecret(env.SSO_ENCRYPTION_KEY) : null,
+      backendPath,
+      method,
+      url.search,
+      { tenantId, role },
+    );
+    if (hookUrl) return hookUrl;
   }
   const binding = previewBase ? null : resolveAlcBinding(backendPath, env, "browser", method);
   if (binding) {

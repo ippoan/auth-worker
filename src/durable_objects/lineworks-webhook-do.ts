@@ -41,6 +41,8 @@ interface QueueItem {
   event: WebhookEvent;
   ts: number;
   attempts: number;
+  /** 新しい callback URL (`/lineworks/hook/{識別子}`) から来たときの tenant。alc-notify の tenant 付きの口へ `X-Tenant-ID` で渡す */
+  tenant_id?: string;
 }
 
 const STORAGE_KEY_BOT_SECRET = "bot_secret_encrypted";
@@ -71,6 +73,7 @@ export class LineworksWebhookDO {
 
   private async handleEvent(req: Request): Promise<Response> {
     const botId = req.headers.get("x-bot-id");
+    const tenantId = req.headers.get("x-tenant-id") ?? undefined;
     const sig = req.headers.get("x-works-signature");
     const rawBody = await req.arrayBuffer();
     if (!botId) return jsonResp(400, { error: "missing_bot_id" });
@@ -78,7 +81,7 @@ export class LineworksWebhookDO {
 
     let botSecret: string;
     try {
-      botSecret = await this.getBotSecret(botId);
+      botSecret = await this.getBotSecret(botId, tenantId);
     } catch (e) {
       console.error("lineworks_webhook_get_bot_secret_failed", { botId, error: String(e) });
       return jsonResp(401, { error: "bot_secret_unavailable" });
@@ -89,7 +92,7 @@ export class LineworksWebhookDO {
       console.warn("lineworks_webhook_signature_mismatch_retrying_with_fresh_secret", { botId });
       await this.invalidateSecret();
       try {
-        botSecret = await this.getBotSecret(botId);
+        botSecret = await this.getBotSecret(botId, tenantId);
       } catch {
         return jsonResp(401, { error: "signature_mismatch" });
       }
@@ -102,7 +105,12 @@ export class LineworksWebhookDO {
     if (!event) return jsonResp(200, { ok: true, ignored: true });
 
     const id = `${QUEUE_PREFIX}${ulid()}`;
-    const item: QueueItem = { event, ts: Date.now(), attempts: 0 };
+    const item: QueueItem = {
+      event,
+      ts: Date.now(),
+      attempts: 0,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
+    };
     await this.state.storage.put(id, item);
     await this.state.storage.setAlarm(Date.now());
     return jsonResp(200, { ok: true, queued: true });
@@ -135,11 +143,11 @@ export class LineworksWebhookDO {
 
   // ---------- bot_secret 取得 ----------
 
-  private async getBotSecret(botId: string): Promise<string> {
+  private async getBotSecret(botId: string, tenantId?: string): Promise<string> {
     if (this.decryptedSecret) return this.decryptedSecret;
     let enc = await this.state.storage.get<string>(STORAGE_KEY_BOT_SECRET);
     if (!enc) {
-      enc = await this.fetchBotSecretEncrypted(botId);
+      enc = await this.fetchBotSecretEncrypted(botId, tenantId);
       await this.state.storage.put(STORAGE_KEY_BOT_SECRET, enc);
     }
     const ssoKey = await resolveSecret(this.env.SSO_ENCRYPTION_KEY);
@@ -148,11 +156,20 @@ export class LineworksWebhookDO {
     return this.decryptedSecret;
   }
 
-  private async fetchBotSecretEncrypted(botId: string): Promise<string> {
+  private async fetchBotSecretEncrypted(botId: string, tenantId?: string): Promise<string> {
     const binding = this.env.ALC_NOTIFY;
     if (!binding) throw new Error("ALC_NOTIFY not bound");
-    const url = `${NOTIFY_ORIGIN}/api/internal/lineworks/bot-secret/${encodeURIComponent(botId)}`;
-    const resp = await binding.fetch(url, { method: "GET", redirect: "manual" });
+    const bot = encodeURIComponent(botId);
+    const resp = tenantId
+      ? await binding.fetch(`${NOTIFY_ORIGIN}/api/internal/lineworks/tenant/bot-secret/${bot}`, {
+          method: "GET",
+          headers: { "X-Tenant-ID": tenantId },
+          redirect: "manual",
+        })
+      : await binding.fetch(`${NOTIFY_ORIGIN}/api/internal/lineworks/bot-secret/${bot}`, {
+          method: "GET",
+          redirect: "manual",
+        });
     if (!resp.ok) {
       throw new Error(`bot-secret fetch failed: ${resp.status}`);
     }
@@ -178,7 +195,11 @@ export class LineworksWebhookDO {
       }
       const next: QueueItem = { ...val, attempts: val.attempts + 1 };
       if (next.attempts > MAX_ATTEMPTS) {
-        console.error("lineworks_webhook_drop_after_max_attempts", { key, val: next });
+        // tenant_id はログに出さない
+        console.error("lineworks_webhook_drop_after_max_attempts", {
+          key,
+          val: { event: next.event, ts: next.ts, attempts: next.attempts },
+        });
         await this.state.storage.delete(key);
         continue;
       }
@@ -200,9 +221,12 @@ export class LineworksWebhookDO {
       return false;
     }
     try {
-      const resp = await binding.fetch(`${NOTIFY_ORIGIN}/api/internal/lineworks/event`, {
+      const path = item.tenant_id ? "/api/internal/lineworks/tenant/event" : "/api/internal/lineworks/event";
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (item.tenant_id) headers["X-Tenant-ID"] = item.tenant_id;
+      const resp = await binding.fetch(`${NOTIFY_ORIGIN}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(item.event),
         redirect: "manual",
       });

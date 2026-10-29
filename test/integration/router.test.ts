@@ -121,6 +121,9 @@ vi.mock("../../src/handlers/lineworks-webhook", () => ({
   handleLineworksRefresh: vi.fn((_req, _env, botId: string) =>
     new Response(`lw-refresh:${botId}`),
   ),
+  handleLineworksHook: vi.fn((_req, _env, hookId: string) =>
+    new Response(`lw-hook:${hookId}`),
+  ),
 }));
 vi.mock("../../src/handlers/line-webhook", () => ({
   handleLineWebhook: vi.fn(() => new Response("line-webhook")),
@@ -505,6 +508,14 @@ describe("Router (index.ts)", () => {
     });
     const res = await worker.fetch(req, env);
     expect(await res.text()).toBe("lw-webhook:bot-abc");
+  });
+
+  it("POST /lineworks/hook/:id → lw-hook handler with the id", async () => {
+    const req = new Request("https://auth.test.example/lineworks/hook/abc_-123", {
+      method: "POST",
+    });
+    const res = await worker.fetch(req, env);
+    expect(await res.text()).toBe("lw-hook:abc_-123");
   });
 
   it("POST /lineworks/refresh/:bot_id → lw-refresh handler with bot_id", async () => {

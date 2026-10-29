@@ -11,6 +11,7 @@
  */
 
 import type { Env } from "../index";
+import { decodeHookId } from "../lib/lineworks-hook-id";
 import { resolveSecret } from "../lib/secret";
 
 export async function handleLineworksWebhook(
@@ -45,6 +46,47 @@ export async function handleLineworksWebhook(
   });
 
   return stub.fetch(doReq);
+}
+
+/**
+ * `POST /lineworks/hook/{識別子}` — tenant 付きの新しい callback URL (識別子は `lib/lineworks-hook-id.ts`)。
+ *
+ * 識別子を `SSO_ENCRYPTION_KEY` で復号して (tenant, bot) を知り、(tenant, bot) ごとの DO へ `x-tenant-id` 付きで渡す。
+ * DO は alc-notify の tenant 付きの口 (`/api/internal/lineworks/tenant/…`) を `X-Tenant-ID` 付きで呼ぶので、bot は tenant の中で
+ * RLS のまま引ける。読めない識別子は 404。旧 URL (`/lineworks/webhook/{bot_id}`) は callback URL の切り替えが済むまで残す。
+ */
+export async function handleLineworksHook(
+  request: Request,
+  env: Env,
+  hookId: string,
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return jsonResp(405, { error: "method_not_allowed" });
+  }
+  const sig = request.headers.get("x-works-signature");
+  if (!sig) {
+    return jsonResp(401, { error: "missing_signature" });
+  }
+  const key = await resolveSecret(env.SSO_ENCRYPTION_KEY);
+  if (!key) return jsonResp(503, { error: "not_configured" });
+  const target = hookId ? await decodeHookId(hookId, key) : null;
+  if (!target) return jsonResp(404, { error: "not_found" });
+
+  const id = env.LINEWORKS_WEBHOOK_DO.idFromName(`hook:${target.tenantId}:${target.botId}`);
+  const stub = env.LINEWORKS_WEBHOOK_DO.get(id);
+  const rawBody = await request.arrayBuffer();
+  return stub.fetch(
+    new Request("https://do/event", {
+      method: "POST",
+      headers: {
+        "x-bot-id": target.botId,
+        "x-tenant-id": target.tenantId,
+        "x-works-signature": sig,
+        "Content-Type": request.headers.get("content-type") ?? "application/json",
+      },
+      body: rawBody,
+    }),
+  );
 }
 
 /**
