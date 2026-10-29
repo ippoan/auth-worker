@@ -14,37 +14,20 @@ export interface AppEntry {
 
 /**
  * StagingFooter-style bar for /top.
- * Mirrors @ippoan/auth-client/StagingFooter.vue but as inline HTML+JS
- * (auth-worker serves plain HTML, no Vue). 表示するのは STAGING の印と backend の版だけ
- * (Export / Import のボタンは rust-alc-api の staging export / import と一緒に消した。Refs ippoan/rust-alc-api#680)。
- *
- * alcApiOrigin は JSON.stringify で埋め込む (任意の引用符に耐える)。
+ * Mirrors @ippoan/auth-client/StagingFooter.vue but as inline HTML
+ * (auth-worker serves plain HTML, no Vue). 表示するのは STAGING の印だけ
+ * (Export / Import のボタンは rust-alc-api の staging export / import と一緒に消し、backend の版
+ * (rust `/api/health` の読み出し) も W9 で消した。Refs ippoan/rust-alc-api#680)。
  */
-export function renderStagingFooter(alcApiOrigin: string): string {
-  const apiJson = JSON.stringify(alcApiOrigin);
+export function renderStagingFooter(): string {
   return `<div id="staging-footer" style="position:fixed;bottom:0;left:0;right:0;background:#eab308;color:#713f12;font-size:0.75rem;padding:0.375rem 0.75rem;display:flex;align-items:center;justify-content:space-between;z-index:50;gap:0.5rem;">
     <span style="font-weight:700;">STAGING</span>
-    <span id="staging-backend-info" style="flex:1;text-align:center;opacity:0.75;"></span>
-  </div>
-  <script>
-  (function(){
-    var ALC_API = ${apiJson};
-    var infoEl = document.getElementById('staging-backend-info');
-    fetch(ALC_API + '/api/health').then(function(r){ return r.json(); }).then(function(h){
-      var parts = [];
-      if (h.git_sha && h.git_sha !== 'dev') parts.push(h.git_sha);
-      if (h.git_ref) parts.push(h.git_ref);
-      if (parts.length) infoEl.textContent = parts.join(' — ');
-    }).catch(function(){});
-  })();
-  </script>`;
+  </div>`;
 }
 
 export interface TopPageStagingOpts {
   /** Worker env; staging footer is rendered only when this equals "staging". */
   workerEnv?: string;
-  /** rust-alc-api origin (backend の版を `/api/health` から読む)。 */
-  alcApiOrigin?: string;
 }
 
 export function renderTopPage(
@@ -53,11 +36,7 @@ export function renderTopPage(
   stagingOpts: TopPageStagingOpts = {},
 ): string {
   const appsJson = JSON.stringify(apps);
-  const showStagingFooter =
-    stagingOpts.workerEnv === "staging" && !!stagingOpts.alcApiOrigin;
-  const footerHtml = showStagingFooter
-    ? renderStagingFooter(stagingOpts.alcApiOrigin ?? "")
-    : "";
+  const footerHtml = stagingOpts.workerEnv === "staging" ? renderStagingFooter() : "";
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>

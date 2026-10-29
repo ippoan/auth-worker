@@ -4,15 +4,17 @@
  * Cloud Run staging の DB には無く me が 500 になる)、本番も rust-alc-api の monolith から 3 本を消すために切り替えた
  * (Refs ippoan/rust-alc-api#680)。
  *
+ * W9 (Refs ippoan/rust-alc-api#680): Cloud Run (rust-alc-api) への fallback は撤去した。切り替えが無効な
+ * my-orgs は 404 (`not_found`)、me / logout は null を返し呼び手 (alc-proxy) が binding 表で 404 にする。
+ *
  * 切り替えは `ALC_AUTH_SESSION=1` かつ `fetchAlcAuth` が非 null (binding と secret が揃う)。
  * 分岐はこのファイルの 1 か所だけ。呼び手は helper を 1 回呼ぶだけで、フラグを見ない。
  * 値は検証済み JWT の claims からだけ作る (リクエストのヘッダ・body・query は写さない)。
  *
  * - `ALC_AUTH_SESSION` は `wrangler.toml` のトップレベルの `[vars]` (本番) と `[env.staging.vars]` の両方に置く
- *   (env は `[vars]` を継承しない)。フラグを消せば Cloud Run の経路に戻る (monolith から 3 本を消すまで)。
+ *   (env は `[vars]` を継承しない)。
  * - 404 は本文が `tenant_not_found` のときだけ「会社が無い」(me → 401 / my-orgs → 空の一覧)。それ以外の非 2xx・
  *   本文空の 404 (共有 secret 不一致)・fetch 失敗は 502。
- * - preview override (`X-Alc-Preview-Api-Base`) 付きの me/logout は alc-proxy が helper に流さず従来の経路。
  * - switch-org の口は撤去済み。
  */
 import type { Env } from "../index";
@@ -138,9 +140,8 @@ export type MyOrgsResult =
   | { ok: false; status: number; error: string };
 
 /**
- * 所属組織の一覧。有効なら alc-auth-worker から現テナント 1 件を組み、無効なら従来の Cloud Run
- * `POST /api/my-orgs` を `identity` (検証済み identity ヘッダ) で呼ぶ。
- * Cloud Run 経路の通信例外はそのまま投げる (呼び手が従来どおり扱う)。
+ * 所属組織の一覧。有効なら alc-auth-worker から現テナント 1 件を組む。
+ * 無効 (フラグ無し・binding/secret 無し) は 404 `not_found` (W9 で Cloud Run 経路を撤去)。
  */
 export async function fetchMyOrgs(
   env: Env,
@@ -164,10 +165,5 @@ export async function fetchMyOrgs(
       },
     };
   }
-  const resp = await fetch(`${env.ALC_API_ORIGIN}/api/my-orgs`, {
-    method: "POST",
-    headers: identity,
-  });
-  if (!resp.ok) return { ok: false, status: resp.status, error: await resp.text() };
-  return { ok: true, data: await resp.json() };
+  return { ok: false, status: 404, error: "not_found" };
 }

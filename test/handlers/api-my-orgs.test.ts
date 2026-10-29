@@ -7,13 +7,26 @@ import {
   restoreFetch,
   waitIfLive,
   isLive,
-  assertMock,
 } from "../helpers/stub-or-real";
-import { makeJwt, TEST_TENANT_ID, TEST_USER_ID } from "../helpers/live-env";
+import { makeJwt, TEST_TENANT_ID } from "../helpers/live-env";
+import { createMockEnv } from "../helpers/mock-env";
+import { FAKE_ALC_AUTH_SECRET } from "../helpers/fake-alc-auth";
+import type { Env } from "../../src/index";
 import { handleMyOrgs } from "../../src/handlers/api-my-orgs";
 
 afterAll(() => restoreFetch());
 waitIfLive();
+
+/** alc-auth-worker (ALC_AUTH) の fake + それを使う env (my-orgs は alc-auth-worker から組む)。 */
+function alcAuthEnv(respond: () => Response): { env: Env; fetchMock: ReturnType<typeof vi.fn> } {
+  const fetchMock = vi.fn(async (_req: Request) => respond());
+  const env = createMockEnv({
+    ALC_AUTH_SESSION: "1",
+    ALC_AUTH: { fetch: fetchMock } as unknown as Fetcher,
+    INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET,
+  });
+  return { env, fetchMock };
+}
 
 describe("handleMyOrgs", () => {
   const env = testEnv();
@@ -37,29 +50,27 @@ describe("handleMyOrgs", () => {
     expect(data.error).toBe("Unauthorized");
   });
 
-  // rust-alc-api の /api/my-orgs は消えた (W2b、Refs ippoan/rust-alc-api#680。本番は ALC_AUTH_SESSION=1 で alc-auth-worker から組む)。
-  // live (ALC_AUTH 無しの testEnv) では Cloud Run の口に落ちて 404 になるので、成功の形は mock だけで確かめる
+  // my-orgs は alc-auth-worker (ALC_AUTH) から組む。live (ALC_AUTH 無しの testEnv) では 404 になるので、成功の形は mock だけで確かめる
   it.skipIf(isLive)("returns organizations on success", async () => {
-    stubOrReal(
-      new Response(
-        JSON.stringify({
-          organizations: [
-            { id: "org1", name: "Test Org", slug: "test-org" },
-          ],
-        }),
-        { status: 200 },
-      ),
+    const { env: e, fetchMock } = alcAuthEnv(
+      () => new Response(JSON.stringify({ id: "org1", name: "Test Org", slug: "test-org", short_id: "ab01" }), { status: 200 }),
     );
-    const res = await handleMyOrgs(
-      authRequest("/api/my-orgs", { method: "POST" }),
-      env,
-    );
+    const res = await handleMyOrgs(authRequest("/api/my-orgs", { method: "POST" }), e);
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
       organizations: Array<Record<string, unknown>>;
     };
-    expect(Array.isArray(data.organizations)).toBe(true);
-    expect(data.organizations.length).toBeGreaterThanOrEqual(1);
+    expect(data.organizations).toEqual([{ id: "org1", name: "Test Org", slug: "test-org", role: "admin" }]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.skipIf(isLive)("alc-auth-worker の binding が無ければ fetch せず 404", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await handleMyOrgs(authRequest("/api/my-orgs", { method: "POST" }), env);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("not_found");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("passes through error status from backend", async () => {
@@ -87,20 +98,15 @@ describe("handleMyOrgs", () => {
     expect(res.status).toBe(401);
   });
 
-  // rust-alc-api#434: raw Bearer ではなく検証済み X-Tenant-ID + X-User-* を注入する。
-  it("injects verified identity headers (not raw Bearer) to backend", async () => {
-    stubOrReal(
-      new Response(JSON.stringify({ organizations: [] }), { status: 200 }),
+  // rust-alc-api#434: raw Bearer ではなく検証済み identity (JWT の tenant) で alc-auth-worker を引く。
+  it.skipIf(isLive)("検証済みの tenant で alc-auth-worker を引き、raw Bearer は渡さない", async () => {
+    const { env: e, fetchMock } = alcAuthEnv(
+      () => new Response(JSON.stringify({ id: TEST_TENANT_ID, name: "T", slug: null, short_id: "ab01" }), { status: 200 }),
     );
-    await handleMyOrgs(authRequest("/api/my-orgs", { method: "POST" }), env);
-    assertMock(() => {
-      const call = vi.mocked(globalThis.fetch).mock.calls[0]!;
-      const headers = (call[1] as RequestInit).headers as Record<string, string>;
-      expect(headers["X-Tenant-ID"]).toBe(TEST_TENANT_ID);
-      expect(headers["X-User-ID"]).toBe(TEST_USER_ID);
-      expect(headers["X-User-Email"]).toBe("test@example.com");
-      expect(headers["X-User-Role"]).toBe("admin");
-      expect(headers["Authorization"]).toBeUndefined();
-    });
+    await handleMyOrgs(authRequest("/api/my-orgs", { method: "POST" }), e);
+    const req = fetchMock.mock.calls[0]![0] as Request;
+    expect(new URL(req.url).pathname).toBe(`/internal/tenants/${TEST_TENANT_ID}`);
+    expect(req.headers.get("X-Internal-Shared-Secret")).toBe(FAKE_ALC_AUTH_SECRET);
+    expect(req.headers.get("Authorization")).toBeNull();
   });
 });

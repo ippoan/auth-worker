@@ -30,7 +30,6 @@ declare namespace Cloudflare {
 		BROWSER: Fetcher;
 		AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org";
 		ACCESS_TEAM_DOMAIN: "mtamaramu.cloudflareaccess.com";
-		ALC_API_ORIGIN: "https://rust-alc-api-staging-566bls5vfq-an.a.run.app";
 		WORKER_ENV: "staging";
 		INTERNAL_AUTH_OIDC: "1";
 		DEBUG: "true";
@@ -70,7 +69,6 @@ declare namespace Cloudflare {
 		BROWSER: Fetcher;
 		AUTH_WORKER_ORIGIN: "https://auth-staging.ippoan.org" | "https://auth.ippoan.org";
 		ACCESS_TEAM_DOMAIN: "mtamaramu.cloudflareaccess.com";
-		ALC_API_ORIGIN: "https://rust-alc-api-staging-566bls5vfq-an.a.run.app" | "https://alc-api.ippoan.org";
 		WORKER_ENV: "staging" | "prod";
 		INTERNAL_AUTH_OIDC: "1";
 		DEBUG?: "true";
@@ -85,7 +83,6 @@ declare namespace Cloudflare {
 		MCP_SESSION_DO: DurableObjectNamespace<import("./src/index").McpSession>;
 		CF_FLICKR_CAM_WORKER: Fetcher /* cf-flickr-cam-worker */;
 		ALC_RECORDER: Fetcher /* alc-recorder-staging */ | Fetcher /* alc-recorder */;
-		ALC_API_PREVIEW_HOST_SUFFIX?: "rust-alc-api-747065218280.asia-northeast1.run.app";
 		ALC_PROXY_DEV_WRITE_ALLOWLIST?: "";
 	}
 }

@@ -303,37 +303,30 @@ describe("alc-proxy → ALC_VEIN binding", () => {
     expect((init.headers as Record<string, string>).Range).toBe("bytes=0-3");
   });
 
-  it("Range は Cloud Run 経路にも渡す。無ければ付けない", async () => {
-    const { cloudRun, env } = setup();
-    await handleAlcProxy(alcReq("/alc-proxy/api/tenko/x", { method: "GET", headers: { Range: "bytes=5-" } }), env);
-    expect((cloudRun.mock.calls[0]![1]!.headers as Record<string, string>).Range).toBe("bytes=5-");
-    await handleAlcProxy(alcReq("/alc-proxy/api/tenko/x", { method: "GET" }), env);
-    expect((cloudRun.mock.calls[1]![1]!.headers as Record<string, string>).Range).toBeUndefined();
+  it("表に無い path は Range 付きでも 404 (Cloud Run にも binding にも届かない)", async () => {
+    const { binding, cloudRun, env } = setup();
+    const res = await handleAlcProxy(alcReq("/alc-proxy/api/tenko/x", { method: "GET", headers: { Range: "bytes=5-" } }), env);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(binding.fetch).not.toHaveBeenCalled();
   });
 
-  it("(b) binding 未定義なら /api/vein/... も Cloud Run へ", async () => {
+  it("(b) binding 未定義なら /api/vein/... は 404", async () => {
     const { binding, cloudRun, env } = setup({ ALC_VEIN: undefined });
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/vein/identify", { body: "{}" }), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(cloudRun).toHaveBeenCalledTimes(1);
-    expect(binding.fetch).not.toHaveBeenCalled();
-    const init = cloudRun.mock.calls[0]![1] as RequestInit;
-    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer fake-oidc-token");
-  });
-
-  it("Cloud Run 経路で OIDC mint が失敗したら 502 (binding 経路とは独立)", async () => {
-    const { cloudRun, env } = setup();
-    vi.mocked(mintGoogleIdToken).mockRejectedValueOnce(new Error("boom"));
-    const res = await handleAlcProxy(alcReq("/alc-proxy/api/tenko/x", { method: "GET" }), env);
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
     expect(cloudRun).not.toHaveBeenCalled();
+    expect(binding.fetch).not.toHaveBeenCalled();
   });
 
-  it("(c) 表に無い /api/tenko/... は binding があっても Cloud Run", async () => {
+  it("(c) 表に無い /api/tenko/... は binding があっても 404", async () => {
     const { binding, cloudRun, env } = setup();
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/tenko/x", { method: "GET" }), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(binding.fetch).not.toHaveBeenCalled();
   });
 
@@ -418,14 +411,15 @@ describe("device-data-proxy → ALC_VEIN binding", () => {
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 
-  it("(b) binding 未定義なら Cloud Run", async () => {
+  it("(b) binding 未定義なら 404", async () => {
     const { binding, cloudRun, env } = setup({ ALC_VEIN: undefined });
     const res = await handleDeviceDataProxy(
       await kioskReq("/device-data-proxy/api/vein/identify", "POST"),
       env,
     );
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(binding.fetch).not.toHaveBeenCalled();
   });
 
@@ -496,25 +490,23 @@ describe("alc-proxy → ALC_DTAKO binding", () => {
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(b) binding 未定義なら /api/upload・分割の 2 口も Cloud Run へ", async () => {
+  it("(b) binding 未定義なら /api/upload・分割の 2 口も 404", async () => {
     const { dtako, cloudRun, env } = setup({ ALC_DTAKO: undefined });
     for (const path of ["/api/upload", "/api/split-csv/x", "/api/split-csv-all"]) {
       const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { body: "{}" }), env);
-      expect(await res.text()).toBe("from-cloud-run");
+      expect(res.status, path).toBe(404);
+      expect(await res.text(), path).toBe('{"error":"not_found"}');
     }
-    expect(cloudRun.mock.calls.map((c) => String(c[0]))).toEqual([
-      "https://alc-api.test.example/api/upload",
-      "https://alc-api.test.example/api/split-csv/x",
-      "https://alc-api.test.example/api/split-csv-all",
-    ]);
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
 
-  it("(c) /api/upload の下位の path は binding があっても Cloud Run", async () => {
+  it("(c) /api/upload の下位の path は binding があっても 404", async () => {
     const { dtako, cloudRun, env } = setup();
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/upload/face-photo", { body: "{}" }), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/upload/face-photo");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
 
@@ -579,18 +571,18 @@ describe("alc-proxy → ALC_DTAKO binding", () => {
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(b) binding 未定義なら履歴の読み取りとやり直しの口も Cloud Run へ", async () => {
+  it("(b) binding 未定義なら履歴の読み取りとやり直しの口も 404", async () => {
     const { dtako, cloudRun, env } = setup({ ALC_DTAKO: undefined });
     const paths = ["/api/uploads", "/api/internal/pending", "/api/internal/download/upload-1"];
     for (const path of paths) {
       const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { method: "GET" }), env);
-      expect(await res.text()).toBe("from-cloud-run");
+      expect(res.status, path).toBe(404);
+      expect(await res.text(), path).toBe('{"error":"not_found"}');
     }
     const rerun = await handleAlcProxy(alcReq("/alc-proxy/api/internal/rerun/upload-1", {}), env);
-    expect(await rerun.text()).toBe("from-cloud-run");
-    expect(cloudRun.mock.calls.map((c) => String(c[0]))).toEqual(
-      [...paths, "/api/internal/rerun/upload-1"].map((p) => `https://alc-api.test.example${p}`),
-    );
+    expect(rerun.status).toBe(404);
+    expect(await rerun.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
 
@@ -680,24 +672,24 @@ describe("alc-proxy → ALC_DTAKO binding", () => {
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(b) binding 未定義なら再計算の 3 口も Cloud Run へ", async () => {
+  it("(b) binding 未定義なら再計算の 3 口も 404", async () => {
     const { dtako, cloudRun, env } = setup({ ALC_DTAKO: undefined });
     const paths = ["/api/recalculate", "/api/recalculate-driver", "/api/recalculate-drivers"];
     for (const path of paths) {
       const res = await handleAlcProxy(alcReq(`/alc-proxy${path}`, { body: "{}" }), env);
-      expect(await res.text()).toBe("from-cloud-run");
+      expect(res.status, path).toBe(404);
+      expect(await res.text(), path).toBe('{"error":"not_found"}');
     }
-    expect(cloudRun.mock.calls.map((c) => String(c[0]))).toEqual(
-      paths.map((p) => `https://alc-api.test.example${p}`),
-    );
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
 
-  it("(c) 再計算の口の下位の path は binding があっても Cloud Run", async () => {
+  it("(c) 再計算の口の下位の path は binding があっても 404", async () => {
     const { dtako, cloudRun, env } = setup();
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/recalculate/x", { body: "{}" }), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/recalculate/x");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
 
@@ -783,24 +775,21 @@ describe("alc-internal-proxy → ALC_DTAKO binding", () => {
     expect(init.body).toBeUndefined();
   });
 
-  it("(b) binding 未定義なら今までどおり Cloud Run (token と共有の secret 付き)", async () => {
+  it("(b) binding 未定義なら 404", async () => {
     const { dtako, cloudRun, env } = setup({ ALC_DTAKO: undefined });
     const res = await handleAlcInternalProxy(internalReq("/alc-internal-proxy/api/upload"), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    const [url, init] = cloudRun.mock.calls[0]!;
-    expect(String(url)).toBe("https://alc-api.test.example/api/upload");
-    const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h.Authorization).toBe("Bearer fake-oidc-token");
-    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
-    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
 
-  it("(c) 許可リストのほかの path は binding があっても今までどおり Cloud Run", async () => {
+  it("(c) 許可リストのほかの path は binding があっても 404", async () => {
     const { binding, dtako, cloudRun, env } = setup();
     const res = await handleAlcInternalProxy(internalReq("/alc-internal-proxy/api/hub/measurements"), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/hub/measurements");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(dtako.fetch).not.toHaveBeenCalled();
     expect(binding.fetch).not.toHaveBeenCalled();
   });
@@ -969,23 +958,19 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
     expect(dtako.fetch).not.toHaveBeenCalled();
   });
 
-  it("(b) binding 未定義なら今までどおり Cloud Run (internal JWT 付き・X-Tenant-ID なし)", async () => {
+  it("(b) binding 未定義なら 404", async () => {
     const { lineworks, cloudRun, env } = setup({ ALC_LINEWORKS: undefined });
     const res = await handleAlcInternalProxy(
       internalReq(`/alc-internal-proxy${SEND}`, { "content-type": "application/json" }, "{}"),
       env,
     );
-    expect(await res.text()).toBe("from-cloud-run");
-    const [url, init] = cloudRun.mock.calls[0]!;
-    expect(String(url)).toBe(`https://alc-api.test.example${SEND}`);
-    expect((init as RequestInit).headers).toEqual({
-      Authorization: "Bearer fake-internal-jwt",
-      "Content-Type": "application/json",
-    });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(lineworks.fetch).not.toHaveBeenCalled();
   });
 
-  it("(c) GET・secret 不一致は binding に届かない。internal-jwt の別の口 (fire) は ALC_LINEWORKS へ行かない (ALC_TROUBLE 未定義なら Cloud Run)", async () => {
+  it("(c) GET・secret 不一致は binding に届かない。internal-jwt の別の口 (fire) は ALC_LINEWORKS へ行かない (ALC_TROUBLE 未定義なら 404)", async () => {
     const { lineworks, cloudRun, env } = setup();
     const get = await handleAlcInternalProxy(
       new Request(`https://auth.test.example/alc-internal-proxy${SEND}`, {
@@ -1004,8 +989,9 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
     expect(cloudRun).not.toHaveBeenCalled();
 
     const fire = await handleAlcInternalProxy(internalReq(`/alc-internal-proxy${FIRE}`, {}, "{}"), env);
-    expect(await fire.text()).toBe("from-cloud-run");
-    expect(String(cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example${FIRE}`);
+    expect(fire.status).toBe(404);
+    expect(await fire.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(lineworks.fetch).not.toHaveBeenCalled();
   });
 
@@ -1064,11 +1050,12 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 
-  it("(h) alc-proxy のデプロイ確認は binding 未定義なら Cloud Run。%2f%2e%2e を含む path は exact に一致せず binding に届かない", async () => {
+  it("(h) alc-proxy のデプロイ確認は binding 未定義なら 404。%2f%2e%2e を含む path は exact に一致せず binding に届かない", async () => {
     const off = setup({ ALC_LINEWORKS: undefined });
     const res = await handleAlcProxy(alcReq(`/alc-proxy${DEPLOY_CHECK}`, { method: "GET" }), off.env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(String(off.cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example${DEPLOY_CHECK}`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(off.cloudRun).not.toHaveBeenCalled();
 
     const { lineworks, env } = setup();
     const unsafe = await handleAlcProxy(
@@ -1081,8 +1068,7 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
 
   it("(d) 端末通知 (sendDeviceNotify) も binding へ。{recipient_id, text} を Content-Type だけで送り、token は作らない", async () => {
     const { lineworks, cloudRun, env } = setup();
-    vi.mocked(internalAuthToken).mockRejectedValue(new Error("boom"));
-    const res = await sendDeviceNotify(env, "https://alc-api.test.example", "r1", "hello", { event: "t" });
+    const res = await sendDeviceNotify(env, "r1", "hello", { event: "t" });
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("from-binding");
     const [url, init] = lineworks.fetch.mock.calls[0]!;
@@ -1094,16 +1080,12 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(e) 端末通知は binding 未定義なら今までどおり rust へ (internal JWT 付き)", async () => {
+  it("(e) 端末通知は binding 未定義なら 404 (Cloud Run へは行かない)", async () => {
     const { cloudRun, env } = setup({ ALC_LINEWORKS: undefined });
-    const res = await sendDeviceNotify(env, "https://alc-api.test.example/", "r1", "hello", { event: "t" });
-    expect(await res.text()).toBe("from-cloud-run");
-    const [url, init] = cloudRun.mock.calls[0]!;
-    expect(String(url)).toBe(`https://alc-api.test.example${SEND}`);
-    expect((init as RequestInit).headers).toEqual({
-      Authorization: "Bearer fake-internal-jwt",
-      "Content-Type": "application/json",
-    });
+    const res = await sendDeviceNotify(env, "r1", "hello", { event: "t" });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
   it("(f) 端末通知の binding の失敗は今までどおり 502 (本文は返さない)", async () => {
@@ -1111,7 +1093,7 @@ describe("LINE WORKS の送信の口 → ALC_LINEWORKS binding (Refs ohishi-exp/
     lineworks.fetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ error: "recipient_not_found" }), { status: 404 }),
     );
-    const res = await sendDeviceNotify(env, "https://alc-api.test.example", "r1", "hello", { event: "t" });
+    const res = await sendDeviceNotify(env, "r1", "hello", { event: "t" });
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "upstream error" });
   });
@@ -1362,11 +1344,12 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(b) alc-proxy の Cloud Run に残る口 (文書の search) は binding があっても Cloud Run", async () => {
+  it("(b) alc-proxy の表に無い口 (文書の search) は binding があっても 404", async () => {
     const { notify, cloudRun, env } = setup();
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/notify/documents/search", { method: "GET" }), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(notify.fetch).not.toHaveBeenCalled();
   });
 
@@ -1412,25 +1395,23 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(e) admin-notify-api の表に無い口・文書の配信 (画面用だけの行) は binding があっても Cloud Run (OIDC 付き)", async () => {
+  it("(e) admin-notify-api の表に無い口・文書の配信 (画面用だけの行) は binding があっても 404", async () => {
     const { notify, cloudRun, env } = setup();
     for (const path of ["/api/notify/documents", DISTRIBUTE]) {
-      await handleAdminNotifyApi(adminReq(`/admin/notify${path}`, { method: "POST", body: "{}" }), env);
+      const res = await handleAdminNotifyApi(adminReq(`/admin/notify${path}`, { method: "POST", body: "{}" }), env);
+      expect(res.status, path).toBe(404);
+      expect(await res.text(), path).toBe('{"error":"not_found"}');
     }
     expect(notify.fetch).not.toHaveBeenCalled();
-    expect(cloudRun).toHaveBeenCalledTimes(2);
-    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/notify/documents");
-    expect(String(cloudRun.mock.calls[1]![0])).toBe(`https://alc-api.test.example${DISTRIBUTE}`);
-    const h = (cloudRun.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
-    expect(h.Authorization).toBe("Bearer fake-oidc-token");
-    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(f) admin-notify-api は binding 未定義なら今までどおり Cloud Run", async () => {
+  it("(f) admin-notify-api は binding 未定義なら 404", async () => {
     const { notify, cloudRun, env } = setup({ ALC_NOTIFY: undefined });
     const res = await handleAdminNotifyApi(adminReq("/admin/notify/api/notify/lineworks/users"), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/notify/lineworks/users");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
     expect(notify.fetch).not.toHaveBeenCalled();
   });
 
@@ -1476,19 +1457,15 @@ describe("notify の口 → ALC_NOTIFY binding (Refs ippoan/rust-alc-api#747)", 
     expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("(i) api-line-users は binding 未定義なら今までどおり Cloud Run (OIDC 付き)", async () => {
-    const { cloudRun, env } = setup({ ALC_NOTIFY: undefined });
-    cloudRun.mockResolvedValueOnce(new Response("[]", { status: 200 }));
+  it("(i) api-line-users は binding 未定義なら Cloud Run へ行かず notify binding にも届かない", async () => {
+    const { notify, cloudRun, env } = setup({ ALC_NOTIFY: undefined });
     await handleLineUsersList(adminReq("/api/line-users/list", { method: "POST" }), env);
     await handleLineUserDelete(
       adminReq("/api/line-users/delete", { method: "POST", body: JSON.stringify({ id: RID }) }),
       env,
     );
-    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/notify/recipients");
-    expect(String(cloudRun.mock.calls[1]![0])).toBe(`https://alc-api.test.example/api/notify/recipients/${RID}`);
-    expect((cloudRun.mock.calls[1]![1] as RequestInit).method).toBe("DELETE");
-    const h = (cloudRun.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
-    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+    expect(cloudRun).not.toHaveBeenCalled();
+    expect(notify.fetch).not.toHaveBeenCalled();
   });
 
   it("(j) api-line-users の削除で id が encode されて % を含む path は 403 で binding に届かない", async () => {
@@ -1658,11 +1635,12 @@ describe("trouble の口 → ALC_TROUBLE binding (Refs ippoan/rust-alc-api#747)"
     expect(lineworks.fetch).not.toHaveBeenCalled();
   });
 
-  it("(d) alc-internal-proxy の発火は binding 未定義なら今までどおり Cloud Run (internal JWT 付き)", async () => {
+  it("(d) alc-internal-proxy の発火は binding 未定義なら 404", async () => {
     const { cloudRun, env } = setup();
     const res = await handleAlcInternalProxy(internalReq(`/alc-internal-proxy${FIRE}`, {}, "{}"), env);
-    expect(await res.text()).toBe("from-cloud-run");
-    expect(String(cloudRun.mock.calls[0]![0])).toBe(`https://alc-api.test.example${FIRE}`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 });
 
@@ -1857,13 +1835,14 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
       expect(cloudRun).not.toHaveBeenCalled();
     });
 
-    it("uuid でない path (m-1・%2e%2e%2fadmin) は許可表は通る (既存の PUT と同じ) が binding へは行かず Cloud Run へ", async () => {
+    it("uuid でない path (m-1・%2e%2e%2fadmin) は許可表は通る (既存の PUT と同じ) が binding へは行かず 404", async () => {
       for (const path of ["/api/measurements/m-1/tenko", "/api/measurements/%2e%2e%2fadmin/tenko"]) {
         const { measurements, cloudRun, env } = setupMeasurements();
         const res = await handleDeviceDataProxy(await deviceReq(path, "POST"), env);
-        expect(await res.text(), path).toBe("from-cloud-run");
+        expect(res.status, path).toBe(404);
+        expect(await res.text(), path).toBe('{"error":"not_found"}');
         expect(measurements.fetch, path).not.toHaveBeenCalled();
-        expect(cloudRun, path).toHaveBeenCalledTimes(1);
+        expect(cloudRun, path).not.toHaveBeenCalled();
       }
     });
 
@@ -2363,9 +2342,10 @@ describe("端末の測定・打刻 → ALC_PEOPLE binding (W6a、Refs ippoan/rus
     expect(await res.text()).toBe("from-binding");
     expect(people.fetch.mock.calls[0]![0]).toBe(`https://alc-people${PATH}?kind=alcohol`);
     const post = await handleAlcProxy(alcReq(`/alc-proxy${PATH}`, { method: "POST", body: "[]" }), env);
-    expect(await post.text()).toBe("from-cloud-run");
+    expect(post.status).toBe(404);
+    expect(await post.text()).toBe('{"error":"not_found"}');
     expect(people.fetch).toHaveBeenCalledTimes(1);
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 });
 
@@ -2777,14 +2757,15 @@ describe("車両のエラーの起票 → ALC_DTAKO binding (W5c-5、Refs ippoan
     }
   });
 
-  it("alc-proxy からの起票の POST は binding に届かず Cloud Run へ", async () => {
+  it("alc-proxy からの起票の POST は binding に届かず 404", async () => {
     vi.mocked(mintGoogleIdToken).mockReset();
     vi.mocked(mintGoogleIdToken).mockResolvedValue("fake-oidc-token");
     const { dtako, cloudRun, env } = setup();
     const res = await handleAlcProxy(alcReq("/alc-proxy/api/dtako/tickets", { method: "POST", body: "{}" }), env);
-    expect(await res.text()).toBe("from-cloud-run");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
     expect(dtako.fetch).not.toHaveBeenCalled();
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
   it("1 件と close は画面用、結果の反映は内部用", () => {

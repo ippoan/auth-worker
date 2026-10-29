@@ -92,16 +92,16 @@ describe("renderLoginPage", () => {
     expect(result).toContain("a&amp;b&lt;c&gt;d");
   });
 
-  it("includes orgId in hidden field when provided", () => {
+  it("パスワードログインのフォームは出さない (POST /auth/login は W9 で撤去)", () => {
     const result = renderLoginPage({
       redirectUri: "https://app.example.com/callback",
-      orgId: "test-org-id",
       googleEnabled: true,
       googleRedirectUrl: "https://api.example.com/auth/google/redirect",
       lineworksRedirectUrl: "https://api.example.com/auth/lineworks/redirect",
       lineLoginRedirectUrl: "https://api.example.com/auth/line/redirect",
     });
-    expect(result).toContain("test-org-id");
+    expect(result).not.toContain("/auth/login");
+    expect(result).not.toContain("togglePwLogin");
   });
 
   describe("clearAllCookies (Refs #531 follow-up)", () => {

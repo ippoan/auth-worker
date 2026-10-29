@@ -3,13 +3,8 @@
  * 短命の端末 JWT (device-kiosk) を返す口。出した JWT が `/device-data-proxy` の kiosk
  * 許可表を通り、`/device/claim-ticket` では弾かれるところまでをここで固定する。
  */
-import { describe, it, expect, vi, afterAll } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import crypto from "node:crypto";
-
-// OIDC mint は別ユニットでテスト済み。proxy を通す確認では forward 先だけ見る。
-vi.mock("../../src/lib/oidc", () => ({
-  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
-}));
 
 import {
   handleDeviceAlarmNonce,
@@ -39,11 +34,6 @@ const ALLOWED_ORIGINS =
   "https://app1.test.example,https://app2.test.example,https://auth.test.example";
 const REDIRECT_URI = "https://app1.test.example/page";
 const TENANT_ID = "tenant-alarm-kiosk-1";
-
-const originalFetch = globalThis.fetch;
-afterAll(() => {
-  globalThis.fetch = originalFetch;
-});
 
 interface Keypair {
   pubRaw: Uint8Array;
@@ -104,9 +94,17 @@ function makeEnv(kvSeed: Record<string, string> = {}, overrides: Partial<Env> = 
   return createMockEnv({
     AUTH_CONFIG: createMockKV({ "origins:prod": ALLOWED_ORIGINS, ...kvSeed }),
     MCP_OAUTH_KV: createMockKV(),
-    ALC_API_PROXY_SA_KEY: "{}", // resolveSecret が非空を返せばよい (oidc は mock)
     ...overrides,
   });
+}
+
+/**
+ * `/device-data-proxy` の forward 先 (Service Binding) を fake に差し替える。W9 で Cloud Run への
+ * fallback は撤去済みなので、表に行が在る path だけが binding へ渡る (`fetchMock` はその fetch)。
+ */
+function bindAlcBackends(env: Env, fetchMock: ReturnType<typeof vi.fn>): void {
+  const fake = { fetch: fetchMock } as unknown as Fetcher;
+  Object.assign(env, { ALC_TENKO: fake, ALC_MEASUREMENTS: fake, ALC_CAM_CLIPS: fake });
 }
 
 function nonceRequest(): Request {
@@ -500,7 +498,7 @@ describe("出した端末 JWT の届く範囲", () => {
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
     );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    bindAlcBackends(env, fetchMock);
 
     const res = await handleDeviceDataProxy(
       new Request(`${AUTH_ORIGIN}/device-data-proxy/api/tenko/dashboard`, {
@@ -512,7 +510,7 @@ describe("出した端末 JWT の届く範囲", () => {
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [target, init] = fetchMock.mock.calls[0]!;
-    expect(String(target)).toBe("https://alc-api.test.example/api/tenko/dashboard");
+    expect(String(target)).toBe("https://alc-tenko/api/tenko/dashboard");
     expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT_ID);
   });
 
@@ -786,7 +784,7 @@ describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-a
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
     );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    bindAlcBackends(env, fetchMock);
 
     const ok = await handleDeviceDataProxy(
       new Request(`${AUTH_ORIGIN}/device-data-proxy/api/tenko/schedules`, {
@@ -878,7 +876,7 @@ describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-a
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
     );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    bindAlcBackends(env, fetchMock);
 
     const ok = await handleDeviceDataProxy(
       new Request(`${AUTH_ORIGIN}/device-data-proxy/api/measurements/start`, {
@@ -1078,7 +1076,7 @@ describe("POST /device/alarm-token の用途 cam-host (拠点 PC の拡張の鍵
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
     );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    bindAlcBackends(env, fetchMock);
 
     const ok = await handleDeviceDataProxy(
       new Request(`${AUTH_ORIGIN}/device-data-proxy/api/cam-clips/cameras/mine`, {
@@ -1242,7 +1240,7 @@ describe("POST /device/alarm-token の用途 hub-record (CoreS3 の記録の ID 
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
     );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    bindAlcBackends(env, fetchMock);
 
     for (const path of ["/api/employees/face-data", "/api/cam-clips/cameras/mine", "/api/hub/measurements"]) {
       const denied = await handleDeviceDataProxy(

@@ -3,11 +3,8 @@ import { createMockEnv, createMockKV, TEST_JWT_SECRET } from "../helpers/mock-en
 import { signTestJwt } from "../helpers/test-jwt";
 import { DEVICE_ROLE, DEVICE_ROLE_DTAKO_INGEST } from "../../src/lib/device";
 
-// internal JWT の mint 実体は lib/alc-internal 側でテスト済み。ここでは handler の
-// flow (device JWT 検証 → role→宛先 → body 検証 → forward) を固定する。
-vi.mock("../../src/lib/alc-internal", () => ({
-  internalAuthToken: vi.fn(async () => "fake-internal-jwt"),
-}));
+// ここでは handler の flow (device JWT 検証 → role→宛先 → body 検証 → ALC_LINEWORKS へ forward) を固定する。
+// W9: Cloud Run への fallback は撤去済み (binding が無ければ 404)。
 
 import { handleDeviceNotify } from "../../src/handlers/device-notify";
 
@@ -20,6 +17,9 @@ afterAll(() => {
   globalThis.fetch = originalFetch;
 });
 
+/** `okFetch` / `bindingResponding` が ALC_LINEWORKS に挿す fake (無ければ binding 無し)。 */
+let currentBinding: { fetch: ReturnType<typeof vi.fn> } | undefined;
+
 /** `device-notify-targets` を持つ AUTH_CONFIG KV 付きの env。 */
 function env(overrides: Record<string, unknown> = {}) {
   return createMockEnv({
@@ -27,6 +27,7 @@ function env(overrides: Record<string, unknown> = {}) {
       "origins:prod": "https://app1.test.example",
       "device-notify-targets": JSON.stringify({ [DEVICE_ROLE]: RECIPIENT }),
     }),
+    ...(currentBinding ? { ALC_LINEWORKS: currentBinding as unknown as Fetcher } : {}),
     ...overrides,
   });
 }
@@ -35,6 +36,7 @@ function env(overrides: Record<string, unknown> = {}) {
 function envWithoutTargets(overrides: Record<string, unknown> = {}) {
   return createMockEnv({
     AUTH_CONFIG: createMockKV({ "origins:prod": "https://app1.test.example" }),
+    ...(currentBinding ? { ALC_LINEWORKS: currentBinding as unknown as Fetcher } : {}),
     ...overrides,
   });
 }
@@ -68,14 +70,17 @@ function okFetch() {
     async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       new Response(JSON.stringify({ ok: true }), { status: 200 }),
   );
-  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  currentBinding = { fetch: fetchMock };
   return fetchMock;
 }
 
 describe("handleDeviceNotify (ippoan/nuxt-pwa-carins#54、無人 box の LINE WORKS 通知)", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    currentBinding = undefined;
+  });
 
-  it("正常: 宛先は KV の role→map 由来で、internal token を付けて rust へ POST する", async () => {
+  it("正常: 宛先は KV の role→map 由来で、alc-lineworks へ token なしで POST する", async () => {
     const fetchMock = okFetch();
     const res = await handleDeviceNotify(
       req({ token: await deviceToken(), body: JSON.stringify({ text: "found=3 uploaded=3 failed=0" }) }),
@@ -84,10 +89,10 @@ describe("handleDeviceNotify (ippoan/nuxt-pwa-carins#54、無人 box の LINE WO
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe("https://alc-api.test.example/api/internal/lineworks/send");
+    expect(String(url)).toBe("https://alc-lineworks/api/internal/lineworks/send");
     expect((init as RequestInit).method).toBe("POST");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-internal-jwt");
+    expect(h["Authorization"]).toBeUndefined();
     expect(h["Content-Type"]).toBe("application/json");
     // ★ 宛先は呼び手の申告ではなく KV 由来 (device は選べない)。
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
@@ -224,37 +229,29 @@ describe("handleDeviceNotify (ippoan/nuxt-pwa-carins#54、無人 box の LINE WO
     expect(res.status).toBe(503);
   });
 
-  it("ALC_API_ORIGIN 未設定は 503", async () => {
+  it("ALC_LINEWORKS の binding が無ければ 404 (送らない、global fetch も呼ばない)", async () => {
+    const globalFetch = vi.fn();
+    globalThis.fetch = globalFetch as unknown as typeof fetch;
     const res = await handleDeviceNotify(
       req({ token: await deviceToken(), body: JSON.stringify({ text: "hi" }) }),
-      env({ ALC_API_ORIGIN: undefined }),
+      env(),
     );
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not_found" });
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 
   it("上流が非 2xx なら 502 (本文はそのまま返さない)", async () => {
     const fetchMock = vi.fn(
       async (): Promise<Response> => new Response("channel not found", { status: 404 }),
     );
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    currentBinding = { fetch: fetchMock };
     const res = await handleDeviceNotify(
       req({ token: await deviceToken(), body: JSON.stringify({ text: "hi" }) }),
       env(),
     );
     expect(res.status).toBe(502);
     expect(await res.text()).not.toContain("channel not found");
-  });
-
-  it("internal token の mint に失敗したら 502", async () => {
-    const { internalAuthToken } = await import("../../src/lib/alc-internal");
-    (internalAuthToken as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("boom"),
-    );
-    const res = await handleDeviceNotify(
-      req({ token: await deviceToken(), body: JSON.stringify({ text: "hi" }) }),
-      env(),
-    );
-    expect(res.status).toBe(502);
   });
 
   it("POST 以外 (GET / PUT) は 405", async () => {

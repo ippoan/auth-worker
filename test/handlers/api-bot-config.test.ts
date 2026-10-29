@@ -23,12 +23,27 @@ import { DEVELOPER_EMAILS } from "../../src/lib/developer";
 afterAll(() => restoreFetch());
 waitIfLive();
 
+/**
+ * 一覧・保存・削除の口の行き先は alc-lineworks-worker の Service Binding (ALC_LINEWORKS)。
+ * binding の fetch を global fetch へ流し、各 test が `stubOrReal` / `vi.stubGlobal("fetch")` で応答を決める
+ * (呼ばれた url は https://alc-lineworks/api/admin/bot/configs...)。
+ */
+function lineworksEnv() {
+  const base = testEnv();
+  return {
+    ...base,
+    ALC_LINEWORKS: {
+      fetch: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
+    } as unknown as Fetcher,
+  };
+}
+
 // ---------- handleBotConfigList ----------
 
 // 一覧・保存・削除の口は ippoan/alc-lineworks-worker へ移り、rust-alc-api から消えた (W2c、Refs ippoan/rust-alc-api#680)。
 // live (rust のコンテナが相手、binding 無し) では Cloud Run の口に落ちて 404 になるので、mock だけで回す。export は rust に残る
 describe.skipIf(isLive)("handleBotConfigList", () => {
-  const env = testEnv();
+  const env = lineworksEnv();
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {
@@ -142,6 +157,25 @@ describe.skipIf(isLive)("handleBotConfigList", () => {
     expect(Array.isArray(data.configs)).toBe(true);
   });
 
+  it("ALC_LINEWORKS が無ければ fetch せず 404 (fail-closed)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await handleBotConfigList(authRequest("/x", { method: "GET" }), testEnv());
+    expect(res.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("binding へ identity ヘッダだけで GET する (Authorization は付けない)", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ configs: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await handleBotConfigList(authRequest("/x", { method: "GET" }), env);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://alc-lineworks/api/admin/bot/configs");
+    expect((init as RequestInit).method).toBe("GET");
+    expect((init as RequestInit).headers as Record<string, string>).toHaveProperty("X-Tenant-ID");
+    expect(((init as RequestInit).headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
   it("passes through error status from backend", async () => {
     stubOrReal(new Response("forbidden", { status: 403 }));
     const req = isLive
@@ -161,7 +195,7 @@ describe.skipIf(isLive)("handleBotConfigList", () => {
 // ---------- handleBotConfigUpsert ----------
 
 describe.skipIf(isLive)("handleBotConfigUpsert", () => {
-  const env = testEnv();
+  const env = lineworksEnv();
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {
@@ -395,7 +429,7 @@ describe.skipIf(isLive)("handleBotConfigUpsert", () => {
 // ---------- handleBotConfigDelete ----------
 
 describe.skipIf(isLive)("handleBotConfigDelete", () => {
-  const env = testEnv();
+  const env = lineworksEnv();
   beforeEach(() => vi.restoreAllMocks());
 
   it("returns 401 without token", async () => {

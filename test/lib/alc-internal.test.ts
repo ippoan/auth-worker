@@ -21,7 +21,7 @@ import type { RlsCheckResult, VeinDbRole } from "../../src/lib/alc-internal";
 import type { Env } from "../../src/index";
 
 function env(overrides: Record<string, unknown> = {}): Env {
-  return { ALC_API_ORIGIN: "https://alc-api.test", ...overrides } as unknown as Env;
+  return { ...overrides } as unknown as Env;
 }
 
 const originalFetch = globalThis.fetch;
@@ -52,81 +52,74 @@ describe("internalAuthToken (rust-alc-api#434 lockdown cutover)", () => {
 });
 
 describe("resolveActiveDeviceTenant (Refs #544)", () => {
+  const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
 
+  /** binding の応答を `respond` で決める。 */
+  function withBinding(respond: () => Response | Promise<Response>) {
+    const binding = { fetch: vi.fn(async () => respond()) };
+    return { binding, e: env({ ALC_DEVICES: binding }) };
+  }
+
   it("200 + tenant_id で ok", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        expect(url).toBe("https://alc-api.test/api/internal/devices/dev-1/pairing-tenant");
-        return new Response(JSON.stringify({ tenant_id: "tenant-9" }), { status: 200 });
-      }),
-    );
-    const res = await resolveActiveDeviceTenant(env(), "dev-1");
-    expect(res).toEqual({ ok: true, tenantId: "tenant-9" });
+    const { e } = withBinding(() => new Response(JSON.stringify({ tenant_id: "tenant-9" }), { status: 200 }));
+    expect(await resolveActiveDeviceTenant(e, ID)).toEqual({ ok: true, tenantId: "tenant-9" });
   });
 
-  it("device_id を path に URL-encode する", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ tenant_id: "t" }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    await resolveActiveDeviceTenant(env(), "a/b c");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://alc-api.test/api/internal/devices/a%2Fb%20c/pairing-tenant",
+  it("device_id を path に載せて binding へ渡す", async () => {
+    const { binding, e } = withBinding(() => new Response(JSON.stringify({ tenant_id: "t" }), { status: 200 }));
+    await resolveActiveDeviceTenant(e, ID);
+    expect(binding.fetch).toHaveBeenCalledWith(
+      `https://alc-devices/api/internal/devices/${ID}/pairing-tenant`,
       expect.anything(),
     );
   });
 
   it("404 は not_found", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 404 })));
-    const res = await resolveActiveDeviceTenant(env(), "dev-1");
-    expect(res).toEqual({ ok: false, reason: "not_found" });
+    const { e } = withBinding(() => new Response("", { status: 404 }));
+    expect(await resolveActiveDeviceTenant(e, ID)).toEqual({ ok: false, reason: "not_found" });
   });
 
-  it("401 は unavailable (SA key 未設定で HS256 に落ちた場合の rust 401 を含む)", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
-    const res = await resolveActiveDeviceTenant(env(), "dev-1");
-    expect(res).toEqual({ ok: false, reason: "unavailable" });
+  it("401 は unavailable", async () => {
+    const { e } = withBinding(() => new Response("", { status: 401 }));
+    expect(await resolveActiveDeviceTenant(e, ID)).toEqual({ ok: false, reason: "unavailable" });
   });
 
   it("5xx は unavailable", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));
-    const res = await resolveActiveDeviceTenant(env(), "dev-1");
-    expect(res).toEqual({ ok: false, reason: "unavailable" });
+    const { e } = withBinding(() => new Response("", { status: 500 }));
+    expect(await resolveActiveDeviceTenant(e, ID)).toEqual({ ok: false, reason: "unavailable" });
   });
 
   it("200 だが JSON 不正は unavailable", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{not json", { status: 200 })));
-    const res = await resolveActiveDeviceTenant(env(), "dev-1");
-    expect(res).toEqual({ ok: false, reason: "unavailable" });
+    const { e } = withBinding(() => new Response("{not json", { status: 200 }));
+    expect(await resolveActiveDeviceTenant(e, ID)).toEqual({ ok: false, reason: "unavailable" });
   });
 
   it("200 だが tenant_id 欠落は unavailable", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })));
-    const res = await resolveActiveDeviceTenant(env(), "dev-1");
-    expect(res).toEqual({ ok: false, reason: "unavailable" });
+    const { e } = withBinding(() => new Response(JSON.stringify({}), { status: 200 }));
+    expect(await resolveActiveDeviceTenant(e, ID)).toEqual({ ok: false, reason: "unavailable" });
   });
 
   it("200 だが tenant_id が空文字は unavailable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ tenant_id: "" }), { status: 200 })),
-    );
-    const res = await resolveActiveDeviceTenant(env(), "dev-1");
-    expect(res).toEqual({ ok: false, reason: "unavailable" });
+    const { e } = withBinding(() => new Response(JSON.stringify({ tenant_id: "" }), { status: 200 }));
+    expect(await resolveActiveDeviceTenant(e, ID)).toEqual({ ok: false, reason: "unavailable" });
   });
 
-  it("fetch の例外は unavailable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new Error("network down");
-      }),
-    );
-    const res = await resolveActiveDeviceTenant(env(), "dev-1");
-    expect(res).toEqual({ ok: false, reason: "unavailable" });
+  it("binding の例外は unavailable", async () => {
+    const { e } = withBinding(() => {
+      throw new Error("network down");
+    });
+    expect(await resolveActiveDeviceTenant(e, ID)).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("binding が無ければ fetch せず not_found (fail-closed)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await resolveActiveDeviceTenant(env(), ID)).toEqual({ ok: false, reason: "not_found" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -663,13 +656,13 @@ describe("resolveActiveDeviceTenant → ALC_DEVICES binding (W6b-a、Refs ippoan
     expect(await resolveActiveDeviceTenant(env({ ALC_DEVICES: broken }), ID)).toEqual({ ok: false, reason: "unavailable" });
   });
 
-  it("UUID でない id は binding があっても Cloud Run", async () => {
+  it("UUID でない id は binding があっても呼ばず not_found (fetch もしない)", async () => {
     const binding = { fetch: vi.fn() };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ tenant_id: "t" }), { status: 200 }));
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const res = await resolveActiveDeviceTenant(env({ ALC_DEVICES: binding }), "dev-1");
-    expect(res).toEqual({ ok: true, tenantId: "t" });
+    expect(res).toEqual({ ok: false, reason: "not_found" });
     expect(binding.fetch).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

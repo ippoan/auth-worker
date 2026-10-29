@@ -1,13 +1,9 @@
 /**
  * ログインの内部口 8 本の行き先の切り替え (Refs ohishi-exp/rust-leave-worker#1)。
  * `ALC_AUTH_LOGIN=1` + `ALC_AUTH` + `INTERNAL_SHARED_SECRET` → alc-auth-worker (`/internal/auth/...`)、
- * それ以外 → Cloud Run (`/api/internal/auth/...`)。
+ * それ以外 → 404 で fail-closed (Cloud Run への退避は撤去済み、fetch は一切しない)。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-vi.mock("../../src/lib/internal-jwt", () => ({
-  signInternalJWT: vi.fn(async () => "hs256-internal-jwt"),
-}));
 
 import {
   findUserByLineId,
@@ -121,7 +117,7 @@ const CASES: Array<{
 ];
 
 function env(overrides: Record<string, unknown> = {}): Env {
-  return { ALC_API_ORIGIN: "https://alc-api.test", JWT_SECRET: "s", WORKER_ENV: "staging", ...overrides } as unknown as Env;
+  return { JWT_SECRET: "s", WORKER_ENV: "staging", ...overrides } as unknown as Env;
 }
 
 /** 応答を `respond` で決める fake の ALC_AUTH と、それを持つ env。 */
@@ -144,7 +140,7 @@ afterEach(() => {
 });
 
 describe.each(CASES)("$name", (c) => {
-  it("スイッチ有り → ALC_AUTH を /internal/auth/... で共有 secret 付きで呼ぶ (Cloud Run は呼ばない)", async () => {
+  it("スイッチ有り → ALC_AUTH を /internal/auth/... で共有 secret 付きで呼ぶ (fetch は呼ばない)", async () => {
     const { env: e, alcAuth } = switched(() => c.ok());
     await expect(c.call(e)).resolves.toEqual(c.expected);
     expect(cloudRun).not.toHaveBeenCalled();
@@ -168,42 +164,35 @@ describe.each(CASES)("$name", (c) => {
     await expect(c.call(e)).rejects.toThrow(/failed: 500/);
   });
 
-  it("スイッチ無し → Cloud Run (/api/internal/auth/...) を呼ぶ (ALC_AUTH は呼ばない)", async () => {
-    cloudRun.mockImplementation(async () => c.ok());
+  it("スイッチ無し → ALC_AUTH も fetch も呼ばず 404 で throw (fail-closed)", async () => {
     const alcAuth = createFakeAlcAuth({ override: () => c.ok() });
     await expect(
       c.call(env({ ALC_AUTH: alcAuth.fetcher, INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET })),
-    ).resolves.toEqual(c.expected);
+    ).rejects.toThrow(/failed: 404/);
     expect(alcAuth.calls).toHaveLength(0);
-    expect(cloudRun).toHaveBeenCalledTimes(1);
-    const [url, init] = cloudRun.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(`https://alc-api.test/api${c.path}`);
-    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer hs256-internal-jwt");
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 });
 
-describe("スイッチ有りでも binding か secret が欠けたら Cloud Run のまま", () => {
+describe("スイッチ有りでも binding か secret が欠けたら 404 で fail-closed", () => {
   it.each([
     ["ALC_AUTH 無し", { ALC_AUTH_LOGIN: "1", INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET }],
     ["INTERNAL_SHARED_SECRET 無し", { ALC_AUTH_LOGIN: "1", ALC_AUTH: createFakeAlcAuth().fetcher }],
   ])("%s", async (_label, overrides) => {
-    cloudRun.mockImplementation(async () => json(200, USER));
-    await expect(findUserByLineId(env(overrides), "U1")).resolves.toEqual(USER);
-    expect(cloudRun).toHaveBeenCalledWith(
-      "https://alc-api.test/api/internal/auth/users/by-line-id?line_user_id=U1",
-      expect.anything(),
-    );
+    await expect(findUserByLineId(env(overrides), "U1")).rejects.toThrow(/by-line-id failed: 404/);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("ALC_AUTH_LOGIN が 1 以外は Cloud Run", async () => {
+  it("ALC_AUTH_LOGIN が 1 以外は ALC_AUTH を呼ばず 404", async () => {
     const alcAuth = createFakeAlcAuth();
-    cloudRun.mockImplementation(async () => json(200, USER));
-    await findUserByLineId(
-      env({ ALC_AUTH_LOGIN: "true", ALC_AUTH: alcAuth.fetcher, INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET }),
-      "U1",
-    );
+    await expect(
+      findUserByLineId(
+        env({ ALC_AUTH_LOGIN: "true", ALC_AUTH: alcAuth.fetcher, INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET }),
+        "U1",
+      ),
+    ).rejects.toThrow(/by-line-id failed: 404/);
     expect(alcAuth.calls).toHaveLength(0);
-    expect(cloudRun).toHaveBeenCalledTimes(1);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 });
 
@@ -229,9 +218,9 @@ describe("sso-config の 404", () => {
     await expect(resolveSsoConfig(e, "google", "example.com")).rejects.toThrow(/sso-config failed: 404/);
   });
 
-  it("Cloud Run の 404 は今までどおり null (本文は見ない)", async () => {
-    cloudRun.mockImplementation(async () => new Response(null, { status: 404 }));
-    await expect(resolveSsoConfig(env(), "google", "example.com")).resolves.toBeNull();
+  it("スイッチ無しの 404 (fail-closed) は「設定なし」の null にせず throw", async () => {
+    await expect(resolveSsoConfig(env(), "google", "example.com")).rejects.toThrow(/sso-config failed: 404/);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 });
 

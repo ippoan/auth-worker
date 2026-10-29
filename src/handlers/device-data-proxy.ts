@@ -15,20 +15,21 @@
  *   ① `Authorization: Bearer <device JWT>` を `verifyJwt` で検証。
  *   ② `payload.role` を `ROLE_PATH_ALLOWLIST` に照合し、この role が転送を
  *      許可された path だけを通す (盗難時の blast radius を role 単位で限定)。
- *   ③ `ALC_API_PROXY_SA_KEY` (run.invoker) で aud=service URL の OIDC を mint。
- *   ④ `payload.tenant_id` (= device record 由来、client 入力ではない) を
- *      X-Tenant-ID として注入し `ALC_API_ORIGIN` + path へ forward する。
+ *   ③ `payload.tenant_id` (= device record 由来、client 入力ではない) を
+ *      X-Tenant-ID として注入し、domain worker (Service Binding、`ALC_BINDING_ROUTES`) へ forward する。
  *
- * rust-alc-api 側は無変更 — 通常の `require_tenant_header` data 経路をそのまま
+ * W9 (Refs ippoan/rust-alc-api#680): Cloud Run (rust-alc-api) への fallback・OIDC mint は撤去した。
+ * binding 表に当たらない path は 404。
+ *
+ * 下流は通常の `require_tenant_header` data 経路をそのまま
  * 叩くだけで良い (proxy が identity 検証済みという #434 の dumb backend 前提を維持)。
  *
- * 値 (OIDC / SA key / device JWT) は log / response に出さない。
+ * 値 (device JWT) は log / response に出さない。
  */
 import type { Env } from "../index";
 import { extractToken } from "../lib/errors";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
-import { mintGoogleIdToken } from "../lib/oidc";
 import {
   forwardViaAlcBinding,
   isUnsafeBackendPath,
@@ -427,10 +428,6 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   // ── env guard ────────────────────────────────────────────────────────────
   const jwtSecret = await resolveSecret(env.JWT_SECRET);
   if (!jwtSecret) return jsonError(503, "server_error");
-  const saKey = await resolveSecret(env.ALC_API_PROXY_SA_KEY);
-  if (!saKey) return jsonError(503, "device-data-proxy not configured"); // SA key binding 未設定
-  const apiOrigin = env.ALC_API_ORIGIN;
-  if (!apiOrigin) return jsonError(503, "server_error");
 
   // ── ① device JWT 検証 (browser JWT と同じ検証関数・同じ HS256 secret) ────────
   const token = extractToken(request) ?? "";
@@ -495,30 +492,14 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
   const body = hasBody ? await request.arrayBuffer() : undefined;
 
   // ── domain worker (Service Binding) への振り分け ─────────────────────────
-  // role×path allowlist 通過後のみ。binding 未定義 / 表に無い path は従来どおり Cloud Run。
-  // binding 経路では OIDC mint しない (Cloud Run IAM 用)。
+  // role×path allowlist 通過後のみ。binding 未定義 / 表に無い path は 404
+  // (W9 で Cloud Run fallback を撤去、Refs ippoan/rust-alc-api#680)。
   const binding = resolveAlcBinding(backendPath, env, "device", method);
-  if (binding) {
-    if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
-    return forwardViaAlcBinding(binding, backendPath, url.search, {
-      method,
-      headers: fwdHeaders,
-      body,
-    });
-  }
-
-  // ── ④ OIDC mint (Cloud Run IAM lockdown 用、aud=service URL) + forward ─────
-  let idToken: string;
-  try {
-    idToken = await mintGoogleIdToken(saKey, apiOrigin);
-  } catch {
-    return jsonError(502, "upstream auth error"); // 詳細は log のみ
-  }
-
-  const target = `${apiOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
-  return fetch(target, {
+  if (!binding) return jsonError(404, "not_found");
+  if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
+  return forwardViaAlcBinding(binding, backendPath, url.search, {
     method,
-    headers: { Authorization: `Bearer ${idToken}`, ...fwdHeaders },
+    headers: fwdHeaders,
     body,
   });
 }

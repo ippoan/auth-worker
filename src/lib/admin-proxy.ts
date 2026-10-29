@@ -11,16 +11,12 @@
  * 注入する 4 ヘッダは rust gateway `inject_auth_headers` と同じ:
  *   X-Tenant-ID / X-User-ID / X-User-Email / X-User-Role
  *
- * lockdown (`allUsers` 削除) 後は Cloud Run IAM が Google OIDC ID token
- * (aud=ALC_API_ORIGIN) を要求するため、`Authorization` は browser JWT の素通しではなく
- * `alcOidcToken` で mint した OIDC に置き換える (browser JWT はそもそも rust に検証され
- * ない値なので transport として意味を持たない)。mint 不可 (SA key 未設定 = lockdown 前)
- * は Authorization を付けずに fail-open する。
+ * W9 (Refs ippoan/rust-alc-api#680): Cloud Run (rust-alc-api) への fallback と transport 用 OIDC
+ * (`Authorization`) は撤去した。ヘッダは identity の 4 点 (+ extra) だけ。
  *
  * `env.DEBUG === "true"` のとき網羅ログ (verify 結果 / 注入 claims / rust 応答) を emit する。
  */
 import type { Env } from "../index";
-import { alcOidcToken } from "./alc-data-fetch";
 import {
   forwardViaAlcBinding,
   isUnsafeBackendPath,
@@ -54,7 +50,6 @@ export async function buildAdminForwardHeaders(
     }
     return null;
   }
-  const oidc = await alcOidcToken(env);
   const headers: Record<string, string> = {
     "X-Tenant-ID": String(claims.tenant_id ?? ""),
     "X-User-ID": String(claims.sub ?? ""),
@@ -62,7 +57,6 @@ export async function buildAdminForwardHeaders(
     "X-User-Role": String(claims.role ?? ""),
     ...(extra ?? {}),
   };
-  if (oidc) headers.Authorization = `Bearer ${oidc}`;
   if (env.DEBUG === "true") {
     console.log(
       JSON.stringify({
@@ -100,9 +94,9 @@ export function debugRustResponse(
 }
 
 /**
- * admin proxy から rust の `backendPath` (`/api/...`) を叩く。振り分け表に管理画面用 (`admin`) の行があり、
- * binding が定義されていれば Service Binding へ流す (Cloud Run 用の OIDC の Authorization は外し、
- * X-Tenant-ID / X-User-* だけを渡す。alc-proxy の binding 経路と同じ)。無ければ今までどおり Cloud Run。
+ * admin proxy から `backendPath` (`/api/...`) を叩く。振り分け表に管理画面用 (`admin`) の行があり、
+ * binding が定義されていれば Service Binding へ流す (X-Tenant-ID / X-User-* だけを渡す。
+ * alc-proxy の binding 経路と同じ)。無ければ 404 (W9 で Cloud Run fallback を撤去)。
  */
 export function fetchAdminBackend(
   env: Env,
@@ -111,21 +105,18 @@ export function fetchAdminBackend(
   init: { method: string; headers: Record<string, string>; body?: string },
 ): Promise<Response> {
   const binding = resolveAlcBinding(backendPath, env, "admin", init.method);
-  if (binding) {
-    if (isUnsafeBackendPath(backendPath)) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ error: "forbidden" }), {
-          status: 403,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-    }
-    const { Authorization: _oidc, ...headers } = init.headers;
-    return forwardViaAlcBinding(binding, backendPath, search, {
-      method: init.method,
-      headers,
-      body: init.body,
-    });
-  }
-  return fetch(`${env.ALC_API_ORIGIN}${backendPath}${search}`, init);
+  if (!binding) return Promise.resolve(errorResponse(404, "not_found"));
+  if (isUnsafeBackendPath(backendPath)) return Promise.resolve(errorResponse(403, "forbidden"));
+  return forwardViaAlcBinding(binding, backendPath, search, {
+    method: init.method,
+    headers: init.headers,
+    body: init.body,
+  });
+}
+
+function errorResponse(status: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }

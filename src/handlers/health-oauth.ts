@@ -11,9 +11,9 @@
  *                  `/signin/oauth/error?authError=...`。
  *   - github_mcp : client_id 正否に関わらず 302 → `github.com/login` を
  *                  返すため、probe では生死を区別できない。**reachability** のみ。
- *   - lineworks  : credentials は rust の DB に暗号化保存 (worker env に無し)。
- *                  rust internal `sso-config` lookup の到達性のみ (旧
- *                  `/api/auth/lineworks/*` は rust-alc-api#479 で撤去済み)。
+ *   - lineworks  : credentials は DB に暗号化保存 (worker env に無し)。
+ *                  alc-auth-worker (`ALC_AUTH`) の内部口 `sso-config` lookup の到達性のみ
+ *                  (W9 で rust-alc-api / Cloud Run から repoint、Refs ippoan/rust-alc-api#680)。
  *   - egov       : Keycloak 依存。`EGOV_AUTH_BASE/.well-known/openid-configuration`
  *                  の到達性 + JSON 整合性。
  *
@@ -26,19 +26,12 @@
  *   - 1 つでも `ok: false` → overall = "degraded" (HTTP 503)。
  */
 import type { Env } from "../index";
-import { internalAuthToken } from "../lib/alc-internal";
+import { fetchAlcAuth } from "../lib/alc-auth-fetch";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
 
 /** 外部 provider への probe 1 回のタイムアウト (ms)。 */
 const PROBE_TIMEOUT_MS = 5000;
-
-/** rust internal 到達性 probe (lineworks) 専用の長めタイムアウト。
- *  staging Cloud Run は minScale=0 + PostgreSQL sidecar + migration 全件再適用で
- *  cold-start に 15-30s かかる。5s timeout だと毎回 `unknown` で返ってしまうため、
- *  rust を叩く probe だけ 30s 許容する (Refs #218)。
- *  prod は常時稼働で数百 ms 応答なので max 値を増やしても実行時間は伸びない。 */
-const RUST_PROBE_TIMEOUT_MS = 30000;
 
 type ProbeMode = "client_id_check" | "reachability" | "secret_check";
 
@@ -358,43 +351,44 @@ async function probeGithubMcpSecret(env: Env): Promise<ProbeResult> {
 // 概念自体が消滅したため。canary endpoint も rust 側で削除済み。
 
 // ---------------------------------------------------------------------------
-// lineworks — reachability only (credentials は rust の DB に暗号化保存)
+// lineworks — reachability only (credentials は DB に暗号化保存)
 // ---------------------------------------------------------------------------
 
 async function probeLineworks(env: Env): Promise<ProbeResult> {
   const mode: ProbeMode = "reachability";
-  // LINE WORKS の OAuth オーケストレーションは auth-worker 自身が担い、rust に
-  // 残る依存は internal の sso-config lookup のみ (旧 `/api/auth/lineworks/*` は
-  // rust-alc-api#479 で撤去済み)。**reachability** として実在しない domain で
-  // sso-config を引き、404 (sso_config_not_found) が返れば「rust 生きてる +
-  // internal route 登録済み + internal auth 通過」の証拠とする。
-  if (!env.ALC_API_ORIGIN) return { configured: false };
-
-  const token = await internalAuthToken(env);
-  const url =
-    `${env.ALC_API_ORIGIN}/api/internal/auth/sso-config?provider=lineworks&domain=__health_probe__`;
-  const res = await timedFetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-    // staging cold-start (15-30s) を踏み倒すため default 5s timeout を override
-    signal: AbortSignal.timeout(RUST_PROBE_TIMEOUT_MS),
-  });
-  if (isFetchError(res)) {
-    return { configured: true, unknown: true, mode, hint: `fetch failed: ${res._fetchError}` };
+  // LINE WORKS の OAuth オーケストレーションは auth-worker 自身が担い、DB の sso-config は
+  // alc-auth-worker が持つ (W9 で rust から repoint)。**reachability** として実在しない domain で
+  // sso-config を引き、404 (sso_config_not_found) が返れば「alc-auth-worker 生きてる +
+  // 内部口登録済み + 共有 secret 通過」の証拠とする。
+  let res: Response | null;
+  try {
+    res = await fetchAlcAuth(
+      env,
+      "/internal/auth/sso-config?provider=lineworks&domain=__health_probe__",
+      { method: "GET", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) },
+    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { configured: true, unknown: true, mode, hint: `fetch failed: ${msg}` };
   }
+  // binding / 共有 secret が無い → 未設定
+  if (!res) return { configured: false };
 
   // 実在しない domain なので 404 (sso_config_not_found) が期待値。200 は
   // 万一 `__health_probe__` が登録されていた場合で、これも到達の証拠。
-  if (res.status === 404 || res.status === 200) {
-    return { configured: true, ok: true, status: res.status, mode };
-  }
-  // 401 → require_internal_jwt が拒否 (OIDC audience 設定ミス等)。
-  if (res.status === 401) {
+  if (res.status === 200) return { configured: true, ok: true, status: 200, mode };
+  if (res.status === 404) {
+    const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+    if (body?.error === "sso_config_not_found") {
+      return { configured: true, ok: true, status: 404, mode };
+    }
+    // 本文空の 404 = 共有 secret の不一致 (alc-auth-worker の内部口は不一致を 404 で返す)。
     return {
       configured: true,
       ok: false,
-      status: 401,
+      status: 404,
       mode,
-      hint: "internal auth rejected by rust-alc-api — OIDC audience mismatch?",
+      hint: "internal shared secret rejected by alc-auth-worker — INTERNAL_SHARED_SECRET mismatch?",
     };
   }
   if (res.status >= 500) {
@@ -403,7 +397,7 @@ async function probeLineworks(env: Env): Promise<ProbeResult> {
       ok: false,
       status: res.status,
       mode,
-      hint: `rust-alc-api internal sso-config returned ${res.status}`,
+      hint: `alc-auth-worker internal sso-config returned ${res.status}`,
     };
   }
   return {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createMockEnv, createMockKV, type MockKV, TEST_JWT_SECRET } from "../helpers/mock-env";
+import { FAKE_ALC_AUTH_SECRET } from "../helpers/fake-alc-auth";
 import type { Env } from "../../src/index";
 import type { McpJwtPayload } from "../../src/lib/mcp-jwt";
 import { decodeJwtPayload, verifyJwt } from "../../src/lib/jwt";
@@ -53,6 +54,22 @@ function internalUserResponse(overrides: Record<string, unknown> = {}): Response
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
+}
+
+/** internal upsert-google (alc-auth-worker の ALC_AUTH) の応答を `respond` で決める env 上書き。 */
+function alcAuthOverrides(respond: (req: Request) => Response | Promise<Response>): {
+  overrides: Partial<Env>;
+  fetchMock: ReturnType<typeof vi.fn>;
+} {
+  const fetchMock = vi.fn(async (req: Request) => respond(req));
+  return {
+    fetchMock,
+    overrides: {
+      ALC_AUTH_LOGIN: "1",
+      ALC_AUTH: { fetch: fetchMock } as unknown as Fetcher,
+      INTERNAL_SHARED_SECRET: FAKE_ALC_AUTH_SECRET,
+    },
+  };
 }
 
 describe("mintDevToken", () => {
@@ -128,27 +145,27 @@ describe("mintDevToken", () => {
   });
 
   it("returns 403 when upsertGoogleUser finds no tenant for the email", async () => {
-    const { env, kv } = envWithKv();
-    kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ error: "no_tenant_for_email" }), { status: 403 }),
+    const { overrides } = alcAuthOverrides(
+      () => new Response(JSON.stringify({ error: "no_tenant_for_email" }), { status: 403 }),
     );
+    const { env, kv } = envWithKv(overrides);
+    kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
     const result = await mintDevToken(env, payload());
     expect(result).toEqual({ kind: "error", error: "no_tenant_for_email", status: 403 });
   });
 
   it("returns 500 when the internal upsertGoogleUser call throws", async () => {
-    const { env, kv } = envWithKv();
+    const { overrides } = alcAuthOverrides(() => new Response("boom", { status: 500 }));
+    const { env, kv } = envWithKv(overrides);
     kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response("boom", { status: 500 }));
     const result = await mintDevToken(env, payload());
     expect(result).toEqual({ kind: "error", error: "server_error", status: 500 });
   });
 
   it("mints a dev JWT with token_kind=dev and the user's AppClaims on success", async () => {
-    const { env, kv } = envWithKv();
+    const { overrides } = alcAuthOverrides(() => internalUserResponse());
+    const { env, kv } = envWithKv(overrides);
     kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
-    globalThis.fetch = vi.fn().mockResolvedValue(internalUserResponse());
 
     const result = await mintDevToken(env, payload());
     expect(result.kind).toBe("ok");
@@ -168,10 +185,10 @@ describe("mintDevToken", () => {
   });
 
   it("adds dev_axis only when asked (Refs ippoan/rust-alc-api#680)", async () => {
-    const { env, kv } = envWithKv();
-    kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
     // 呼ぶたびに新しい Response (本文は 1 回しか読めない)
-    globalThis.fetch = vi.fn().mockImplementation(async () => internalUserResponse());
+    const { overrides } = alcAuthOverrides(() => internalUserResponse());
+    const { env, kv } = envWithKv(overrides);
+    kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
     const plain = await mintDevToken(env, payload());
     const dev = await mintDevToken(env, payload(), { devAxis: true });
     if (plain.kind !== "ok" || dev.kind !== "ok") throw new Error("unreachable");
@@ -181,9 +198,9 @@ describe("mintDevToken", () => {
   });
 
   it("omits org_slug when the user has no tenant slug", async () => {
-    const { env, kv } = envWithKv();
+    const { overrides } = alcAuthOverrides(() => internalUserResponse({ slug: null }));
+    const { env, kv } = envWithKv(overrides);
     kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
-    globalThis.fetch = vi.fn().mockResolvedValue(internalUserResponse({ slug: null }));
 
     const result = await mintDevToken(env, payload());
     expect(result.kind).toBe("ok");
@@ -193,18 +210,17 @@ describe("mintDevToken", () => {
   });
 
   it("calls upsertGoogleUser with the cached google_sub and email as name", async () => {
-    const { env, kv } = envWithKv();
+    const { overrides, fetchMock } = alcAuthOverrides(() => internalUserResponse());
+    const { env, kv } = envWithKv(overrides);
     kv._data["google_sub:dev@example.com"] = "google-sub-xyz";
-    const mockFetch = vi.fn().mockResolvedValue(internalUserResponse());
-    globalThis.fetch = mockFetch;
 
     await mintDevToken(env, payload());
 
-    const call = mockFetch.mock.calls[0]!;
-    const url = call[0] as string;
-    const init = call[1] as RequestInit;
-    expect(url).toBe("https://alc-api.test.example/api/internal/auth/users/upsert-google");
-    const sentBody = JSON.parse(init.body as string) as Record<string, unknown>;
+    const req = fetchMock.mock.calls[0]![0] as Request;
+    expect(req.url).toBe("https://alc-auth/internal/auth/users/upsert-google");
+    expect(req.headers.get("X-Internal-Shared-Secret")).toBe(FAKE_ALC_AUTH_SECRET);
+    expect(req.headers.get("Authorization")).toBeNull();
+    const sentBody = (await req.json()) as Record<string, unknown>;
     expect(sentBody).toEqual({
       google_sub: "google-sub-xyz",
       email: "dev@example.com",

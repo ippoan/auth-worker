@@ -1,9 +1,9 @@
 /**
- * rust-alc-api の `/api/internal/auth/*` を叩く internal client (rust-alc-api#434 Phase 2)。
+ * ログイン / session の内部口 (`/internal/auth/*`) を叩く internal client (rust-alc-api#434 Phase 2)。
  *
- * 認証 DB 操作 (sso-config 読み / user upsert / refresh-token 保存) は rust が DB owner の
- * まま保持し、auth-worker は `signInternalJWT` (`aud=alc-api-internal`) を付けて internal
- * endpoint 越しに叩く。rust 側は `require_internal_jwt` で検証する。
+ * W9 (Refs ippoan/rust-alc-api#680): 認証 DB 操作 (sso-config 読み / user upsert / refresh-token 保存) の
+ * 持ち主は alc-auth-worker (Service Binding `ALC_AUTH`、`fetchAlcAuth`)。Cloud Run (rust-alc-api) への
+ * 退避は撤去し、binding / secret が無ければ 404 (fail-closed) を返す。
  *
  * lockdown (`allUsers` 削除) 後は Cloud Run IAM が OIDC を要求するため、`INTERNAL_AUTH_OIDC=1`
  * で `internalAuthToken` が `mintGoogleIdToken(aud=alc-api-internal)` に切替わる (Refs #434)。
@@ -69,34 +69,33 @@ export interface InternalUserWithSlug {
   lineworks_id: string | null;
   line_user_id: string | null;
   slug: string | null;
-  /** ロールから展開した権限 (alc-auth-worker だけが返す。Cloud Run 退避では無い)。 */
+  /** ロールから展開した権限 (alc-auth-worker だけが返す)。 */
   permissions?: string[];
 }
 
-async function internalFetch(env: Env, path: string, init?: RequestInit): Promise<Response> {
-  const token = await internalAuthToken(env);
-  const headers = new Headers(init?.headers);
-  headers.set("Authorization", `Bearer ${token}`);
-  if (init?.body !== undefined) headers.set("Content-Type", "application/json");
-  return fetch(`${env.ALC_API_ORIGIN}${path}`, { ...init, headers });
+/** binding / secret が無いとき、各 caller が従来どおり fail-closed に扱える 404 JSON。 */
+function notFound(): Response {
+  return new Response(JSON.stringify({ error: "not_found" }), {
+    status: 404,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 /**
- * ログインの内部口 (`/internal/auth/...`) を叩く (Refs ohishi-exp/rust-leave-worker#1)。
- * `ALC_AUTH_LOGIN=1` かつ `ALC_AUTH` binding と `INTERNAL_SHARED_SECRET` が揃っていれば alc-auth-worker
- * (接頭辞 `/api` 無し) を、それ以外は従来どおり Cloud Run (`/api` + path) を叩く。
- * `viaAlcAuth` は alc-auth-worker を叩いたか (404 の読み方が違う口のため)。
+ * ログインの内部口 (`/internal/auth/...`) を alc-auth-worker (接頭辞 `/api` 無し) へ叩く (Refs ohishi-exp/rust-leave-worker#1)。
+ * `ALC_AUTH_LOGIN=1` かつ `ALC_AUTH` binding と `INTERNAL_SHARED_SECRET` が揃っていなければ 404 (fail-closed。
+ * W9 で Cloud Run 退避を撤去)。
  */
 async function loginFetch(
   env: Env,
   path: string,
   init?: { method: "POST"; body: string },
-): Promise<{ res: Response; viaAlcAuth: boolean }> {
+): Promise<Response> {
   if (env.ALC_AUTH_LOGIN === "1") {
     const res = await fetchAlcAuth(env, path, init);
-    if (res) return { res, viaAlcAuth: true };
+    if (res) return res;
   }
-  return { res: await internalFetch(env, `/api${path}`, init), viaAlcAuth: false };
+  return notFound();
 }
 
 /** `listUserRoles` の 1 行 (alc-auth-worker の `GET /internal/tenants/{tenant_id}/user-roles`)。 */
@@ -114,7 +113,7 @@ const ROLES_UPSTREAM_ERROR = { ok: false, status: 502, error: "upstream_error" }
 
 /**
  * その会社の user ごとのロールを引く (Refs ohishi-exp/rust-leave-worker#1)。ロールの持ち主は
- * alc-auth-worker だけなので `fetchAlcAuth` を直接叩く (`loginFetch` の Cloud Run 退避は使わない)。
+ * alc-auth-worker だけなので `fetchAlcAuth` を直接叩く。
  * binding / secret が無い・通信の例外・200 以外・形が配列でない → 502。
  */
 export async function listUserRoles(
@@ -174,9 +173,8 @@ export async function resolveSsoConfig(
   domain: string,
 ): Promise<SsoConfig | null> {
   const qs = `provider=${encodeURIComponent(provider)}&domain=${encodeURIComponent(domain)}`;
-  const { res, viaAlcAuth } = await loginFetch(env, `/internal/auth/sso-config?${qs}`);
+  const res = await loginFetch(env, `/internal/auth/sso-config?${qs}`);
   if (res.status === 404) {
-    if (!viaAlcAuth) return null;
     // alc-auth-worker は共有 secret の不一致も 404 (本文空) で返すので、「設定なし」と区別する。
     const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
     if (body?.error === "sso_config_not_found") return null;
@@ -204,14 +202,14 @@ export async function resolveActiveDeviceTenant(
   deviceId: string,
 ): Promise<ResolveDeviceTenantResult> {
   const path = `/api/internal/devices/${encodeURIComponent(deviceId)}/pairing-tenant`;
-  // alc-devices-worker (W6b-a) に binding があればそちら (内部の口でテナントも認証も要らない。token は作らない)、
-  // 無ければ (または id が UUID でなければ) 従来どおり Cloud Run
+  // alc-devices-worker (W6b-a) の binding へ (内部の口でテナントも認証も要らない。token は作らない)。
+  // binding が無ければ (または id が UUID でなければ) 404 = not_found (W9 で Cloud Run 退避を撤去)
   const binding = resolveAlcBinding(path, env, "internal", "GET");
   let res: Response;
   try {
     res = binding
       ? await forwardViaAlcBinding(binding, path, "", { method: "GET", headers: {}, body: undefined })
-      : await internalFetch(env, path);
+      : notFound();
   } catch {
     return { ok: false, reason: "unavailable" };
   }
@@ -528,7 +526,7 @@ export async function upsertLineworksUser(
   env: Env,
   body: { tenant_id: string; lineworks_id: string; email: string; name: string },
 ): Promise<InternalUserWithSlug> {
-  const { res } = await loginFetch(env, `/internal/auth/users/upsert-lineworks`, {
+  const res = await loginFetch(env, `/internal/auth/users/upsert-lineworks`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -541,7 +539,7 @@ export async function saveRefreshToken(
   env: Env,
   body: { user_id: string; refresh_hash: string; expires_at: string },
 ): Promise<void> {
-  const { res } = await loginFetch(env, `/internal/auth/refresh-token`, {
+  const res = await loginFetch(env, `/internal/auth/refresh-token`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -554,7 +552,7 @@ export async function findUserByLineId(
   lineUserId: string,
 ): Promise<InternalUserWithSlug | null> {
   const qs = `line_user_id=${encodeURIComponent(lineUserId)}`;
-  const { res } = await loginFetch(env, `/internal/auth/users/by-line-id?${qs}`);
+  const res = await loginFetch(env, `/internal/auth/users/by-line-id?${qs}`);
   if (!res.ok) throw new Error(`internal by-line-id failed: ${res.status}`);
   return (await res.json()) as InternalUserWithSlug | null;
 }
@@ -568,7 +566,7 @@ export async function upsertGoogleUser(
   env: Env,
   body: { google_sub: string; email: string; name: string },
 ): Promise<InternalUserWithSlug | null> {
-  const { res } = await loginFetch(env, `/internal/auth/users/upsert-google`, {
+  const res = await loginFetch(env, `/internal/auth/users/upsert-google`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -582,7 +580,7 @@ export async function upsertLineUser(
   env: Env,
   body: { tenant_id: string; line_user_id: string; name: string },
 ): Promise<InternalUserWithSlug> {
-  const { res } = await loginFetch(env, `/internal/auth/users/upsert-line`, {
+  const res = await loginFetch(env, `/internal/auth/users/upsert-line`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -595,7 +593,7 @@ export async function registerLineRecipient(
   env: Env,
   body: { tenant_id: string; name: string; line_user_id: string },
 ): Promise<void> {
-  const { res } = await loginFetch(env, `/internal/auth/recipients/register-line`, {
+  const res = await loginFetch(env, `/internal/auth/recipients/register-line`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -608,7 +606,7 @@ export async function recipientsByLineId(
   lineUserId: string,
 ): Promise<Array<{ tenant_id: string; name: string }>> {
   const qs = `line_user_id=${encodeURIComponent(lineUserId)}`;
-  const { res } = await loginFetch(env, `/internal/auth/recipients/by-line-id?${qs}`);
+  const res = await loginFetch(env, `/internal/auth/recipients/by-line-id?${qs}`);
   if (!res.ok) throw new Error(`internal recipients-by-line-id failed: ${res.status}`);
   return (await res.json()) as Array<{ tenant_id: string; name: string }>;
 }

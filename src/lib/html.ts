@@ -15,7 +15,7 @@ interface LoginPageParams {
 }
 
 export function renderLoginPage(params: LoginPageParams): string {
-  const { redirectUri, orgId, error, googleEnabled, googleRedirectUrl, lineworksRedirectUrl, lineworksLastDomain, lineLoginRedirectUrl } =
+  const { redirectUri, error, googleEnabled, googleRedirectUrl, lineworksRedirectUrl, lineworksLastDomain, lineLoginRedirectUrl } =
     params;
 
   const lwQuickHtml = lineworksLastDomain
@@ -178,20 +178,6 @@ export function renderLoginPage(params: LoginPageParams): string {
       font-size: 0.875rem;
     }
     .lw-form button:hover { background: #009a00; }
-    .pw-section { display: none; margin-top: 1rem; }
-    .pw-toggle {
-      display: block;
-      margin: 1.25rem auto 0;
-      padding: 0.5rem 1rem;
-      background: none;
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      color: #888;
-      font-size: 0.8rem;
-      cursor: pointer;
-      width: auto;
-    }
-    .pw-toggle:hover { background: #f9fafb; color: #555; }
     .clear-btn {
       display: block;
       margin: 1.25rem auto 0;
@@ -230,27 +216,9 @@ export function renderLoginPage(params: LoginPageParams): string {
       <input type="text" id="lw_address" name="address" placeholder="例: example" autocomplete="on"${lineworksLastDomain ? "" : " autofocus"}>
       <button type="submit">Login</button>
     </form>
-    <button class="pw-toggle" onclick="togglePwLogin()">パスワードログイン</button>
-    <div id="pw-section" class="pw-section">
-      <form method="POST" action="/auth/login">
-        <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}">
-        <label for="organization_id">Organization ID</label>
-        <input type="text" id="organization_id" name="organization_id"
-               value="${escapeHtml(orgId || "00000000-0000-0000-0000-000000000001")}" required>
-        <label for="username">Username</label>
-        <input type="text" id="username" name="username" autocomplete="username" required>
-        <label for="password">Password</label>
-        <input type="password" id="password" name="password" autocomplete="current-password" required>
-        <button type="submit">Login</button>
-      </form>
-    </div>
     <button class="clear-btn" onclick="clearAllCookies()">Cookie をクリア</button>
     <div id="clear-msg" class="clear-msg" style="display:none">クリアしました。ページをリロードします...</div>
     <script>
-    function togglePwLogin() {
-      var s = document.getElementById('pw-section');
-      s.style.display = s.style.display === 'none' ? 'block' : 'none';
-    }
     function clearAllCookies() {
       var names = ['lw_domain', 'logi_auth_token', 'logi_auth'];
       var parts = location.hostname.split('.');

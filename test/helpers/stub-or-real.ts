@@ -8,7 +8,7 @@
  * live:  ALC_API_URL=http://localhost:18081 npx vitest run
  */
 import { vi, beforeAll } from "vitest";
-import { isLive, ALC_API_URL, waitForApi, makeJwt } from "./live-env";
+import { isLive, waitForApi, makeJwt } from "./live-env";
 import { createMockEnv, TEST_JWT_SECRET } from "./mock-env";
 import type { Env } from "../../src/index";
 
@@ -23,7 +23,7 @@ export function stubOrReal(mockResponse: Response): void {
 
 /** mock/live で Env を切り替え */
 export function testEnv(): Env {
-  return createMockEnv(isLive ? { ALC_API_ORIGIN: ALC_API_URL } : {});
+  return createMockEnv();
 }
 
 /**

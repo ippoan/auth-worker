@@ -1,17 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { createMockEnv } from "../helpers/mock-env";
 
-// OIDC mint は別ユニットでテスト済み。ここでは handler の flow
-// (consumer proof → path allowlist → tenant 必須 → OIDC mint → forward) を固定する。
-vi.mock("../../src/lib/oidc", () => ({
-  mintGoogleIdToken: vi.fn(async () => "fake-oidc-token"),
-}));
-
-// internal-jwt class (schedule fire) は internalAuthToken (aud=alc-api-internal) を
-// 使う。mint 実体は lib/alc-internal 側でテスト済みなのでここでは mock で固定する。
-vi.mock("../../src/lib/alc-internal", () => ({
-  internalAuthToken: vi.fn(async () => "fake-internal-jwt"),
-}));
+// handler の flow (consumer proof → path allowlist → tenant 必須 → binding へ forward) を固定する。
+// 振り分け表は「どの path にも binding がある」fake に差し替える (W9 で Cloud Run 退避を撤去。
+// 表に無い path が 404 になることは alc-binding-route.test.ts が本物の表で確認する)。
+vi.mock("../../src/lib/alc-backend-route", async (orig) =>
+  (await import("../helpers/fake-alc-route")).fakeAlcRouteFactory(await orig<object>()),
+);
 
 import { handleAlcInternalProxy } from "../../src/handlers/alc-internal-proxy";
 
@@ -24,7 +19,6 @@ afterAll(() => {
 
 function env(overrides: Record<string, unknown> = {}) {
   return createMockEnv({
-    ALC_API_PROXY_SA_KEY: "{}", // resolveSecret が非空を返せばよい (oidc は mock)
     INTERNAL_SHARED_SECRET: PROXY_SECRET,
     ...overrides,
   });
@@ -74,14 +68,6 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(res.status).toBe(503);
   });
 
-  it("ALC_API_PROXY_SA_KEY 未設定は 503", async () => {
-    const res = await handleAlcInternalProxy(
-      req("/alc-internal-proxy/api/dtako/tickets", { method: "POST" }),
-      env({ ALC_API_PROXY_SA_KEY: undefined }),
-    );
-    expect(res.status).toBe(503);
-  });
-
   it("allowlist 外の path は 403 (data 経路への X-Tenant-ID 詐称を塞ぐ)", async () => {
     for (const p of [
       "/alc-internal-proxy/api/employees",
@@ -103,7 +89,7 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("正常 (POST 起票): OIDC Bearer + X-Internal-Shared-Secret + X-Tenant-ID を付けて forward", async () => {
+  it("正常 (POST 起票): X-Tenant-ID を付けて forward (共有 secret・OIDC は渡さない)", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
@@ -123,8 +109,8 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe("https://alc-api.test.example/api/dtako/tickets");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
-    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined(); // 共有 secret は下流へ渡さない (W9)
     expect(h["X-Tenant-ID"]).toBe(TENANT);
     expect(h["Content-Type"]).toBe("application/json");
     expect((init as RequestInit).method).toBe("POST");
@@ -150,8 +136,8 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe("https://alc-api.test.example/api/hub/measurements");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
-    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined(); // 共有 secret は下流へ渡さない (W9)
     expect(h["X-Tenant-ID"]).toBe(TENANT);
     expect((init as RequestInit).method).toBe("POST");
   });
@@ -184,7 +170,7 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe("https://alc-api.test.example/api/upload");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined(); // 共有 secret は下流へ渡さない (W9)
     expect(h["X-Tenant-ID"]).toBe(TENANT);
     expect(h["Content-Type"]).toBe(`multipart/form-data; boundary=${boundary}`);
   });
@@ -208,8 +194,8 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
       "https://alc-api.test.example/api/internal/operations?vehicle_cd=0272&date_from=2026-06-01",
     );
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
-    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined(); // 共有 secret は下流へ渡さない (W9)
     expect(h["X-Tenant-ID"]).toBe(TENANT);
     expect((init as RequestInit).method).toBe("GET");
   });
@@ -255,7 +241,7 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe("https://alc-api.test.example/api/tenko-call/register");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
     expect(h["X-Tenant-ID"]).toBeUndefined();
     expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
   });
@@ -300,7 +286,7 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     );
     expect(res.status).toBe(200);
     const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
     expect(h["X-Tenant-ID"]).toBeUndefined();
   });
 
@@ -316,7 +302,7 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     );
     expect(res.status).toBe(200);
     const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
     expect(h["X-Tenant-ID"]).toBeUndefined();
   });
 
@@ -339,8 +325,8 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe("https://alc-api.test.example/api/dvr/notifications");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
-    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined(); // 共有 secret は下流へ渡さない (W9)
     expect(h["X-Tenant-ID"]).toBe(TENANT);
     expect((init as RequestInit).method).toBe("POST");
   });
@@ -366,8 +352,8 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
       "https://alc-api.test.example/api/dvr/files/9f4c1e0a-2b3d-4e5f-8a9b-0c1d2e3f4a5b",
     );
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
-    expect(h["X-Internal-Shared-Secret"]).toBe(PROXY_SECRET);
+    expect(h["Authorization"]).toBeUndefined(); // Cloud Run 用 OIDC は付けない (W9)
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined(); // 共有 secret は下流へ渡さない (W9)
     expect(h["X-Tenant-ID"]).toBe(TENANT);
   });
 
@@ -406,7 +392,7 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
   });
 
 
-  it("internal-secret (trigger-update-dev): caller の X-Internal-Secret を pass-through、tenant/base-secret は載せない", async () => {
+  it("internal-secret (trigger-update-dev): binding 表の対象外なので 404 (W9 で Cloud Run 退避を撤去)。何も転送しない", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
@@ -419,15 +405,12 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
       }),
       env(),
     );
-    expect(res.status).toBe(200);
-    const h = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-oidc-token");
-    expect(h["X-Internal-Secret"]).toBe("fcm-secret-xyz");
-    expect(h["X-Tenant-ID"]).toBeUndefined();
-    expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not_found" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("internal-jwt (schedule fire): aud=alc-api-internal の Bearer で forward、tenant/secret は載せない (ippoan/auth-worker#359)", async () => {
+  it("internal-jwt (schedule fire): tenant/secret/Authorization は載せない (ippoan/auth-worker#359)", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
@@ -447,12 +430,12 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
       "https://alc-api.test.example/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/fire",
     );
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-internal-jwt");
+    expect(h["Authorization"]).toBeUndefined(); // internal JWT も付けない (W9)
     expect(h["X-Tenant-ID"]).toBeUndefined();
     expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
   });
 
-  it("internal-jwt (LINE WORKS 送信): aud=alc-api-internal の Bearer で forward、tenant/secret は載せない (Refs ohishi-exp/nuxt-dtako-admin#874)", async () => {
+  it("internal-jwt (LINE WORKS 送信): tenant/secret/Authorization は載せない (Refs ohishi-exp/nuxt-dtako-admin#874)", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
         new Response("ok", { status: 200 }),
@@ -471,7 +454,7 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe("https://alc-api.test.example/api/internal/lineworks/send");
     const h = (init as RequestInit).headers as Record<string, string>;
-    expect(h["Authorization"]).toBe("Bearer fake-internal-jwt");
+    expect(h["Authorization"]).toBeUndefined(); // internal JWT も付けない (W9)
     // tenant は rust 側が channel id 引きで解決する。詐称材料を渡さない。
     expect(h["X-Tenant-ID"]).toBeUndefined();
     expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
@@ -541,33 +524,6 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
       env(),
     );
     expect(res.status).toBe(401);
-  });
-
-  it("internal-jwt: internalAuthToken 失敗は 502 (詳細は出さない)", async () => {
-    const { internalAuthToken } = await import("../../src/lib/alc-internal");
-    (internalAuthToken as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("boom"),
-    );
-    const res = await handleAlcInternalProxy(
-      req(
-        "/alc-internal-proxy/api/internal/trouble/schedules/61cf27f0-b192-4ca4-a608-1cc1b24f45c3/fire",
-        { method: "POST" },
-      ),
-      env(),
-    );
-    expect(res.status).toBe(502);
-  });
-
-  it("OIDC mint 失敗は 502 (詳細は出さない)", async () => {
-    const { mintGoogleIdToken } = await import("../../src/lib/oidc");
-    (mintGoogleIdToken as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("boom"),
-    );
-    const res = await handleAlcInternalProxy(
-      req("/alc-internal-proxy/api/dtako/tickets", { method: "POST" }),
-      env(),
-    );
-    expect(res.status).toBe(502);
   });
 });
 

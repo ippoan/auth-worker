@@ -4,10 +4,6 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-vi.mock("../../src/lib/internal-jwt", () => ({
-  signInternalJWT: vi.fn(async () => "hs256-internal-jwt"),
-}));
-
 import { fetchMyOrgs, handleSessionPath } from "../../src/lib/alc-session";
 import { createMockEnv } from "../helpers/mock-env";
 import { FAKE_ALC_AUTH_SECRET } from "../helpers/fake-alc-auth";
@@ -66,18 +62,18 @@ afterEach(() => {
 });
 
 describe("切り替えの判定", () => {
-  it("フラグ無し → alc-auth-worker を呼ばず、me/logout は null・my-orgs は Cloud Run", async () => {
+  it("フラグ無し → alc-auth-worker を呼ばず、me/logout は null・my-orgs は 404 (fetch しない)", async () => {
     const stub = stubAlcAuth(() => json(200, TENANT));
     const env = envWith({ ALC_AUTH: stub.fetcher, ALC_AUTH_SESSION: undefined });
     expect(await handleSessionPath(env, "/api/auth/me", "GET", CLAIMS)).toBeNull();
     expect(await handleSessionPath(env, "/api/auth/logout", "POST", CLAIMS)).toBeNull();
     const r = await fetchMyOrgs(env, IDENTITY);
-    expect(r).toEqual({ ok: true, data: { organizations: [{ id: "cr" }] } });
+    expect(r).toEqual({ ok: false, status: 404, error: "not_found" });
     expect(stub.calls).toHaveLength(0);
-    expect(String(cloudRun.mock.calls[0]![0])).toBe("https://alc-api.test.example/api/my-orgs");
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
-  it("フラグが '1' 以外 / binding 無し / secret 無し → 今の経路", async () => {
+  it("フラグが '1' 以外 / binding 無し / secret 無し → 404 (fail-closed)", async () => {
     const stub = stubAlcAuth(() => json(200, TENANT));
     for (const env of [
       envWith({ ALC_AUTH: stub.fetcher, ALC_AUTH_SESSION: "0" }),
@@ -86,9 +82,10 @@ describe("切り替えの判定", () => {
     ]) {
       expect(await handleSessionPath(env, "/api/auth/me", "GET", CLAIMS)).toBeNull();
       const r = await fetchMyOrgs(env, IDENTITY);
-      expect(r.ok && (r.data as { organizations: unknown[] }).organizations).toEqual([{ id: "cr" }]);
+      expect(r).toEqual({ ok: false, status: 404, error: "not_found" });
     }
     expect(stub.calls).toHaveLength(0);
+    expect(cloudRun).not.toHaveBeenCalled();
   });
 
   it("対象外の path / method は null (有効でも alc-auth-worker を呼ばない)", async () => {
@@ -225,11 +222,5 @@ describe("fetchMyOrgs", () => {
     const stub = stubAlcAuth(() => json(200, TENANT));
     const r = await fetchMyOrgs(envWith({ ALC_AUTH: stub.fetcher }), {});
     expect(r).toMatchObject({ ok: true, data: { organizations: [{ role: "" }] } });
-  });
-
-  it("Cloud Run 経路: 非 2xx は status と本文を返す", async () => {
-    cloudRun.mockResolvedValueOnce(new Response("forbidden", { status: 403 }));
-    const r = await fetchMyOrgs(envWith({ ALC_AUTH_SESSION: undefined }), IDENTITY);
-    expect(r).toEqual({ ok: false, status: 403, error: "forbidden" });
   });
 });

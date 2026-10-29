@@ -6,7 +6,7 @@
  * 各 probe の役割:
  *   - google     : client_id 生死を判定 (mode = "client_id_check")
  *   - github_mcp : reachability のみ (GitHub は client_id 正否で挙動が変わらない)
- *   - lineworks  : rust-alc-api の reachability のみ
+ *   - lineworks  : alc-auth-worker (ALC_AUTH binding) の internal sso-config の reachability のみ
  *   - egov       : Keycloak well-known の reachability + JSON 整合性
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -63,7 +63,7 @@ function defaultResponses(): Record<string, Response> {
       JSON.stringify({ error: "bad_verification_code" }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ),
-    // 実在しない domain で internal sso-config を引いた時の rust-alc-api 期待応答。
+    // 実在しない domain で internal sso-config を引いた時の alc-auth-worker 期待応答 (ALC_AUTH binding 経由)。
     lineworks: new Response(JSON.stringify({ error: "sso_config_not_found" }), { status: 404 }),
     egov: new Response(
       JSON.stringify({
@@ -79,6 +79,24 @@ function defaultResponses(): Record<string, Response> {
 /** URL host / path で probe 先を識別して mock を返す。
  *  値が `Error` の場合は throw される (fetch 失敗の模擬)。
  *  各 probe は 1 リクエストしか発行しないので Response を clone しなくて良い。 */
+/** lineworks probe が alc-auth-worker (ALC_AUTH) へ出した要求の記録。 */
+let lwCalls: Array<{ url: string; method: string; secret: string | null; authorization: string | null; signal: boolean }> = [];
+/** ALC_AUTH binding の次の応答 (Error なら throw)。 */
+let lwNext: Response | Error = defaultResponses().lineworks!;
+const lwBinding = {
+  fetch: async (req: Request): Promise<Response> => {
+    lwCalls.push({
+      url: req.url,
+      method: req.method,
+      secret: req.headers.get("X-Internal-Shared-Secret"),
+      authorization: req.headers.get("Authorization"),
+      signal: req.signal instanceof AbortSignal,
+    });
+    if (lwNext instanceof Error) throw lwNext;
+    return lwNext;
+  },
+} as unknown as Fetcher;
+
 function setupFetch(overrides: Partial<{
   google: Response | Error;
   google_token: Response | Error;
@@ -91,6 +109,8 @@ function setupFetch(overrides: Partial<{
     ...defaultResponses(),
     ...overrides,
   };
+  lwCalls = [];
+  lwNext = merged.lineworks!;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     let key: string | undefined;
@@ -98,7 +118,6 @@ function setupFetch(overrides: Partial<{
     else if (url.includes("accounts.google.com")) key = "google";
     else if (url.includes("github.com/login/oauth/access_token")) key = "github_token";
     else if (url.includes("github.com")) key = "github";
-    else if (url.includes("/api/internal/auth/sso-config")) key = "lineworks";
     else if (url.includes(".well-known/openid-configuration")) key = "egov";
     if (!key) throw new Error(`unexpected fetch URL: ${url}`);
     const r = merged[key];
@@ -117,6 +136,8 @@ function envAllConfigured(extra: Partial<Env> = {}): Env {
     GITHUB_MCP_CLIENT_SECRET: "test-github-mcp-secret",
     EGOV_CLIENT_ID: "egov-test-client",
     EGOV_AUTH_BASE: "https://egov.test.example/auth/realms/test",
+    ALC_AUTH: lwBinding,
+    INTERNAL_SHARED_SECRET: "test-shared-secret",
     ...extra,
   });
 }
@@ -200,12 +221,16 @@ describe("handleHealthOAuth", () => {
     expect(body.providers.egov).toEqual({ configured: false });
   });
 
-  it("reports skip for lineworks when ALC_API_ORIGIN is empty", async () => {
+  it.each<[string, Partial<Env>]>([
+    ["ALC_AUTH binding が無い", { ALC_AUTH: undefined }],
+    ["INTERNAL_SHARED_SECRET が無い", { INTERNAL_SHARED_SECRET: undefined }],
+  ])("reports skip for lineworks when %s (呼ばない)", async (_label, extra) => {
     setupFetch();
-    const env = createMockEnv({ ALC_API_ORIGIN: "" });
+    const env = envAllConfigured(extra);
     const res = await handleHealthOAuth(await authedRequest(), env);
     const body = await res.json() as OAuthBody;
     expect(body.providers.lineworks).toEqual({ configured: false });
+    expect(lwCalls).toHaveLength(0);
   });
 
   it("reports skip for egov when only EGOV_CLIENT_ID is set but EGOV_AUTH_BASE is missing", async () => {
@@ -606,16 +631,20 @@ describe("handleHealthOAuth", () => {
   });
 
   // -------------------------------------------------------------------------
-  // lineworks probe — reachability of rust internal sso-config lookup
-  // (旧 /api/auth/lineworks/* は rust-alc-api#479 で撤去済み)
+  // lineworks probe — alc-auth-worker (ALC_AUTH) の internal sso-config の reachability
+  // (旧 /api/auth/lineworks/* は rust-alc-api#479 で撤去、Cloud Run 退避は W9 で撤去)
   // -------------------------------------------------------------------------
 
-  it("lineworks: ok when internal sso-config returns 404 (not found — route alive)", async () => {
-    setupFetch();
+  async function lineworksProbe(): Promise<{ lw: ProbeResultJson; status: number }> {
     const env = envAllConfigured();
     const res = await handleHealthOAuth(await authedRequest(), env);
     const body = await res.json() as OAuthBody;
-    const lw = body.providers.lineworks;
+    return { lw: body.providers.lineworks, status: res.status };
+  }
+
+  it("lineworks: ok when internal sso-config returns 404 sso_config_not_found (route alive)", async () => {
+    setupFetch();
+    const { lw } = await lineworksProbe();
     if (!("ok" in lw)) throw new Error("expected ok variant");
     expect(lw.ok).toBe(true);
     expect(lw.mode).toBe("reachability");
@@ -626,78 +655,78 @@ describe("handleHealthOAuth", () => {
     setupFetch({
       lineworks: new Response(JSON.stringify({ tenant_id: "t" }), { status: 200 }),
     });
-    const env = envAllConfigured();
-    const res = await handleHealthOAuth(await authedRequest(), env);
-    const body = await res.json() as OAuthBody;
-    const lw = body.providers.lineworks;
+    const { lw } = await lineworksProbe();
     if (!("ok" in lw)) throw new Error("expected ok variant");
     expect(lw.ok).toBe(true);
     expect(lw.status).toBe(200);
   });
 
-  it("lineworks: degraded when internal auth is rejected (401)", async () => {
-    setupFetch({ lineworks: new Response("unauthorized", { status: 401 }) });
-    const env = envAllConfigured();
-    const res = await handleHealthOAuth(await authedRequest(), env);
-    expect(res.status).toBe(503);
-    const body = await res.json() as OAuthBody;
-    const lw = body.providers.lineworks;
+  it.each<[string, () => Response]>([
+    ["本文空", () => new Response(null, { status: 404 })],
+    ["別の error", () => new Response(JSON.stringify({ error: "other" }), { status: 404 })],
+    ["JSON でない本文", () => new Response("not json", { status: 404 })],
+  ])("lineworks: degraded when 404 without sso_config_not_found (%s = 共有 secret の不一致)", async (_label, make) => {
+    setupFetch({ lineworks: make() });
+    const { lw, status } = await lineworksProbe();
+    expect(status).toBe(503);
     if (!("ok" in lw)) throw new Error("expected ok variant");
     expect(lw.ok).toBe(false);
-    expect(lw.hint).toMatch(/internal auth rejected/);
+    expect(lw.status).toBe(404);
+    expect(lw.hint).toMatch(/shared secret/);
   });
 
-  it("lineworks: degraded when rust-alc-api returns 5xx", async () => {
+  it("lineworks: degraded when alc-auth-worker returns 5xx", async () => {
     setupFetch({ lineworks: new Response("oops", { status: 502 }) });
-    const env = envAllConfigured();
-    const res = await handleHealthOAuth(await authedRequest(), env);
-    const body = await res.json() as OAuthBody;
-    const lw = body.providers.lineworks;
+    const { lw } = await lineworksProbe();
     if (!("ok" in lw)) throw new Error("expected ok variant");
     expect(lw.ok).toBe(false);
-    expect(lw.hint).toMatch(/502/);
+    expect(lw.status).toBe(502);
+    expect(lw.hint).toBe("alc-auth-worker internal sso-config returned 502");
   });
 
-  it("lineworks: unknown for unexpected status (e.g. 400)", async () => {
-    setupFetch({ lineworks: new Response("bad request", { status: 400 }) });
-    const env = envAllConfigured();
-    const res = await handleHealthOAuth(await authedRequest(), env);
-    const body = await res.json() as OAuthBody;
-    const lw = body.providers.lineworks;
-    if (!("unknown" in lw)) throw new Error("expected unknown variant");
-    expect(lw.hint).toMatch(/unexpected status 400/);
+  it("lineworks: unknown for unexpected status (e.g. 400, 401)", async () => {
+    for (const status of [400, 401]) {
+      setupFetch({ lineworks: new Response("bad", { status }) });
+      const { lw } = await lineworksProbe();
+      if (!("unknown" in lw)) throw new Error("expected unknown variant");
+      expect(lw.hint).toBe(`unexpected status ${status}`);
+    }
   });
 
-  it("lineworks: unknown on fetch error", async () => {
+  it("lineworks: unknown on fetch error (Error)", async () => {
     setupFetch({ lineworks: new Error("dns failure") });
-    const env = envAllConfigured();
-    const res = await handleHealthOAuth(await authedRequest(), env);
+    const { lw } = await lineworksProbe();
+    if (!("unknown" in lw)) throw new Error("expected unknown variant");
+    expect(lw.mode).toBe("reachability");
+    expect(lw.hint).toBe("fetch failed: dns failure");
+  });
+
+  it("lineworks: unknown on fetch error (Error 以外の throw も文字列化)", async () => {
+    setupFetch();
+    const failing = {
+      fetch: async () => {
+        throw "plain failure";
+      },
+    } as unknown as Fetcher;
+    const res = await handleHealthOAuth(await authedRequest(), envAllConfigured({ ALC_AUTH: failing }));
     const body = await res.json() as OAuthBody;
     const lw = body.providers.lineworks;
     if (!("unknown" in lw)) throw new Error("expected unknown variant");
-    expect(lw.hint).toMatch(/dns failure/);
+    expect(lw.hint).toBe("fetch failed: plain failure");
   });
 
-  it("lineworks: sends Bearer internal auth to the sso-config endpoint", async () => {
-    let observedUrl = "";
-    let observedAuth = "";
+  it("lineworks: ALC_AUTH binding へ共有 secret 付き GET で sso-config を引く (Authorization / global fetch は使わない)", async () => {
     setupFetch();
-    const inner = globalThis.fetch;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/internal/auth/sso-config")) {
-        observedUrl = url;
-        observedAuth = (init?.headers as Record<string, string> | undefined)?.["Authorization"]
-          ?? (init?.headers as Record<string, string> | undefined)?.["authorization"]
-          ?? "";
-      }
-      return inner(input, init);
-    }));
-    const env = envAllConfigured();
-    await handleHealthOAuth(await authedRequest(), env);
-    expect(observedUrl).toContain("provider=lineworks");
-    expect(observedUrl).toContain("domain=__health_probe__");
-    expect(observedAuth).toMatch(/^Bearer eyJ/);
+    await lineworksProbe();
+    expect(lwCalls).toHaveLength(1);
+    const call = lwCalls[0]!;
+    expect(call.method).toBe("GET");
+    expect(call.url).toContain("/internal/auth/sso-config?");
+    expect(call.url).toContain("provider=lineworks");
+    expect(call.url).toContain("domain=__health_probe__");
+    expect(call.secret).toBe("test-shared-secret");
+    expect(call.authorization).toBeNull();
+    expect(call.signal).toBe(true);
   });
 
   // -------------------------------------------------------------------------

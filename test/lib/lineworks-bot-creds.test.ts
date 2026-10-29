@@ -16,24 +16,11 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** rust 宛の fetch だけを URL で振り分ける (OIDC mint 等の他の fetch に順番を食われないように)。 */
-function routeRust(routes: Record<string, () => Response>): ReturnType<typeof vi.fn> {
-  const f = vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    for (const [suffix, respond] of Object.entries(routes)) {
-      if (url.endsWith(suffix)) return respond();
-    }
-    return new Response("unexpected", { status: 599 });
-  });
+/** global fetch を stub する (Cloud Run 退避は撤去済みなので、どの経路でも 1 度も呼ばれないはず)。 */
+function stubGlobalFetch(): ReturnType<typeof vi.fn> {
+  const f = vi.fn(async () => new Response("unexpected", { status: 599 }));
   vi.stubGlobal("fetch", f);
   return f;
-}
-
-/** rust (ALC_API_ORIGIN) 宛の呼び出しだけを `{ url, init }` で返す。 */
-function rustCalls(f: ReturnType<typeof vi.fn>): Array<{ url: string; init: RequestInit }> {
-  return f.mock.calls
-    .map((c) => ({ url: String(c[0]), init: c[1] as RequestInit }))
-    .filter(({ url }) => url.startsWith(env.ALC_API_ORIGIN));
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -58,7 +45,7 @@ describe("getBotAccess", () => {
 
   it("asks ALC_LINEWORKS for a token with the caller's tenant, bot config and scope", async () => {
     const lw = lineworksBinding(ok);
-    const f = routeRust({});
+    const f = stubGlobalFetch();
     const bot = await getBotAccess(
       createMockEnv({ ALC_LINEWORKS: lw.fetcher }),
       token,
@@ -77,8 +64,8 @@ describe("getBotAccess", () => {
       bot_config_id: "bc-1",
       scope: "board.read",
     });
-    // rust (/secrets 等) は 1 度も呼ばない
-    expect(rustCalls(f)).toEqual([]);
+    // global fetch (Cloud Run 等) は 1 度も呼ばない
+    expect(f).not.toHaveBeenCalled();
   });
 
   it("defaults scope to bot (Rich Menu)", async () => {
@@ -105,9 +92,9 @@ describe("getBotAccess", () => {
   });
 
   it("throws when ALC_LINEWORKS is not bound (no fallback to rust)", async () => {
-    const f = routeRust({});
+    const f = stubGlobalFetch();
     await expect(getBotAccess(env, token, "bc1")).rejects.toThrow("LINE WORKS worker not bound");
-    expect(rustCalls(f)).toEqual([]);
+    expect(f).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -139,41 +126,56 @@ describe("getBotAccess", () => {
 });
 
 describe("pickLineworksBotConfigId", () => {
-  it("returns the first enabled lineworks config in rust's order", async () => {
-    const f = routeRust({
-      "/api/admin/bot/configs": () =>
-        json({
-          configs: [
-            { id: "c-line", provider: "line", enabled: true, name: "a" },
-            { id: "c-off", provider: "lineworks", enabled: false, name: "b" },
-            { id: "c-on", provider: "lineworks", enabled: true, name: "z" },
-            { id: "c-on2", provider: "lineworks", enabled: true, name: "c" },
-          ],
-        }),
-    });
-    await expect(pickLineworksBotConfigId(env, token)).resolves.toBe("c-on");
-    const calls = rustCalls(f);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.init.headers).toMatchObject({ "X-Tenant-ID": "tenant-1" });
+  it("returns the first enabled lineworks config in the worker's order", async () => {
+    const lw = lineworksBinding(() =>
+      json({
+        configs: [
+          { id: "c-line", provider: "line", enabled: true, name: "a" },
+          { id: "c-off", provider: "lineworks", enabled: false, name: "b" },
+          { id: "c-on", provider: "lineworks", enabled: true, name: "z" },
+          { id: "c-on2", provider: "lineworks", enabled: true, name: "c" },
+        ],
+      }),
+    );
+    const f = stubGlobalFetch();
+    await expect(
+      pickLineworksBotConfigId(createMockEnv({ ALC_LINEWORKS: lw.fetcher }), token),
+    ).resolves.toBe("c-on");
+    expect(lw.calls).toHaveLength(1);
+    expect(lw.calls[0]!.url).toBe("https://alc-lineworks/api/admin/bot/configs");
+    expect(lw.calls[0]!.init.method).toBe("GET");
+    expect(lw.calls[0]!.init.headers).toMatchObject({ "X-Tenant-ID": "tenant-1" });
+    expect(lw.calls[0]!.init.headers).not.toHaveProperty("Authorization");
+    expect(f).not.toHaveBeenCalled();
   });
 
   it("returns null when the tenant has no enabled lineworks config", async () => {
-    routeRust({
-      "/api/admin/bot/configs": () =>
-        json({ configs: [{ id: "c-off", provider: "lineworks", enabled: false, name: "b" }] }),
-    });
-    await expect(pickLineworksBotConfigId(env, token)).resolves.toBeNull();
+    const lw = lineworksBinding(() =>
+      json({ configs: [{ id: "c-off", provider: "lineworks", enabled: false, name: "b" }] }),
+    );
+    await expect(
+      pickLineworksBotConfigId(createMockEnv({ ALC_LINEWORKS: lw.fetcher }), token),
+    ).resolves.toBeNull();
   });
 
   it("throws when the list request fails", async () => {
-    routeRust({ "/api/admin/bot/configs": () => new Response("nope", { status: 500 }) });
-    await expect(pickLineworksBotConfigId(env, token)).rejects.toThrow(
-      "Failed to list bot configs: 500",
-    );
+    const lw = lineworksBinding(() => new Response("nope", { status: 500 }));
+    await expect(
+      pickLineworksBotConfigId(createMockEnv({ ALC_LINEWORKS: lw.fetcher }), token),
+    ).rejects.toThrow("Failed to list bot configs: 500");
+  });
+
+  it("throws (404) without fetching when ALC_LINEWORKS is not bound (fail-closed)", async () => {
+    const f = stubGlobalFetch();
+    await expect(pickLineworksBotConfigId(env, token)).rejects.toThrow("Failed to list bot configs: 404");
+    expect(f).not.toHaveBeenCalled();
   });
 
   it("refuses an unverifiable token", async () => {
-    routeRust({});
-    await expect(pickLineworksBotConfigId(env, "not-a-jwt")).rejects.toThrow("Unauthorized");
+    const lw = lineworksBinding(() => json({ configs: [] }));
+    await expect(
+      pickLineworksBotConfigId(createMockEnv({ ALC_LINEWORKS: lw.fetcher }), "not-a-jwt"),
+    ).rejects.toThrow("Unauthorized");
+    expect(lw.calls).toEqual([]);
   });
 });

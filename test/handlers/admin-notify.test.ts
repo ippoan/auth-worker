@@ -18,13 +18,13 @@ describe("handleAdminNotifyPage", () => {
     vi.clearAllMocks();
   });
 
-  it("returns HTML built from env.ALC_API_ORIGIN", async () => {
+  it("returns HTML (backend origin は渡さない)", async () => {
     const env = createMockEnv();
     const req = new Request("https://auth.test.example/admin/notify");
     const res = await handleAdminNotifyPage(req, env);
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
-    expect(renderAdminNotifyPage).toHaveBeenCalledWith(env.ALC_API_ORIGIN);
+    expect(renderAdminNotifyPage).toHaveBeenCalledWith();
     expect(await res.text()).toContain("mock admin notify page");
   });
 });

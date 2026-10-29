@@ -6,8 +6,7 @@
  * (#54)。原因は直したが「気づけなかったこと」は直っていない — 無人 box が毎正時に
  * 数えている `found/uploaded/failed` を人に届ける経路がこれ。
  *
- * 送信そのものは rust-alc-api の `POST /api/internal/lineworks/send`
- * (`require_internal_jwt`) に実装済みで、`/alc-internal-proxy` の allowlist にも
+ * 送信そのものは `POST /api/internal/lineworks/send` (alc-lineworks) に実装済みで、`/alc-internal-proxy` の allowlist にも
  * `internal-jwt` として載っている。**それでも第三の口を作るのは、`/alc-internal-proxy`
  * が `X-Alc-Proxy-Secret` (= INTERNAL_SHARED_SECRET) を要求するから**。オンプレの
  * 無人 box にこの共有 secret を置くと blast radius が大きすぎる (#434 の「SA key /
@@ -15,15 +14,16 @@
  * だけに保ち、**内部 JWT の mint は auth-worker が代行する** — `device-data-proxy`
  * (device JWT + role→path allowlist) と同じ考え方。
  *
- *   ① env guard (`JWT_SECRET` / `ALC_API_ORIGIN`)。
+ *   ① env guard (`JWT_SECRET`)。
  *   ② `Authorization: Bearer <device JWT>` を `verifyJwt` で検証
  *      (`device-data-proxy.ts` と同じ HS256/JWT_SECRET)。
  *   ③ `payload.role` → 宛先 (`recipient_id`) を **AUTH_CONFIG KV から**解決。
  *      未設定 / パース不能 / role が map に無い → 403 (fail-closed)。
  *   ④ body 検証 — 受け付けるのは `text` **だけ** (下記 ★)。
- *   ⑤ `internalAuthToken` (aud=alc-api-internal) を付けて rust へ forward。
+ *   ⑤ 送信は alc-lineworks の binding へ (W9 で rust-alc-api / Cloud Run への fallback を撤去、
+ *      binding 無しは 404。Refs ippoan/rust-alc-api#680)。
  *
- * 値 (device JWT / internal token) は log / response に出さない。
+ * 値 (device JWT) は log / response に出さない。
  */
 import type { Env } from "../index";
 import { extractToken } from "../lib/errors";
@@ -54,8 +54,6 @@ export async function handleDeviceNotify(request: Request, env: Env): Promise<Re
   // ── ① env guard ───────────────────────────────────────────────────────────
   const jwtSecret = await resolveSecret(env.JWT_SECRET);
   if (!jwtSecret) return jsonError(503, "server_error");
-  const apiOrigin = env.ALC_API_ORIGIN;
-  if (!apiOrigin) return jsonError(503, "server_error");
 
   // ── ② device JWT 検証 (browser JWT と同じ検証関数・同じ HS256 secret) ────────
   const token = extractToken(request) ?? "";
@@ -101,8 +99,8 @@ export async function handleDeviceNotify(request: Request, env: Env): Promise<Re
   if (typeof text !== "string" || text.length === 0) return jsonError(400, "text required");
   if (text.length > MAX_TEXT_LEN) return jsonError(400, `text は ${MAX_TEXT_LEN} 文字以内`);
 
-  // ── ⑤ forward (internal JWT の mint は auth-worker が代行する。`lib/device-notify-send.ts`)
-  return sendDeviceNotify(env, apiOrigin, recipientId, text, {
+  // ── ⑤ forward (`lib/device-notify-send.ts`)
+  return sendDeviceNotify(env, recipientId, text, {
     event: "device_notify_upstream_failed",
     role,
   });

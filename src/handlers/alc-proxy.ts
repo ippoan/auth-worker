@@ -15,13 +15,14 @@
  *      同じ `JWT_SECRET` で署名されるので署名だけでは区別できない (#482)。この
  *      route は browser JWT 専用で、device 系 token はここでは受けない
  *      (device の data 経路は `/device-data-proxy` 側)
- *   ③ `run.invoker` SA key (`ALC_API_PROXY_SA_KEY`、auth-worker のみ bind) で
- *      Google OIDC ID token を mint
- *   ④ `ALC_API_ORIGIN` (= rust-alc-api、Cloud Run IAM lockdown 後) へ
- *      `Authorization: Bearer <OIDC>` + `X-Tenant-ID` / `X-User-ID/Email/Role`
- *      を注入して forward
- * を 1 箇所で行う。SA key + OIDC mint を auth-worker に集約し、方式変更時の
- * 再配線を 1 repo に閉じる。
+ *   ③ 認証・ACL 通過後、`X-Tenant-ID` / `X-User-ID/Email/Role` を注入して
+ *      domain worker (Service Binding、`ALC_BINDING_ROUTES`) へ forward
+ * を 1 箇所で行う。
+ *
+ * W9 (Refs ippoan/rust-alc-api#680): Cloud Run (rust-alc-api) への fallback・OIDC mint・
+ * flip 前 preview override (`X-Alc-Preview-Api-Base`) は撤去した。me / logout / LINE WORKS
+ * callback URL は session / hook helper が答え、それ以外は binding 表に当たらなければ 404
+ * (`X-Alc-Preview-Api-Base` は無視する)。
  *
  * 値 (token / SA key / OIDC / shared secret) は log / response に出さない。
  */
@@ -31,7 +32,6 @@ import { extractToken } from "../lib/errors";
 import { verifyJwt } from "../lib/jwt";
 import { checkAppTenant, checkOrgAccess } from "../lib/acl";
 import { resolveSecret } from "../lib/secret";
-import { mintGoogleIdToken } from "../lib/oidc";
 import {
   forwardViaAlcBinding,
   isUnsafeBackendPath,
@@ -47,36 +47,6 @@ const ROUTE_PREFIX = "/alc-proxy";
 
 /** consumer worker proof を運ぶ header。`INTERNAL_SHARED_SECRET*` の生値を載せる。 */
 const PROXY_SECRET_HEADER = "X-Alc-Proxy-Secret";
-
-/**
- * flip 前 preview override を運ぶ header (Refs ippoan/ci-dashboard#472)。
- * ci-dashboard の preview-router が `alc_api_preview_base` cookie を Set し、
- * consumer の `createAuthWorkerProxyHandler` (auth-client) がこの header に
- * 変換して forward してくる。値は同一 Cloud Run service の tagged revision URL
- * (`https://<tag>---<ALC_API_PREVIEW_HOST_SUFFIX>`) のみ許可。
- */
-const PREVIEW_BASE_HEADER = "X-Alc-Preview-Api-Base";
-
-/**
- * preview override の値を検証して origin を返す (不正は null)。
- * `<tag>---<suffix>` 形式に pin することで、任意 host への forward
- * (= 認証済み利用者が自分の JWT 由来リクエストを外部に流す) を防ぐ。
- */
-export function validatePreviewBase(raw: string, hostSuffix: string): string | null {
-  if (!hostSuffix) return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "https:") return null;
-  const marker = `---${hostSuffix}`;
-  if (!parsed.hostname.endsWith(marker)) return null;
-  const tag = parsed.hostname.slice(0, -marker.length);
-  if (!/^[a-z0-9-]+$/.test(tag)) return null;
-  return parsed.origin;
-}
 
 /** 定数時間比較。短絡せず全文字を XOR して合算 (mcp-introspect.ts と同実装)。 */
 function constantTimeEquals(a: string, b: string): boolean {
@@ -129,10 +99,6 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   // ── env guard ────────────────────────────────────────────────────────────
   const jwtSecret = await resolveSecret(env.JWT_SECRET);
   if (!jwtSecret) return jsonError(503, "server_error");
-  const saKey = await resolveSecret(env.ALC_API_PROXY_SA_KEY);
-  if (!saKey) return jsonError(503, "alc-proxy not configured"); // SA key binding 未設定
-  const apiOrigin = env.ALC_API_ORIGIN;
-  if (!apiOrigin) return jsonError(503, "server_error");
   // consumer worker proof 用の shared secret。1 つも bind されていなければ
   // proxy であることを検証できない = fail-closed で route ごと無効化 (503)。
   const sharedSecrets = await resolveAllSharedSecrets(env);
@@ -225,22 +191,7 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
     return jsonError(403, "dev_token_write_forbidden");
   }
 
-  // ── flip 前 preview override (Refs ippoan/ci-dashboard#472) ───────────────
-  // proof (①) + JWT/ACL 通過後のみ評価する。不正値は 400 で loud fail —
-  // 黙って prod に流すと「flip 前を検証したつもりで prod を叩いていた」事故に
-  // なるため、fallback しない。
-  let targetOrigin = apiOrigin;
-  const previewBase = request.headers.get(PREVIEW_BASE_HEADER);
-  if (previewBase) {
-    const previewOrigin = validatePreviewBase(
-      previewBase,
-      env.ALC_API_PREVIEW_HOST_SUFFIX ?? "",
-    );
-    if (!previewOrigin) return jsonError(400, "invalid preview override");
-    targetOrigin = previewOrigin;
-  }
-
-  // ── forward: targetOrigin + (/alc-proxy 以降の path) ──────────────────────
+  // ── forward: (/alc-proxy 以降の path) を domain worker へ ──────────────────────
   // (backendPath は上の #433 enforcement で計算済みのものを再利用)
   const url = new URL(request.url);
 
@@ -279,45 +230,26 @@ export async function handleAlcProxy(request: Request, env: Env): Promise<Respon
   const body = hasBody ? await request.arrayBuffer() : undefined;
 
   // ── domain worker (Service Binding) への振り分け ─────────────────────────
-  // 認証・ACL・ヘッダ付け直しは上で完了済み。binding 未定義 / 表に無い path /
-  // flip 前 preview override (Cloud Run の tagged revision 宛) は従来どおり Cloud Run。
-  // binding 経路では OIDC mint しない (Cloud Run IAM 用。mint 失敗で 502 にしない)。
-  // me・logout は alc-auth-worker から答える (判定は lib/alc-session.ts の 1 か所。preview は従来の経路)。
-  if (!previewBase) {
-    const session = await handleSessionPath(env, backendPath, method, { tenantId, sub, email, role });
-    if (session) return session;
-    // LINE WORKS の callback URL (tenant を暗号化した識別子) も auth-worker が答える (鍵はここにしか無い)
-    const hookUrl = await handleWebhookUrlPath(
-      backendPath === WEBHOOK_URL_PATH ? await resolveSecret(env.SSO_ENCRYPTION_KEY) : null,
-      backendPath,
-      method,
-      url.search,
-      { tenantId, role },
-    );
-    if (hookUrl) return hookUrl;
-  }
-  const binding = previewBase ? null : resolveAlcBinding(backendPath, env, "browser", method);
-  if (binding) {
-    if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
-    return forwardViaAlcBinding(binding, backendPath, url.search, {
-      method,
-      headers: fwdHeaders,
-      body,
-    });
-  }
-
-  // ── OIDC mint (Cloud Run IAM lockdown 用)。aud = forward 先 service URL ──
-  let idToken: string;
-  try {
-    idToken = await mintGoogleIdToken(saKey, targetOrigin);
-  } catch {
-    return jsonError(502, "upstream auth error"); // 詳細は log のみ (ここでは出さない)
-  }
-
-  const target = `${targetOrigin.replace(/\/$/, "")}${backendPath}${url.search}`;
-  return fetch(target, {
+  // 認証・ACL・ヘッダ付け直しは上で完了済み。binding 未定義 / 表に無い path は 404
+  // (W9 で Cloud Run fallback を撤去、Refs ippoan/rust-alc-api#680)。
+  // me・logout は alc-auth-worker から答える (判定は lib/alc-session.ts の 1 か所)。
+  const session = await handleSessionPath(env, backendPath, method, { tenantId, sub, email, role });
+  if (session) return session;
+  // LINE WORKS の callback URL (tenant を暗号化した識別子) も auth-worker が答える (鍵はここにしか無い)
+  const hookUrl = await handleWebhookUrlPath(
+    backendPath === WEBHOOK_URL_PATH ? await resolveSecret(env.SSO_ENCRYPTION_KEY) : null,
+    backendPath,
     method,
-    headers: { Authorization: `Bearer ${idToken}`, ...fwdHeaders },
+    url.search,
+    { tenantId, role },
+  );
+  if (hookUrl) return hookUrl;
+  const binding = resolveAlcBinding(backendPath, env, "browser", method);
+  if (!binding) return jsonError(404, "not_found");
+  if (isUnsafeBackendPath(backendPath)) return jsonError(403, "forbidden");
+  return forwardViaAlcBinding(binding, backendPath, url.search, {
+    method,
+    headers: fwdHeaders,
     body,
   });
 }

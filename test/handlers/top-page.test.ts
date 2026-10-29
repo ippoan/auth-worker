@@ -151,23 +151,33 @@ describe("handleTopPage", () => {
       email: "op@example.com",
       role: "admin",
     };
-    const realFetch = globalThis.fetch;
-    afterEach(() => {
-      globalThis.fetch = realFetch;
-    });
+    // 所属組織は alc-auth-worker (ALC_AUTH) の `GET /internal/tenants/{id}` から組む (W9 で Cloud Run 経路を撤去)。
+    // organizations が空 = tenant_not_found、非 null = tenant 1 件、status 非 200 = エラー
+    let alcAuthResponder: () => Promise<Response> = async () => new Response("{}", { status: 500 });
+    function myOrgsEnv() {
+      return createMockEnv({
+        ALC_AUTH_SESSION: "1",
+        INTERNAL_SHARED_SECRET: "test-internal-shared-secret-32!!",
+        ALC_AUTH: { fetch: async () => alcAuthResponder() } as unknown as Fetcher,
+      });
+    }
     function stubMyOrgs(organizations: unknown[] | null, status = 200): void {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValue(
-          new Response(JSON.stringify(organizations === null ? {} : { organizations }), {
-            status,
-          }),
-        ) as unknown as typeof fetch;
+      alcAuthResponder = async () => {
+        if (status !== 200) return new Response("{}", { status });
+        if (organizations === null) return new Response("{}", { status: 200 });
+        if (organizations.length === 0) {
+          return new Response(JSON.stringify({ error: "tenant_not_found" }), { status: 404 });
+        }
+        return new Response(
+          JSON.stringify({ id: "22222222-2222-2222-2222-222222222222", name: "Org", slug: "org", short_id: "o1" }),
+          { status: 200 },
+        );
+      };
     }
 
     it("my-orgs が空なら /logout へ 302 (/login ではない = ループ回避)", async () => {
       stubMyOrgs([]);
-      const env = createMockEnv();
+      const env = myOrgsEnv();
       const req = new Request("https://auth.test.example/top", {
         headers: { Cookie: await authedCookie(fullClaims) },
       });
@@ -182,7 +192,7 @@ describe("handleTopPage", () => {
 
     it("組織があれば通常どおり表示する", async () => {
       stubMyOrgs([{ id: "org-1", name: "Org", slug: "org" }]);
-      const env = createMockEnv();
+      const env = myOrgsEnv();
       const req = new Request("https://auth.test.example/top", {
         headers: { Cookie: await authedCookie(fullClaims) },
       });
@@ -194,12 +204,12 @@ describe("handleTopPage", () => {
     });
 
     it("判定不能 (fetch 失敗 / 非 200 / 応答形不正) は fail-open で表示", async () => {
-      const env = createMockEnv();
+      const env = myOrgsEnv();
       for (const setup of [
         () => {
-          globalThis.fetch = vi
-            .fn()
-            .mockRejectedValue(new Error("rust down")) as unknown as typeof fetch;
+          alcAuthResponder = async () => {
+            throw new Error("alc-auth down");
+          };
         },
         () => stubMyOrgs([], 503),
         () => stubMyOrgs(null),
@@ -216,7 +226,7 @@ describe("handleTopPage", () => {
 
     it("?woff=1 は組織 gate をスキップ (WOFF 非破壊)", async () => {
       stubMyOrgs([]);
-      const env = createMockEnv();
+      const env = myOrgsEnv();
       const req = new Request("https://auth.test.example/top?woff=1", {
         headers: { Cookie: await authedCookie(fullClaims) },
       });
@@ -229,8 +239,11 @@ describe("handleTopPage", () => {
 
     it("identity claims 不足は fetch せず fail-open", async () => {
       const fetchSpy = vi.fn();
-      globalThis.fetch = fetchSpy as unknown as typeof fetch;
-      const env = createMockEnv();
+      alcAuthResponder = async () => {
+        fetchSpy();
+        return new Response("{}", { status: 500 });
+      };
+      const env = myOrgsEnv();
       const req = new Request("https://auth.test.example/top", {
         headers: { Cookie: await authedCookie() }, // claims なし
       });
@@ -280,7 +293,7 @@ describe("handleTopPage", () => {
         { name: "車両位置", url: "https://ohishi2.example", icon: "🚛", description: "GPS トラック位置" },
       ],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -302,7 +315,7 @@ describe("handleTopPage", () => {
         { name: "車両位置", url: "https://dtako-logs.ippoan.org", icon: "🚛", description: "GPS トラック位置" },
       ],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -319,7 +332,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "物品管理", url: "https://nuxt-items.example", icon: "箱", description: "組織・個人の物品管理" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -340,7 +353,7 @@ describe("handleTopPage", () => {
         { name: "一番星 請求", url: "https://ichibanboshi-seikyu.ippoan.org", icon: "🧾", description: "燃料サーチャージ請求" },
       ],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -357,7 +370,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車両整備", url: "https://maintenance.ippoan.org", icon: "🔧", description: "定期点検・修理・部品交換の記録" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -374,7 +387,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "休暇申請", url: "https://leave.ippoan.org", icon: "🗓", description: "休暇申請 PDF の紐づけ" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -391,7 +404,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "https://unknown.example", url: "https://unknown.example", icon: "App", description: "" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -415,7 +428,7 @@ describe("handleTopPage", () => {
         { name: "車検証管理", url: "https://nuxt-pwa-carins-staging.m-tama-ramu.workers.dev", icon: "車", description: "車検証・ファイル管理" },
       ],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -435,7 +448,7 @@ describe("handleTopPage", () => {
         { name: "アルコールチェック", url: "https://alc-app-staging.m-tama-ramu.workers.dev", icon: "🍺", description: "アルコール検知・管理" },
       ],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -460,7 +473,7 @@ describe("handleTopPage", () => {
         { name: "物品管理", url: "https://items-staging.ippoan.org", icon: "箱", description: "組織・個人の物品管理" },
       ],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -478,7 +491,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車検証管理", url: "https://carins-staging.ippoan.org", icon: "車", description: "車検証・ファイル管理" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -493,7 +506,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -513,7 +526,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車検証管理", url: "https://nuxt-pwa-carins.example", icon: "車", description: "車検証・ファイル管理" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
     const lastCall = vi.mocked(renderTopPage).mock.calls[0]!;
     const calledApps = lastCall[0];
@@ -537,7 +550,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "DTako 管理", url: "https://dtako-admin.example", icon: "DVR", description: "ドライブレコーダーログ" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -558,7 +571,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車検証管理", url: "https://nuxt-pwa-carins.example", icon: "車", description: "車検証・ファイル管理" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -599,7 +612,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -619,7 +632,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 
@@ -698,12 +711,14 @@ describe("handleTopPage", () => {
         email: "op@example.com",
         role: "admin",
       };
-      const realFetch = globalThis.fetch;
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValue(new Response(JSON.stringify({ organizations: [] }), { status: 200 })) as unknown as typeof fetch;
-      try {
-        const env = createMockEnv();
+      {
+        const env = createMockEnv({
+          ALC_AUTH_SESSION: "1",
+          INTERNAL_SHARED_SECRET: "test-internal-shared-secret-32!!",
+          ALC_AUTH: {
+            fetch: async () => new Response(JSON.stringify({ error: "tenant_not_found" }), { status: 404 }),
+          } as unknown as Fetcher,
+        });
         const req = new Request("https://auth.test.example/top", {
           headers: { Cookie: await authedCookie(fullClaims) },
         });
@@ -714,8 +729,6 @@ describe("handleTopPage", () => {
         expect(res.headers.get("Location")).toContain("/logout");
         const setCookies = res.headers.getSetCookie();
         expect(setCookies.some((c) => c.startsWith("logi_bounce=1:no_org;"))).toBe(true);
-      } finally {
-        globalThis.fetch = realFetch;
       }
     });
 
@@ -761,7 +774,7 @@ describe("handleTopPage", () => {
     expect(renderTopPage).toHaveBeenCalledWith(
       [{ name: "車検証管理", url: "https://nuxt-pwa-carins.example", icon: "車", description: "車検証・ファイル管理" }],
       "https://auth.test.example",
-      expect.objectContaining({ workerEnv: "prod", alcApiOrigin: "https://alc-api.test.example" }),
+      expect.objectContaining({ workerEnv: "prod" }),
     );
   });
 });

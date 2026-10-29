@@ -46,7 +46,6 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     GOOGLE_CLIENT_SECRET: "",
     OAUTH_STATE_SECRET: "",
     AUTH_WORKER_ORIGIN: "",
-    ALC_API_ORIGIN: "https://alc-api.test",
     VERSION: "test",
     WORKER_ENV: "test",
     JWT_SECRET: TEST_JWT_SECRET,

@@ -5,7 +5,6 @@ declare module "cloudflare:test" {
     GOOGLE_CLIENT_SECRET: string;
     OAUTH_STATE_SECRET: string;
     AUTH_WORKER_ORIGIN: string;
-    ALC_API_ORIGIN: string;
     ALC_VEIN?: Fetcher;
     ALC_DTAKO?: Fetcher;
     ALC_LINEWORKS?: Fetcher;
