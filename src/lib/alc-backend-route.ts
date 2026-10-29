@@ -138,7 +138,7 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 点呼のセッションは `alc-measurements` へ回す (点呼の記録の入口を測定の口に一本化した。点呼セッションと点呼記録を書く worker は
  * alc-measurements だけ。W7b で alc-tenko に移した口を alc-measurements へ移し直した)。一覧 `GET /api/tenko/sessions`・開始 `POST /api/tenko/sessions/start`・1 件
  * `GET /api/tenko/sessions/{uuid}` と各段 (`/{uuid}/{段}`)。画面用 (alc-app の管理画面) は rust と同じ method の全部、端末用は
- * device-data-proxy の role の表にある口 (キオスク = 開始・7 つの段・中止・一覧・1 件・中断・自己再開、運行管理者席 = 一覧・
+ * device-data-proxy の role の表にある口 (キオスク = 開始・6 つの段 (アルコールの段は測定の保存で進むので無い)・中止・一覧・1 件・中断・自己再開、運行管理者席 = 一覧・
  * 1 件・判定)。遠隔への切り替え (`escalate-remote`) と管理者の再開 (`resume`) は画面用だけ。id は UUID に固定 (UUID でない id は
  * Cloud Run に落ちる)。webhook は alc-measurements が応答の後に alc-tenko の内部の口へ渡し、alc-tenko が送る (dev端末の要求では送らない)。
  */
@@ -565,7 +565,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   {
     match: "pattern",
     pattern:
-      /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(alcohol|medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items)$/i,
+      /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items)$/i,
     binding: "ALC_MEASUREMENTS",
     host: "alc-measurements",
     proxies: ["browser", "device"],

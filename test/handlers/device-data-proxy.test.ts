@@ -403,7 +403,6 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "POST", path: "/api/upload/report-audio" },
     { method: "GET", path: "/api/tenko/schedules/pending/emp-1" },
     { method: "POST", path: "/api/tenko/sessions/start" },
-    { method: "PUT", path: "/api/tenko/sessions/s-1/alcohol" },
     { method: "PUT", path: "/api/tenko/sessions/s-1/medical" },
     { method: "PUT", path: "/api/tenko/sessions/s-1/self-declaration" },
     { method: "PUT", path: "/api/tenko/sessions/s-1/daily-inspection" },
@@ -423,6 +422,22 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "POST", path: "/api/car-inspections/lookup" },
     { method: "POST", path: "/api/timecard/cards/lookup" },
   ];
+
+  // アルコールの段は測定の保存 (`PUT /api/measurements/{id}` の tenko_session_id) で進む。本文で結果を受ける口は通さない
+  it("PUT /api/tenko/sessions/{id}/alcohol はキオスクの鍵でも 403", async () => {
+    const fetchMock = okFetch();
+    const res = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/tenko/sessions/s-1/alcohol", {
+        method: "PUT",
+        token: await kioskToken(),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      env(),
+    );
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
   for (const { method, path } of ALLOWED) {
     it(`${method} ${path} を forward する`, async () => {
