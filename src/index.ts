@@ -55,7 +55,11 @@ import {
   handleAccessRequestApprove, handleAccessRequestDecline,
 } from "./handlers/api-access-requests";
 import { corsPreflight } from "./lib/errors";
-import { handleLineworksWebhook, handleLineworksRefresh } from "./handlers/lineworks-webhook";
+import {
+  handleLineworksWebhook,
+  handleLineworksHook,
+  handleLineworksRefresh,
+} from "./handlers/lineworks-webhook";
 import { handleLineWebhook } from "./handlers/line-webhook";
 import { handleMcpAsMetadata } from "./handlers/mcp-as-metadata";
 import { handleOidcJwks } from "./handlers/oidc-jwks";
@@ -983,6 +987,11 @@ export default {
         if (url.pathname.startsWith("/lineworks/webhook/")) {
           const botId = url.pathname.slice("/lineworks/webhook/".length);
           return await handleLineworksWebhook(request, env, botId);
+        }
+        // Dynamic path: /lineworks/hook/:識別子 (tenant と bot_id を暗号化した識別子の callback URL)
+        if (url.pathname.startsWith("/lineworks/hook/")) {
+          const hookId = url.pathname.slice("/lineworks/hook/".length);
+          return await handleLineworksHook(request, env, hookId);
         }
         // Dynamic path: /lineworks/refresh/:bot_id (DO bot_secret cache invalidation, internal)
         if (url.pathname.startsWith("/lineworks/refresh/")) {

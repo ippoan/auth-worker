@@ -475,3 +475,9 @@ branches = true
 [[files]]
 path = "src/alc-redact-entrypoint.ts"
 branches = true
+
+# LINE WORKS webhook の callback URL の識別子 (tenant と bot_id を暗号化したもの)。復号と IV の検査が緩むと、
+# 偽の識別子で別の tenant の DO・alc-notify の tenant 付きの口へ届くので 100% を維持する。
+[[files]]
+path = "src/lib/lineworks-hook-id.ts"
+branches = true

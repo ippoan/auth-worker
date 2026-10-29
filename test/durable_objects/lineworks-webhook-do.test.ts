@@ -86,6 +86,32 @@ describe("LineworksWebhookDO backend (ALC_NOTIFY)", () => {
     expect(data.has("queue:1")).toBe(false);
   });
 
+  it("uses the tenant paths with X-Tenant-ID for events from the new callback URL", async () => {
+    const T = "11111111-2222-4333-8444-555555555555";
+    // bot-secret: tenant 付きの口へ X-Tenant-ID を付けて取りに行く (取れなければ 401)
+    const secretSpy = vi.fn(async () => new Response(JSON.stringify({ error: "bot_not_found" }), { status: 404 }));
+    const first = mockState();
+    const req = new Request("https://do/event", {
+      method: "POST",
+      headers: { "x-bot-id": "13333925", "x-tenant-id": T, "x-works-signature": "c2ln" },
+      body: "{}",
+    });
+    expect((await makeDO(first.state, { fetch: secretSpy }).fetch(req)).status).toBe(401);
+    const [secretUrl, secretInit] = secretSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(secretUrl).toBe("https://alc-notify/api/internal/lineworks/tenant/bot-secret/13333925");
+    expect(secretInit.headers).toEqual({ "X-Tenant-ID": T });
+
+    // 積まれた event: tenant 付きの event の口へ X-Tenant-ID を付けて送る
+    const postSpy = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    const second = mockState({ "queue:1": { ...item, tenant_id: T } });
+    await makeDO(second.state, { fetch: postSpy }).alarm();
+    const [url, init] = postSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://alc-notify/api/internal/lineworks/tenant/event");
+    expect(init.headers).toEqual({ "Content-Type": "application/json", "X-Tenant-ID": T });
+    expect(JSON.parse(init.body as string)).toEqual(item.event);
+    expect(second.data.has("queue:1")).toBe(false);
+  });
+
   it("keeps the event for retry when the worker fails or is not bound", async () => {
     const failing = vi.fn(async () => new Response("", { status: 500 }));
     const first = mockState({ "queue:1": item });
