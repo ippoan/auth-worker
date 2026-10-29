@@ -3185,7 +3185,7 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
   });
 });
 
-describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust-alc-api#680)", () => {
+describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録の入口の一本化、Refs ippoan/rust-alc-api#680)", () => {
   const ID = "0b9f5a52-6a1e-4c1b-9d2a-3f4e5d6c7b8a";
   type Proxy = "browser" | "internal" | "device" | "admin" | "rpc";
   const PROXIES: ReadonlyArray<Proxy> = ["browser", "internal", "device", "admin", "rpc"];
@@ -3194,7 +3194,7 @@ describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust
 
   function setupTenko() {
     const tenko = makeBinding();
-    return { tenko, ...setup({ ALC_TENKO: tenko as unknown as Fetcher }) };
+    return { tenko, ...setup({ ALC_MEASUREMENTS: tenko as unknown as Fetcher }) };
   }
 
   /** [path, method, binding に回す proxy] */
@@ -3210,7 +3210,7 @@ describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust
 
   it("口ごとに、今通っている proxy だけが binding を引く (16 口)", () => {
     const { tenko, env } = setupTenko();
-    const target = { fetcher: tenko, host: "alc-tenko" };
+    const target = { fetcher: tenko, host: "alc-measurements" };
     expect(ROWS).toHaveLength(16);
     for (const [path, method, allowed] of ROWS) {
       for (const proxy of PROXIES) {
@@ -3256,6 +3256,13 @@ describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust
     expect(resolveAlcBinding("/api/tenko/sessions/start", env, "device", "POST")).toBeNull();
   });
 
+  it("alc-tenko の binding だけでは回さない (点呼のセッションは alc-measurements だけが受ける)", () => {
+    const { env } = setup({ ALC_TENKO: makeBinding() as unknown as Fetcher });
+    for (const [path, method, allowed] of ROWS) {
+      expect(resolveAlcBinding(path, env, allowed[0]!, method), `${method} ${path}`).toBeNull();
+    }
+  });
+
   it("alc-proxy の一覧・管理者の再開は binding に届き、dev の鍵の印も渡す", async () => {
     const { tenko, cloudRun, env } = setupTenko();
     expect(
@@ -3273,9 +3280,9 @@ describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust
     );
     expect(await dev.text()).toBe("from-binding");
     expect(tenko.fetch.mock.calls.map((c) => [c[0], c[1]!.method])).toEqual([
-      ["https://alc-tenko/api/tenko/sessions?judgment_pending=true", "GET"],
-      [`https://alc-tenko/api/tenko/sessions/${ID}/resume`, "POST"],
-      ["https://alc-tenko/api/tenko/sessions", "GET"],
+      ["https://alc-measurements/api/tenko/sessions?judgment_pending=true", "GET"],
+      [`https://alc-measurements/api/tenko/sessions/${ID}/resume`, "POST"],
+      ["https://alc-measurements/api/tenko/sessions", "GET"],
     ]);
     expect((tenko.fetch.mock.calls[0]![1]!.headers as Record<string, string>)["X-Device-Dev"]).toBeUndefined();
     expect((tenko.fetch.mock.calls[2]![1]!.headers as Record<string, string>)["X-Device-Dev"]).toBe("1");
@@ -3304,10 +3311,10 @@ describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust
     expect(await dev.text()).toBe("from-binding");
     const calls = tenko.fetch.mock.calls;
     expect(calls.map((c) => [c[0], c[1]!.method])).toEqual([
-      ["https://alc-tenko/api/tenko/sessions/start", "POST"],
-      [`https://alc-tenko/api/tenko/sessions/${ID}/alcohol`, "PUT"],
-      [`https://alc-tenko/api/tenko/sessions/${ID}/self-resume`, "POST"],
-      ["https://alc-tenko/api/tenko/sessions/start", "POST"],
+      ["https://alc-measurements/api/tenko/sessions/start", "POST"],
+      [`https://alc-measurements/api/tenko/sessions/${ID}/alcohol`, "PUT"],
+      [`https://alc-measurements/api/tenko/sessions/${ID}/self-resume`, "POST"],
+      ["https://alc-measurements/api/tenko/sessions/start", "POST"],
     ]);
     expect((calls[0]![1]!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
     expect((calls[0]![1]!.headers as Record<string, string>)["X-Device-Dev"]).toBeUndefined();
@@ -3328,7 +3335,7 @@ describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust
     );
     expect(await res.text()).toBe("from-binding");
     const [url, init] = tenko.fetch.mock.calls[0]!;
-    expect(url).toBe(`https://alc-tenko/api/tenko/sessions/${ID}/judgment`);
+    expect(url).toBe(`https://alc-measurements/api/tenko/sessions/${ID}/judgment`);
     expect((init!.headers as Record<string, string>)["X-Device-Role"]).toBe(DEVICE_ROLE_TENKO_MANAGER);
     expect(cloudRun).not.toHaveBeenCalled();
   });
