@@ -8,7 +8,7 @@
  * (ほかの `ALC_NOTIFY` の口と同じ)。
  *
  * 署名検証 (全テナント channel secret 照合) は **alc-notify-worker 側**が行う (auth-worker は channel
- * secret を持たない薄い pass-through)。LINE WORKS (`/lineworks/webhook/:bot_id`) は DO で
+ * secret を持たない薄い pass-through)。LINE WORKS (`/lineworks/hook/:識別子`) は DO で
  * HMAC 検証 + 復号するが、LINE Messaging は worker が DB に channel secret を持つため検証を
  * worker に置く方が単純。
  */
