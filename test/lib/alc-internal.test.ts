@@ -132,6 +132,15 @@ describe("resolveActiveDeviceTenant (Refs #544)", () => {
 
 describe("fetchRlsCheck (Refs #605)", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  /** alc-auth-worker の binding (`ALC_AUTH`) を global の fetch (各テストの stub) に通す。共有 secret も入れる */
+  function rlsEnv(overrides: Record<string, unknown> = {}): Env {
+    return env({
+      ALC_AUTH: { fetch: (req: Request) => globalThis.fetch(req) },
+      INTERNAL_SHARED_SECRET: "shared-secret",
+      ...overrides,
+    });
+  }
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
@@ -183,7 +192,7 @@ describe("fetchRlsCheck (Refs #605)", () => {
 
   it("200 + 契約どおりは同じ値を返す", async () => {
     stubJson(contract());
-    expect(await fetchRlsCheck(env())).toEqual(contract());
+    expect(await fetchRlsCheck(rlsEnv())).toEqual(contract());
   });
 
   it("connections と violations は空配列でもよい", async () => {
@@ -191,22 +200,29 @@ describe("fetchRlsCheck (Refs #605)", () => {
     body.connections = [];
     body.invariants = { violation_count: 0, checks: [], violations: [] };
     stubJson(body);
-    expect(await fetchRlsCheck(env())).toEqual(body);
+    expect(await fetchRlsCheck(rlsEnv())).toEqual(body);
   });
 
-  it("GET 1 回・path 固定・テナントのヘッダ無し・body 無しで呼ぶ", async () => {
+  it("alc-auth-worker へ GET 1 回・path 固定・共有 secret だけ (テナントのヘッダ・body 無し) で呼ぶ", async () => {
     const fetchMock = stubJson(contract());
-    await fetchRlsCheck(env());
+    await fetchRlsCheck(rlsEnv());
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("https://alc-api.test/api/internal/rls-check");
-    expect(init.method).toBe("GET");
-    expect(init.body).toBeUndefined();
-    const headers = init.headers as Headers;
-    expect(headers.get("Authorization")).toBe("Bearer hs256-internal-jwt");
-    expect(headers.has("X-Tenant-ID")).toBe(false);
-    expect(headers.has("Content-Type")).toBe(false);
-    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const [req] = fetchMock.mock.calls[0] as unknown as [Request];
+    expect(req.url).toBe("https://alc-auth/internal/rls-check");
+    expect(req.method).toBe("GET");
+    expect(req.body).toBeNull();
+    expect([...req.headers.keys()]).toEqual(["x-internal-shared-secret"]);
+    expect(req.headers.get("X-Internal-Shared-Secret")).toBe("shared-secret");
+    expect(req.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["binding 無し", { ALC_AUTH: undefined }],
+    ["共有 secret 無し", { INTERNAL_SHARED_SECRET: undefined }],
+  ])("%s は呼ばずに null (Cloud Run には戻らない)", async (_label, overrides) => {
+    const fetchMock = stubJson(contract());
+    expect(await fetchRlsCheck(rlsEnv(overrides))).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("余分な key はどの深さでも出力に出ない", async () => {
@@ -220,7 +236,7 @@ describe("fetchRlsCheck (Refs #605)", () => {
     body.invariants.violations[0].extra = "leak";
     body.verdicts.extra = "leak";
     stubJson(body);
-    const res = await fetchRlsCheck(env());
+    const res = await fetchRlsCheck(rlsEnv());
     expect(res).toEqual(contract());
     expect(JSON.stringify(res)).not.toContain("leak");
   });
@@ -271,14 +287,14 @@ describe("fetchRlsCheck (Refs #605)", () => {
     const body = contract();
     mutate(body);
     stubJson(body);
-    expect(await fetchRlsCheck(env())).toBeNull();
+    expect(await fetchRlsCheck(rlsEnv())).toBeNull();
   });
 
   it("state は object ならそのまま返す (入れ子の未知の key も残る)", async () => {
     const body = contract();
     body.state = { tables: [{ future_key: { deep: [1, "x", null] } }], another: true };
     stubJson(body);
-    const res = await fetchRlsCheck(env());
+    const res = await fetchRlsCheck(rlsEnv());
     expect(res?.state).toEqual({ tables: [{ future_key: { deep: [1, "x", null] } }], another: true });
   });
 
@@ -292,7 +308,7 @@ describe("fetchRlsCheck (Refs #605)", () => {
     const body = contract();
     mutate(body);
     stubJson(body);
-    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: null });
+    expect(await fetchRlsCheck(rlsEnv())).toEqual({ ...contract(), state: null });
   });
 
   it("state は上限ちょうどまで通し、超えたら state: null (ほかの値は返す)", async () => {
@@ -300,17 +316,17 @@ describe("fetchRlsCheck (Refs #605)", () => {
     const atLimit = { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 10) };
     expect(JSON.stringify(atLimit)).toHaveLength(RLS_STATE_MAX_LENGTH);
     stubJson({ ...contract(), state: atLimit });
-    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: atLimit });
+    expect(await fetchRlsCheck(rlsEnv())).toEqual({ ...contract(), state: atLimit });
 
     stubJson({ ...contract(), state: { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 9) } });
-    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), state: null });
+    expect(await fetchRlsCheck(rlsEnv())).toEqual({ ...contract(), state: null });
   });
 
   it("verdicts は 4 つとも boolean なら、その値を写す", async () => {
     const body = contract();
     body.verdicts = { invariants: true, runtime_role: false, migrations: true, drift: false };
     stubJson(body);
-    const res = await fetchRlsCheck(env());
+    const res = await fetchRlsCheck(rlsEnv());
     expect(res?.verdicts).toEqual({
       invariants: true,
       runtime_role: false,
@@ -324,14 +340,14 @@ describe("fetchRlsCheck (Refs #605)", () => {
     delete body.verdicts;
     delete body.drift;
     stubJson(body);
-    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), verdicts: null, drift: null });
+    expect(await fetchRlsCheck(rlsEnv())).toEqual({ ...contract(), verdicts: null, drift: null });
   });
 
   it("drift は object ならそのまま返す (入れ子の未知の key も残る)", async () => {
     const body = contract();
     body.drift = { matches_expected: false, future_key: { deep: [1, "x", null] } };
     stubJson(body);
-    const res = await fetchRlsCheck(env());
+    const res = await fetchRlsCheck(rlsEnv());
     expect(res?.drift).toEqual({ matches_expected: false, future_key: { deep: [1, "x", null] } });
   });
 
@@ -345,31 +361,31 @@ describe("fetchRlsCheck (Refs #605)", () => {
     const body = contract();
     mutate(body);
     stubJson(body);
-    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), drift: null });
+    expect(await fetchRlsCheck(rlsEnv())).toEqual({ ...contract(), drift: null });
   });
 
   it("drift は state と同じ上限ちょうどまで通し、超えたら drift: null (ほかの値は返す)", async () => {
     const atLimit = { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 10) };
     stubJson({ ...contract(), drift: atLimit });
-    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), drift: atLimit });
+    expect(await fetchRlsCheck(rlsEnv())).toEqual({ ...contract(), drift: atLimit });
 
     stubJson({ ...contract(), drift: { pad: "x".repeat(RLS_STATE_MAX_LENGTH - 9) } });
-    expect(await fetchRlsCheck(env())).toEqual({ ...contract(), drift: null });
+    expect(await fetchRlsCheck(rlsEnv())).toEqual({ ...contract(), drift: null });
   });
 
   it.each([null, [], "text", 1])("最上位が object でない応答 (%j) は null", async (body) => {
     stubJson(body);
-    expect(await fetchRlsCheck(env())).toBeNull();
+    expect(await fetchRlsCheck(rlsEnv())).toBeNull();
   });
 
   it.each([201, 401, 403, 404, 500, 503])("非 200 (%i) は null", async (status) => {
     stubJson(contract(), status);
-    expect(await fetchRlsCheck(env())).toBeNull();
+    expect(await fetchRlsCheck(rlsEnv())).toBeNull();
   });
 
   it("200 だが JSON 不正は null", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{not json", { status: 200 })));
-    expect(await fetchRlsCheck(env())).toBeNull();
+    expect(await fetchRlsCheck(rlsEnv())).toBeNull();
   });
 
   it("fetch の例外は null", async () => {
@@ -379,7 +395,7 @@ describe("fetchRlsCheck (Refs #605)", () => {
         throw new Error("network down");
       }),
     );
-    expect(await fetchRlsCheck(env())).toBeNull();
+    expect(await fetchRlsCheck(rlsEnv())).toBeNull();
   });
 });
 

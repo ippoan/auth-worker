@@ -1916,14 +1916,15 @@ describe("Bot 設定の口 → ALC_LINEWORKS binding (Refs ippoan/rust-alc-api#6
     expect(resolveAlcBinding(BOT, env, "device")).toBeNull();
   });
 
-  it("id 付きの削除 (UUID) は画面用だけ。export・UUID でない・余りは拾わない (export は Cloud Run)", () => {
+  it("id 付きの削除 (UUID) は画面用だけ。UUID でない・余りは拾わない", () => {
     const { lineworks, env } = setup();
     expect(resolveAlcBinding(`${BOT}/${ID}`, env, "browser")).toEqual({ fetcher: lineworks, host: "alc-lineworks" });
     expect(resolveAlcBinding(`${BOT}/${ID.toUpperCase()}`, env, "browser")).not.toBeNull();
     expect(resolveAlcBinding(`${BOT}/${ID}`, env, "admin")).toBeNull();
     for (const path of [
-      `${BOT}/export`,
       `${BOT}/x`,
+      `${BOT}/export/`,
+      `${BOT}/exportx`,
       `${BOT}/${ID}/secrets`,
       `${BOT}/${ID}x`,
       `${BOT}/`,
@@ -1940,6 +1941,14 @@ describe("Bot 設定の口 → ALC_LINEWORKS binding (Refs ippoan/rust-alc-api#6
     const { env } = setup({ ALC_LINEWORKS: undefined });
     expect(resolveAlcBinding(BOT, env, "browser")).toBeNull();
     expect(resolveAlcBinding(BOT, env, "admin")).toBeNull();
+  });
+
+  it("開発者だけの export は auth-worker 自身 (admin proxy) からだけ ALC_LINEWORKS へ。画面用・内部用・端末用からは届かない (W9)", () => {
+    const { lineworks, env } = setup();
+    expect(resolveAlcBinding(`${BOT}/export`, env, "admin", "GET")).toEqual({ fetcher: lineworks, host: "alc-lineworks" });
+    for (const proxy of ["browser", "internal", "device", "rpc"] as const) {
+      expect(resolveAlcBinding(`${BOT}/export`, env, proxy, "GET"), proxy).toBeNull();
+    }
   });
 
   it("alc-proxy の DELETE /api/admin/bot/configs/{id} は binding に届く (Cloud Run は呼ばれない)", async () => {
@@ -3341,5 +3350,24 @@ describe("点呼のセッション → ALC_TENKO binding (W7b、Refs ippoan/rust
     expect(url).toBe(`https://alc-tenko/api/tenko/sessions/${ID}/judgment`);
     expect((init!.headers as Record<string, string>)["X-Device-Role"]).toBe(DEVICE_ROLE_TENKO_MANAGER);
     expect(cloudRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("dtakologs の書き戻しの内部口は振り分けの表に載せない (W9、Refs ippoan/rust-alc-api#680)", () => {
+  it("/internal/archive/restore は、どの proxy・どの書き方でも binding を引かない (MCP の dtako_restore だけが binding を直に呼ぶ)", () => {
+    const { env } = setup();
+    for (const path of [
+      "/internal/archive/restore",
+      "/api/internal/archive/restore",
+      "/api/internal/archive/restore/",
+      "/api/internal/archive/",
+      "/api/internal/archive",
+    ]) {
+      for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
+        for (const method of ["GET", "POST"]) {
+          expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toBeNull();
+        }
+      }
+    }
   });
 });

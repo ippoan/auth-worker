@@ -2197,7 +2197,10 @@ describe("POST /mcp/tools — lineworks_get", () => {
 
 describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
   const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
-  const RLS_PATH = "/api/internal/rls-check";
+  /** 検査の口は alc-auth-worker (`ALC_AUTH`) に在る (W9、Refs ippoan/rust-alc-api#680) */
+  const RLS_URL = "https://alc-auth/internal/rls-check";
+  /** `ALC_AUTH` の binding を global の fetch (`routeFetch` の記録) に通す */
+  const ALC_AUTH_VIA_FETCH = { fetch: (req: Request) => globalThis.fetch(req) } as unknown as Fetcher;
   const VEIN_URL = "https://alc-vein/internal/db-role";
   const VEIN_UNBOUND = { bound: false, current_user: null, is_runtime_role: null };
   const VEIN_RT = { bound: true, current_user: "rt_role", is_runtime_role: true };
@@ -2268,7 +2271,12 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
   function routeFetch(body: unknown = rlsBody(), status = 200): void {
     backendCalls = [];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      backendCalls.push({ url: String(input), init });
+      if (input instanceof Request) {
+        const body = input.body === null ? undefined : await input.text();
+        backendCalls.push({ url: input.url, init: { method: input.method, headers: input.headers, body } });
+      } else {
+        backendCalls.push({ url: String(input), init });
+      }
       return new Response(JSON.stringify(body), {
         status,
         headers: { "Content-Type": "application/json" },
@@ -2278,7 +2286,10 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
 
   /** 許可リストだけ入れる。`google_sub:<email>` の cache は入れない。 */
   function allowedEnv(vein?: ReturnType<typeof makeVein>): Env {
-    const { env, kv } = envWithKv(vein ? { ALC_VEIN: vein as unknown as Fetcher } : {});
+    const { env, kv } = envWithKv({
+      ALC_AUTH: ALC_AUTH_VIA_FETCH,
+      ...(vein ? { ALC_VEIN: vein as unknown as Fetcher } : {}),
+    });
     kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
     return env;
   }
@@ -2342,7 +2353,7 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     ["リスト外", JSON.stringify(["google:other@example.com"]), "dev-login error 403: not_in_allowlist"],
   ])("%s は拒否し、backend も vein も 1 度も呼ばない", async (_label, raw, message) => {
     const vein = makeVein();
-    const { env, kv } = envWithKv({ ALC_VEIN: vein as unknown as Fetcher });
+    const { env, kv } = envWithKv({ ALC_AUTH: ALC_AUTH_VIA_FETCH, ALC_VEIN: vein as unknown as Fetcher });
     if (raw !== undefined) kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = raw;
     routeFetch();
     const body = await callVerifyRls(env);
@@ -2362,7 +2373,7 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
 
     expect(backendCalls).toHaveLength(1);
     const { url, init } = backendCalls[0]!;
-    expect(url).toBe(`${env.ALC_API_ORIGIN}${RLS_PATH}`);
+    expect(url).toBe(RLS_URL);
     expect(init?.method).toBe("GET");
     expect(init?.body).toBeUndefined();
     expect((init?.headers as Headers).has("X-Tenant-ID")).toBe(false);
@@ -2443,7 +2454,7 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     expect(parsed.ok).toBe(true);
 
     expect(backendCalls).toHaveLength(1);
-    expect(backendCalls[0]!.url).toBe(`${env.ALC_API_ORIGIN}${RLS_PATH}`);
+    expect(backendCalls[0]!.url).toBe(RLS_URL);
     expect(backendCalls[0]!.init?.method).toBe("GET");
     expect(vein.fetch).toHaveBeenCalledTimes(1);
     const [veinUrl, veinInit] = vein.fetch.mock.calls[0]!;
@@ -2555,12 +2566,12 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     expect(body.result?.isError).toBe(false);
     expect(backendCalls).toHaveLength(1);
     const { url, init } = backendCalls[0]!;
-    expect(url).toBe(`${env.ALC_API_ORIGIN}${RLS_PATH}`);
+    expect(url).toBe(RLS_URL);
     expect(init?.method).toBe("GET");
     expect(init?.body).toBeUndefined();
     const headers = init?.headers as Headers;
     expect(headers.has("X-Tenant-ID")).toBe(false);
-    expect([...headers.keys()]).toEqual(["authorization"]);
+    expect([...headers.keys()]).toEqual(["x-internal-shared-secret"]);
 
     expect(vein.fetch).toHaveBeenCalledTimes(1);
     const [veinUrl, veinInit] = vein.fetch.mock.calls[0]!;
@@ -2568,5 +2579,112 @@ describe("POST /mcp/tools — verify_rls (Refs #605)", () => {
     expect(veinInit?.method).toBe("GET");
     expect(veinInit?.body).toBeUndefined();
     expect([...new Headers(veinInit?.headers).keys()]).toEqual([]);
+  });
+});
+
+describe("POST /mcp/tools — dtako_restore (W9、Refs ippoan/rust-alc-api#680)", () => {
+  const ALLOWLIST = JSON.stringify(["google:dev@example.com"]);
+  const TENANT = "22222222-2222-2222-2222-222222222222";
+
+  function makeDtako(body: unknown = { restored: 3 }, status = 200) {
+    return {
+      fetch: vi.fn(async (_url: string, _init?: RequestInit) =>
+        new Response(typeof body === "string" ? body : JSON.stringify(body), { status })),
+    };
+  }
+
+  function allowedEnv(dtako?: ReturnType<typeof makeDtako>): Env {
+    const { env, kv } = envWithKv(dtako ? { ALC_DTAKO: dtako as unknown as Fetcher } : {});
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = ALLOWLIST;
+    return env;
+  }
+
+  type RpcBody = {
+    result?: { isError: boolean; content: Array<{ text: string }> };
+    error?: { code: number; message: string };
+  };
+
+  async function callRestore(env: Env, args: unknown, jwt?: string): Promise<RpcBody> {
+    const res = await handleMcpTools(
+      await authedReq(jwt ?? (await googleUserJwt()), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "dtako_restore", arguments: args },
+      }),
+      env,
+    );
+    return (await res.json()) as RpcBody;
+  }
+
+  function out(body: RpcBody): Record<string, unknown> {
+    expect(body.result?.isError).toBe(false);
+    return JSON.parse(body.result!.content[0]!.text) as Record<string, unknown>;
+  }
+
+  it("tools/list に出て、引数は tenant_id と date の 2 つ (mcp.read には出ない)", async () => {
+    const { env } = envWithKv();
+    const list = async (scope?: string) => {
+      const res = await handleMcpTools(
+        await authedReq(await googleUserJwt(scope ? { scope } : {}), { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+        env,
+      );
+      return ((await res.json()) as { result: { tools: Array<{ name: string; inputSchema: { required: string[] } }> } })
+        .result.tools;
+    };
+    const tool = (await list()).find((t) => t.name === "dtako_restore");
+    expect(tool!.inputSchema.required).toEqual(["tenant_id", "date"]);
+    expect((await list("mcp.read")).map((t) => t.name)).not.toContain("dtako_restore");
+  });
+
+  it("許可リストの人は、alc-dtako の内部口へ X-Tenant-ID と {date} を POST し、書き戻した行数を返す", async () => {
+    const dtako = makeDtako();
+    const body = await callRestore(allowedEnv(dtako), { tenant_id: TENANT, date: "2026-03-01" });
+    expect(out(body)).toEqual({ tenant_id: TENANT, date: "2026-03-01", restored: 3 });
+    expect(dtako.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/internal/archive/restore");
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toEqual({ "Content-Type": "application/json", "X-Tenant-ID": TENANT });
+    expect(JSON.parse(init?.body as string)).toEqual({ date: "2026-03-01" });
+  });
+
+  it.each<[string, Record<string, unknown>, string]>([
+    ["tenant_id が UUID でない", { tenant_id: "x", date: "2026-03-01" }, "dev-login error 400: tenant_id must be a UUID"],
+    ["tenant_id 欠け", { date: "2026-03-01" }, "dev-login error 400: tenant_id must be a UUID"],
+    ["date の形が違う", { tenant_id: TENANT, date: "2026-3-1" }, "dev-login error 400: date must be YYYY-MM-DD"],
+    ["date 欠け", { tenant_id: TENANT }, "dev-login error 400: date must be YYYY-MM-DD"],
+  ])("%s は呼ばずに拒否", async (_label, args, message) => {
+    const dtako = makeDtako();
+    const body = await callRestore(allowedEnv(dtako), args);
+    expect(body.result?.isError).toBe(true);
+    expect(body.result!.content[0]!.text).toBe(message);
+    expect(dtako.fetch).not.toHaveBeenCalled();
+  });
+
+  it("許可リスト外は拒否し、alc-dtako を呼ばない", async () => {
+    const dtako = makeDtako();
+    const { env, kv } = envWithKv({ ALC_DTAKO: dtako as unknown as Fetcher });
+    kv._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] = JSON.stringify(["google:other@example.com"]);
+    const body = await callRestore(env, { tenant_id: TENANT, date: "2026-03-01" });
+    expect(body.result!.content[0]!.text).toBe("dev-login error 403: not_in_allowlist");
+    expect(dtako.fetch).not.toHaveBeenCalled();
+  });
+
+  it("binding が無ければ not_configured", async () => {
+    const body = await callRestore(allowedEnv(), { tenant_id: TENANT, date: "2026-03-01" });
+    expect(out(body)).toEqual({ tenant_id: TENANT, date: "2026-03-01", error: "not_configured" });
+  });
+
+  it.each<[string, unknown, number]>([
+    ["404 (退避が無い)", { error: "not_found" }, 404],
+    ["422 (別の会社の行)", { error: "tenant_mismatch" }, 422],
+    ["200 だが JSON でない", "not json", 200],
+    ["200 だが restored が無い", { ok: true }, 200],
+  ])("%s は backend_error (status と本文の先頭)", async (_label, resBody, status) => {
+    const dtako = makeDtako(resBody, status);
+    const body = await callRestore(allowedEnv(dtako), { tenant_id: TENANT, date: "2026-03-01" });
+    const text = typeof resBody === "string" ? resBody : JSON.stringify(resBody);
+    expect(out(body)).toEqual({ tenant_id: TENANT, date: "2026-03-01", error: "backend_error", status, body: text });
   });
 });

@@ -1,27 +1,20 @@
 import type { Env } from "../index";
-import { alcOidcToken } from "../lib/alc-data-fetch";
 
+/**
+ * `GET /api/health` — auth-worker 自身の生死と版を返す。
+ *
+ * 以前は rust-alc-api の `/api/health` (backend の status・版) を写して返していたが、rust の撤収で
+ * backend の health は無くなった (W9、Refs ippoan/rust-alc-api#680)。分割 worker の版は各 worker の
+ * 応答ヘッダー `x-worker-version` / `x-worker-tag` で見る。
+ */
 export async function handleHealthProxy(env: Env): Promise<Response> {
-  // #434 lockdown: rust は allUsers 削除後 Google OIDC (aud=ALC_API_ORIGIN) を要求する。
-  // mint 不可 (SA key 未設定 = lockdown 前) は Authorization 無しで fail-open。
-  const oidc = await alcOidcToken(env);
-  const res = await fetch(
-    `${env.ALC_API_ORIGIN}/api/health`,
-    oidc ? { headers: { Authorization: `Bearer ${oidc}` } } : undefined,
-  );
-
-  let backend: Record<string, unknown> = {};
-  try {
-    backend = await res.json() as Record<string, unknown>;
-  } catch { /* non-JSON response */ }
-
   const body = {
-    ...backend,
+    status: "ok",
     auth_worker_version: env.VERSION || "dev",
   };
 
   return new Response(JSON.stringify(body), {
-    status: res.status,
+    status: 200,
     headers: {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",

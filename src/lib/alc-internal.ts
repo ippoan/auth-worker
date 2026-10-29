@@ -232,7 +232,7 @@ export async function resolveActiveDeviceTenant(
   return { ok: true, tenantId };
 }
 
-/** `GET /api/internal/rls-check` の応答のうち、auth-worker が外へ出す部分 (Refs #605)。 */
+/** `GET /internal/rls-check` (alc-auth-worker) の応答のうち、auth-worker が外へ出す部分 (Refs #605)。 */
 export interface RlsCheckResult {
   ok: boolean;
   migrations: {
@@ -405,24 +405,26 @@ function parseRlsCheck(body: unknown): RlsCheckResult | null {
 }
 
 /**
- * backend の固定の検査 (RLS の不変条件・実行用ロールの属性・接続ロール・適用履歴) の
- * 結果を読む (Refs #605)。引数を取らない GET 1 回で、テナントのヘッダも body も付けない。
+ * 固定の検査 (RLS の不変条件・実行用ロールの属性・接続ロール・適用履歴) の結果を読む (Refs #605)。
+ * 検査の口は alc-auth-worker (`ALC_AUTH` の `GET /internal/rls-check`。rust-alc-api から移した、W9 /
+ * Refs ippoan/rust-alc-api#680。応答の形は同じ)。引数を取らない GET 1 回で、テナントのヘッダも body も付けない
+ * (付けるのは共有 secret だけ)。
  *
- * 200 かつ契約どおりの形の時だけ値を返す。それ以外 (fetch の例外・timeout・非 200・
+ * 200 かつ契約どおりの形の時だけ値を返す。それ以外 (binding・secret が無い・fetch の例外・timeout・非 200・
  * JSON 不正・型違い・key 欠け) はすべて null — 呼び出し元は fail-closed で扱う。
  * 例外は `state` と `drift`、それに無くてよい `verdicts` (`parseRlsCheck` 参照)。
  */
 export async function fetchRlsCheck(env: Env): Promise<RlsCheckResult | null> {
-  let res: Response;
+  let res: Response | null;
   try {
-    res = await internalFetch(env, `/api/internal/rls-check`, {
+    res = await fetchAlcAuth(env, "/internal/rls-check", {
       method: "GET",
       signal: AbortSignal.timeout(15000),
     });
   } catch {
     return null;
   }
-  if (res.status !== 200) return null;
+  if (!res || res.status !== 200) return null;
 
   let body: unknown;
   try {

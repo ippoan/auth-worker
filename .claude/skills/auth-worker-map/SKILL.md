@@ -230,10 +230,11 @@ alc-app のサーバが端末一覧の表示と、キオスクが報告した `d
 ## RLS の確認を MCP の tool 1 回で受け取る (`verify_rls`、Refs #605)
 
 `mcp-tools.ts` の tool `verify_rls`。本番 DB で RLS の不変条件・backend の実行用ロールの属性・いま繋いでいる
-ロール・migration の適用履歴・履歴との食い違いを、backend (rust-alc-api) に固定された検査で確かめ、分割 worker
-(vein) の DB 接続のロールと合わせて返す。DB に繋ぐのは backend と vein で、auth-worker が出す要求は 2 つだけ:
-`lib/alc-internal.ts::fetchRlsCheck` の `GET /api/internal/rls-check` **1 回** (body なし・テナントのヘッダなし・
-15 秒で打ち切り) と、`fetchVeinDbRole` の `GET /internal/db-role` **1 回** (Service Binding `ALC_VEIN`。
+ロール・migration の適用履歴・履歴との食い違いを、alc-auth-worker に固定された検査 (W9 で rust-alc-api から移した。
+応答の形は同じ。`migrations.binary_*` は alc-auth-worker が組み込んだ alc-migrations の rev) で確かめ、分割 worker
+(vein) の DB 接続のロールと合わせて返す。DB に繋ぐのは alc-auth-worker と vein で、auth-worker が出す要求は 2 つだけ:
+`lib/alc-internal.ts::fetchRlsCheck` の `GET /internal/rls-check` **1 回** (Service Binding `ALC_AUTH`、`lib/alc-auth-fetch.ts`。
+共有 secret だけ・body なし・テナントのヘッダなし・15 秒で打ち切り。binding か secret が無ければ呼ばずに `rls_check_unavailable`) と、`fetchVeinDbRole` の `GET /internal/db-role` **1 回** (Service Binding `ALC_VEIN`。
 ヘッダなし・body なし・10 秒で打ち切り)。行のデータは返さない (vein からはロール名と真偽だけ)。
 
 - **引数を足さない** (`inputSchema.properties` は空)。SQL・表名・式・テナントを受ける入口を作らない。
@@ -410,3 +411,17 @@ secret_name = "ci-dashboard-internal-shared-secret-staging"
 ```
 
 introspect handler は `resolveAllSharedSecrets(env)` で `Object.keys(env)` を走査し、prefix match した全 binding の値を constant-time で順次比較する。1 つでも一致すれば 200、全 unmatch なら 401。新規 consumer を増やすときに introspect の **コード変更は不要**、binding と Secrets Store entry の追加だけで済む。
+
+## dtakologs の書き戻しを MCP の tool 1 回で (`dtako_restore`、W9)
+
+`mcp-tools.ts` の tool `dtako_restore` (`{tenant_id, date}`)。R2 に退避した車両の現在地のログの 1 日ぶんを、alc-dtako-worker の
+内部口 `POST /internal/archive/restore` (`ALC_DTAKO` を直に呼ぶ。X-Tenant-ID と body `{date}`) で DB に書き戻す
+(rust-alc-api の archive Job の `dtako-restore` の置き換え)。gate は `verify_rls` と同じ `checkDevLoginAllowlist` だけ
+(会社は引数。rust の CLI と同じ)。**この path は振り分けの表 (`ALC_BINDING_ROUTES`) に載せない** — 画面・内部用・端末用の
+proxy からは届かない (`alc-binding-route.test.ts` が固定)。
+
+## Bot 設定の export (`/api/bot-config/export`、W9)
+
+`handleBotConfigExport` は開発者の判定 (`lib/developer.ts::isDeveloperEmail`。rust の `DEVELOPER_EMAILS` を寄せた) をここで済ませ、
+X-Tenant-ID を query の `tenant_id` に差し替えて `fetchAdminBackend` で `/api/admin/bot/configs/export` へ。振り分けの表はこの path を
+**admin proxy だけ**で alc-lineworks-worker へ回す (alc-lineworks-worker は X-Tenant-ID しか見ないので、画面の proxy から届かせない)。

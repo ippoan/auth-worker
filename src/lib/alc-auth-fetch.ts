@@ -24,7 +24,7 @@ export interface AlcAuthEnv {
 export async function fetchAlcAuth(
   env: AlcAuthEnv,
   path: string,
-  init: { method: "GET" | "POST" | "PUT" | "DELETE"; body?: string } = { method: "GET" },
+  init: { method: "GET" | "POST" | "PUT" | "DELETE"; body?: string; signal?: AbortSignal } = { method: "GET" },
 ): Promise<Response | null> {
   if (!env.ALC_AUTH) return null;
   const secret = await resolveSecret(env.INTERNAL_SHARED_SECRET);
@@ -32,6 +32,11 @@ export async function fetchAlcAuth(
   const headers = new Headers({ "X-Internal-Shared-Secret": secret });
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
   return env.ALC_AUTH.fetch(
-    new Request(`${ALC_AUTH_ORIGIN}${path}`, { method: init.method, headers, body: init.body }),
+    new Request(`${ALC_AUTH_ORIGIN}${path}`, {
+      method: init.method,
+      headers,
+      body: init.body,
+      signal: init.signal,
+    }),
   );
 }
