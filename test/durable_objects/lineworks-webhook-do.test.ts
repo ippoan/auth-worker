@@ -28,10 +28,16 @@ function makeDO(state: DurableObjectState, binding?: { fetch: ReturnType<typeof 
   return new LineworksWebhookDO(state, env as unknown as ConstructorParameters<typeof LineworksWebhookDO>[1]);
 }
 
-function eventReq(botId: string): Request {
+const T = "11111111-2222-4333-8444-555555555555";
+
+function eventReq(botId: string, tenantId: string | null = T): Request {
   return new Request("https://do/event", {
     method: "POST",
-    headers: { "x-bot-id": botId, "x-works-signature": "c2ln" },
+    headers: {
+      "x-bot-id": botId,
+      "x-works-signature": "c2ln",
+      ...(tenantId ? { "x-tenant-id": tenantId } : {}),
+    },
     body: "{}",
   });
 }
@@ -40,12 +46,13 @@ const item = {
   event: { bot_id: "bot-1", event_type: "joined", channel_id: "ch-1" },
   ts: 0,
   attempts: 0,
+  tenant_id: T,
 };
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("LineworksWebhookDO backend (ALC_NOTIFY)", () => {
-  it("fetches bot_secret_encrypted from alc-notify via the binding", async () => {
+  it("fetches bot_secret_encrypted from the tenant path with X-Tenant-ID", async () => {
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ error: "bot_not_found" }), { status: 404 }));
     const { state } = mockState();
     const res = await makeDO(state, { fetch: fetchSpy }).fetch(eventReq("bot/1"));
@@ -54,10 +61,23 @@ describe("LineworksWebhookDO backend (ALC_NOTIFY)", () => {
     expect(res.status).toBe(401);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("https://alc-notify/api/internal/lineworks/bot-secret/bot%2F1");
+    expect(url).toBe("https://alc-notify/api/internal/lineworks/tenant/bot-secret/bot%2F1");
     expect(init.method).toBe("GET");
     expect(init.redirect).toBe("manual");
-    expect(init.headers).toBeUndefined();
+    expect(init.headers).toEqual({ "X-Tenant-ID": T });
+  });
+
+  it("rejects events without a tenant or bot, and unknown paths", async () => {
+    const fetchSpy = vi.fn();
+    const { state } = mockState();
+    const d = makeDO(state, { fetch: fetchSpy });
+    const noTenant = await d.fetch(eventReq("bot-1", null));
+    expect(noTenant.status).toBe(400);
+    expect(await noTenant.json()).toEqual({ error: "missing_tenant_id" });
+    const noBot = new Request("https://do/event", { method: "POST", headers: { "x-tenant-id": T } });
+    expect((await d.fetch(noBot)).status).toBe(400);
+    expect((await d.fetch(new Request("https://do/refresh", { method: "POST" }))).status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("does not fetch the secret when ALC_NOTIFY is not bound", async () => {
@@ -71,45 +91,28 @@ describe("LineworksWebhookDO backend (ALC_NOTIFY)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts queued events to alc-notify via the binding and drops them on success", async () => {
+  it("posts queued events to the tenant path with X-Tenant-ID and drops them on success", async () => {
     const fetchSpy = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
     const { state, data } = mockState({ "queue:1": item });
     await makeDO(state, { fetch: fetchSpy }).alarm();
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("https://alc-notify/api/internal/lineworks/event");
+    expect(url).toBe("https://alc-notify/api/internal/lineworks/tenant/event");
     expect(init.method).toBe("POST");
     expect(init.redirect).toBe("manual");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.headers).toEqual({ "Content-Type": "application/json", "X-Tenant-ID": T });
     expect(JSON.parse(init.body as string)).toEqual(item.event);
     expect(data.has("queue:1")).toBe(false);
   });
 
-  it("uses the tenant paths with X-Tenant-ID for events from the new callback URL", async () => {
-    const T = "11111111-2222-4333-8444-555555555555";
-    // bot-secret: tenant 付きの口へ X-Tenant-ID を付けて取りに行く (取れなければ 401)
-    const secretSpy = vi.fn(async () => new Response(JSON.stringify({ error: "bot_not_found" }), { status: 404 }));
-    const first = mockState();
-    const req = new Request("https://do/event", {
-      method: "POST",
-      headers: { "x-bot-id": "13333925", "x-tenant-id": T, "x-works-signature": "c2ln" },
-      body: "{}",
-    });
-    expect((await makeDO(first.state, { fetch: secretSpy }).fetch(req)).status).toBe(401);
-    const [secretUrl, secretInit] = secretSpy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(secretUrl).toBe("https://alc-notify/api/internal/lineworks/tenant/bot-secret/13333925");
-    expect(secretInit.headers).toEqual({ "X-Tenant-ID": T });
-
-    // 積まれた event: tenant 付きの event の口へ X-Tenant-ID を付けて送る
-    const postSpy = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
-    const second = mockState({ "queue:1": { ...item, tenant_id: T } });
-    await makeDO(second.state, { fetch: postSpy }).alarm();
-    const [url, init] = postSpy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("https://alc-notify/api/internal/lineworks/tenant/event");
-    expect(init.headers).toEqual({ "Content-Type": "application/json", "X-Tenant-ID": T });
-    expect(JSON.parse(init.body as string)).toEqual(item.event);
-    expect(second.data.has("queue:1")).toBe(false);
+  it("drops items left without a tenant by the old callback URL, without sending", async () => {
+    const fetchSpy = vi.fn();
+    const { tenant_id: _t, ...legacy } = item;
+    const { state, data } = mockState({ "queue:1": legacy });
+    await makeDO(state, { fetch: fetchSpy }).alarm();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(data.has("queue:1")).toBe(false);
   });
 
   it("keeps the event for retry when the worker fails or is not bound", async () => {
