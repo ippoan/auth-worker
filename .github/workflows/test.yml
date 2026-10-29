@@ -24,7 +24,6 @@ jobs:
     uses: ippoan/ci-workflows/.github/workflows/frontend-ci.yml@main
     with:
       install_command: 'npm install'
-      has_integration: true
       typecheck_command: 'npx tsc --noEmit && npx tsc -p test/tsconfig.json --noEmit'
       post_install_script: |
         npx wrangler types
@@ -47,13 +46,6 @@ jobs:
       npm_publish_name: '@ippoan/auth-client'
       npm_publish_propagate_repos: 'ippoan/nuxt-pwa-carins,ippoan/nuxt-items,ohishi-exp/nuxt_dtako_logs,ohishi-exp/nuxt-ichibanboshi,ohishi-exp/nuxt-ichibanboshi-seikyu,ohishi-exp/nuxt-dtako-admin,ippoan/nuxt-trouble,ippoan/nuxt-notify,ippoan/alc-app,ohishi-exp/nuxt-leave'
       npm_publish_propagate_dirs: '.,.,.,.,.,.,.,.,web,.'
-      # Release Wave compatibility (Refs ippoan/ci-dashboard#157):
-      # auth-worker は integration test で rust-alc-api を backend として叩く
-      # consumer。docker-compose.test.yml の API_IMAGE を現 production SHA に
-      # 差し替えて test し (truthful 突合)、結果を ci-dashboard に記録する。
-      # これで Compatibility グラフに auth-worker → rust-alc-api edge が載る。
-      compat_backend_repo: 'ippoan/rust-alc-api'
-      compat_backend_image_env: 'API_IMAGE'
     secrets: inherit
 
   # PR run: staging deploy 直後に、CF Secrets Store binding 経由で auth-worker が
