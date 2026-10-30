@@ -685,6 +685,9 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     { method: "GET", path: "/api/tenko/schedules/sch-1" },
     { method: "PUT", path: "/api/tenko/schedules/sch-1" },
     { method: "DELETE", path: "/api/tenko/schedules/sch-1" },
+    // 指静脈の照合データの読み取り (運行管理者の入口の指静脈ログイン)
+    { method: "GET", path: "/api/vein/module-templates" },
+    { method: "GET", path: "/api/vein/templates" },
   ];
 
   for (const { method, path } of ALLOWED) {
@@ -731,6 +734,14 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       { method: "POST", path: "/api/upload" },
       // 予定でも kiosk 側の口 (乗務員ごとの未実施一覧) は運行管理者の表に無い。
       { method: "GET", path: "/api/tenko/schedules/pending/emp-1" },
+      // 指静脈は照合データの読み取り 2 本だけ。登録・照合・承認・1 件の読み取りは開けない
+      { method: "PUT", path: "/api/vein/templates/emp-1" },
+      { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+      { method: "POST", path: "/api/vein/identify" },
+      { method: "GET", path: "/api/vein/module-templates/pending" },
+      { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee" },
+      { method: "GET", path: "/api/vein/templates/emp-1" },
+      { method: "GET", path: "/api/vein/templates/pending" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
@@ -805,7 +816,8 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
 
   it("★ device-kiosk は予定の CRUD を叩けないまま (KIOSK_ROUTES を広げていない)", async () => {
     const fetchMock = okFetch();
-    for (const { method, path } of ALLOWED) {
+    // 指静脈の照合データの読み取りは、もともと kiosk にも開いている口 (KIOSK_ROUTES と同じ行)
+    for (const { method, path } of ALLOWED.filter(r => r.path.startsWith("/api/tenko/schedules"))) {
       const res = await handleDeviceDataProxy(
         req(`/device-data-proxy${path}`, { method, token: await kioskToken() }),
         env(),

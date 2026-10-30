@@ -240,6 +240,13 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * ingest 側も `X-Device-Role: device-tenko-manager` にはこの GET だけを許し、録画の設定を除いた
  * `id`・`name`・`device_ids` だけを返す。
  *
+ * 指静脈の照合データの読み取り 2 本 (`GET /api/vein/module-templates`・`GET /api/vein/templates`) は、
+ * 運行管理者の入口の指静脈ログインが、席の機体 (Vein Base) のモジュールと手元の写しを揃えるのに使う。
+ * Vein Base を運行管理者席の鍵にした PC にはキオスクの鍵が無く、これが無いと照合データを取れない。
+ * どちらも `KIOSK_ROUTES` に同じ正規表現で在る口 (tenant の承認済みの生体記録を端末へ) で、新しい種類の
+ * 到達面ではない。開くのは読み取りの GET 2 本だけ (両端固定)。登録 (`PUT`)・照合 (`POST /api/vein/identify`)・
+ * 承認の口は開けない。
+ *
  * **入れない口 (モニターが呼ばない、または席が行を持たない)**:
  * - `GET /api/employees/face-data` — tenant 全員の生体情報。モニターからの呼び出しが 0 件。
  * - `GET /api/devices/settings/{id}` — 運行管理者席は devices に行を持たない。
@@ -286,6 +293,8 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/judgment$`) },
   { method: "POST", pattern: /^\/api\/timecard\/cards\/lookup$/ },
   { method: "GET", pattern: /^\/api\/cam-clips\/cameras$/ },
+  { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
+  { method: "GET", pattern: /^\/api\/vein\/templates$/ },
 ];
 
 /**
