@@ -2204,6 +2204,9 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
     // Vein Station は書き直しの select にだけ足す (DEVICE_KINDS = インストーラーのリンクは増やさない。Refs ippoan/alc-app#436)
     expect(options).toContain('<option value="vein-station">Vein Station (指静脈読み取り端末)</option>');
     expect(DEVICE_KINDS).not.toHaveProperty("vein-station");
+    // Vein Base を運行管理者席 (VoiceS3R の代わり) にする口も、書き直しの select にだけ足す
+    expect(options).toContain('<option value="vein-base-manager">Vein Base (運行管理者席)</option>');
+    expect(DEVICE_KINDS).not.toHaveProperty("vein-base-manager");
     // ペアリングの画面・署名鍵の登録の画面に「開発用」のチェックは足さない
     expect(html).not.toMatch(/type="checkbox"[^>]*dev[_-]device/);
   });
@@ -2223,10 +2226,12 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
     const html = await pageHtml();
     const fn = extractFn(html, "rewriteConnectedDevice");
     expect(fn).toContain('"接続中の機体を" + (devDevice ? "開発用" : "本番") + "として書き直しますか? (" +');
-    expect(fn).toContain('(veinStation ? "署名鍵" : "端末の鍵と署名鍵") + "を作り直します。古い鍵は使えなくなります)"');
+    expect(fn).toContain('(keyOnly ? "署名鍵" : "端末の鍵と署名鍵") + "を作り直します。古い鍵は使えなくなります)"');
     expect(fn).toContain(
-      '"Vein Station を運行者端末として" + (devDevice ? "開発用" : "本番") + "で登録しました。点呼の画面を再読み込みしてください"',
+      'keyOnly.done + (devDevice ? "開発用" : "本番") + "で登録しました。点呼の画面を再読み込みしてください"',
     );
+    expect(html).toContain('done: "Vein Station を運行者端末として"');
+    expect(html).toContain('done: "Vein Base を運行管理者席として"');
     // 機体の選択 (許可ダイアログ) → confirm → 書き込み、の順
     expect(fn.indexOf("navigator.serial.requestPort()")).toBeLessThan(fn.indexOf("confirm("));
     expect(fn.indexOf("confirm(")).toBeLessThan(fn.indexOf("await run("));
@@ -2249,8 +2254,12 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
     );
     // credential を発行する機種だけ端末の鍵の手順、P4 GW 以外は署名鍵の手順
     expect(fn).toContain("paired: PAIRABLE_KINDS.includes(kind)");
-    // Vein Station は端末の鍵を持たない (PAIRABLE_KINDS に無い) ので、署名鍵の手順だけを運行者端末の用途で流す
-    expect(fn).toContain('if (veinStation) Object.assign(rewrite, { usage: "kiosk", label: "vein-station" });');
+    // Vein Station・Vein Base は端末の鍵を持たない (PAIRABLE_KINDS に無い) ので、署名鍵の手順だけを
+    // 機種ごとの用途 (運行者端末 / 運行管理者席) で流す
+    expect(fn).toContain("const keyOnly = KEY_ONLY_REWRITES[kind];");
+    expect(fn).toContain("if (keyOnly) Object.assign(rewrite, { usage: keyOnly.usage, label: keyOnly.label });");
+    expect(html).toContain('"vein-station": { usage: "kiosk", label: "vein-station",');
+    expect(html).toContain('"vein-base-manager": { usage: "tenko-manager", label: "vein-base",');
     expect(fn).toContain("if (rewrite.paired) {");
     expect(fn).toContain("if (!(await run(undefined, rewrite))) return;");
     expect(fn).toContain('if (kind !== "p4-gw" && !(await registerAlarmKey(rewrite))) return;');
@@ -2462,6 +2471,19 @@ describe("接続中の機体を書き直す (画面、Refs ippoan/alc-app#387)",
         { pubkey: "new-key-1", replaces_pubkey: "old-key", dev_device: true, usage: "kiosk", label: "vein-station" },
         { pubkey: "new-key-1", label: "vein-station", usage: "kiosk", dev_device: true },
       ]);
+    });
+
+    it("Vein Base (運行管理者席) + 旧鍵なし: 用途 tenko-manager・ラベル vein-base で新規登録する", async () => {
+      const { port, commands } = fakePort(null);
+      const r = await runRegister({ ...vein(port), usage: "tenko-manager", label: "vein-base" }, [
+        { status: 200, body: { fingerprint: "f" } },
+      ]);
+      expect(r.ok).toBe(true);
+      expect(commands).toContain("AUTH KEYGEN");
+      expect(r.sent.map((s) => s.body)).toEqual([
+        { pubkey: "new-key-1", label: "vein-base", usage: "tenko-manager", dev_device: true },
+      ]);
+      expect(r.prompts).toEqual([]);
     });
 
     it("Vein Station + 差し替えがほかの理由で失敗: 新規登録に回らず止める", async () => {
