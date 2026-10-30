@@ -947,8 +947,9 @@ function setupPage(issuer: string, email: string): string {
   // developer のみ: 接続中の機体の鍵を、開発用 / 本番として書き直す (Refs ippoan/alc-app#387)。
   // 開発用かどうかは鍵を書き込む時点で決まるので、切り替えの入口はここ 1 つ。機種は
   // DEVICE_KINDS の全部 (credential を発行しない機種 = 署名鍵だけの機種も書き直せる) と、
-  // Vein Station (署名鍵を運行者端末の用途で付け直す。インストーラーのリンクを増やさないよう
-  // DEVICE_KINDS には入れない — Refs ippoan/alc-app#436)。
+  // 署名鍵だけを決まった用途で付け直す機種 (KEY_ONLY_REWRITES。インストーラーのリンクを増やさないよう
+  // DEVICE_KINDS には入れない): Vein Station = 運行者端末 (Refs ippoan/alc-app#436)、
+  // Vein Base = 運行管理者席 (VoiceS3R の代わりに運行管理者席の鍵にする)。
   // 表示の出し分けだけで、権限の根拠はサーバ側 (explicitDevDevice)。
   const rewriteHtml = isDeveloper
     ? `<p><label for="rewrite-kind">書き直す機体の機種</label>
@@ -957,6 +958,7 @@ ${Object.entries(DEVICE_KINDS)
   .map(([name, k]) => `  <option value="${escapeHtml(name)}">${escapeHtml(k.display)}</option>`)
   .join("\n")}
   <option value="vein-station">Vein Station (指静脈読み取り端末)</option>
+  <option value="vein-base-manager">Vein Base (運行管理者席)</option>
 </select></p>
 <p><button id="rewrite-dev" type="button" style="background:#b45309">接続中の機体を開発用として書き直す</button>
 <button id="rewrite-prod" type="button" style="background:#1a56db">接続中の機体を本番として書き直す</button></p>
@@ -2519,7 +2521,7 @@ async function revokeAlarmKey(fingerprint, label) {
 // rewrite = { devDevice, port, paired, usage?, label? } は「接続中の機体を書き直す」からの呼び出し
 // (それ以外は undefined): 鍵を作り直し (AUTH KEYGEN FORCE)、作り直す前の公開鍵を replaces_pubkey に
 // 添えて差し替える。ラベルと用途は聞かない — usage / label があればその値に替え、無ければ古い
-// record からサーバが写す。usage がある (Vein Station) ときは、旧鍵が無い・登録簿に無い機体も
+// record からサーバが写す。usage がある (Vein Station・Vein Base) ときは、旧鍵が無い・登録簿に無い機体も
 // 新規登録に回す。port は選択済みのもの、paired は端末の鍵を書き直した後か。結果は #result に出し、
 // 済んだら true (端末の鍵を書き直した機体が署名鍵を持たなければ、何もせず true)、失敗は false を返す。
 async function registerAlarmKey(rewrite) {
@@ -2615,7 +2617,7 @@ async function registerAlarmKey(rewrite) {
     await port.close().catch(() => {});
     port = null;
 
-    // 差し替えで済めば終わり。Vein Station (rewrite.usage) は旧鍵が無い・登録簿に無いとき、下の新規登録へ進む。
+    // 差し替えで済めば終わり。署名鍵だけの機体 (rewrite.usage) は旧鍵が無い・登録簿に無いとき、下の新規登録へ進む。
     if (rewrite && (oldPubkey || !rewrite.usage)) {
       if (!oldPubkey) {
         // 署名鍵を持たない機体。端末の鍵を書き直した後なら、それで全部。
@@ -2679,6 +2681,13 @@ loadAlarmKeys();
 // console) は端末の鍵の手順だけ。途中で失敗したら止める (表示は各手順が #result に出す) —
 // 端末の鍵だけ替わった状態は、一覧の食い違いの警告 (refreshPairWarnings) で見える。
 const REWRITE_DONE = "書き直しました。キオスクの画面を再読み込みしてください。ファームが古い端末は、書き直した後に電源を入れ直してください";
+// 署名鍵だけの機体として、決まった用途とラベルで付け直す機種 (端末の鍵は持たない)。
+// Vein Station = 運行者端末 (Refs ippoan/alc-app#436)。Vein Base = 運行管理者席 (VoiceS3R の代わり)。
+// 同じファームの機体なので、どちらの用途にするかは書き直すときに選ぶ (1 つの鍵は 1 つの用途だけ)
+const KEY_ONLY_REWRITES = {
+  "vein-station": { usage: "kiosk", label: "vein-station", done: "Vein Station を運行者端末として" },
+  "vein-base-manager": { usage: "tenko-manager", label: "vein-base", done: "Vein Base を運行管理者席として" },
+};
 async function rewriteConnectedDevice(devDevice, buttons) {
   for (const b of buttons) b.disabled = true;
   resultEl.textContent = "";
@@ -2687,12 +2696,12 @@ async function rewriteConnectedDevice(devDevice, buttons) {
     // 機体の選択 (ブラウザの許可ダイアログ) は、押した操作が有効なうちに先に済ませる。書き込みは確認の後。
     const port = await navigator.serial.requestPort();
     const kind = document.getElementById("rewrite-kind").value;
-    const veinStation = kind === "vein-station";
+    const keyOnly = KEY_ONLY_REWRITES[kind];
     if (!confirm("接続中の機体を" + (devDevice ? "開発用" : "本番") + "として書き直しますか? (" +
-      (veinStation ? "署名鍵" : "端末の鍵と署名鍵") + "を作り直します。古い鍵は使えなくなります)")) return;
+      (keyOnly ? "署名鍵" : "端末の鍵と署名鍵") + "を作り直します。古い鍵は使えなくなります)")) return;
     const rewrite = { devDevice, port, paired: PAIRABLE_KINDS.includes(kind) };
-    // Vein Station は署名鍵だけの機体として、運行者端末の用途で付け直す (Refs ippoan/alc-app#436)。
-    if (veinStation) Object.assign(rewrite, { usage: "kiosk", label: "vein-station" });
+    // 署名鍵だけの機体は、その機種の用途とラベルで付け直す (旧鍵が無い・登録簿に無ければ新規登録)。
+    if (keyOnly) Object.assign(rewrite, { usage: keyOnly.usage, label: keyOnly.label });
     if (rewrite.paired) {
       kindSel.value = kind;
       syncPrinterRow();
@@ -2700,8 +2709,8 @@ async function rewriteConnectedDevice(devDevice, buttons) {
       if (!(await run(undefined, rewrite))) return;
     }
     if (kind !== "p4-gw" && !(await registerAlarmKey(rewrite))) return;
-    resultEl.innerHTML = '<span class="ok">' + (veinStation
-      ? "Vein Station を運行者端末として" + (devDevice ? "開発用" : "本番") + "で登録しました。点呼の画面を再読み込みしてください"
+    resultEl.innerHTML = '<span class="ok">' + (keyOnly
+      ? keyOnly.done + (devDevice ? "開発用" : "本番") + "で登録しました。点呼の画面を再読み込みしてください"
       : REWRITE_DONE) + "</span>";
     loadDevices();
     loadAlarmKeys();
