@@ -224,6 +224,16 @@ describe("handleDeviceSetupPage", () => {
     expect(select).not.toContain('value="alarm"');
   });
 
+  it("Vein Station・Vein Base のインストーラー (vein.html) へのリンクも出る (機種 select には出ない)", async () => {
+    const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
+    const html = await res.text();
+    expect(html).toContain(
+      '<a href="https://ippoan.github.io/alc-app-s3/vein.html" target="_blank" rel="noopener">Vein Station・Vein Base (指静脈)</a>',
+    );
+    const select = html.match(/<select id="kind"[^>]*>([\s\S]*?)<\/select>/)?.[1] ?? "";
+    expect(select).not.toContain("vein");
+  });
+
   it("developer アカウントには dev ビルド (mem-hud) 配信の選択を表示する (alc-app-s3#44)", async () => {
     const cookie = await opCookie({ email: "m.tama.ramu@gmail.com" });
     const res = await handleDeviceSetupPage(getReq("/device/setup", cookie), makeEnv());
