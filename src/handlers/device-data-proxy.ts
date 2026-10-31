@@ -152,6 +152,14 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * できない。管理者のログインの口 (`GET /api/vein/templates/pending`・`POST …/approve`) は別で、
  * 端末の表には入れない。測定台の鍵にも同じ 2 本を開ける。
  *
+ * 端末で撮った記録の追加 (`PUT /api/vein/templates/{employee_id}/module/devices`、Refs ippoan/alc-app#558):
+ * 乗務員がほかの端末で「この端末の指を足す」と、その端末のモジュールが作った記録を預ける
+ * (同じ端末なら差し替え)。撮った端末は auth-worker が付ける `X-Device-Id` (token の sub) で決まり、
+ * 端末が名乗る値ではない。足せるのは承認済みの記録を持つ乗務員だけで (alc-vein-worker が 409)、
+ * 足した記録は承認を挟まずにその端末向けの記録へ組まれる (オーナー決定 2026-10-31)。
+ * `GET /api/vein/module-templates` は端末の token なら、その端末向けに組んだ記録を返す。
+ * 測定台と運行管理者席の鍵にも同じ 1 本を開ける。
+ *
  * カードの持ち主の照会 (`POST /api/timecard/cards/lookup`、body に `card_id`、
  * Refs ippoan/alc-app#387)。運転者の端末 (ブラウザ) に USB で繋いだ機体が社員証を読んだとき、
  * 画面が「このカードは誰のものか」をサーバーに引くのに使う。**読み取りだけの照会**で、
@@ -171,6 +179,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/vein\/templates$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates\/pending$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/approve-by-employee$/ },
@@ -244,8 +253,9 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * 運行管理者の入口の指静脈ログインが、席の機体 (Vein Base) のモジュールと手元の写しを揃えるのに使う。
  * Vein Base を運行管理者席の鍵にした PC にはキオスクの鍵が無く、これが無いと照合データを取れない。
  * どちらも `KIOSK_ROUTES` に同じ正規表現で在る口 (tenant の承認済みの生体記録を端末へ) で、新しい種類の
- * 到達面ではない。開くのは読み取りの GET 2 本だけ (両端固定)。登録 (`PUT`)・照合 (`POST /api/vein/identify`)・
- * 承認の口は開けない。
+ * 到達面ではない。開くのは読み取りの GET 2 本と、席の機体で撮った記録の追加
+ * (`PUT /api/vein/templates/{employee_id}/module/devices`。理由は `KIOSK_ROUTES` の doc) だけ (両端固定)。
+ * 登録し直し (`PUT …/{employee_id}` / `PUT …/module`)・照合 (`POST /api/vein/identify`)・承認の口は開けない。
  *
  * **入れない口 (モニターが呼ばない、または席が行を持たない)**:
  * - `GET /api/employees/face-data` — tenant 全員の生体情報。モニターからの呼び出しが 0 件。
@@ -295,6 +305,7 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/cam-clips\/cameras$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/templates$/ },
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
 ];
 
 /**
@@ -390,6 +401,7 @@ const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/api\/measurements\/[^/]+\/tenko$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates\/pending$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/approve-by-employee$/ },
