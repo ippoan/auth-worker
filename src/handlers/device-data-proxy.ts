@@ -257,11 +257,21 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * (`PUT /api/vein/templates/{employee_id}/module/devices`。理由は `KIOSK_ROUTES` の doc) だけ (両端固定)。
  * 登録し直し (`PUT …/{employee_id}` / `PUT …/module`)・照合 (`POST /api/vein/identify`)・承認の口は開けない。
  *
+ * **運行管理者のダッシュボードの読み取り専用の画面を席で開く (オーナー決定 2026-10-31)**: 席は指静脈で
+ * ログインし、管理者の Google ログインは無い。その席でダッシュボード・測定の 1 件 (顔写真・動画を含む)・
+ * 点呼記録と機器故障の CSV・健康の基準値・携行品・車検証の車両区分・乗務員・日別の労働時間・タイムカード
+ * (カード台帳・打刻と CSV)・端末の一覧と承認待ちを **GET だけ** 読めるようにした。これにより健康・生体
+ * (顔写真・動画)・労務 (労働時間・打刻) の情報が、席の鍵から tenant 単位で読めるようになる (承知の上の判断)。
+ * 書き込み (登録・更新・削除・承認など) は開けない — 管理者の Google ログインだけ。`{id}` は UUID の形に限る
+ * (`GET /api/measurements/start` などを拾わない)。一覧 (`GET /api/measurements`) は入れていない。
+ * backend が `X-Device-Role` で role を絞る口があれば、そちらの変更が別途要る (PR 本文の表を参照)。
+ *
  * **入れない口 (モニターが呼ばない、または席が行を持たない)**:
  * - `GET /api/employees/face-data` — tenant 全員の生体情報。モニターからの呼び出しが 0 件。
  * - `GET /api/devices/settings/{id}` — 運行管理者席は devices に行を持たない。
- * - `/api/timecard/cards` のほかの口 (一覧 GET・登録 POST・`{id}` の GET / DELETE・bulk)、
- *   `/api/timecard/punch`・`/punches`、`POST /api/employees/lookup` — 席はカードの管理も打刻もしない。
+ * - `/api/timecard/cards` の書き込み (登録 POST・`{id}` の DELETE・bulk)、`{id}` の GET、
+ *   `/api/timecard/punch`、`POST /api/employees/lookup` — 席はカードの管理も打刻もしない
+ *   (カード台帳と打刻の一覧・CSV の GET は上のオーナー決定で開けた)。
  *
  * **判定の POST は運行管理者の鍵すべてに通す。** 「dev の鍵だけ」に絞るのは backend
  * (rust-alc-api) の仕事で、`X-Device-Role` と `X-Device-Dev` を見て判断する。ここでは
@@ -306,6 +316,24 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/templates$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
+  // 運行管理者のダッシュボードの読み取り専用の画面 (オーナー決定 2026-10-31。上の doc)
+  { method: "GET", pattern: /^\/api\/tenko\/dashboard$/ },
+  { method: "GET", pattern: new RegExp(`^/api/measurements/${UUID_SEGMENT}$`) },
+  { method: "GET", pattern: new RegExp(`^/api/measurements/${UUID_SEGMENT}/face-photo$`) },
+  { method: "GET", pattern: new RegExp(`^/api/measurements/${UUID_SEGMENT}/video$`) },
+  { method: "GET", pattern: /^\/api\/tenko\/records\/csv$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/health-baselines$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/equipment-failures$/ },
+  { method: "GET", pattern: /^\/api\/tenko\/equipment-failures\/csv$/ },
+  { method: "GET", pattern: /^\/api\/carrying-items$/ },
+  { method: "GET", pattern: /^\/api\/car-inspections\/vehicle-categories$/ },
+  { method: "GET", pattern: /^\/api\/drivers$/ },
+  { method: "GET", pattern: /^\/api\/daily-hours$/ },
+  { method: "GET", pattern: /^\/api\/timecard\/cards$/ },
+  { method: "GET", pattern: /^\/api\/timecard\/punches$/ },
+  { method: "GET", pattern: /^\/api\/timecard\/punches\/csv$/ },
+  { method: "GET", pattern: /^\/api\/devices$/ },
+  { method: "GET", pattern: /^\/api\/devices\/pending$/ },
 ];
 
 /**

@@ -2512,19 +2512,35 @@ describe("画面向けの読み取りと分類の更新 → ALC_DTAKO binding (W
     "/api/dtako-logs/by-date",
     "/api/dtako-logs/by-date-range",
   ];
+  /** 運行管理者席 (device-tenko-manager) の読み取り専用の画面が呼ぶ GET。端末用にも回す (device-data-proxy の TENKO_MANAGER_ROUTES が通すのは一覧の 2 本) */
+  const MANAGER_SEAT_READS = ["/api/drivers", "/api/daily-hours", `/api/daily-hours/${ID}/2026-10-01/segments`];
 
   it("画面の口は画面用だけ、internal/operations は内部用だけ、scraper/history は画面用・RPC・端末用", () => {
     const { dtako, env } = setup();
     const target = { fetcher: dtako, host: "alc-dtako" };
     const rows: Array<[string, ReadonlyArray<"browser" | "internal" | "device" | "admin" | "rpc">]> = [
-      ...SCREEN_PATHS.map((p): [string, ReadonlyArray<"browser">] => [p, ["browser"]]),
+      ...SCREEN_PATHS.filter((p) => !MANAGER_SEAT_READS.includes(p)).map(
+        (p): [string, ReadonlyArray<"browser">] => [p, ["browser"]],
+      ),
+      ...MANAGER_SEAT_READS.map((p): [string, ReadonlyArray<"browser" | "device">] => [p, ["browser", "device"]]),
       ["/api/internal/operations", ["internal"]],
       ["/api/scraper/history", ["browser", "rpc", "device"]],
     ];
     for (const [path, allowed] of rows) {
       for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
         const want = allowed.includes(proxy) ? target : null;
-        expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toEqual(want);
+        // 端末用に回す口は GET だけ (method を渡す)
+        expect(resolveAlcBinding(path, env, proxy, "GET"), `${proxy} ${path}`).toEqual(want);
+      }
+    }
+  });
+
+  it("運行管理者席の読み取り (乗務員・日別) は端末用でも GET だけ binding に回す (書きは Cloud Run)", () => {
+    const { dtako, env } = setup();
+    for (const path of MANAGER_SEAT_READS) {
+      expect(resolveAlcBinding(path, env, "device", "GET"), path).toEqual({ fetcher: dtako, host: "alc-dtako" });
+      for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+        expect(resolveAlcBinding(path, env, "device", method), `${method} ${path}`).toBeNull();
       }
     }
   });
@@ -3075,10 +3091,11 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
     ["/api/tenko/schedules/batch", "POST", ["browser", "device"]],
     [`/api/tenko/schedules/${ID}`, "PUT", ["browser", "device"]],
     [`/api/tenko/schedules/pending/${ID}`, "GET", ["device"]],
-    ["/api/tenko/health-baselines", "GET", ["browser"]],
+    ["/api/tenko/health-baselines", "GET", ["browser", "device"]],
     [`/api/tenko/health-baselines/${ID}`, "DELETE", ["browser"]],
     ["/api/tenko/equipment-failures", "POST", ["browser"]],
-    ["/api/tenko/equipment-failures/csv", "GET", ["browser"]],
+    ["/api/tenko/equipment-failures", "GET", ["browser", "device"]],
+    ["/api/tenko/equipment-failures/csv", "GET", ["browser", "device"]],
     [`/api/tenko/equipment-failures/${ID}`, "PUT", ["browser"]],
     ["/api/tenko/webhooks", "GET", ["browser"]],
     [`/api/tenko/webhooks/${ID}`, "DELETE", ["browser"]],
@@ -3106,7 +3123,15 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
 
   it("端末用の読み取りの口と点呼の電話の登録・点呼は、決めた method だけを回す", () => {
     const { env } = setupTenko();
-    for (const path of ["/api/tenko/records", "/api/tenko/records/csv", "/api/tenko/dashboard", "/api/tenko-call/drivers"]) {
+    for (const path of [
+      "/api/tenko/records",
+      "/api/tenko/records/csv",
+      "/api/tenko/dashboard",
+      "/api/tenko-call/drivers",
+      "/api/tenko/health-baselines",
+      "/api/tenko/equipment-failures",
+      "/api/tenko/equipment-failures/csv",
+    ]) {
       expect(resolveAlcBinding(path, env, "device", "POST"), path).toBeNull();
     }
     for (const path of ["/api/tenko-call/register", "/api/tenko-call/tenko"]) {

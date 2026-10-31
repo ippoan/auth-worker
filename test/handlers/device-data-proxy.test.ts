@@ -683,6 +683,7 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     return fetchMock;
   }
 
+  const MID = "22222222-2222-2222-2222-222222222222";
   // ★ TENKO_MANAGER_ROUTES の全行を method + path で固定する (表駆動)。
   const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
     { method: "GET", path: "/api/tenko/schedules" },
@@ -696,6 +697,24 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     { method: "GET", path: "/api/vein/templates" },
     // 席の機体で撮った記録の追加 (Refs ippoan/alc-app#558)
     { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
+    // 運行管理者のダッシュボードの読み取り専用の画面 (オーナー決定 2026-10-31)
+    { method: "GET", path: "/api/tenko/dashboard" },
+    { method: "GET", path: `/api/measurements/${MID}` },
+    { method: "GET", path: `/api/measurements/${MID}/face-photo` },
+    { method: "GET", path: `/api/measurements/${MID}/video` },
+    { method: "GET", path: "/api/tenko/records/csv" },
+    { method: "GET", path: "/api/tenko/health-baselines" },
+    { method: "GET", path: "/api/tenko/equipment-failures" },
+    { method: "GET", path: "/api/tenko/equipment-failures/csv" },
+    { method: "GET", path: "/api/carrying-items" },
+    { method: "GET", path: "/api/car-inspections/vehicle-categories" },
+    { method: "GET", path: "/api/drivers" },
+    { method: "GET", path: "/api/daily-hours" },
+    { method: "GET", path: "/api/timecard/cards" },
+    { method: "GET", path: "/api/timecard/punches" },
+    { method: "GET", path: "/api/timecard/punches/csv" },
+    { method: "GET", path: "/api/devices" },
+    { method: "GET", path: "/api/devices/pending" },
   ];
 
   for (const { method, path } of ALLOWED) {
@@ -727,15 +746,11 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       { method: "POST", path: "/api/employees/lookup" },
       { method: "GET", path: "/api/employees/face-data" },
       { method: "PUT", path: "/api/employees/emp-1/face" },
-      { method: "GET", path: "/api/tenko/dashboard" },
       { method: "POST", path: "/api/tenko/sessions/start" },
       { method: "PUT", path: "/api/tenko/sessions/s-1/alcohol" },
       { method: "GET", path: "/api/measurements" },
-      { method: "GET", path: "/api/measurements/m-1/face-photo" },
       { method: "POST", path: "/api/measurements" },
       { method: "POST", path: "/api/upload/face-photo" },
-      { method: "GET", path: "/api/timecard/punches" },
-      { method: "GET", path: "/api/carrying-items" },
       { method: "POST", path: "/api/car-inspections/lookup" },
       { method: "GET", path: "/api/files" },
       { method: "POST", path: "/api/scraper/history" },
@@ -752,6 +767,72 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee" },
       { method: "GET", path: "/api/vein/templates/emp-1" },
       { method: "GET", path: "/api/vein/templates/pending" },
+    ];
+    for (const { method, path } of cases) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method, token: await managerToken() }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("★ 読み取り専用の画面の口は GET だけ — 書き込み (POST/PUT/PATCH/DELETE) と近い path は 403", async () => {
+    const fetchMock = okFetch();
+    const cases: ReadonlyArray<{ method: string; path: string }> = [
+      // 開けた path の書き込み
+      { method: "POST", path: "/api/tenko/dashboard" },
+      { method: "PUT", path: `/api/measurements/${MID}` },
+      { method: "POST", path: `/api/measurements/${MID}` },
+      { method: "DELETE", path: `/api/measurements/${MID}` },
+      { method: "POST", path: `/api/measurements/${MID}/tenko` },
+      { method: "POST", path: `/api/measurements/${MID}/face-photo` },
+      { method: "DELETE", path: `/api/measurements/${MID}/video` },
+      { method: "POST", path: "/api/tenko/records/csv" },
+      { method: "POST", path: "/api/tenko/health-baselines" },
+      { method: "PUT", path: `/api/tenko/health-baselines/${MID}` },
+      { method: "DELETE", path: `/api/tenko/health-baselines/${MID}` },
+      { method: "POST", path: "/api/tenko/equipment-failures" },
+      { method: "PUT", path: `/api/tenko/equipment-failures/${MID}` },
+      { method: "POST", path: "/api/carrying-items" },
+      { method: "PUT", path: `/api/carrying-items/${MID}` },
+      { method: "DELETE", path: `/api/carrying-items/${MID}` },
+      { method: "POST", path: "/api/drivers" },
+      { method: "PUT", path: "/api/daily-hours" },
+      { method: "POST", path: "/api/timecard/cards" },
+      { method: "DELETE", path: `/api/timecard/cards/${MID}` },
+      { method: "POST", path: "/api/timecard/punch" },
+      { method: "POST", path: "/api/timecard/punches" },
+      { method: "POST", path: "/api/devices" },
+      { method: "DELETE", path: `/api/devices/${MID}` },
+      { method: "POST", path: `/api/devices/approve/${MID}` },
+      { method: "POST", path: `/api/devices/reject/${MID}` },
+      { method: "POST", path: "/api/devices/pending" },
+      // 近い path (予約語・下位・UUID でない id・別の口)
+      { method: "GET", path: "/api/measurements/start" },
+      { method: "GET", path: "/api/measurements/alert-test" },
+      { method: "GET", path: "/api/measurements/m-1" },
+      { method: "GET", path: `/api/measurements/${MID}/tenko` },
+      { method: "GET", path: `/api/measurements/${MID}/extra` },
+      { method: "GET", path: `/api/tenko/health-baselines/${MID}` },
+      { method: "GET", path: `/api/tenko/equipment-failures/${MID}` },
+      { method: "GET", path: "/api/tenko/records" },
+      { method: "GET", path: "/api/tenko/webhooks" },
+      { method: "GET", path: "/api/tenko/daily-health-status" },
+      { method: "GET", path: "/api/carrying-items/x" },
+      { method: "GET", path: "/api/car-inspections" },
+      { method: "GET", path: "/api/car-inspections/vehicle-categories/x" },
+      { method: "GET", path: "/api/daily-hours/x" },
+      { method: "GET", path: `/api/daily-hours/${MID}/2026-10-01/segments` },
+      { method: "GET", path: "/api/drivers/x" },
+      { method: "GET", path: "/api/vehicles" },
+      { method: "GET", path: `/api/timecard/cards/${MID}` },
+      { method: "GET", path: "/api/timecard/punches/x" },
+      { method: "GET", path: "/api/devices/settings/x" },
+      { method: "GET", path: `/api/devices/${MID}` },
+      { method: "GET", path: "/api/devices/pending/x" },
+      { method: "GET", path: "/api/devicesx" },
     ];
     for (const { method, path } of cases) {
       const res = await handleDeviceDataProxy(
@@ -860,7 +941,6 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
   });
 
   // ── 遠隔点呼モニターと IT点呼の受け画面の 7 本 (Refs ippoan/alc-app#387) ──────────
-  const MID = "22222222-2222-2222-2222-222222222222";
   const MONITOR_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
     { method: "GET", path: "/api/employees" },
     { method: "GET", path: `/api/employees/${MID}` },
@@ -955,13 +1035,13 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("運行管理者の鍵 (dev_device: true): 記録簿 GET 3 本は 403 (記録簿の分岐は kiosk だけ)", async () => {
+  it("運行管理者の鍵 (dev_device: true): 記録簿の分岐は kiosk だけ (一覧・1 件は 403。csv は席の読み取りの表で通る)", async () => {
     const fetchMock = okFetch();
     const token = await signTestJwt(
       { sub: "alarm:deadbeefdeadbeef", tenant_id: TENANT, role: DEVICE_ROLE_TENKO_MANAGER, dev_device: true },
       TEST_JWT_SECRET,
     );
-    for (const path of ["/api/tenko/records", "/api/tenko/records/csv", `/api/tenko/records/${MID}`]) {
+    for (const path of ["/api/tenko/records", `/api/tenko/records/${MID}`]) {
       const res = await handleDeviceDataProxy(
         req(`/device-data-proxy${path}`, { method: "GET", token }),
         env(),
@@ -969,6 +1049,12 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       expect(res.status, path).toBe(403);
     }
     expect(fetchMock).not.toHaveBeenCalled();
+    // csv は TENKO_MANAGER_ROUTES の読み取り専用の画面の口 (オーナー決定 2026-10-31)
+    const csv = await handleDeviceDataProxy(
+      req("/device-data-proxy/api/tenko/records/csv", { method: "GET", token }),
+      env(),
+    );
+    expect(csv.status).toBe(200);
   });
 });
 
@@ -1230,7 +1316,7 @@ describe("運行管理者の鍵のセッション一覧 GET (開発用の鍵に�
       { method: "PUT", path: `${LIST}/${SID}/report` },
       { method: "POST", path: `${LIST}/${SID}/cancel` },
       { method: "POST", path: `${LIST}/${SID}/interrupt` },
-      { method: "GET", path: "/api/tenko/dashboard" },
+      { method: "POST", path: "/api/tenko/dashboard" },
       { method: "GET", path: "/api/tenko/records" },
     ];
     for (const { method, path } of cases) {
@@ -1267,7 +1353,7 @@ describe("運行管理者の鍵のセッション一覧 GET (開発用の鍵に�
       { method: "POST", path: `${LIST}/start` },
       { method: "GET", path: `${LIST}/` },
       { method: "GET", path: `${LIST}/${SID}/extra` },
-      { method: "GET", path: "/api/tenko/dashboard" },
+      { method: "POST", path: "/api/tenko/dashboard" },
       { method: "GET", path: "/api/employees/face-data" },
       { method: "GET", path: `/api/devices/settings/${SID}` },
     ];
@@ -1461,16 +1547,15 @@ describe("運行管理者の鍵のカード照会 POST /api/timecard/cards/looku
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("★ 席の鍵に増えた口は POST の lookup 1 本だけ (カードのほかの口・打刻・employees/lookup・GET・末尾スラッシュは 403)", async () => {
+  it("★ カードの書き込み・打刻の書き込み・employees/lookup・lookup の GET/PUT/DELETE・末尾スラッシュは 403 のまま (台帳と打刻の GET は読み取り専用の画面の口)", async () => {
     const fetchMock = okFetch();
     const cases: ReadonlyArray<{ method: string; path: string }> = [
-      { method: "GET", path: "/api/timecard/cards" },
       { method: "POST", path: "/api/timecard/cards" },
       { method: "POST", path: "/api/timecard/cards/bulk" },
       { method: "GET", path: `/api/timecard/cards/${CID}` },
       { method: "DELETE", path: `/api/timecard/cards/${CID}` },
       { method: "POST", path: "/api/timecard/punch" },
-      { method: "GET", path: "/api/timecard/punches" },
+      { method: "POST", path: "/api/timecard/punches" },
       { method: "POST", path: "/api/employees/lookup" },
       { method: "GET", path: LOOKUP },
       { method: "PUT", path: LOOKUP },
