@@ -928,7 +928,12 @@ function setupPage(issuer: string, email: string): string {
   // Web インストーラー (GitHub Pages) への導線。credential も Wi-Fi も入っていない
   // 出荷直後の個体や、WS が上がらず OTA が届かない個体はここから USB で焼く。
   // DEVICE_KINDS から生成するので機種を足したら自動で並ぶ
-  const installerLinksHtml = Object.values(DEVICE_KINDS)
+  // Vein Station / Vein Base は DEVICE_KINDS に入れない機種 (下の KEY_ONLY_REWRITES) なので、
+  // インストーラー (両方を 1 ページで焼く vein.html) のリンクだけ末尾に足す
+  const installerLinksHtml = [
+    ...Object.values(DEVICE_KINDS),
+    { installerUrl: `${PAGES_BASE}/vein.html`, display: "Vein Station・Vein Base (指静脈)" },
+  ]
     .map(
       (k) =>
         `<a href="${escapeHtml(k.installerUrl)}" target="_blank" rel="noopener">${escapeHtml(k.display)}</a>`,
