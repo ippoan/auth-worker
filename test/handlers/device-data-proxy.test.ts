@@ -379,6 +379,8 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "PUT", path: "/api/vein/templates/emp-1" },
     { method: "GET", path: "/api/vein/templates" },
     { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+    // ほかの端末で撮った記録の追加 (Refs ippoan/alc-app#558)。
+    { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
     { method: "GET", path: "/api/vein/module-templates" },
     // 運行管理者の照合による承認 (Refs ippoan/alc-app#436)。
     { method: "GET", path: "/api/vein/module-templates/pending" },
@@ -519,6 +521,10 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "PUT", path: "/api/vein/templates/emp-1/module/extra" },
       { method: "POST", path: "/api/vein/templates/emp-1/module" },
       { method: "GET", path: "/api/vein/templates/emp-1/module" },
+      // 端末で撮った記録の追加は PUT だけ。別 method・下位 path の余りは 403。
+      { method: "POST", path: "/api/vein/templates/emp-1/module/devices" },
+      { method: "GET", path: "/api/vein/templates/emp-1/module/devices" },
+      { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/dev-1" },
       { method: "PUT", path: "/api/vein/module-templates" },
       { method: "POST", path: "/api/vein/module-templates" },
       { method: "GET", path: "/api/vein/module-templates/emp-1" },
@@ -688,6 +694,8 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     // 指静脈の照合データの読み取り (運行管理者の入口の指静脈ログイン)
     { method: "GET", path: "/api/vein/module-templates" },
     { method: "GET", path: "/api/vein/templates" },
+    // 席の機体で撮った記録の追加 (Refs ippoan/alc-app#558)
+    { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
   ];
 
   for (const { method, path } of ALLOWED) {
@@ -734,9 +742,11 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       { method: "POST", path: "/api/upload" },
       // 予定でも kiosk 側の口 (乗務員ごとの未実施一覧) は運行管理者の表に無い。
       { method: "GET", path: "/api/tenko/schedules/pending/emp-1" },
-      // 指静脈は照合データの読み取り 2 本だけ。登録・照合・承認・1 件の読み取りは開けない
+      // 指静脈は照合データの読み取り 2 本と記録の追加だけ。登録し直し・照合・承認・1 件の読み取りは開けない
       { method: "PUT", path: "/api/vein/templates/emp-1" },
       { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+      { method: "POST", path: "/api/vein/templates/emp-1/module/devices" },
+      { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/dev-1" },
       { method: "POST", path: "/api/vein/identify" },
       { method: "GET", path: "/api/vein/module-templates/pending" },
       { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee" },
@@ -1522,6 +1532,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     { method: "PUT", path: "/api/vein/templates/emp-1" },
     // 指静脈の登録・照合・同期は測定台も端末のモジュールで行う (Refs ippoan/alc-app#436)。
     { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+    // ほかの端末で撮った記録の追加 (Refs ippoan/alc-app#558)。
+    { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
     { method: "GET", path: "/api/vein/module-templates" },
     // 運行管理者の照合による承認 (Refs ippoan/alc-app#436)。
     { method: "GET", path: "/api/vein/module-templates/pending" },
@@ -1594,6 +1606,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "GET", path: "/api/vein/templates/emp-1/module" },
       { method: "POST", path: "/api/vein/templates/emp-1/module" },
       { method: "PUT", path: "/api/vein/templates/emp-1/module/extra" },
+      { method: "POST", path: "/api/vein/templates/emp-1/module/devices" },
+      { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/dev-1" },
       { method: "POST", path: "/api/vein/module-templates" },
       { method: "GET", path: "/api/vein/module-templates/emp-1" },
       // 承認: 管理者のログインの口 (pending / approve) は端末に開けない。照合による承認は別 method・余りの path を 403。
