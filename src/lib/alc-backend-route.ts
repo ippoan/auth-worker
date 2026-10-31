@@ -167,10 +167,12 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/dtako/events", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["rpc"] },
   { match: "exact", path: "/api/dtako/events/etags", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["rpc", "browser", "device"] },
   // 画面向けの読み取りと分類の更新 (W5c-1)。画面用だけ (内部用の operations と、relay も呼ぶ scraper/history を除く)
-  { match: "exact", path: "/api/drivers", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  // 運行管理者席 (device-tenko-manager) の読み取り専用の画面が呼ぶ GET (乗務員・日別・基準値・機器故障) だけ端末用にも回す。
+  // 端末用に通すかは device-data-proxy の TENKO_MANAGER_ROUTES が決める (method は GET のみ)
+  { match: "exact", path: "/api/drivers", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "device"], methods: { device: ["GET"] } },
   { match: "exact", path: "/api/vehicles", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/work-times", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
-  { match: "prefix", path: "/api/daily-hours/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
+  { match: "prefix", path: "/api/daily-hours/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "device"], methods: { device: ["GET"] } },
   { match: "prefix", path: "/api/operations/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/dtako/operation-changes", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "prefix", path: "/api/event-classifications/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
@@ -487,7 +489,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-tenko",
     proxies: ["device"],
   },
-  { match: "exact", path: "/api/tenko/health-baselines", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  { match: "exact", path: "/api/tenko/health-baselines", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
   {
     match: "pattern",
     pattern: /^\/api\/tenko\/health-baselines\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -495,8 +497,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-tenko",
     proxies: ["browser"],
   },
-  { match: "exact", path: "/api/tenko/equipment-failures", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
-  { match: "exact", path: "/api/tenko/equipment-failures/csv", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  { match: "exact", path: "/api/tenko/equipment-failures", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
+  { match: "exact", path: "/api/tenko/equipment-failures/csv", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
   {
     match: "pattern",
     pattern: /^\/api\/tenko\/equipment-failures\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,

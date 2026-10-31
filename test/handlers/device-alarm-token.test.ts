@@ -798,7 +798,7 @@ describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-a
     expect(h["X-Tenant-ID"]).toBe(TENANT_ID);
 
     const denied = await handleDeviceDataProxy(
-      new Request(`${AUTH_ORIGIN}/device-data-proxy/api/tenko/dashboard`, {
+      new Request(`${AUTH_ORIGIN}/device-data-proxy/api/tenko/sessions/start`, {
         method: "GET",
         headers: { Authorization: `Bearer ${access_token}` },
       }),
