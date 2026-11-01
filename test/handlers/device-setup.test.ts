@@ -113,6 +113,23 @@ describe("handleDeviceSetupPage", () => {
     expect(res.status).toBe(403);
   });
 
+  it("指静脈の照合の数値: USB の Vein で 1:N / 1:1 照合と厳しさの読み書きをし、表にする (Refs ippoan/alc-app-s3#352)", async () => {
+    const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
+    const html = await res.text();
+    expect(html).toContain("指静脈の照合の数値");
+    for (const id of ["connect", "identify", "verify", "security", "disconnect", "status", "body"]) {
+      expect(html).toContain(`id="vein-stats-${id}"`);
+    }
+    expect(html).toContain('"VEIN IDENTIFY"');
+    expect(html).toContain('"VEIN VERIFY " + id');
+    expect(html).toContain('"VEIN SECURITY"');
+    // 1 段目の候補・時間を動作記録の塊から読む。長い 16 進は画面のログに出さない
+    expect(html).toContain("IDENTT1->");
+    expect(html).toContain("<hex ");
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    for (const src of scripts) expect(() => new Function(src)).not.toThrow();
+  });
+
   it("serves the WebSerial setup page for an operator session", async () => {
     const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
     expect(res.status).toBe(200);
