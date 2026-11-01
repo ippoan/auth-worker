@@ -117,12 +117,16 @@ describe("handleDeviceSetupPage", () => {
     const res = await handleDeviceSetupPage(getReq("/device/setup", await opCookie()), makeEnv());
     const html = await res.text();
     expect(html).toContain("指静脈の照合の数値");
-    for (const id of ["connect", "identify", "verify", "security", "disconnect", "status", "body"]) {
+    for (const id of ["connect", "identify", "verify", "security", "disconnect", "status", "body", "enroll-id", "enroll-count", "enroll", "clear"]) {
       expect(html).toContain(`id="vein-stats-${id}"`);
     }
     expect(html).toContain('"VEIN IDENTIFY"');
     expect(html).toContain('"VEIN VERIFY " + id');
     expect(html).toContain('"VEIN SECURITY"');
+    // 試し用の登録 (本数を選ぶ) と消す。登録の完了は VEIN RECORD <id> END <バイト数> で見る
+    expect(html).toContain('"VEIN ENROLL " + id + " " + count');
+    expect(html).toContain('"VEIN SYNC CLEAR " + id');
+    expect(html).toContain('" END \\\\d+$"');
     // 1 段目の候補・時間を動作記録の塊から読む。長い 16 進は画面のログに出さない
     expect(html).toContain("IDENTT1->");
     expect(html).toContain("<hex ");
