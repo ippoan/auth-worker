@@ -126,7 +126,7 @@ describe("handleDeviceSetupPage", () => {
     // 1 段目の候補・時間を動作記録の塊から読む。長い 16 進は画面のログに出さない
     expect(html).toContain("IDENTT1->");
     expect(html).toContain("<hex ");
-    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1] ?? "");
     for (const src of scripts) expect(() => new Function(src)).not.toThrow();
   });
 
