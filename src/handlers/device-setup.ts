@@ -1068,6 +1068,24 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
 <thead><tr><th>ラベル</th><th>種別</th><th>拠点ID</th><th>接続</th><th>バージョン</th><th>血圧計ボンド</th><th>更新</th><th>再登録</th></tr></thead>
 <tbody id="devices-body"></tbody>
 </table>
+<h2>指静脈の照合の数値 (Vein Station・Vein Base)</h2>
+<p class="muted">USB でつないだ Vein で照合し、1 回ごとの数値を並べます: 通った層 (静脈 / 指紋互換 / 不一致)・
+静脈の点数・閾値 3 段 (照合の厳しさ 0・1・2 のそれぞれ)・1:N の 1 段目の候補・照合にかかった時間。
+<b>運行者画面・運行管理者のタブが Vein をつかんでいる間はつなげません</b> — そのタブを閉じてから「つなぐ」を押してください
+(終わったら「切る」を押してからタブを開き直す)。</p>
+<p><button id="vein-stats-connect">つなぐ</button>
+<button id="vein-stats-identify" disabled>1:N で照合</button>
+<label style="margin-left:.5rem">ID <input id="vein-stats-id" value="10" size="3" inputmode="numeric"></label>
+<button id="vein-stats-verify" disabled>この ID と 1:1 で照合</button>
+<label style="margin-left:.5rem">照合の厳しさ <select id="vein-stats-security" disabled>
+  <option value="">(読むだけ)</option><option value="0">0 (緩い)</option><option value="1">1 (工場の既定)</option><option value="2">2 (厳しい)</option>
+</select></label>
+<button id="vein-stats-disconnect" disabled>切る</button></p>
+<p id="vein-stats-status" class="muted"></p>
+<table id="vein-stats" style="display:none">
+<thead><tr><th>時刻</th><th>照合</th><th>結果</th><th>ID</th><th>静脈の点数</th><th>閾値 0/1/2</th><th>1 段目の候補</th><th>候補の値</th><th>ms</th></tr></thead>
+<tbody id="vein-stats-body"></tbody>
+</table>
 <h2>デバイスの署名鍵 (VoiceS3R = 運行管理者席、CoreS3 = 運行者端末)</h2>
 <p class="muted">デバイスが機体内で作った署名鍵の公開鍵を、用途を選んで登録・失効します
 (秘密鍵は機体から出ません)。1 つの鍵は 1 つの用途にだけ使えます。デバイスを USB で
@@ -1231,6 +1249,176 @@ async function runPrintTest() {
   }
 }
 printTestBtn.addEventListener("click", runPrintTest);
+
+// 指静脈の照合の数値 (Refs ippoan/alc-app-s3#352)。Vein Station / Vein Base を USB でつなぎ、
+// VEIN IDENTIFY (1:N) / VEIN VERIFY <id> (1:1) の応答と、その直前の VEIN MATCHLOG (モジュールの動作記録の塊) から
+// 照合 1 回ごとの数値を表にする。行の形は alc-app-s3 の docs/console-protocol.md。つないだまま何回でも照合できる
+const veinStats = {
+  port: null, writer: null, reader: null, lines: [], pendingLog: null,
+  btn: (id) => document.getElementById("vein-stats-" + id),
+};
+function veinStatsStatus(text, err) {
+  const el = veinStats.btn("status");
+  el.textContent = text;
+  el.style.color = err ? "#b91c1c" : "";
+}
+function veinStatsEnable(connected) {
+  veinStats.btn("connect").disabled = connected;
+  for (const id of ["identify", "verify", "security", "disconnect"]) veinStats.btn(id).disabled = !connected;
+}
+async function veinStatsSend(cmd) {
+  log(">> " + cmd);
+  await veinStats.writer.write(new TextEncoder().encode(cmd + "\\n"));
+}
+// re に合う行を待つ (ERR で始まる行は失敗)。from 以降の行だけを見る
+async function veinStatsWait(re, timeoutMs, from) {
+  const deadline = Date.now() + timeoutMs;
+  let idx = from;
+  for (;;) {
+    while (idx < veinStats.lines.length) {
+      const line = veinStats.lines[idx++];
+      if (re.test(line)) return line;
+      if (/^ERR\\b/.test(line)) throw new Error(line);
+    }
+    if (Date.now() > deadline) throw new Error("応答タイムアウト: " + re);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+function veinStatsCell(tr, text, color) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (color) td.style.color = color;
+  tr.appendChild(td);
+}
+// 照合の応答 1 行 (+ 直前の MATCHLOG) を表の先頭に足す
+function veinStatsRow(mode, line, block) {
+  const field = (k) => { const m = new RegExp("\\\\b" + k + "=(\\\\S+)").exec(line); return m ? m[1] : null; };
+  const hit = /^VEIN (IDENTIFIED|VERIFIED) (\\d+)/.exec(line);
+  const via = field("VIA");
+  const result = hit ? (via === "FV" ? "静脈" : via === "FP" ? "指紋互換" : "一致") : "不一致";
+  const color = result === "静脈" ? "#166534" : result === "指紋互換" ? "#b45309" : result === "不一致" ? "#b91c1c" : "";
+  const ident = block ? /IDENTT1->:\\s*\\d+,\\s*(\\d+)/.exec(block) : null;
+  const user = block ? /###\\d+:USER:\\s*\\d+((?:,\\s*-?\\d+)+)/.exec(block) : null;
+  const ms = block ? /\\bMS:(\\d+)/.exec(block) : null;
+  const tr = document.createElement("tr");
+  veinStatsCell(tr, new Date().toLocaleTimeString("ja-JP"));
+  veinStatsCell(tr, mode);
+  veinStatsCell(tr, result, color);
+  veinStatsCell(tr, hit ? hit[2] : (field("BEST") || "-"));
+  veinStatsCell(tr, field("SCORE") || "-");
+  veinStatsCell(tr, field("THS") ? field("THS").split(",").join(" / ") : "-");
+  veinStatsCell(tr, ident ? (ident[1] === "0" ? "なし" : ident[1]) : "-");
+  veinStatsCell(tr, user ? user[1].replace(/^,\\s*/, "").replace(/\\s+/g, "") : "-");
+  veinStatsCell(tr, ms ? ms[1] : "-");
+  const body = veinStats.btn("body");
+  body.insertBefore(tr, body.firstChild);
+  document.getElementById("vein-stats").style.display = "";
+}
+async function veinStatsConnect() {
+  veinStats.btn("connect").disabled = true;
+  try {
+    if (!("serial" in navigator)) throw new Error("このブラウザは WebSerial 非対応です (Chrome/Edge を使用)");
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    // ESP32-S3 は DTR=0・RTS=1 で reset されるので両方下ろしておく
+    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
+    veinStats.port = port;
+    veinStats.writer = port.writable.getWriter();
+    veinStats.reader = port.readable.getReader();
+    veinStats.lines = [];
+    const decoder = new TextDecoder();
+    let buf = "";
+    (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await veinStats.reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let i;
+          while ((i = buf.search(/[\\r\\n]/)) >= 0) {
+            const line = buf.slice(0, i).trim();
+            buf = buf.slice(i + 1);
+            if (line && /^(OK|ERR|VEIN|PONG|EVT VEIN)\\b/.test(line)) {
+              veinStats.lines.push(line);
+              // 登録の記録などの長い 16 進は画面のログに出さない
+              log("<< " + line.replace(/\\b[0-9A-Fa-f]{32,}\\b/g, (h) => "<hex " + Math.floor(h.length / 2) + " B>"));
+            }
+          }
+        }
+      } catch { /* port closed */ }
+    })();
+    veinStatsStatus("機体の応答を待っています ...");
+    const deadline = Date.now() + 20000;
+    let ready = false;
+    while (!ready && Date.now() < deadline) {
+      const before = veinStats.lines.length;
+      await veinStats.writer.write(new TextEncoder().encode("PING\\n"));
+      const until = Date.now() + 700;
+      while (Date.now() < until) {
+        if (veinStats.lines.slice(before).some((l) => /^PONG/.test(l))) { ready = true; break; }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    if (!ready) throw new Error("機体が応答しません (USB 接続とファームウェアを確認してください)");
+    veinStatsEnable(true);
+    await veinStatsSecurity("");
+  } catch (e) {
+    veinStatsStatus("つなげませんでした: " + (e && e.message ? e.message : e), true);
+    await veinStatsDisconnect();
+  }
+}
+async function veinStatsDisconnect() {
+  const port = veinStats.port;
+  veinStats.port = null;
+  if (port) {
+    try { veinStats.writer.releaseLock(); } catch {}
+    await veinStats.reader.cancel().catch(() => {});
+    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
+    await port.close().catch(() => {});
+  }
+  veinStatsEnable(false);
+}
+// 照合の厳しさを読む ("") / 書く ("0"〜"2")
+async function veinStatsSecurity(level) {
+  try {
+    const from = veinStats.lines.length;
+    await veinStatsSend(level === "" ? "VEIN SECURITY" : "VEIN SECURITY " + level);
+    const line = await veinStatsWait(/^VEIN SECURITY \\d+$/, 5000, from);
+    veinStatsStatus("つないでいます。照合の厳しさ: " + line.split(" ")[2]);
+  } catch (e) {
+    veinStatsStatus("照合の厳しさを読めませんでした (古いファーム?): " + (e && e.message ? e.message : e), true);
+  }
+}
+async function veinStatsRun(mode) {
+  const id = Number(veinStats.btn("id").value);
+  if (mode === "1:1" && !(Number.isInteger(id) && id >= 10 && id <= 100)) {
+    veinStatsStatus("ID は 10〜100 の数字です", true);
+    return;
+  }
+  veinStatsEnable(false);
+  veinStats.btn("disconnect").disabled = false;
+  try {
+    const from = veinStats.lines.length;
+    veinStatsStatus("指を置いてください ...");
+    await veinStatsSend(mode === "1:N" ? "VEIN IDENTIFY" : "VEIN VERIFY " + id);
+    const line = await veinStatsWait(/^VEIN (IDENTIFIED|VERIFIED|NOMATCH)\\b/, 60000, from);
+    const block = veinStats.lines.slice(from).find((l) => l.startsWith("VEIN MATCHLOG ")) || null;
+    veinStatsRow(mode, line, block);
+    veinStatsStatus("つないでいます。もう一度照合できます");
+  } catch (e) {
+    veinStatsStatus("照合できませんでした: " + (e && e.message ? e.message : e), true);
+  } finally {
+    if (veinStats.port) veinStatsEnable(true);
+  }
+}
+veinStats.btn("connect").addEventListener("click", veinStatsConnect);
+veinStats.btn("disconnect").addEventListener("click", veinStatsDisconnect);
+veinStats.btn("identify").addEventListener("click", () => veinStatsRun("1:N"));
+veinStats.btn("verify").addEventListener("click", () => veinStatsRun("1:1"));
+veinStats.btn("security").addEventListener("change", (ev) => {
+  const v = ev.target.value;
+  if (v !== "") void veinStatsSecurity(v);
+});
 
 // dev ビルド切り替え (developer のみ checkbox が描画される)。チェックで
 // OTA URL 欄を dev app イメージへ、外すと prod へ書き戻す
