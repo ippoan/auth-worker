@@ -3231,7 +3231,7 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
     ...PUT_STEPS.map((s): [string, string, ReadonlyArray<Proxy>] => [`/api/tenko/sessions/${ID}/${s}`, "PUT", ["browser", "device"]]),
     ...POST_STEPS.map((s): [string, string, ReadonlyArray<Proxy>] => [`/api/tenko/sessions/${ID}/${s}`, "POST", ["browser", "device"]]),
     [`/api/tenko/sessions/${ID}/escalate-remote`, "PUT", ["browser"]],
-    [`/api/tenko/sessions/${ID}/resume`, "POST", ["browser"]],
+    [`/api/tenko/sessions/${ID}/resume`, "POST", ["browser", "device"]],
   ];
 
   it("口ごとに、今通っている proxy だけが binding を引く (15 口)", () => {
