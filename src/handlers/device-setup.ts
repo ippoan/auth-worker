@@ -1081,6 +1081,16 @@ PC が落ちている間は PoE から給電します。行の「BUS5V確認」�
   <option value="">(読むだけ)</option><option value="0">0 (緩い)</option><option value="1">1 (工場の既定)</option><option value="2">2 (厳しい)</option>
 </select></label>
 <button id="vein-stats-disconnect" disabled>切る</button></p>
+<p>試し用の登録: <label>ID <input id="vein-stats-enroll-id" value="50" size="3" inputmode="numeric"></label>
+<label style="margin-left:.5rem">撮る本数 <select id="vein-stats-enroll-count" disabled>
+  <option value="4">4 (既定)</option><option value="5">5</option><option value="6">6</option>
+</select></label>
+<button id="vein-stats-enroll" disabled>この ID に登録</button>
+<button id="vein-stats-clear" disabled>この ID を消す</button></p>
+<p class="muted">この端末だけで撮った記録を、空いている ID (例: 50) に登録して 1:1 で照合すると、ほかの端末と混ぜた記録が
+原因かを切り分けられます。この登録はサーバーに預けず、乗務員にも結び付きません。<b>試し終わったら「この ID を消す」</b>
+(運用中の ID — 乗務員が登録済みの ID — を消すと、その人はこの端末で照合できなくなります。次の同期で戻ります)。
+本数 5・6 は対応したファームが要ります (古いファームは ERR を返します)。</p>
 <p id="vein-stats-status" class="muted"></p>
 <table id="vein-stats" style="display:none">
 <thead><tr><th>時刻</th><th>照合</th><th>結果</th><th>ID</th><th>静脈の点数</th><th>閾値 0/1/2</th><th>1 段目の候補</th><th>候補の値</th><th>ms</th></tr></thead>
@@ -1264,7 +1274,7 @@ function veinStatsStatus(text, err) {
 }
 function veinStatsEnable(connected) {
   veinStats.btn("connect").disabled = connected;
-  for (const id of ["identify", "verify", "security", "disconnect"]) veinStats.btn(id).disabled = !connected;
+  for (const id of ["identify", "verify", "security", "disconnect", "enroll-count", "enroll", "clear"]) veinStats.btn(id).disabled = !connected;
 }
 async function veinStatsSend(cmd) {
   log(">> " + cmd);
@@ -1415,6 +1425,57 @@ veinStats.btn("connect").addEventListener("click", veinStatsConnect);
 veinStats.btn("disconnect").addEventListener("click", veinStatsDisconnect);
 veinStats.btn("identify").addEventListener("click", () => veinStatsRun("1:N"));
 veinStats.btn("verify").addEventListener("click", () => veinStatsRun("1:1"));
+// 試し用の登録 (VEIN ENROLL <id> [<本数>]) と消す (VEIN SYNC CLEAR <id>)。記録 (VEIN RECORD) は受け取るが使わない
+function veinStatsTargetId() {
+  const id = Number(veinStats.btn("enroll-id").value);
+  if (!(Number.isInteger(id) && id >= 10 && id <= 100)) throw new Error("ID は 10〜100 の数字です");
+  return id;
+}
+async function veinStatsEnroll() {
+  veinStatsEnable(false);
+  veinStats.btn("disconnect").disabled = false;
+  try {
+    const id = veinStatsTargetId();
+    const count = veinStats.btn("enroll-count").value;
+    const from = veinStats.lines.length;
+    veinStatsStatus("ID " + id + " に " + count + " 本で登録します。指を置いてください (置き直しの合図ごとに置き直す) ...");
+    await veinStatsSend(count === "4" ? "VEIN ENROLL " + id : "VEIN ENROLL " + id + " " + count);
+    const placeTimer = setInterval(() => {
+      const place = veinStats.lines.slice(from).filter((l) => /^EVT VEIN PLACE /.test(l)).pop();
+      if (place) veinStatsStatus("置いて: " + place.split(" ").slice(3).join(" / ") + " 回目");
+    }, 300);
+    try {
+      const end = await veinStatsWait(new RegExp("^VEIN RECORD " + id + " END \\\\d+$"), 120000, from);
+      veinStatsStatus("ID " + id + " に登録しました (" + end.split(" ")[4] + " バイト)。この ID と 1:1 で照合できます");
+      veinStats.btn("id").value = String(id);
+    } finally {
+      clearInterval(placeTimer);
+    }
+  } catch (e) {
+    veinStatsStatus("登録できませんでした: " + (e && e.message ? e.message : e), true);
+  } finally {
+    if (veinStats.port) veinStatsEnable(true);
+  }
+}
+async function veinStatsClear() {
+  let id;
+  try { id = veinStatsTargetId(); } catch (e) { veinStatsStatus(e.message, true); return; }
+  if (!confirm("モジュールから ID " + id + " の登録を消します。運用中の ID なら、その人はこの端末で照合できなくなります (次の同期で戻ります)。消しますか?")) return;
+  veinStatsEnable(false);
+  veinStats.btn("disconnect").disabled = false;
+  try {
+    const from = veinStats.lines.length;
+    await veinStatsSend("VEIN SYNC CLEAR " + id);
+    await veinStatsWait(new RegExp("^VEIN SYNC CLEARED " + id + "$"), 10000, from);
+    veinStatsStatus("ID " + id + " を消しました");
+  } catch (e) {
+    veinStatsStatus("消せませんでした: " + (e && e.message ? e.message : e), true);
+  } finally {
+    if (veinStats.port) veinStatsEnable(true);
+  }
+}
+veinStats.btn("enroll").addEventListener("click", veinStatsEnroll);
+veinStats.btn("clear").addEventListener("click", veinStatsClear);
 veinStats.btn("security").addEventListener("change", (ev) => {
   const v = ev.target.value;
   if (v !== "") void veinStatsSecurity(v);
