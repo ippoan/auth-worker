@@ -949,6 +949,10 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     { method: "GET", path: `/api/tenko/sessions/${MID}` },
     { method: "GET", path: `/api/tenko/driver-info/${MID}` },
     { method: "POST", path: `/api/tenko/sessions/${MID}/judgment` },
+    // 運行管理者の点呼の一覧の取り消し・中断・再開
+    { method: "POST", path: `/api/tenko/sessions/${MID}/cancel` },
+    { method: "POST", path: `/api/tenko/sessions/${MID}/interrupt` },
+    { method: "POST", path: `/api/tenko/sessions/${MID}/resume` },
   ];
 
   for (const { method, path } of MONITOR_ROUTES) {
@@ -1014,6 +1018,29 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       env(),
     );
     expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("運行管理者の鍵: 取り消し・中断・再開は UUID の {id} の POST だけ (自己再開・UUID でない id・GET は 403)", async () => {
+    const fetchMock = okFetch();
+    for (const [method, path] of [
+      ["POST", `/api/tenko/sessions/${MID}/self-resume`],
+      ["POST", "/api/tenko/sessions/not-a-uuid/cancel"],
+      ["POST", `/api/tenko/sessions/${MID}/cancelx`],
+      ["GET", `/api/tenko/sessions/${MID}/resume`],
+    ] as const) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, {
+          method,
+          token: await managerToken(),
+          ...(method === "POST"
+            ? { headers: { "content-type": "application/json" }, body: JSON.stringify({}) }
+            : {}),
+        }),
+        env(),
+      );
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1303,7 +1330,9 @@ describe("運行管理者の鍵のセッション一覧 GET (開発用の鍵に�
     }
   });
 
-  it("★ 開発用でない運行管理者の鍵に増えた口は一覧の GET だけ (start / PUT / POST / 末尾スラッシュ / 記録簿は 403)", async () => {
+  // 取り消し・中断・再開 (`…/cancel`・`…/interrupt`・`…/resume`) は運行管理者の点呼の一覧のために席の鍵すべてへ開けた
+  // (範囲は alc-measurements-worker が判定と同じに絞る。2026-11-02 ユーザー決定)。自己再開は開けない
+  it("★ 開発用でない運行管理者の鍵に増えた口は一覧の GET だけ (start / PUT / 自己再開 / 末尾スラッシュ / 記録簿は 403)", async () => {
     const fetchMock = okFetch();
     const cases: ReadonlyArray<{ method: string; path: string }> = [
       { method: "POST", path: LIST },
@@ -1314,8 +1343,7 @@ describe("運行管理者の鍵のセッション一覧 GET (開発用の鍵に�
       { method: "POST", path: `${LIST}/start` },
       { method: "PUT", path: `${LIST}/${SID}/alcohol` },
       { method: "PUT", path: `${LIST}/${SID}/report` },
-      { method: "POST", path: `${LIST}/${SID}/cancel` },
-      { method: "POST", path: `${LIST}/${SID}/interrupt` },
+      { method: "POST", path: `${LIST}/${SID}/self-resume` },
       { method: "POST", path: "/api/tenko/dashboard" },
       { method: "GET", path: "/api/tenko/records" },
     ];

@@ -277,6 +277,12 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * (rust-alc-api) の仕事で、`X-Device-Role` と `X-Device-Dev` を見て判断する。ここでは
  * dev を条件にしない。
  *
+ * **運行管理者の点呼の一覧の取り消し・中断・再開** (`POST /api/tenko/sessions/{id}/cancel`・
+ * `…/interrupt`・`…/resume`) も、判定と同じく運行管理者の鍵すべてに通す。席の PC は管理者の
+ * ログインが無く、一覧 (GET) は席の鍵で読めるのに操作だけ送れなかったため。触れる点呼の範囲は
+ * 判定と同じで (開発用の席の鍵はどの点呼も、本番の席の鍵は IT点呼 だけ。2026-11-02 ユーザー決定)、
+ * 絞るのは alc-measurements-worker (`X-Device-Role` と `X-Device-Dev` を見る)。
+ *
  * `{id}` は UUID の形に限る (`UUID_SEGMENT`)。`KIOSK_ROUTES` の `GET /api/employees/{id}` は
  * `[^/]+` で `face-data` にも当たるが (kiosk は face-data を別途許可している)、こちらで
  * 真似すると上の「入れない口」を開けてしまうため。
@@ -311,6 +317,8 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}$`) },
   { method: "GET", pattern: new RegExp(`^/api/tenko/driver-info/${UUID_SEGMENT}$`) },
   { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/judgment$`) },
+  // 運行管理者の点呼の一覧 (alc-app の `TenkoSessionMonitor.vue`) の取り消し・中断・再開 (上の doc)
+  { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/(cancel|interrupt|resume)$`) },
   { method: "POST", pattern: /^\/api\/timecard\/cards\/lookup$/ },
   { method: "GET", pattern: /^\/api\/cam-clips\/cameras$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
