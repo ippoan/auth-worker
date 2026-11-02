@@ -523,6 +523,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   },
   { match: "exact", path: "/api/tenko/dashboard", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
   { match: "exact", path: "/api/tenko/daily-health-status", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  // 点呼の届出・認定申請に差し込む値 (管理画面の「点呼の届出」。worker が admin に絞る)
+  { match: "exact", path: "/api/tenko/filing-settings", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"], methods: { browser: ["GET", "PUT"] } },
   {
     match: "pattern",
     pattern: /^\/api\/tenko\/driver-info\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
