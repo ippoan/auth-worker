@@ -5,6 +5,8 @@
     :title="tooltip"
   >
     <span>{{ label }}</span>
+    <!-- 画面ごとの状態を版の横に足す口 (例: alc-app の開発端末のファームの合図の購読)。何も渡さなければ従来どおり -->
+    <slot />
   </div>
 </template>
 
