@@ -1522,6 +1522,17 @@ describe("POST /mcp/tools — get_device_log", () => {
       });
     });
 
+    it("firmware_update を送れる (長いので wait_ms 0 で id だけ返し、結果は kiosk_command_result で取る)", async () => {
+      const { fetcher, calls } = mockRecorder(() => new Response(JSON.stringify({ id: "k-ota", sent: 2 }), { status: 202 }));
+      expect(parsed(await kiosk(logEnv(fetcher), { device_id: KIOSK, op: "firmware_update", wait_ms: 0 }))).toEqual({
+        id: "k-ota",
+        device_id: KIOSK,
+        timed_out: true,
+        last: null,
+      });
+      expect(JSON.parse(calls[0]!.body)).toEqual({ device_id: KIOSK, op: "firmware_update", args: {} });
+    });
+
     it("キオスクが居ない・recorder が無い・recorder のエラーはそのまま返す", async () => {
       const none = mockRecorder(() => new Response("{}", { status: 404 }));
       expect(parsed(await kiosk(logEnv(none.fetcher), { device_id: KIOSK, op: "hello" }))).toEqual({
