@@ -95,6 +95,7 @@ const KIOSK_CMD_OPS = [
   "kiosk_flow",
   "serial",
   "lines",
+  "firmware_update",
 ] as const;
 const GET_LOG_TIMEOUT_MS = 8000;
 /** `ota_device` の進捗ポーリング間隔と全体の待ち時間 (書き込みは数十秒かかる)。 */
@@ -805,7 +806,11 @@ const TOOLS: ToolDef[] = [
       "write it to the module exactly like the kiosk), vein_verify {id?, wait_finger_ms?} (says 'place', waits for " +
       "the finger, 1:1 if id else 1:N; returns score/threshold), kiosk_flow {employee_id, wait_finger_ms?} " +
       "(prepare → finger → 1:1 → employee lookup, as after a license read), serial {line, prefix, timeout_ms?} " +
-      "(one raw line, hex redacted), lines {n?} (recent redacted serial lines). Errors: `kiosk_not_connected` " +
+      "(one raw line, hex redacted), lines {n?} (recent redacted serial lines), firmware_update (flash the " +
+      "latest official firmware to the connected finger-vein device over WebSerial, exactly like the screen's " +
+      "update button; takes minutes, so it usually times out with `{stage:'updating'}` — read the final " +
+      "`{outcome}` (updated / up_to_date / busy / skipped / unsupported / failed) with kiosk_command_result; " +
+      "the page reloads after an update). Errors: `kiosk_not_connected` " +
       "(no kiosk subscription in your tenant). A kiosk that is off, not addressed or without Vein Station " +
       "simply never answers (timeout). Biometric hex is never returned. Same allowlist gate as issue_dev_token.",
     inputSchema: {
