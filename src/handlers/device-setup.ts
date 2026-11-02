@@ -598,6 +598,39 @@ function commandIdResponse(sent: SendDeviceCommandResult): Response {
   return jsonNoStore({ error: `recorder_${sent.status}` }, 502);
 }
 
+/** `sendKioskCommand` の結果 (Refs ippoan/alc-app-s3#352)。 */
+export type SendKioskCommandResult =
+  | { id: string; sent: number }
+  | { error: "kiosk_not_connected" }
+  | { error: "recorder_unavailable" }
+  | { error: "recorder_error"; status: number };
+
+/**
+ * 開発用の遠隔操作: キオスク (ブラウザの alc-app) へ命令を送る (Refs ippoan/alc-app-s3#352)。
+ * recorder がテナントのキオスクの購読へ `kiosk_command` を配り、宛先 (`deviceId`、`*` は全キオスク) の
+ * うち端末設定でオンにしたものだけが実行して返事を送る。返事は `getCommandResult` で取る。
+ * キオスクは登録簿 (devices KV) に行が無いこと (鍵で取った token) があるので `managedDeviceKind` は通さない。
+ * 宛先の確認は recorder が返事を受けるときに行う
+ */
+export async function sendKioskCommand(
+  env: Env,
+  tenantId: string,
+  deviceId: string,
+  op: string,
+  args: Record<string, unknown>,
+): Promise<SendKioskCommandResult> {
+  const res = await recorderFetch(env, `/tenants/${encodeURIComponent(tenantId)}/kiosk-command`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device_id: deviceId, op, args }),
+  });
+  if (!res) return { error: "recorder_unavailable" };
+  if (res.status === 404) return { error: "kiosk_not_connected" };
+  if (!res.ok) return { error: "recorder_error", status: res.status };
+  const data = (await res.json()) as { id?: string; sent?: number };
+  return { id: data.id ?? "", sent: data.sent ?? 0 };
+}
+
 /** `getCommandResult` の結果。`pending` は「まだデバイスが結果を push していない」。 */
 export type CommandResult =
   | { kind: "ok"; payload: unknown }

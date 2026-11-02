@@ -1460,6 +1460,142 @@ describe("POST /mcp/tools — get_device_log", () => {
   // ota_device (issue #535) — 機種の公式 firmware URL で ota command を送り、
   // 進捗 (command_result) を 2 秒間隔・最大 90 秒待つ。URL は入力に無い。
   // ──────────────────────────────────────────────────────────────────────
+  describe("kiosk_command / kiosk_command_result (Refs ippoan/alc-app-s3#352)", () => {
+    const KIOSK = "alarm-0123456789abcdef";
+    const kiosk = (env: Env, args: Record<string, unknown>, steps = 24) =>
+      callDeviceTool(env, args, { tool: "kiosk_command", stepMs: 1000, steps });
+
+    it("★ 命令を送り、done の返事を device_id と id 付きで返す (途中経過は待ち続ける)", async () => {
+      let polls = 0;
+      const { fetcher, calls } = mockRecorder((req) => {
+        if (req.method === "POST") return new Response(JSON.stringify({ id: "k-1", sent: 1 }), { status: 202 });
+        polls += 1;
+        if (polls === 1) return new Response("{}", { status: 404 });
+        if (polls === 2) {
+          return new Response(JSON.stringify({ payload: { done: false, stage: "waiting_finger" } }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({ payload: { done: true, ok: true, op: "vein_info", result: { users: 1 }, device_id: "x" } }),
+          { status: 200 },
+        );
+      });
+      const result = await kiosk(logEnv(fetcher), { device_id: KIOSK, op: "vein_info", args: { a: 1 } });
+      expect(result.isError).toBe(false);
+      expect(parsed(result)).toEqual({ done: true, ok: true, op: "vein_info", result: { users: 1 }, id: "k-1", device_id: KIOSK });
+      expect(new URL(calls[0]!.url).pathname).toBe(`/tenants/${TENANT_ID}/kiosk-command`);
+      expect(JSON.parse(calls[0]!.body)).toEqual({ device_id: KIOSK, op: "vein_info", args: { a: 1 } });
+      expect(new URL(calls[1]!.url).pathname).toBe(`/tenants/${TENANT_ID}/commands/k-1/result`);
+    });
+
+    it("返事が来なければ最後の途中経過と timed_out を返す。wait_ms 0 は送るだけ", async () => {
+      const { fetcher } = mockRecorder((req) =>
+        req.method === "POST"
+          ? new Response(JSON.stringify({ id: "k-2", sent: 1 }), { status: 202 })
+          : new Response(JSON.stringify({ payload: { done: false, stage: "waiting_finger" } }), { status: 200 }),
+      );
+      expect(parsed(await kiosk(logEnv(fetcher), { device_id: KIOSK, op: "vein_verify", wait_ms: 3000 }))).toEqual({
+        id: "k-2",
+        device_id: KIOSK,
+        timed_out: true,
+        last: { done: false, stage: "waiting_finger" },
+      });
+      expect(parsed(await kiosk(logEnv(fetcher), { device_id: KIOSK, op: "hello", wait_ms: 0 }))).toEqual({
+        id: "k-2",
+        device_id: KIOSK,
+        timed_out: true,
+        last: null,
+      });
+    });
+
+    it("全キオスク宛て (*) は待てるだけ待って集まった返事を返す", async () => {
+      const answers = { devices: { [KIOSK]: { done: true, ok: true, op: "hello" } } };
+      const { fetcher } = mockRecorder((req) =>
+        req.method === "POST"
+          ? new Response(JSON.stringify({ id: "k-3", sent: 2 }), { status: 202 })
+          : new Response(JSON.stringify({ payload: answers }), { status: 200 }),
+      );
+      expect(parsed(await kiosk(logEnv(fetcher), { device_id: "*", op: "hello", wait_ms: 2000 }))).toEqual({
+        id: "k-3",
+        device_id: "*",
+        sent: 2,
+        answers,
+      });
+    });
+
+    it("キオスクが居ない・recorder が無い・recorder のエラーはそのまま返す", async () => {
+      const none = mockRecorder(() => new Response("{}", { status: 404 }));
+      expect(parsed(await kiosk(logEnv(none.fetcher), { device_id: KIOSK, op: "hello" }))).toEqual({
+        device_id: KIOSK,
+        error: "kiosk_not_connected",
+      });
+      expect(parsed(await kiosk(logEnv(undefined), { device_id: KIOSK, op: "hello" }))).toEqual({
+        device_id: KIOSK,
+        error: "recorder_unavailable",
+      });
+      const broken = mockRecorder(() => new Response("{}", { status: 500 }));
+      expect(parsed(await kiosk(logEnv(broken.fetcher), { device_id: KIOSK, op: "hello" }))).toEqual({
+        device_id: KIOSK,
+        error: "recorder_error",
+        status: 500,
+      });
+      const pollFails = mockRecorder((req) =>
+        req.method === "POST"
+          ? new Response(JSON.stringify({ id: "k-4", sent: 1 }), { status: 202 })
+          : new Response("{}", { status: 503 }),
+      );
+      expect(parsed(await kiosk(logEnv(pollFails.fetcher), { device_id: KIOSK, op: "hello" }))).toEqual({
+        device_id: KIOSK,
+        id: "k-4",
+        error: "recorder_error",
+        status: 503,
+      });
+    });
+
+    it("recorder が id・sent を返さなくても落ちない", async () => {
+      const { fetcher } = mockRecorder((req) =>
+        req.method === "POST" ? new Response("{}", { status: 202 }) : new Response("{}", { status: 404 }),
+      );
+      expect(parsed(await kiosk(logEnv(fetcher), { device_id: "*", op: "hello", wait_ms: 1000 }))).toEqual({
+        id: "",
+        device_id: "*",
+        sent: 0,
+        answers: null,
+      });
+    });
+
+    it("引数が外れていれば isError (recorder を呼ばない)", async () => {
+      const { fetcher, calls } = mockRecorder(() => new Response("{}", { status: 202 }));
+      for (const args of [
+        { op: "hello" },
+        { device_id: "x".repeat(129), op: "hello" },
+        { device_id: KIOSK, op: "rm_rf" },
+        { device_id: KIOSK, op: "hello", args: [1] },
+        { device_id: KIOSK, op: "hello", wait_ms: 110_001 },
+        { device_id: KIOSK, op: "hello", wait_ms: 1.5 },
+      ]) {
+        expect((await kiosk(logEnv(fetcher), args)).isError).toBe(true);
+      }
+      expect(calls).toHaveLength(0);
+    });
+
+    it("kiosk_command_result: 返事・未着・エラーを返す", async () => {
+      let status = 200;
+      const { fetcher } = mockRecorder(() =>
+        status === 200
+          ? new Response(JSON.stringify({ payload: { done: true } }), { status: 200 })
+          : new Response("{}", { status }),
+      );
+      const get = (args: Record<string, unknown>) =>
+        callDeviceTool(logEnv(fetcher), args, { tool: "kiosk_command_result", stepMs: 1 });
+      expect(parsed(await get({ id: "k-1" }))).toEqual({ id: "k-1", payload: { done: true } });
+      status = 404;
+      expect(parsed(await get({ id: "k-1" }))).toEqual({ id: "k-1", pending: true });
+      status = 500;
+      expect(parsed(await get({ id: "k-1" }))).toEqual({ id: "k-1", error: "recorder_error", status: 500 });
+      expect((await get({})).isError).toBe(true);
+    });
+  });
+
   describe("ota_device", () => {
     /** 2 秒 × 最大 60 回 = 120 秒ぶん進める (90 秒の待ちを越える)。 */
     const OTA = { tool: "ota_device", stepMs: 2000, steps: 60 };

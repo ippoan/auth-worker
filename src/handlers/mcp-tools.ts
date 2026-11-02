@@ -47,7 +47,7 @@ import {
 import { worksApiGet } from "../lib/lineworks-bot-api";
 import { getBotAccess, pickLineworksBotConfigId } from "../lib/lineworks-bot-creds";
 import { LINEWORKS_GET_BODY_MAX, resolveLineworksGetTarget } from "../lib/lineworks-get-path";
-import { getCommandResult, managedDeviceKind, sendDeviceCommand } from "./device-setup";
+import { getCommandResult, managedDeviceKind, sendDeviceCommand, sendKioskCommand } from "./device-setup";
 import { DEVICE_ROLE_HUB, DEVICE_ROLE_PRINT, DEVICE_ROLE_TIMECARD } from "../lib/device";
 import { forwardAlcTenantRequest } from "../lib/alc-tenant-forward";
 import { decryptWithKey } from "../lib/mcp-crypto";
@@ -80,6 +80,22 @@ const GET_LOG_MAX_BYTES_LIMIT = 3800;
 const GET_LOG_MAX_BYTES_DEFAULT = 3000;
 /** `command_result` のポーリング間隔と全体の待ち時間 (端末は WS 越しに数百 ms で返す)。 */
 const GET_LOG_POLL_INTERVAL_MS = 500;
+/** kiosk_command: 返事を見に行く間隔と、待てる上限 (指を待つ照合が入るので長め) */
+const KIOSK_CMD_POLL_INTERVAL_MS = 1000;
+const KIOSK_CMD_WAIT_DEFAULT_MS = 60_000;
+const KIOSK_CMD_WAIT_MAX_MS = 110_000;
+/** kiosk_command で送れる op (キオスクの `utils/kiosk-remote.ts` の `runKioskCommand` と揃える) */
+const KIOSK_CMD_OPS = [
+  "hello",
+  "vein_info",
+  "vein_entries",
+  "vein_clear",
+  "vein_prepare",
+  "vein_verify",
+  "kiosk_flow",
+  "serial",
+  "lines",
+] as const;
 const GET_LOG_TIMEOUT_MS = 8000;
 /** `ota_device` の進捗ポーリング間隔と全体の待ち時間 (書き込みは数十秒かかる)。 */
 const OTA_POLL_INTERVAL_MS = 2000;
@@ -772,6 +788,112 @@ const TOOLS: ToolDef[] = [
         return { ...payload, device_id: deviceId };
       }
       return { device_id: deviceId, error: "timeout" };
+    },
+  },
+  {
+    name: "kiosk_command",
+    description:
+      "Development remote control of a kiosk browser (alc-app) and the finger-vein device (Vein Station) it " +
+      "holds over WebSerial (Refs ippoan/alc-app-s3#352). Only kiosks whose device settings turn on " +
+      "「開発用の遠隔操作を受ける」 run commands. The command goes over the recorder WebSocket to the kiosk " +
+      "subscriptions of your tenant; the addressed kiosk runs it with its own device key, module map and sync " +
+      "(the same code as the real kiosk screen) and answers. Waits up to `wait_ms` for `{done:true}`; on " +
+      "timeout returns the last progress (e.g. `{stage:'waiting_finger'}`) with `timed_out:true` and the `id` " +
+      "to read later with kiosk_command_result. Ops (args): hello (use device_id '*' to list kiosks — answers " +
+      "come back per device under `devices`), vein_info, vein_entries (module map: who is in which module id, no " +
+      "records), vein_clear {id}, vein_prepare {employee_id} (fetch that person's record from the server and " +
+      "write it to the module exactly like the kiosk), vein_verify {id?, wait_finger_ms?} (says 'place', waits for " +
+      "the finger, 1:1 if id else 1:N; returns score/threshold), kiosk_flow {employee_id, wait_finger_ms?} " +
+      "(prepare → finger → 1:1 → employee lookup, as after a license read), serial {line, prefix, timeout_ms?} " +
+      "(one raw line, hex redacted), lines {n?} (recent redacted serial lines). Errors: `kiosk_not_connected` " +
+      "(no kiosk subscription in your tenant). A kiosk that is off, not addressed or without Vein Station " +
+      "simply never answers (timeout). Biometric hex is never returned. Same allowlist gate as issue_dev_token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: {
+          type: "string",
+          description: "Kiosk device id shown in its device settings (e.g. alarm-0123456789abcdef), or '*' for all kiosks",
+        },
+        op: { type: "string", enum: [...KIOSK_CMD_OPS] },
+        args: { type: "object", description: "Arguments of the op (see description)" },
+        wait_ms: {
+          type: "integer",
+          minimum: 0,
+          maximum: KIOSK_CMD_WAIT_MAX_MS,
+          default: KIOSK_CMD_WAIT_DEFAULT_MS,
+          description: "How long to wait for the answer (0 = send only and return the id)",
+        },
+      },
+      required: ["device_id", "op"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const deviceId = asString(args["device_id"]);
+      if (!deviceId || deviceId.length > 128) throw new DevLoginError(400, "device_id is required");
+      const op = asString(args["op"]);
+      if (!op || !(KIOSK_CMD_OPS as readonly string[]).includes(op)) {
+        throw new DevLoginError(400, `op must be one of ${KIOSK_CMD_OPS.join(", ")}`);
+      }
+      const opArgs = args["args"] === undefined ? {} : args["args"];
+      if (!isObject(opArgs)) throw new DevLoginError(400, "args must be an object");
+      const waitRaw = args["wait_ms"];
+      if (
+        waitRaw !== undefined &&
+        (typeof waitRaw !== "number" || !Number.isInteger(waitRaw) || waitRaw < 0 || waitRaw > KIOSK_CMD_WAIT_MAX_MS)
+      ) {
+        throw new DevLoginError(400, `wait_ms must be an integer in [0, ${KIOSK_CMD_WAIT_MAX_MS}]`);
+      }
+      const waitMs = waitRaw === undefined ? KIOSK_CMD_WAIT_DEFAULT_MS : waitRaw;
+
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      const tenantId = resolved.user.tenant_id;
+
+      const sent = await sendKioskCommand(ctx.env, tenantId, deviceId, op, opArgs);
+      if ("error" in sent) return { device_id: deviceId, ...sent };
+
+      // 全キオスク宛ては返事が何通来るか分からないので、待てるだけ待って集まった分を返す
+      let last: unknown = null;
+      for (let waited = 0; waited < waitMs; waited += KIOSK_CMD_POLL_INTERVAL_MS) {
+        await new Promise((resolve) => setTimeout(resolve, KIOSK_CMD_POLL_INTERVAL_MS));
+        const result = await getCommandResult(ctx.env, tenantId, sent.id);
+        if (result.kind === "error") return { device_id: deviceId, id: sent.id, ...result, kind: undefined };
+        if (result.kind === "pending") continue;
+        last = result.payload;
+        if (deviceId !== "*" && isObject(last) && last["done"] === true) {
+          return { ...last, id: sent.id, device_id: deviceId };
+        }
+      }
+      return deviceId === "*"
+        ? { id: sent.id, device_id: deviceId, sent: sent.sent, answers: last }
+        : { id: sent.id, device_id: deviceId, timed_out: true, last };
+    },
+  },
+  {
+    name: "kiosk_command_result",
+    description:
+      "Read the answer of an earlier kiosk_command by its `id` (answers are kept 10 minutes). " +
+      "Returns `{pending:true}` while the kiosk has not answered yet.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const id = asString(args["id"]);
+      if (!id || id.length > 128) throw new DevLoginError(400, "id is required");
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      const result = await getCommandResult(ctx.env, resolved.user.tenant_id, id);
+      if (result.kind === "pending") return { id, pending: true };
+      if (result.kind === "error") return { id, ...result, kind: undefined };
+      return { id, payload: result.payload };
     },
   },
   {
