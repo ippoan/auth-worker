@@ -4,6 +4,8 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { DocxBody, fillDocx } from "../../src/lib/docx-fill";
 import {
   MAKER_FORMS,
+  applicantAddress,
+  applicantStreet,
   TENKO_FORMS_RAW,
   PRODUCT_PATH,
   buildMakerForm,
@@ -55,17 +57,21 @@ const cell = (b: DocxBody, t: number, r: number, c: number, p = 0) => DocxBody.t
 const A: Applicant = {
   name: "架空製作所",
   kana: "カクウセイサクショ",
-  address: "000-0000 架空県架空市9-9",
+  postal_code: "000-0000",
+  prefecture: "架空県",
+  city: "架空市",
+  street: "9-9",
+  building: null,
   contact_name: "架空 次郎",
   contact_dept: "開発部",
   contact_phone: "000-1111-2222",
   contact_fax: "000-1111-3333",
   contact_email: "dev@example.com",
-  product_url: "https://example.com/tenko",
 };
 const CFG: ProductConfig = {
   product: "一歩庵点呼",
   version: "v2",
+  product_url: "https://example.com/tenko",
   certification: { pre: "前-0001", post: "後-0002" },
   history: [
     { version: "v2", date: "2027-04-01", summary: "体温計を足す", impact: "なし" },
@@ -96,6 +102,14 @@ describe("値の道具", () => {
     expect(parseApplicant({ name: "あ".repeat(501) })).toBeNull();
     expect(parseApplicant(null)).toBeNull();
     expect(parseApplicant("x")).toBeNull();
+  });
+
+  it("住所は郵便番号・都道府県・市区町村・番地・建物名をつなぐ", () => {
+    expect(applicantAddress(A)).toBe("〒000-0000 架空県架空市9-9");
+    expect(applicantAddress({ ...A, building: "架空ビル 2F" })).toBe("〒000-0000 架空県架空市9-9　架空ビル 2F");
+    expect(applicantAddress({ ...A, postal_code: null })).toBe("架空県架空市9-9");
+    expect(applicantAddress({ ...emptyApplicant(), postal_code: "〒1" })).toBe("〒1");
+    expect([applicantAddress(emptyApplicant()), applicantStreet(emptyApplicant())]).toEqual([null, null]);
   });
 
   it("自己チェック表の項目の key", () => {
@@ -143,10 +157,10 @@ describe("様式1・様式2", () => {
   it("様式1: 日付・申請者・機器の種類・名称・添付 1〜6", () => {
     const b = run(YOSHIKI1, (d) => fillYoshiki1(d, A, CFG, "2026-11-03"));
     expect(text(b, 0)).toBe("（様式１）　　令和8年11月3日");
-    expect(text(b, 4)).toBe("申請者　住所　000-0000 架空県架空市9-9");
+    expect(text(b, 4)).toBe("申請者　住所　〒000-0000 架空県架空市9-9");
     expect(cell(b, 0, 0, 1)).toBe("（フリガナ）カクウセイサクショ");
     expect(cell(b, 0, 1, 1)).toBe("架空製作所");
-    expect(cell(b, 0, 2, 1)).toBe("〒000-0000 架空県架空市9-9");
+    expect([cell(b, 0, 2, 1), cell(b, 0, 2, 1, 1)]).toEqual(["〒000-0000", "架空県架空市9-9"]);
     expect(cell(b, 0, 6, 1)).toBe("メールアドレス　dev@example.com");
     expect(cell(b, 1, 0, 1)).toBe("○業務前自動点呼機器　・　○業務後自動点呼機器");
     expect(cell(b, 1, 1, 1)).toBe("一歩庵点呼 v2");
@@ -156,7 +170,7 @@ describe("様式1・様式2", () => {
     expect(b.xml()).toMatch(/<w:r><w:rPr><w:sz w:val="21"\/><\/w:rPr><w:t xml:space="preserve">一歩庵点呼 v2</);
   });
 
-  it("様式1: 値が無ければ元のまま、〒付きの住所はそのまま", () => {
+  it("様式1: 値が無ければ元のまま、〒付きの郵便番号は〒を重ねない", () => {
     const empty = run(YOSHIKI1, (d) => fillYoshiki1(d, emptyApplicant(), CFG, ""));
     expect([text(empty, 0), cell(empty, 0, 0, 1), cell(empty, 0, 1, 1), cell(empty, 0, 2, 1)]).toEqual([
       "（様式１）　　令和　　年　　月　　日",
@@ -164,8 +178,8 @@ describe("様式1・様式2", () => {
       "",
       "〒",
     ]);
-    const zip = run(YOSHIKI1, (d) => fillYoshiki1(d, { ...A, address: "〒1 架空" }, CFG, ""));
-    expect(cell(zip, 0, 2, 1)).toBe("〒1 架空");
+    const zip = run(YOSHIKI1, (d) => fillYoshiki1(d, { ...A, postal_code: "〒111-1111" }, CFG, ""));
+    expect(cell(zip, 0, 2, 1)).toBe("〒111-1111");
   });
 
   it("様式2: 名称・①に ○・製作事業者・URL", () => {
@@ -184,7 +198,7 @@ describe("様式1・様式2", () => {
       "架空製作所",
       "https://example.com/tenko",
     ]);
-    const empty = run(Y2, (d) => fillYoshiki2(d, emptyApplicant(), CFG));
+    const empty = run(Y2, (d) => fillYoshiki2(d, emptyApplicant(), { product: "x", version: "v1" }));
     expect([cell(empty, 0, 3, 1), cell(empty, 0, 4, 1)]).toEqual(["", ""]);
   });
 });
@@ -236,7 +250,7 @@ describe("様式5・様式7", () => {
 
   it("様式5: 認定済みの版の名称と認定番号・変更の内容・時期・影響・連絡先 (FAX も)", () => {
     const b = run(Y5, (d) => fillYoshiki5(d, A, CFG, "2027-03-01"));
-    expect([text(b, 2), text(b, 10), text(b, 11)]).toEqual(["令和9年3月1日", "住所　000-0000 架空県架空市9-9", "氏名又は名称　架空製作所"]);
+    expect([text(b, 2), text(b, 10), text(b, 11)]).toEqual(["令和9年3月1日", "住所　〒000-0000 架空県架空市9-9", "氏名又は名称　架空製作所"]);
     expect(cell(b, 0, 0, 1)).toBe("一歩庵点呼 v1（認定番号 業務前 前-0001・業務後 後-0002）");
     expect(cell(b, 0, 1, 1)).toBe("一歩庵点呼 v1 → 一歩庵点呼 v2：体温計を足す");
     expect([cell(b, 0, 2, 1), cell(b, 0, 3, 1)]).toEqual(["令和9年4月1日", "なし"]);

@@ -4,6 +4,7 @@
  * LINE WORKS アプリ内ブラウザ向けモバイルファースト UI
  */
 import { renderAuthCookieScript, AUTH_COOKIE_GLOBAL } from "./auth-cookie-script";
+import { DEVELOPER_EMAILS } from "./developer";
 
 export interface AppEntry {
   name: string;
@@ -281,6 +282,9 @@ export function renderTopPage(
         <a href="/device/setup" class="nav-item">
           <div class="nav-item-icon">🔌</div>デバイス登録 (CoreS3)
         </a>
+        <a href="/maker/certification" class="nav-item hidden" id="nav-maker-certification">
+          <div class="nav-item-icon">📄</div>自動点呼機器の認定申請
+        </a>
       </div>
     </div>
     <div id="nav-overlay" class="nav-overlay" onclick="toggleNav(false)"></div>
@@ -407,8 +411,22 @@ export function renderTopPage(
       popover.classList.toggle('open', open);
     }
 
+    /**
+     * 開発者アカウントが Google でログインしたときだけ「自動点呼機器の認定申請」を出す。
+     * 表示の出し分けだけで、ページと口の認可はサーバ (isDeveloperGoogleSession) が持つ。
+     */
+    function showDeveloperNav() {
+      var developers = ${JSON.stringify(DEVELOPER_EMAILS.map((e) => e.toLowerCase()))};
+      var t = getValidToken();
+      var p = t && decodeJwtPayload(t.token);
+      if (p && !p.token_kind && p.idp === 'google' && developers.indexOf(String(p.email || '').toLowerCase()) >= 0) {
+        document.getElementById('nav-maker-certification').classList.remove('hidden');
+      }
+    }
+
     function showMenu() {
       document.getElementById('loading').classList.add('hidden');
+      showDeveloperNav();
       const menu = document.getElementById('menu');
       menu.classList.add('visible');
       document.getElementById('hamburger-btn').classList.add('visible');

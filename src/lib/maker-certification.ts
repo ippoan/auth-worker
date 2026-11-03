@@ -3,6 +3,7 @@
  *
  * - 製品の名称・版・認定番号・版の履歴・自己チェック表の答えは ippoan/tenko-forms の
  *   `product/ippoan-tenko.json` (public) から読む。版を上げると名称が切り替わる
+ * - 様式2 の機器の概要の URL も製品の設定 (`product_url`。GitHub Pages の操作マニュアル)
  * - 申請者 (一歩庵) の名称・住所・連絡先は public repo に書けないので `AUTH_CONFIG` KV に 1 件だけ持つ
  *   (key に環境名。`AUTH_CONFIG` は本番と staging で同じ namespace)
  * - 様式の原本は tenko-forms の `manifest.json` の `forms.<id>.latest`
@@ -21,26 +22,50 @@ export const PRODUCT_PATH = "product/ippoan-tenko.json";
 export interface Applicant {
   name: string | null;
   kana: string | null;
-  address: string | null;
+  postal_code: string | null;
+  prefecture: string | null;
+  city: string | null;
+  street: string | null;
+  building: string | null;
   contact_name: string | null;
   contact_dept: string | null;
   contact_phone: string | null;
   contact_fax: string | null;
   contact_email: string | null;
-  product_url: string | null;
 }
 
-export const APPLICANT_FIELDS: ReadonlyArray<[keyof Applicant, string]> = [
-  ["name", "氏名又は名称 (製作事業者名)"],
-  ["kana", "フリガナ"],
-  ["address", "住所 (〒 から)"],
-  ["contact_name", "担当者名"],
-  ["contact_dept", "所属・役職"],
-  ["contact_phone", "電話番号"],
-  ["contact_fax", "FAX (様式5)"],
-  ["contact_email", "メールアドレス"],
-  ["product_url", "機器の概要のウェブサイトの URL (様式2)"],
+/**
+ * 申請者の欄 (key・見出し・ブラウザの自動入力の `autocomplete`)。住所は Chrome の自動入力が欄ごとに入れるよう
+ * 郵便番号・都道府県・市区町村・番地・建物名に分ける (様式には `applicantAddress` でつないで書く)
+ */
+export const APPLICANT_FIELDS: ReadonlyArray<[keyof Applicant, string, string]> = [
+  ["name", "氏名又は名称 (製作事業者名)", "organization"],
+  ["kana", "フリガナ", "off"],
+  ["postal_code", "郵便番号", "postal-code"],
+  ["prefecture", "都道府県", "address-level1"],
+  ["city", "市区町村", "address-level2"],
+  ["street", "町名・番地", "address-line1"],
+  ["building", "建物名・部屋番号", "address-line2"],
+  ["contact_name", "担当者名", "name"],
+  ["contact_dept", "所属・役職", "organization-title"],
+  ["contact_phone", "電話番号", "tel"],
+  ["contact_fax", "FAX (様式5)", "off"],
+  ["contact_email", "メールアドレス", "email"],
 ];
+
+/** 都道府県から建物名までをつないだ住所 (郵便番号は含めない)。どれも空なら null */
+export function applicantStreet(a: Applicant): string | null {
+  const s = [a.prefecture, a.city, a.street].map((v) => v ?? "").join("");
+  const full = a.building ? `${s}　${a.building}` : s;
+  return full.trim() || null;
+}
+
+/** 様式の「住所」に書く文 (`〒000-0000 住所`)。どれも空なら null */
+export function applicantAddress(a: Applicant): string | null {
+  const street = applicantStreet(a);
+  const postal = a.postal_code ? `〒${a.postal_code.replace(/^〒/, "")}` : "";
+  return [postal, street].filter(Boolean).join(" ") || null;
+}
 
 export interface SelfCheckAnswer {
   ok?: string | null;
@@ -51,6 +76,8 @@ export interface SelfCheckAnswer {
 export interface ProductConfig {
   product: string;
   version: string;
+  /** 機器の概要が載ったウェブサイトの URL (様式2。国交省のウェブサイトに載る。いまは GitHub Pages の操作マニュアル) */
+  product_url?: string | null;
   certification?: { pre?: string | null; post?: string | null };
   history?: Array<{ version: string; date?: string | null; summary?: string | null; impact?: string | null }>;
   self_check?: { pre?: Record<string, SelfCheckAnswer>; post?: Record<string, SelfCheckAnswer> };
@@ -61,13 +88,16 @@ export function emptyApplicant(): Applicant {
   return {
     name: null,
     kana: null,
-    address: null,
+    postal_code: null,
+    prefecture: null,
+    city: null,
+    street: null,
+    building: null,
     contact_name: null,
     contact_dept: null,
     contact_phone: null,
     contact_fax: null,
     contact_email: null,
-    product_url: null,
   };
 }
 
@@ -155,7 +185,7 @@ function circle(word: string): (now: string) => string {
 /** 申請者の住所と名称 (様式1・5・7 の冒頭) と日付の段落 */
 function header(b: DocxBody, a: Applicant, date: string, at: { date: number; address: number; name: number }): void {
   b.setText(b.child(at.date), (now) => now.replace(DATE_RE, reiwaDate(date)), "令和");
-  b.setText(b.child(at.address), afterLabel("住所", a.address), "住所");
+  b.setText(b.child(at.address), afterLabel("住所", applicantAddress(a)), "住所");
   b.setText(b.child(at.name), afterLabel("氏名又は名称", a.name), "氏名又は名称");
 }
 
@@ -171,15 +201,15 @@ function contacts(b: DocxBody, tbl: XmlElement, a: Applicant, first: number, fax
 /** 様式1 自動点呼機器認定申請書。機器の種類は業務前・業務後の両方に ○、添付 1〜6 に ○ */
 export function fillYoshiki1(b: DocxBody, a: Applicant, cfg: ProductConfig, date: string): void {
   b.setText(b.child(0), (now) => now.replace(DATE_RE, reiwaDate(date)), "令和");
-  b.setText(b.child(4), afterLabel("住所", a.address), "住所");
+  b.setText(b.child(4), afterLabel("住所", applicantAddress(a)), "住所");
   b.setText(b.child(5), afterLabel("氏名又は名称", a.name), "氏名又は名称");
   const who = b.table(0);
   b.setText(b.cellPara(who, 0, 1), (now) => (a.kana ? `（フリガナ）${a.kana}` : now), "フリガナ");
   if (a.name) b.setText(b.cellPara(who, 1, 1), () => a.name!);
-  if (a.address) {
-    const addr = a.address;
-    b.setText(b.cellPara(who, 2, 1), () => (addr.startsWith("〒") ? addr : `〒${addr}`), "〒");
-  }
+  // 住所の欄は 1 段目が「〒」、2 段目が空の段落
+  if (a.postal_code) b.setText(b.cellPara(who, 2, 1), () => `〒${a.postal_code!.replace(/^〒/, "")}`, "〒");
+  const street = applicantStreet(a);
+  if (street) b.setText(b.cellPara(who, 2, 1, 1), () => street);
   contacts(b, who, a, 3);
   const dev = b.table(1);
   b.setText(
@@ -200,7 +230,7 @@ export function fillYoshiki2(b: DocxBody, a: Applicant, cfg: ProductConfig): voi
   b.setText(b.cellPara(t, 1, 1), circle("①運転者のみ"), "①運転者のみ");
   b.setText(b.cellPara(t, 2, 1), circle("①営業所又は車庫に限る"), "①営業所又は車庫に限る");
   b.setText(b.cellPara(t, 3, 1), () => a.name ?? "");
-  b.setText(b.cellPara(t, 4, 1), () => a.product_url ?? "");
+  b.setText(b.cellPara(t, 4, 1), () => cfg.product_url ?? "");
 }
 
 /** 自己チェック表の行の項目 (`一`〜`二十三`、`（ア）…` は `ア`) */

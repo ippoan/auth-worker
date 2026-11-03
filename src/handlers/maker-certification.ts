@@ -125,8 +125,8 @@ function deniedPage(): string {
 
 function page(today: string): string {
   const fields = APPLICANT_FIELDS.map(
-    ([key, label]) =>
-      `<label>${escapeHtml(label)}<input name="${key}" data-field="${key}" maxlength="500"></label>`,
+    ([key, label, autocomplete]) =>
+      `<label>${escapeHtml(label)}<input name="${key}" data-field="${key}" autocomplete="${autocomplete}" maxlength="500"></label>`,
   ).join("");
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -150,7 +150,7 @@ table{border-collapse:collapse;font-size:.85rem}td,th{border-top:1px solid #eee;
 <section id="product"><h2>製品</h2><div id="product-body" class="muted">読み込み中…</div></section>
 
 <section><h2>申請者 (一歩庵)</h2>
-<form id="applicant"><div class="grid">${fields}</div>
+<form id="applicant" autocomplete="on"><div class="grid">${fields}</div>
 <p><button type="submit" id="save">保存</button> <span id="save-msg"></span></p></form></section>
 
 <section><h2>記入済みの様式をダウンロード</h2>
@@ -169,7 +169,7 @@ async function load() {
   if (d.product) {
     const p = d.product, c = p.certification || {};
     const hist = (p.history || []).map((h) => "<tr><td>" + esc(h.version) + "</td><td>" + esc(h.date) + "</td><td>" + esc(h.summary) + "</td></tr>").join("");
-    $("#product-body").innerHTML = "<p><b>" + esc(d.device_name) + "</b>　認定番号: 業務前 " + esc(c.pre || "未") + " / 業務後 " + esc(c.post || "未") + "</p><table><tr><th>版</th><th>時期</th><th>内容</th></tr>" + hist + "</table>";
+    $("#product-body").innerHTML = "<p><b>" + esc(d.device_name) + "</b>　認定番号: 業務前 " + esc(c.pre || "未") + " / 業務後 " + esc(c.post || "未") + "</p><p class=\"muted\">機器の概要の URL (様式2): " + esc(p.product_url || "未設定") + "</p><table><tr><th>版</th><th>時期</th><th>内容</th></tr>" + hist + "</table>";
   } else {
     $("#product-body").innerHTML = '<span class="err">' + esc(d.product_error) + "</span>";
   }
