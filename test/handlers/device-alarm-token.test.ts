@@ -26,7 +26,12 @@ import {
 } from "../../src/lib/device";
 import { handleAuthIntrospect } from "../../src/handlers/auth-introspect";
 import { decodeJwtPayload } from "../../src/lib/jwt";
-import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
+import {
+  createMockEnv,
+  createMockKV,
+  type MockAlarmNonceNamespace,
+  type MockKV,
+} from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 const AUTH_ORIGIN = "https://auth.test.example";
@@ -88,6 +93,11 @@ function alarmKeySeed(
     ...(opts.revoked ? { revoked_at: 1_700_000_500 } : {}),
   };
   return { fp, kv: { [`alarmkey:${fp}`]: JSON.stringify(record) } };
+}
+
+/** nonce の置き場 (`ALARM_NONCE_DO` の mock) の中身 */
+function nonceData(env: Env): Record<string, string> {
+  return (env.ALARM_NONCE_DO as unknown as MockAlarmNonceNamespace)._data as Record<string, string>;
 }
 
 function makeEnv(kvSeed: Record<string, string> = {}, overrides: Partial<Env> = {}): Env {
@@ -190,7 +200,7 @@ describe("GET /device/alarm-nonce", () => {
     expect(body.nonce).toMatch(/^[0-9a-f]{32}$/);
     expect(body.expires_in).toBe(60);
     const stored = JSON.parse(
-      (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${body.nonce}`]!,
+      nonceData(env)[`devnonce:${body.nonce}`]!,
     ) as Record<string, unknown>;
     expect(stored.purpose).toBe("kiosk");
     expect(stored).not.toHaveProperty("redirect_uri");
@@ -305,7 +315,7 @@ describe("POST /device/alarm-token", () => {
     const keypair = generateKeypair();
     const env = makeEnv(alarmKeySeed(keypair.pubRaw).kv);
     const nonce = "a".repeat(32);
-    (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`] = JSON.stringify({
+    nonceData(env)[`devnonce:${nonce}`] = JSON.stringify({
       exp: Math.floor(Date.now() / 1000) + 60,
     });
     await expectInvalid(
@@ -596,7 +606,7 @@ describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-a
       const env = makeEnv();
       const nonce = await issueNonce(env, "tenko-manager");
       const stored = JSON.parse(
-        (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`]!,
+        nonceData(env)[`devnonce:${nonce}`]!,
       ) as Record<string, unknown>;
       expect(stored.purpose).toBe("tenko-manager");
     });
@@ -606,7 +616,7 @@ describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-a
       for (const usage of [undefined, ""]) {
         const nonce = await issueNonce(env, usage);
         const stored = JSON.parse(
-          (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`]!,
+          nonceData(env)[`devnonce:${nonce}`]!,
         ) as Record<string, unknown>;
         expect(stored.purpose, String(usage)).toBe("kiosk");
       }
@@ -622,7 +632,7 @@ describe("POST /device/alarm-token の用途 (usage → role、Refs ippoan/alc-a
         );
         expect(res.status).toBe(400);
         expect(await res.json()).toEqual({ error: "invalid_usage" });
-        const keys = Object.keys((env.AUTH_CONFIG as unknown as MockKV)._data).filter((k) =>
+        const keys = Object.keys(nonceData(env)).filter((k) =>
           k.startsWith("devnonce:"),
         );
         expect(keys).toEqual([]);
@@ -975,7 +985,7 @@ describe("POST /device/alarm-token の用途 cam-host (拠点 PC の拡張の鍵
     const env = makeEnv();
     const nonce = await issueNonce(env, "cam-host");
     const stored = JSON.parse(
-      (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`]!,
+      nonceData(env)[`devnonce:${nonce}`]!,
     ) as Record<string, unknown>;
     expect(stored.purpose).toBe("cam-host");
   });
@@ -1171,7 +1181,7 @@ describe("POST /device/alarm-token の用途 hub-record (CoreS3 の記録の ID 
     const env = makeEnv();
     const nonce = await issueNonce(env, "hub-record");
     const stored = JSON.parse(
-      (env.AUTH_CONFIG as unknown as MockKV)._data[`devnonce:${nonce}`]!,
+      nonceData(env)[`devnonce:${nonce}`]!,
     ) as Record<string, unknown>;
     expect(stored.purpose).toBe("hub-record");
   });

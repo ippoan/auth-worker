@@ -144,6 +144,7 @@ import {
 } from "./handlers/api-dashboard-branch-protection";
 export { LineworksWebhookDO } from "./durable_objects/lineworks-webhook-do";
 export { McpSession } from "./durable_objects/mcp-session-do";
+export { AlarmNonceDO } from "./durable_objects/alarm-nonce-do";
 // issue #483: service binding 越しにしか呼べない内部 RPC の口。
 // `[[services]] entrypoint = "InternalEntrypoint"` から解決されるので、
 // **main module (ここ) から named export されている必要がある**。
@@ -368,6 +369,9 @@ export interface Env {
   LINE_LOGIN_CHANNEL_SECRET?: SecretBinding;
   /** LINE WORKS webhook 受信用 Durable Object Namespace (bot_id ごとに 1 instance)。 */
   LINEWORKS_WEBHOOK_DO: DurableObjectNamespace;
+  /** `/device/alarm-nonce`・`/device/alarm-token` の nonce と回数制限 (全体で 1 instance、
+   *  `lib/alarm-nonce.ts` の `alarmNonceStore`)。 */
+  ALARM_NONCE_DO: DurableObjectNamespace<import("./durable_objects/alarm-nonce-do").AlarmNonceDO>;
   /** MCP OAuth Provider 用 GitHub OAuth App credentials.
    *  staging/prod で別 App (callback URL が異なるため)。
    *  Refs #206: Secrets Store binding 化済。`resolveSecret()` 経由でアクセス。 */

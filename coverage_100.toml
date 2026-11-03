@@ -301,6 +301,11 @@ branches = true
 path = "src/durable_objects/mcp-session-do.ts"
 branches = true
 
+# nonce と回数制限の置き場 (apac-ne)
+[[files]]
+path = "src/durable_objects/alarm-nonce-do.ts"
+branches = true
+
 [[files]]
 path = "src/handlers/mcp-relay-connect.ts"
 branches = true

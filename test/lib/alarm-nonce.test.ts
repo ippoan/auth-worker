@@ -12,7 +12,7 @@ import {
   HUB_RECORD_SIGNER_USAGES,
 } from "../../src/lib/alarm-nonce";
 import { ALARM_KEY_USAGES, type AlarmKeyUsage } from "../../src/handlers/alarm-key";
-import { createMockEnv, type MockKV } from "../helpers/mock-env";
+import { createMockEnv, type MockAlarmNonceNamespace, type MockKV } from "../helpers/mock-env";
 import type { Env } from "../../src/index";
 
 const REDIRECT_URI = "https://app1.test.example/page";
@@ -40,27 +40,32 @@ function kv(env: Env): MockKV {
   return env.AUTH_CONFIG as unknown as MockKV;
 }
 
+/** nonce の置き場 (`ALARM_NONCE_DO` の mock) の中身 */
+function nonces(env: Env): Record<string, string> {
+  return (env.ALARM_NONCE_DO as unknown as MockAlarmNonceNamespace)._data as Record<string, string>;
+}
+
 function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
 describe("issueAlarmNonce", () => {
-  it("kiosk: purpose だけを持ち redirect_uri を持たない record を TTL 60 で積む", async () => {
+  it("kiosk: purpose だけを持ち redirect_uri を持たない record を期限 60 秒で積む", async () => {
     const env = createMockEnv();
     const nonce = await issueAlarmNonce(env, { purpose: "kiosk" });
     expect(nonce).toMatch(/^[0-9a-f]{32}$/);
-    const stored = JSON.parse(kv(env)._data[`devnonce:${nonce}`]!) as Record<string, unknown>;
+    const stored = JSON.parse(nonces(env)[`devnonce:${nonce}`]!) as Record<string, unknown>;
     expect(stored.purpose).toBe("kiosk");
     expect(stored).not.toHaveProperty("redirect_uri");
     expect(stored.exp).toBeGreaterThan(nowSec());
-    expect(kv(env)._ttls[`devnonce:${nonce}`]).toBe(ALARM_NONCE_TTL_SEC);
+    expect(stored.exp).toBeLessThanOrEqual(nowSec() + ALARM_NONCE_TTL_SEC);
     expect(ALARM_NONCE_TTL_SEC).toBe(60);
   });
 
   it("redirect_uri 付きでも積める (purpose は問わない)", async () => {
     const env = createMockEnv();
     const nonce = await issueAlarmNonce(env, { purpose: "kiosk", redirectUri: REDIRECT_URI });
-    const stored = JSON.parse(kv(env)._data[`devnonce:${nonce}`]!) as Record<string, unknown>;
+    const stored = JSON.parse(nonces(env)[`devnonce:${nonce}`]!) as Record<string, unknown>;
     expect(stored.purpose).toBe("kiosk");
     expect(stored.redirect_uri).toBe(REDIRECT_URI);
   });
@@ -73,7 +78,7 @@ describe("consumeAlarmNonce", () => {
 
     const first = await consumeAlarmNonce(env, nonce, "kiosk");
     expect(first).toMatchObject({ purpose: "kiosk", redirect_uri: REDIRECT_URI });
-    expect(kv(env)._data[`devnonce:${nonce}`]).toBeUndefined();
+    expect(nonces(env)[`devnonce:${nonce}`]).toBeUndefined();
 
     expect(await consumeAlarmNonce(env, nonce, "kiosk")).toBeNull();
   });
@@ -82,7 +87,7 @@ describe("consumeAlarmNonce", () => {
     const env = createMockEnv();
     const nonce = await issueAlarmNonce(env, { purpose: "kiosk" });
     expect(await consumeAlarmNonce(env, nonce, "tenko-manager")).toBeNull();
-    expect(kv(env)._data[`devnonce:${nonce}`]).toBeUndefined();
+    expect(nonces(env)[`devnonce:${nonce}`]).toBeUndefined();
     expect(await consumeAlarmNonce(env, nonce, "kiosk")).toBeNull();
   });
 
@@ -94,7 +99,7 @@ describe("consumeAlarmNonce", () => {
   ])("%s は null", async (_label, record) => {
     const env = createMockEnv();
     const nonce = "d".repeat(32);
-    kv(env)._data[`devnonce:${nonce}`] = JSON.stringify(record);
+    nonces(env)[`devnonce:${nonce}`] = JSON.stringify(record);
     expect(await consumeAlarmNonce(env, nonce, "kiosk")).toBeNull();
     expect(await consumeAlarmNonce(env, nonce, "tenko-manager")).toBeNull();
   });
@@ -102,7 +107,7 @@ describe("consumeAlarmNonce", () => {
   it("record が無い / JSON として壊れている → null", async () => {
     const env = createMockEnv();
     expect(await consumeAlarmNonce(env, "e".repeat(32), "kiosk")).toBeNull();
-    kv(env)._data[`devnonce:${"f".repeat(32)}`] = "{not json";
+    nonces(env)[`devnonce:${"f".repeat(32)}`] = "{not json";
     expect(await consumeAlarmNonce(env, "f".repeat(32), "kiosk")).toBeNull();
   });
 });
