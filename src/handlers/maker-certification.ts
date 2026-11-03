@@ -169,7 +169,7 @@ async function load() {
   if (d.product) {
     const p = d.product, c = p.certification || {};
     const hist = (p.history || []).map((h) => "<tr><td>" + esc(h.version) + "</td><td>" + esc(h.date) + "</td><td>" + esc(h.summary) + "</td></tr>").join("");
-    $("#product-body").innerHTML = "<p><b>" + esc(d.device_name) + "</b>　認定番号: 業務前 " + esc(c.pre || "未") + " / 業務後 " + esc(c.post || "未") + "</p><p class=\"muted\">機器の概要の URL (様式2): " + esc(p.product_url || "未設定") + "</p><table><tr><th>版</th><th>時期</th><th>内容</th></tr>" + hist + "</table>";
+    $("#product-body").innerHTML = "<p><b>" + esc(d.device_name) + "</b>　認定番号: 業務前 " + esc(c.pre || "未") + " / 業務後 " + esc(c.post || "未") + "</p><p class='muted'>機器の概要の URL (様式2): " + esc(p.product_url || "未設定") + "</p><table><tr><th>版</th><th>時期</th><th>内容</th></tr>" + hist + "</table>";
   } else {
     $("#product-body").innerHTML = '<span class="err">' + esc(d.product_error) + "</span>";
   }
