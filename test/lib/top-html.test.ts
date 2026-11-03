@@ -298,3 +298,54 @@ describe("renderStagingFooter", () => {
     expect(html).not.toContain("staging-btn-");
   });
 });
+
+describe("開発者だけのメニュー「自動点呼機器の認定申請」", () => {
+  afterAll(() => {
+    // @ts-expect-error test-only global stub
+    delete globalThis.document;
+    // @ts-expect-error test-only global stub
+    delete globalThis.sessionStorage;
+    // @ts-expect-error test-only global stub (ensureAuthCookieGlobalInstalled が立てる)
+    delete globalThis.window;
+  });
+
+  it("リンクは隠して置き、開発者が Google でログインしたときだけ出す (dev token・LINE・ほかの人は出さない)", () => {
+    const html = renderTopPage([], "https://auth.example.com");
+    expect(html).toContain('<a href="/maker/certification" class="nav-item hidden" id="nav-maker-certification">');
+    const fns = extractClientFunctions<{
+      decodeJwtPayload: (token: string) => unknown;
+      findValidAuthCookie: () => string | null;
+      getValidToken: () => unknown;
+      showDeveloperNav: () => void;
+    }>(html, [
+      "decodeJwtPayload",
+      "findValidAuthCookie",
+      "getValidToken",
+      "showDeveloperNav",
+    ]);
+    const now = Math.floor(Date.now() / 1000);
+    const shown = (claims: Record<string, unknown>) => {
+      const removed: string[] = [];
+      const store: Record<string, string> = { auth_token: fakeJwt({ exp: now + 3600, ...claims }) };
+      // @ts-expect-error test-only global stub
+      globalThis.sessionStorage = { getItem: (k: string) => store[k] ?? null, setItem: () => {} };
+      // @ts-expect-error test-only global stub
+      globalThis.document = {
+        cookie: "",
+        getElementById: () => ({ classList: { remove: (c: string) => removed.push(c) } }),
+      };
+      fns.showDeveloperNav();
+      return removed.includes("hidden");
+    };
+    expect(shown({ email: "M.Tama.Ramu@gmail.com", idp: "google" })).toBe(true);
+    expect(shown({ email: "m.tama.ramu@gmail.com", idp: "google", token_kind: "dev" })).toBe(false);
+    expect(shown({ email: "m.tama.ramu@gmail.com", idp: "line" })).toBe(false);
+    expect(shown({ email: "op@example.com", idp: "google" })).toBe(false);
+    expect(shown({ idp: "google" })).toBe(false);
+    // @ts-expect-error test-only global stub
+    globalThis.sessionStorage = { getItem: () => null, setItem: () => {} };
+    // @ts-expect-error test-only global stub
+    globalThis.document = { cookie: "", getElementById: () => { throw new Error("呼ばない"); } };
+    expect(() => fns.showDeveloperNav()).not.toThrow();
+  });
+});

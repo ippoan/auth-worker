@@ -11,6 +11,7 @@ declare module "@xmldom/xmldom/lib/index.js" {
     readonly firstChild: XmlNode | null;
     readonly nextSibling: XmlNode | null;
     readonly localName: string | null;
+    readonly parentNode: XmlNode | null;
     textContent: string | null;
     appendChild(node: XmlNode): XmlNode;
     cloneNode(deep: boolean): XmlNode;
@@ -18,6 +19,8 @@ declare module "@xmldom/xmldom/lib/index.js" {
   export interface XmlElement extends XmlNode {
     getElementsByTagName(name: string): ArrayLike<XmlElement>;
     setAttribute(name: string, value: string): void;
+    getAttribute(name: string): string | null;
+    removeAttribute(name: string): void;
   }
   export interface XmlDocument extends XmlNode {
     getElementsByTagName(name: string): ArrayLike<XmlElement>;
