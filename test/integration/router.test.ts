@@ -978,6 +978,22 @@ describe("Router (index.ts)", () => {
     },
   );
 
+  // 一歩庵点呼の認定申請 (開発者専用)。handler は mock していないので実物まで届く: cookie が無ければ
+  // ページは /login へ、口は 401
+  it("GET /maker/certification は /login へ、data・form は 401、POST applicant は 401", async () => {
+    const page = await worker.fetch(new Request("https://auth.test.example/maker/certification"), env);
+    expect(page.status).toBe(302);
+    for (const path of ["/maker/certification/data", "/maker/certification/form?id=x"]) {
+      const res = await worker.fetch(new Request(`https://auth.test.example${path}`), env);
+      expect(res.status).toBe(401);
+    }
+    const save = await worker.fetch(
+      new Request("https://auth.test.example/maker/certification/applicant", { method: "POST", body: "{}" }),
+      env,
+    );
+    expect(save.status).toBe(401);
+  });
+
   // 開発用かどうかを決める口は、鍵を発行する 2 本だけ (body の dev_device)。handler は mock して
   // いないので実物まで届く: cookie の無い POST は 401、GET では route に当たらず 404 のまま。
   it.each(["/device/setup/pair", "/device/setup/alarm-key"])(

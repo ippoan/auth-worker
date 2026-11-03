@@ -51,7 +51,7 @@ function jsonNoStore(body: unknown, status = 200): Response {
   });
 }
 
-function issuerOf(env: Env): string {
+export function issuerOf(env: Env): string {
   return env.AUTH_WORKER_ORIGIN || "https://auth.ippoan.org";
 }
 
@@ -197,7 +197,7 @@ export interface OperatorSession {
 }
 
 /** cookie (logi_auth_token) の session JWT から operator の tenant/email/token_kind を返す。不正なら null。 */
-async function cookieSession(request: Request, env: Env): Promise<OperatorSession | null> {
+export async function cookieSession(request: Request, env: Env): Promise<OperatorSession | null> {
   const token = getAuthCookie(request);
   if (!token) return null;
   const secret = await resolveSecret(env.JWT_SECRET);
