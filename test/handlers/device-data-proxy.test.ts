@@ -381,6 +381,8 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "PUT", path: "/api/vein/templates/emp-1/module" },
     // ほかの端末で撮った記録の追加 (Refs ippoan/alc-app#558)。
     { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
+    // 照合が通った後の 1 本で一番古い 1 本を入れ替える。
+    { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate" },
     { method: "GET", path: "/api/vein/module-templates" },
     // 運行管理者の照合による承認 (Refs ippoan/alc-app#436)。
     { method: "GET", path: "/api/vein/module-templates/pending" },
@@ -525,6 +527,10 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "POST", path: "/api/vein/templates/emp-1/module/devices" },
       { method: "GET", path: "/api/vein/templates/emp-1/module/devices" },
       { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/dev-1" },
+      // 入れ替えは POST だけ。別 method・語尾の余りは 403。
+      { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+      { method: "GET", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+      { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate/extra" },
       { method: "PUT", path: "/api/vein/module-templates" },
       { method: "POST", path: "/api/vein/module-templates" },
       { method: "GET", path: "/api/vein/module-templates/emp-1" },
@@ -697,6 +703,8 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     { method: "GET", path: "/api/vein/templates" },
     // 席の機体で撮った記録の追加 (Refs ippoan/alc-app#558)
     { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
+    // 照合が通った後の 1 本で一番古い 1 本を入れ替える。
+    { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate" },
     // 運行管理者のダッシュボードの読み取り専用の画面 (オーナー決定 2026-10-31)
     { method: "GET", path: "/api/tenko/dashboard" },
     { method: "GET", path: `/api/measurements/${MID}` },
@@ -762,6 +770,10 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       { method: "PUT", path: "/api/vein/templates/emp-1/module" },
       { method: "POST", path: "/api/vein/templates/emp-1/module/devices" },
       { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/dev-1" },
+      // 入れ替えは POST だけ。別 method・語尾の余りは 403。
+      { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+      { method: "GET", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+      { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate/extra" },
       { method: "POST", path: "/api/vein/identify" },
       { method: "GET", path: "/api/vein/module-templates/pending" },
       { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee" },
@@ -1647,6 +1659,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     { method: "PUT", path: "/api/vein/templates/emp-1/module" },
     // ほかの端末で撮った記録の追加 (Refs ippoan/alc-app#558)。
     { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
+    // 照合が通った後の 1 本で一番古い 1 本を入れ替える。
+    { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate" },
     { method: "GET", path: "/api/vein/module-templates" },
     // 運行管理者の照合による承認 (Refs ippoan/alc-app#436)。
     { method: "GET", path: "/api/vein/module-templates/pending" },
@@ -1721,6 +1735,10 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "PUT", path: "/api/vein/templates/emp-1/module/extra" },
       { method: "POST", path: "/api/vein/templates/emp-1/module/devices" },
       { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/dev-1" },
+      // 入れ替えは POST だけ。別 method・語尾の余りは 403。
+      { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+      { method: "GET", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+      { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate/extra" },
       { method: "POST", path: "/api/vein/module-templates" },
       { method: "GET", path: "/api/vein/module-templates/emp-1" },
       // 承認: 管理者のログインの口 (pending / approve) は端末に開けない。照合による承認は別 method・余りの path を 403。
