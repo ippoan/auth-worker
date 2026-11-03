@@ -1,60 +1,60 @@
 /**
  * docx (Word) の本文 (word/document.xml) の決まった位置に文を書く小さな道具。
  *
- * Workers には DOMParser が無いので @xmldom/xmldom で読む。差し込み用の目印が無い様式を、
+ * Workers には DOMParser が無いので @xmldom/xmldom で読む (型は `types/xmldom.d.ts`。package の型は DOM を引き込むため使わない)。差し込み用の目印が無い様式を、
  * 本文の何番目の要素 (段落・表) か・表の何行何列の何番目の段落かで指す。書く前に位置の文字を
  * 確かめ、合わなければ書かずに例外にする (様式の版のずれ)。
  *
  * alc-app の `web/app/utils/tenko-forms.ts` の `DocxBody` (ブラウザの DOMParser 版) と同じ考え方。
  */
-import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
+import { DOMParser, XMLSerializer, type XmlDocument, type XmlElement } from "@xmldom/xmldom/lib/index.js";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
 /** 子の要素 (文字や注釈を除く) */
-function elementChildren(el: Element): Element[] {
-  const out: Element[] = [];
-  for (let n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 1) out.push(n as Element);
+function elementChildren(el: XmlElement): XmlElement[] {
+  const out: XmlElement[] = [];
+  for (let n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 1) out.push(n as XmlElement);
   return out;
 }
 
 /** 子孫の要素を localName で引く (接頭辞に頼らない) */
-function descendants(el: Element | Document, local: string): Element[] {
+function descendants(el: XmlElement | XmlDocument, local: string): XmlElement[] {
   return Array.from(el.getElementsByTagName("*")).filter((e) => e.localName === local);
 }
 
 export class DocxBody {
-  readonly doc: Document;
-  readonly body: Element;
+  readonly doc: XmlDocument;
+  readonly body: XmlElement;
 
   constructor(xml: string) {
-    this.doc = new DOMParser().parseFromString(xml, "text/xml") as unknown as Document;
+    this.doc = new DOMParser().parseFromString(xml, "text/xml");
     const body = descendants(this.doc, "body")[0];
     if (!body) throw new Error("様式の本文が見つかりません");
     this.body = body;
   }
 
   /** 本文の直下の i 番目の要素 (段落・表) */
-  child(i: number): Element {
+  child(i: number): XmlElement {
     const el = elementChildren(this.body)[i];
     if (!el) throw new Error(`様式の本文に ${i} 番目の要素がありません`);
     return el;
   }
 
   /** 本文の直下の表のうち n 番目 */
-  table(n: number): Element {
+  table(n: number): XmlElement {
     const t = elementChildren(this.body).filter((e) => e.localName === "tbl")[n];
     if (!t) throw new Error(`様式に ${n + 1} 番目の表がありません`);
     return t;
   }
 
-  rows(tbl: Element): Element[] {
+  rows(tbl: XmlElement): XmlElement[] {
     return elementChildren(tbl).filter((e) => e.localName === "tr");
   }
 
   /** 表の r 行 c 列の p 番目の段落 */
-  cellPara(tbl: Element, r: number, c: number, p = 0): Element {
+  cellPara(tbl: XmlElement, r: number, c: number, p = 0): XmlElement {
     const row = this.rows(tbl)[r];
     const cell = row && elementChildren(row).filter((e) => e.localName === "tc")[c];
     const para = cell && elementChildren(cell).filter((e) => e.localName === "p")[p];
@@ -62,7 +62,7 @@ export class DocxBody {
     return para;
   }
 
-  static text(p: Element): string {
+  static text(p: XmlElement): string {
     return descendants(p, "t")
       .map((t) => t.textContent ?? "")
       .join("");
@@ -73,7 +73,7 @@ export class DocxBody {
    * 文の run が無ければ、段落の既定の書式で run を足す。`expect` があれば、今の文がそれを
    * 含まないとき書かずに例外にする。
    */
-  setText(p: Element, f: (now: string) => string, expect?: string): void {
+  setText(p: XmlElement, f: (now: string) => string, expect?: string): void {
     const now = DocxBody.text(p);
     if (expect !== undefined && !now.includes(expect)) {
       throw new Error(`様式の版が想定と違います (「${expect}」の位置が合いません)`);
@@ -96,7 +96,7 @@ export class DocxBody {
   }
 
   xml(): string {
-    return new XMLSerializer().serializeToString(this.doc as unknown as Node);
+    return new XMLSerializer().serializeToString(this.doc);
   }
 }
 

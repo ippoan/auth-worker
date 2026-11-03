@@ -11,6 +11,7 @@
  * alc-app の管理画面の受け持ちで、ここは製作元の手続 (認定申請・仕様変更・自己チェック・廃止) だけ。
  */
 import type { Env } from "../index";
+import type { XmlElement } from "@xmldom/xmldom/lib/index.js";
 import { DocxBody, fillDocx } from "./docx-fill";
 
 export const TENKO_FORMS_RAW = "https://raw.githubusercontent.com/ippoan/tenko-forms/main/";
@@ -159,7 +160,7 @@ function header(b: DocxBody, a: Applicant, date: string, at: { date: number; add
 }
 
 /** 連絡先の 4 行 (担当者名・所属・電話・メール)。`first` は担当者名の行 */
-function contacts(b: DocxBody, tbl: Element, a: Applicant, first: number, fax = false): void {
+function contacts(b: DocxBody, tbl: XmlElement, a: Applicant, first: number, fax = false): void {
   b.setText(b.cellPara(tbl, first, 1), afterLabel("担当者名", a.contact_name), "担当者名");
   b.setText(b.cellPara(tbl, first + 1, 1), afterLabel("所属・役職", a.contact_dept), "所属・役職");
   b.setText(b.cellPara(tbl, first + 2, 1), afterLabel("電話番号", a.contact_phone), "電話番号");
