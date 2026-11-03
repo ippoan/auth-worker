@@ -76,6 +76,9 @@ describe("GET /maker/certification", () => {
     expect(html).toContain('data-field="postal_code" autocomplete="postal-code"');
     expect(html).toContain('data-field="prefecture" autocomplete="address-level1"');
     expect(html).toMatch(/id="date" value="\d{4}-\d{2}-\d{2}"/);
+    // ページの script が構文として読める (テンプレートの中の引用符が外れて画面が動かなくなったことがある)
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+    expect(() => new Function(script)).not.toThrow();
   });
 });
 
