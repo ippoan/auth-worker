@@ -29,6 +29,7 @@ import {
   type AlarmKeyUsage,
 } from "../handlers/alarm-key";
 import { verifyEd25519 } from "./ed25519";
+import type { AlarmNonceDO } from "../durable_objects/alarm-nonce-do";
 
 /**
  * nonce を何に使うか (= `/device/alarm-token` が出す JWT の用途)。**`AlarmKeyUsage`
@@ -84,14 +85,30 @@ export function keyUsagesForPurpose(purpose: AlarmNoncePurpose): ReadonlyArray<A
 /** nonce の TTL (秒)。両エンドポイントの `expires_in` と一致させる。 */
 export const ALARM_NONCE_TTL_SEC = 60;
 
-const NONCE_KV_PREFIX = "devnonce:";
+const NONCE_KEY_PREFIX = "devnonce:";
+
+/**
+ * nonce と回数制限の置き場 (`durable_objects/alarm-nonce-do.ts`)。全体で 1 つを日本寄りに置く
+ * (使うのは日本の拠点の端末だけ。KV は置き場所をアジアに指定できず、SIN に着いた要求で
+ * 書き込みが 10 秒を超えていた)。location hint は最初の `get` でだけ効く。
+ */
+export function alarmNonceStore(env: Env): DurableObjectStub<AlarmNonceDO> {
+  const ns = env.ALARM_NONCE_DO;
+  // apac-ne (2026-06 追加) は手元の型定義にまだ無い
+  return ns.get(ns.idFromName("global"), { locationHint: "apac-ne" as DurableObjectLocationHint });
+}
+
+/** `key` (IP・鍵など) の今の分の回数を 1 足す。上限に達していれば false。 */
+export async function bumpAlarmRate(env: Env, key: string, limitPerMinute: number): Promise<boolean> {
+  return alarmNonceStore(env).bumpRate(key, limitPerMinute, Date.now());
+}
 
 export interface AlarmNonceRecord {
   purpose: AlarmNoncePurpose;
   /** redirect_uri を伴う nonce だけが持つ (現状は未使用の口のみが渡していた。
    *  消費側で完全一致を見る仕組み自体は汎用なので残す)。 */
   redirect_uri?: string;
-  /** 失効時刻 (unix 秒)。KV の TTL に加えて消費時にも見る。 */
+  /** 失効時刻 (unix 秒)。消費時に見る (置き場の alarm も、これを過ぎた record を消す)。 */
   exp: number;
 }
 
@@ -139,7 +156,7 @@ function parseAlarmNonceRecord(raw: string | null): AlarmNonceRecord | null {
   }
 }
 
-/** nonce を発行し、`devnonce:<nonce>` (TTL 60s) に purpose と一緒に積む。 */
+/** nonce を発行し、`devnonce:<nonce>` (期限 60s) に purpose と一緒に積む。 */
 export async function issueAlarmNonce(
   env: Env,
   opts: { purpose: AlarmNoncePurpose; redirectUri?: string },
@@ -148,14 +165,12 @@ export async function issueAlarmNonce(
   const now = Math.floor(Date.now() / 1000);
   const record: AlarmNonceRecord = { purpose: opts.purpose, exp: now + ALARM_NONCE_TTL_SEC };
   if (opts.redirectUri !== undefined) record.redirect_uri = opts.redirectUri;
-  await env.AUTH_CONFIG.put(NONCE_KV_PREFIX + nonce, JSON.stringify(record), {
-    expirationTtl: ALARM_NONCE_TTL_SEC,
-  });
+  await alarmNonceStore(env).put(NONCE_KEY_PREFIX + nonce, JSON.stringify(record), Date.now());
   return nonce;
 }
 
 /**
- * nonce を消費する (single-use — 読んだ時点で KV から消す)。record が無い・壊れている・
+ * nonce を消費する (single-use — 読んだ時点で置き場から消す)。record が無い・壊れている・
  * purpose が無い / 違う・期限切れのどれでも null。
  */
 export async function consumeAlarmNonce(
@@ -163,9 +178,7 @@ export async function consumeAlarmNonce(
   nonce: string,
   purpose: AlarmNoncePurpose,
 ): Promise<AlarmNonceRecord | null> {
-  const key = NONCE_KV_PREFIX + nonce;
-  const record = parseAlarmNonceRecord(await env.AUTH_CONFIG.get(key));
-  await env.AUTH_CONFIG.delete(key);
+  const record = parseAlarmNonceRecord(await alarmNonceStore(env).take(NONCE_KEY_PREFIX + nonce));
   if (!record || record.purpose !== purpose) return null;
   if (record.exp <= Math.floor(Date.now() / 1000)) return null;
   return record;

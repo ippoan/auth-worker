@@ -51,9 +51,9 @@
  */
 import type { Env } from "../index";
 import { corsJsonResponse } from "../lib/errors";
-import { checkAndBumpRateLimit, checkAndBumpGrantRateLimit } from "../lib/mcp-pair";
 import {
   ALARM_NONCE_TTL_SEC,
+  bumpAlarmRate,
   issueAlarmNonce,
   consumeAlarmNonce,
   verifyAlarmSignature,
@@ -143,12 +143,10 @@ function clientIp(request: Request): string {
  * `usage` 省略時は `kiosk` (後方互換)。`ALARM_NONCE_PURPOSES` に無い用途は 400。
  */
 export async function handleDeviceAlarmNonce(request: Request, env: Env): Promise<Response> {
-  const okRate = await checkAndBumpRateLimit(
+  const okRate = await bumpAlarmRate(
     env,
-    clientIp(request),
-    Date.now(),
+    `nonce_ip:${clientIp(request)}`,
     NONCE_RATE_LIMIT_PER_MINUTE,
-    "device_alarm/nonce_rate",
   );
   if (!okRate) return rateLimited();
 
@@ -164,12 +162,10 @@ export async function handleDeviceAlarmNonce(request: Request, env: Env): Promis
 
 /** `POST /device/alarm-token` — `{nonce, pubkey, sig, usage?}` を検証して端末 JWT を返す。 */
 export async function handleDeviceAlarmToken(request: Request, env: Env): Promise<Response> {
-  const okIpRate = await checkAndBumpRateLimit(
+  const okIpRate = await bumpAlarmRate(
     env,
-    clientIp(request),
-    Date.now(),
+    `token_ip:${clientIp(request)}`,
     TOKEN_IP_RATE_LIMIT_PER_MINUTE,
-    "device_alarm/token_rate",
   );
   if (!okIpRate) return rateLimited();
 
@@ -211,10 +207,9 @@ export async function handleDeviceAlarmToken(request: Request, env: Env): Promis
 
   // c. 鍵ごとの rate limit。署名検証の後に置く (署名できない者に他人の鍵の枠を
   //    消費させない)。他の用途の枠とも subject を分ける。
-  const okKeyRate = await checkAndBumpGrantRateLimit(
+  const okKeyRate = await bumpAlarmRate(
     env,
-    `alarm-${usage}:${fingerprint}`,
-    Date.now(),
+    `token_key:alarm-${usage}:${fingerprint}`,
     TOKEN_KEY_RATE_LIMIT_PER_MINUTE,
   );
   if (!okKeyRate) return rateLimited();
