@@ -113,6 +113,12 @@ import {
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
 import {
+  handleMakerCertificationData,
+  handleMakerCertificationForm,
+  handleMakerCertificationPage,
+  handleMakerCertificationSave,
+} from "./handlers/maker-certification";
+import {
   handleAlarmKeyRegister,
   handleAlarmKeyList,
   handleAlarmKeyRevoke,
@@ -880,6 +886,13 @@ export default {
           // 接続/切断の live push (recorder /tenants/:t/events の SSE 透過)。
           case "/device/setup/events":
             return await handleDeviceSetupEvents(request, env);
+          // 一歩庵点呼の認定申請 (開発者専用。ページ・値・記入済みの様式)
+          case "/maker/certification":
+            return await handleMakerCertificationPage(request, env);
+          case "/maker/certification/data":
+            return await handleMakerCertificationData(request, env);
+          case "/maker/certification/form":
+            return await handleMakerCertificationForm(request, env);
           // 公開中の最新 firmware バージョン (Pages manifest.json)。
           case "/device/setup/latest":
             return await handleDeviceSetupLatest(request, env);
@@ -1052,6 +1065,9 @@ export default {
             return await handleAlarmKeyRegister(request, env);
           case "/device/setup/alarm-key/revoke":
             return await handleAlarmKeyRevoke(request, env);
+          // 一歩庵点呼の認定申請の申請者を保存 (開発者専用)。POST。
+          case "/maker/certification/applicant":
+            return await handleMakerCertificationSave(request, env);
           // OTA トリガ (cookie session → recorder の下り command)。POST。
           case "/device/setup/ota":
             return await handleDeviceSetupOta(request, env);
