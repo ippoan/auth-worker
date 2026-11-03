@@ -36,7 +36,7 @@ export interface Applicant {
 
 /**
  * 申請者の欄 (key・見出し・ブラウザの自動入力の `autocomplete`)。住所は Chrome の自動入力が欄ごとに入れるよう
- * 郵便番号・都道府県・市区町村・番地・建物名に分ける (様式には `applicantAddress` でつないで書く)
+ * 郵便番号・都道府県・市区町村・番地・建物名に分ける (様式の冒頭の住所は `writeAddress` が 2 行で書く)
  */
 export const APPLICANT_FIELDS: ReadonlyArray<[keyof Applicant, string, string]> = [
   ["name", "氏名又は名称 (製作事業者名)", "organization"],
@@ -60,12 +60,6 @@ export function applicantStreet(a: Applicant): string | null {
   return full.trim() || null;
 }
 
-/** 様式の「住所」に書く文 (`〒000-0000 住所`)。どれも空なら null */
-export function applicantAddress(a: Applicant): string | null {
-  const street = applicantStreet(a);
-  const postal = a.postal_code ? `〒${a.postal_code.replace(/^〒/, "")}` : "";
-  return [postal, street].filter(Boolean).join(" ") || null;
-}
 
 export interface SelfCheckAnswer {
   ok?: string | null;
@@ -182,10 +176,26 @@ function circle(word: string): (now: string) => string {
   return (now) => now.replace(word, `○${word}`);
 }
 
+/**
+ * 冒頭の「住所」の段落 (様式1 は「申請者　住所」)。1 行目に「住所　〒郵便番号」、2 行目に都道府県から先を書き、
+ * どの行も同じ位置から始まるよう字下げを寄せる (1 行目だけ右へ寄せた段落なので、1 行に書くと 2 行目が左端へ戻る)
+ */
+function writeAddress(b: DocxBody, p: XmlElement, label: string, a: Applicant): void {
+  const now = DocxBody.text(p);
+  if (!now.includes(label)) throw new Error(`様式の版が想定と違います (「${label}」の位置が合いません)`);
+  const street = applicantStreet(a);
+  const postal = a.postal_code ? `〒${a.postal_code.replace(/^〒/, "")}` : "";
+  if (!street && !postal) return;
+  const head = now.slice(0, now.indexOf(label) + label.length).trim();
+  const lines = [[head, postal].filter(Boolean).join("　"), ...(street ? [street] : [])];
+  b.setLines(p, lines);
+  b.fitIndent(p, lines);
+}
+
 /** 申請者の住所と名称 (様式1・5・7 の冒頭) と日付の段落 */
 function header(b: DocxBody, a: Applicant, date: string, at: { date: number; address: number; name: number }): void {
   b.setText(b.child(at.date), (now) => now.replace(DATE_RE, reiwaDate(date)), "令和");
-  b.setText(b.child(at.address), afterLabel("住所", applicantAddress(a)), "住所");
+  writeAddress(b, b.child(at.address), "住所", a);
   b.setText(b.child(at.name), afterLabel("氏名又は名称", a.name), "氏名又は名称");
 }
 
@@ -201,7 +211,7 @@ function contacts(b: DocxBody, tbl: XmlElement, a: Applicant, first: number, fax
 /** 様式1 自動点呼機器認定申請書。機器の種類は業務前・業務後の両方に ○、添付 1〜6 に ○ */
 export function fillYoshiki1(b: DocxBody, a: Applicant, cfg: ProductConfig, date: string): void {
   b.setText(b.child(0), (now) => now.replace(DATE_RE, reiwaDate(date)), "令和");
-  b.setText(b.child(4), afterLabel("住所", applicantAddress(a)), "住所");
+  writeAddress(b, b.child(4), "住所", a);
   b.setText(b.child(5), afterLabel("氏名又は名称", a.name), "氏名又は名称");
   const who = b.table(0);
   b.setText(b.cellPara(who, 0, 1), (now) => (a.kana ? `（フリガナ）${a.kana}` : now), "フリガナ");

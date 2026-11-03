@@ -95,6 +95,59 @@ export class DocxBody {
     for (const t of ts.slice(1)) t.textContent = "";
   }
 
+  /**
+   * 段落を複数行にする (先頭の文の run に `<w:br/>` と文を足す)。ほかの run の文は空にする。
+   * `expect` は {@link setText} と同じ。
+   */
+  setLines(p: XmlElement, lines: string[], expect?: string): void {
+    this.setText(p, () => lines[0] ?? "", expect);
+    const run = descendants(p, "t")[0]!.parentNode as XmlElement;
+    for (const line of lines.slice(1)) {
+      run.appendChild(this.doc.createElementNS(W_NS, "w:br"));
+      const t = this.doc.createElementNS(W_NS, "w:t");
+      t.textContent = line;
+      t.setAttribute("xml:space", "preserve");
+      run.appendChild(t);
+    }
+  }
+
+  /** 本文の幅 (twips) = 用紙の幅 - 左右の余白。読めなければ A4 縦・余白 20mm の幅 */
+  textWidth(): number {
+    const size = descendants(this.body, "pgSz")[0];
+    const mar = descendants(this.body, "pgMar")[0];
+    const num = (el: XmlElement | undefined, name: string) => Number(el?.getAttribute(name) ?? NaN);
+    const w = num(size, "w:w") - num(mar, "w:left") - num(mar, "w:right");
+    return Number.isFinite(w) && w > 0 ? w : 9638;
+  }
+
+  /**
+   * 段落の字下げを「どの行も同じ位置から始まる」形 (左の字下げだけ) にし、いちばん長い行が本文の幅に
+   * 収まるところまで左へ寄せる (元の 1 行目の位置より右へは出さない)。1 行目だけ右へ寄せた欄
+   * (「申請者　住所」など) に長い住所を書くと、2 行目が左端へ戻ってしまうため。
+   * 文字の幅は段落の既定の文字の大きさ (無ければ 10.5pt) で、全角を 1・半角を 0.5 と数える。
+   */
+  fitIndent(p: XmlElement, lines: string[]): void {
+    const pPr = elementChildren(p).find((e) => e.localName === "pPr");
+    if (!pPr) return;
+    let ind = elementChildren(pPr).find((e) => e.localName === "ind");
+    if (!ind) {
+      ind = this.doc.createElementNS(W_NS, "w:ind");
+      pPr.appendChild(ind);
+    }
+    const num = (name: string) => Number(ind!.getAttribute(name) ?? 0) || 0;
+    const start = num("w:left") + num("w:firstLine");
+    const rPr = elementChildren(pPr).find((e) => e.localName === "rPr");
+    const sz = Number(rPr && descendants(rPr, "sz")[0]?.getAttribute("w:val")) || 21;
+    const full = sz * 10;
+    const width = (s: string) => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) < 0x100 ? full / 2 : full), 0);
+    const need = Math.max(0, ...lines.map(width));
+    const left = Math.max(0, Math.min(start, this.textWidth() - need));
+    for (const a of ["w:firstLine", "w:firstLineChars", "w:hanging", "w:hangingChars", "w:leftChars", "w:start", "w:startChars"]) {
+      ind.removeAttribute(a);
+    }
+    ind.setAttribute("w:left", String(Math.floor(left)));
+  }
+
   xml(): string {
     return new XMLSerializer().serializeToString(this.doc);
   }
