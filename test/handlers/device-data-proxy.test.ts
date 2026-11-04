@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import { createMockEnv, TEST_JWT_SECRET } from "../helpers/mock-env";
+import { createMockEnv, createMockKV, TEST_JWT_SECRET } from "../helpers/mock-env";
 import { signTestJwt } from "../helpers/test-jwt";
 import {
   DEVICE_ROLE,
@@ -2202,5 +2202,134 @@ describe("拠点 PC の拡張の鍵の担当カメラ GET /api/cam-clips/cameras
     }
     expect(clips.fetch).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("指静脈の認証ログ POST /api/vein/auth-shots・GET /api/vein/auth-log/enabled (Refs ippoan/alc-app-s3#352)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  // 合成値 (本番の識別子ではない)
+  const OTHER_TENANT = "22222222-2222-2222-2222-222222222222";
+  const SHOTS = "/device-data-proxy/api/vein/auth-shots";
+  const ENABLED = "/device-data-proxy/api/vein/auth-log/enabled";
+  const ROLES = [DEVICE_ROLE_KIOSK, DEVICE_ROLE_TENKO_MANAGER, DEVICE_ROLE_BP_STATION];
+
+  const tokenFor = (role: string, tenant = TENANT) =>
+    signTestJwt({ sub: "device-x", tenant_id: tenant, role }, TEST_JWT_SECRET);
+  const envWithList = (value: string | undefined) =>
+    env({
+      AUTH_CONFIG: createMockKV(value === undefined ? {} : { vein_auth_log_tenants: value }),
+    });
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response(JSON.stringify({ id: "s-1" }), { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+  const post = async (role: string, e: ReturnType<typeof env>, tenant = TENANT) =>
+    handleDeviceDataProxy(
+      req(SHOTS, {
+        method: "POST",
+        token: await tokenFor(role, tenant),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ employee_id: "emp-1" }),
+      }),
+      e,
+    );
+  const get = async (role: string, e: ReturnType<typeof env>, tenant = TENANT) =>
+    handleDeviceDataProxy(req(ENABLED, { method: "GET", token: await tokenFor(role, tenant) }), e);
+
+  for (const role of ROLES) {
+    describe(role, () => {
+      it("POST auth-shots: 一覧に載ったテナントは forward する (X-Tenant-ID・X-Device-Id 付き)", async () => {
+        const fetchMock = okFetch();
+        const res = await post(role, envWithList(JSON.stringify([OTHER_TENANT, TENANT.toUpperCase()])));
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const [url, init] = fetchMock.mock.calls[0]!;
+        expect(String(url)).toBe("https://alc-api.test.example/api/vein/auth-shots");
+        const h = (init as RequestInit).headers as Record<string, string>;
+        expect(h["X-Tenant-ID"]).toBe(TENANT);
+        expect(h["X-Device-Id"]).toBe("device-x");
+      });
+
+      it("POST auth-shots: 載っていないテナントは転送せず 204", async () => {
+        const fetchMock = okFetch();
+        const res = await post(role, envWithList(JSON.stringify([OTHER_TENANT])));
+        expect(res.status).toBe(204);
+        expect(await res.text()).toBe("");
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      for (const [label, value] of [
+        ["KV に key が無い", undefined],
+        ["KV が壊れた JSON", "{not json"],
+        ["KV が配列でない", JSON.stringify({ tenants: [TENANT] })],
+        ["KV が空配列", "[]"],
+        ["KV の要素が UUID でない", JSON.stringify(["not-a-uuid"])],
+      ] as const) {
+        it(`POST auth-shots: ${label} は転送せず 204 (fail-closed)`, async () => {
+          const fetchMock = okFetch();
+          const res = await post(role, envWithList(value));
+          expect(res.status).toBe(204);
+          expect(fetchMock).not.toHaveBeenCalled();
+        });
+      }
+
+      it("GET auth-log/enabled: 載っていれば {enabled:true}、転送しない", async () => {
+        const fetchMock = okFetch();
+        const res = await get(role, envWithList(JSON.stringify([TENANT])));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ enabled: true });
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("GET auth-log/enabled: 載っていない・KV 無し・壊れている は {enabled:false} (200)", async () => {
+        const fetchMock = okFetch();
+        for (const value of [JSON.stringify([OTHER_TENANT]), undefined, "garbage"]) {
+          const res = await get(role, envWithList(value));
+          expect(res.status).toBe(200);
+          expect(await res.json()).toEqual({ enabled: false });
+        }
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("別 method・語尾の余りは 403 (許可表のまま)", async () => {
+        const fetchMock = okFetch();
+        const e = envWithList(JSON.stringify([TENANT]));
+        for (const [method, path] of [
+          ["GET", SHOTS],
+          ["PUT", SHOTS],
+          ["POST", `${SHOTS}/rejudge`],
+          ["POST", `${SHOTS}/extra`],
+          ["POST", ENABLED],
+          ["GET", `${ENABLED}/extra`],
+        ] as const) {
+          const res = await handleDeviceDataProxy(
+            req(path, { method, token: await tokenFor(role), body: method === "GET" ? undefined : "{}" }),
+            e,
+          );
+          expect(res.status, `${method} ${path}`).toBe(403);
+        }
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+    });
+  }
+
+  it("開けていない鍵 (dtako-ingest・cam-host) は auth-shots / enabled とも 403 (一覧に載っていても)", async () => {
+    const fetchMock = okFetch();
+    const e = envWithList(JSON.stringify([TENANT]));
+    for (const role of [DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_CAM_HOST]) {
+      expect((await post(role, e)).status, role).toBe(403);
+      expect((await get(role, e)).status, role).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("鍵が無ければ 401 (KV を見る前)", async () => {
+    const res = await handleDeviceDataProxy(req(ENABLED, { method: "GET" }), envWithList(JSON.stringify([TENANT])));
+    expect(res.status).toBe(401);
   });
 });
