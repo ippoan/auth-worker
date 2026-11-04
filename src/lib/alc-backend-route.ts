@@ -143,6 +143,10 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * Cloud Run に落ちる)。webhook は alc-measurements が応答の後に alc-tenko の内部の口へ渡し、alc-tenko が送る (dev端末の要求では送らない)。
  */
 export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
+  // 指静脈の認証ログの開発者だけの口 (MCP `vein_auth_shots` / `vein_auth_rejudge`、Refs ippoan/alc-app-s3#352)。
+  // rpc (MCP の転送) にだけ method を絞って開ける。画面用・端末用は下の prefix の行と同じ (method は絞らない)。
+  { match: "exact", path: "/api/vein/auth-shots", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device", "rpc"], methods: { rpc: ["GET"] } },
+  { match: "exact", path: "/api/vein/auth-shots/rejudge", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device", "rpc"], methods: { rpc: ["POST"] } },
   { match: "prefix", path: "/api/vein/", binding: "ALC_VEIN", host: "alc-vein", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/upload", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "internal", "device"] },
   { match: "prefix", path: "/api/split-csv/", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },

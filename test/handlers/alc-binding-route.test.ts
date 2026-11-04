@@ -108,6 +108,22 @@ describe("resolveAlcBinding", () => {
     expect(resolveAlcBinding("/api/vein/identify", env, "internal")).toBeNull();
   });
 
+  it("vein の認証ログの開発者口は rpc に method を絞って開け、画面用・端末用は従来どおり引ける", () => {
+    const { binding, env } = setup();
+    const target = { fetcher: binding, host: "alc-vein" };
+    expect(resolveAlcBinding("/api/vein/auth-shots", env, "rpc", "GET")).toEqual(target);
+    expect(resolveAlcBinding("/api/vein/auth-shots", env, "rpc", "POST")).toBeNull();
+    expect(resolveAlcBinding("/api/vein/auth-shots/rejudge", env, "rpc", "POST")).toEqual(target);
+    expect(resolveAlcBinding("/api/vein/auth-shots/rejudge", env, "rpc", "GET")).toBeNull();
+    for (const path of ["/api/vein/auth-shots", "/api/vein/auth-shots/rejudge"]) {
+      expect(resolveAlcBinding(path, env, "browser", "POST")).toEqual(target);
+      expect(resolveAlcBinding(path, env, "device", "POST")).toEqual(target);
+      expect(resolveAlcBinding(path, env, "internal", "POST")).toBeNull();
+    }
+    // 他の vein の口は rpc に開けない
+    expect(resolveAlcBinding("/api/vein/identify", env, "rpc", "POST")).toBeNull();
+  });
+
   it("/api/leave/ は画面用だけ ALC_LEAVE へ解決され、端末用・内部用は null (Cloud Run のまま)", () => {
     const { leave, env } = setup();
     expect(resolveAlcBinding("/api/leave/settings", env, "browser")).toEqual({ fetcher: leave, host: "rust-leave" });
