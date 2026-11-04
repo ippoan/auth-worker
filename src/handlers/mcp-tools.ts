@@ -1095,6 +1095,69 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "vein_auth_shots",
+    description:
+      "Read the finger-vein authentication log of your tenant (verification-only tenants listed in the " +
+      "auth-log allowlist): the latest captures' state and each one's latest judgment, newest first. " +
+      "Read-only. The capture itself (biometric data) is never returned. Optional `limit` (1-200, " +
+      "default 20). Returns the vein worker's JSON as is; errors are returned as `{error, status, body}` " +
+      "(`developer_only` is a 403 from the vein worker). Same allowlist gate as issue_dev_token; only " +
+      "the caller's own tenant is reachable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "Rows to return (default 20)" },
+      },
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const limit = args["limit"] === undefined ? 20 : args["limit"];
+      if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 200) {
+        throw new DevLoginError(400, "limit must be an integer between 1 and 200");
+      }
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      return forwardVeinAuthLog(ctx.env, resolved.user.tenant_id, "GET", `?limit=${limit}`);
+    },
+  },
+  {
+    name: "vein_auth_rejudge",
+    description:
+      "Re-judge the stored finger-vein authentication captures of your tenant with the current " +
+      "judgment logic (chara_verify) and add the new judgments. This WRITES: each call appends " +
+      "judgment rows (captures themselves are not changed or returned). Optional `since` (ISO 8601) " +
+      "limits it to captures taken at or after that time. Returns the vein worker's JSON as is: " +
+      "`{judged, logic_version, more?, next_since?}` (when `more` is true call again with " +
+      "`since = next_since`). Errors are returned as `{error, status, body}`. Same allowlist gate as " +
+      "issue_dev_token; only the caller's own tenant is reachable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: { type: "string", description: "ISO 8601 timestamp; only captures at or after it" },
+      },
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const since = args["since"];
+      if (since !== undefined && (typeof since !== "string" || !since || Number.isNaN(Date.parse(since)))) {
+        throw new DevLoginError(400, "since must be an ISO 8601 timestamp");
+      }
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      return forwardVeinAuthLog(
+        ctx.env,
+        resolved.user.tenant_id,
+        "POST",
+        "",
+        JSON.stringify(since === undefined ? {} : { since }),
+      );
+    },
+  },
+  {
     name: "run_cam_clips_auto",
     description:
       "Run the automatic clipping of one site camera of your tenant now (the same job as the hourly " +
@@ -1325,6 +1388,38 @@ async function findTestRecord(
   );
   // この口が読むのは開発の軸だけ (is_dev は backend の応答に無いので、読み方から付ける)
   return row ? { ...row, is_dev: true } : null;
+}
+
+/**
+ * `vein_auth_shots` / `vein_auth_rejudge` — alc-vein-worker の開発者だけの口 (`X-User-Developer: 1`)。
+ * 呼び手 (tool) が許可リストを通したテナントで転送し、vein の JSON をそのまま返す。
+ */
+async function forwardVeinAuthLog(
+  env: Env,
+  tenantId: string,
+  method: "GET" | "POST",
+  search: string,
+  body?: string,
+): Promise<unknown> {
+  const res = await forwardAlcTenantRequest(env, {
+    tenantId,
+    path: method === "GET" ? "/api/vein/auth-shots" : "/api/vein/auth-shots/rejudge",
+    method,
+    search,
+    body,
+    contentType: body === undefined ? undefined : "application/json",
+    userDeveloper: true,
+  });
+  let json: unknown;
+  try {
+    json = JSON.parse(res.body);
+  } catch {
+    json = undefined;
+  }
+  if (res.status !== 200 || json === undefined) {
+    return { error: "backend_error", status: res.status, body: res.body.slice(0, 500) };
+  }
+  return json;
 }
 
 const TOOL_BY_NAME: Record<string, ToolDef> = Object.fromEntries(

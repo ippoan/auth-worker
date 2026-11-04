@@ -80,6 +80,11 @@ export interface AlcTenantForwardInput {
    * 読み返すときだけ立てる (Refs ippoan/alc-cam#2)。
    */
   deviceDev?: boolean;
+  /**
+   * 開発者だけの口 (`X-User-Developer: 1`、vein の認証ログの読み・判定し直し) を叩くときだけ立てる。
+   * 呼び手が開発者の許可リストを通してあること (この関数は検査しない)。
+   */
+  userDeveloper?: boolean;
 }
 
 export async function forwardAlcTenantRequest(
@@ -91,6 +96,7 @@ export async function forwardAlcTenantRequest(
   const headers: Record<string, string> = { "X-Tenant-ID": input.tenantId };
   if (input.contentType) headers["Content-Type"] = input.contentType;
   if (input.deviceDev) headers["X-Device-Dev"] = "1";
+  if (input.userDeveloper) headers["X-User-Developer"] = "1";
   const method = (input.method || "GET").toUpperCase();
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? input.body : undefined;

@@ -2017,6 +2017,139 @@ describe("POST /mcp/tools — get_device_log", () => {
     });
   });
 
+  describe("vein_auth_shots / vein_auth_rejudge (Refs ippoan/alc-app-s3#352)", () => {
+    function veinEnv(veinHandler: (req: Request) => Response) {
+      const env = logEnv(mockRecorder(() => new Response("{}", { status: 404 })).fetcher);
+      const seen: Array<{ url: string; method: string; headers: Headers; body: string }> = [];
+      env.ALC_VEIN = {
+        fetch: async (input: RequestInfo, init?: RequestInit) => {
+          const req = new Request(input as string, init);
+          seen.push({ url: req.url, method: req.method, headers: req.headers, body: await req.clone().text() });
+          return veinHandler(req);
+        },
+      } as unknown as Fetcher;
+      globalThis.fetch = vi.fn(async () => internalUserResponse()) as typeof fetch;
+      return { env, seen };
+    }
+    const okJson = (v: unknown) => () => new Response(JSON.stringify(v), { status: 200 });
+
+    it("tools/list に両方出る", async () => {
+      const { env } = envWithKv();
+      const res = await handleMcpTools(
+        await authedReq(await googleUserJwt(), { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+        env,
+      );
+      const body = (await res.json()) as { result: { tools: Array<{ name: string }> } };
+      const names = body.result.tools.map((t) => t.name);
+      expect(names).toContain("vein_auth_shots");
+      expect(names).toContain("vein_auth_rejudge");
+    });
+
+    it("vein_auth_shots: GET /api/vein/auth-shots?limit= を呼び手のテナントと X-User-Developer 付きで転送し、JSON をそのまま返す", async () => {
+      const payload = { items: [{ id: "s-1", judgment: null }] };
+      const { env, seen } = veinEnv(okJson(payload));
+      const result = await callDeviceTool(env, { limit: 5 }, { tool: "vein_auth_shots" });
+      expect(result.isError).toBe(false);
+      expect(parsed(result)).toEqual(payload);
+      expect(seen).toHaveLength(1);
+      const u = new URL(seen[0]!.url);
+      expect(u.pathname).toBe("/api/vein/auth-shots");
+      expect(u.searchParams.get("limit")).toBe("5");
+      expect(seen[0]!.method).toBe("GET");
+      expect(seen[0]!.headers.get("X-User-Developer")).toBe("1");
+      expect(seen[0]!.headers.get("X-Tenant-ID")).toBe(TENANT_ID);
+      expect(seen[0]!.headers.get("Authorization")).toBeNull();
+    });
+
+    it("vein_auth_shots: limit の既定は 20", async () => {
+      const { env, seen } = veinEnv(okJson({ items: [] }));
+      await callDeviceTool(env, {}, { tool: "vein_auth_shots" });
+      expect(new URL(seen[0]!.url).searchParams.get("limit")).toBe("20");
+    });
+
+    for (const limit of [0, 201, 1.5, "5"]) {
+      it(`vein_auth_shots: limit=${JSON.stringify(limit)} は拒否 (vein へ届かない)`, async () => {
+        const { env, seen } = veinEnv(okJson({}));
+        const result = await callDeviceTool(env, { limit }, { tool: "vein_auth_shots" });
+        expect(result.isError).toBe(true);
+        expect(result.content[0]!.text).toContain("limit");
+        expect(seen).toHaveLength(0);
+      });
+    }
+
+    it("vein_auth_rejudge: POST /api/vein/auth-shots/rejudge に {since} を載せて転送する", async () => {
+      const payload = { judged: 3, logic_version: "v-test", more: false };
+      const { env, seen } = veinEnv(okJson(payload));
+      const result = await callDeviceTool(
+        env,
+        { since: "2026-11-04T00:00:00Z" },
+        { tool: "vein_auth_rejudge" },
+      );
+      expect(parsed(result)).toEqual(payload);
+      expect(new URL(seen[0]!.url).pathname).toBe("/api/vein/auth-shots/rejudge");
+      expect(seen[0]!.method).toBe("POST");
+      expect(JSON.parse(seen[0]!.body)).toEqual({ since: "2026-11-04T00:00:00Z" });
+      expect(seen[0]!.headers.get("Content-Type")).toBe("application/json");
+      expect(seen[0]!.headers.get("X-User-Developer")).toBe("1");
+      expect(seen[0]!.headers.get("X-Tenant-ID")).toBe(TENANT_ID);
+    });
+
+    it("vein_auth_rejudge: since 省略は {} 、不正な since は拒否", async () => {
+      const { env, seen } = veinEnv(okJson({ judged: 0, logic_version: "v" }));
+      await callDeviceTool(env, {}, { tool: "vein_auth_rejudge" });
+      expect(JSON.parse(seen[0]!.body)).toEqual({});
+      const bad = await callDeviceTool(env, { since: "yesterday" }, { tool: "vein_auth_rejudge" });
+      expect(bad.isError).toBe(true);
+      expect(seen).toHaveLength(1);
+    });
+
+    it("vein の 403 developer_only・非 JSON は {error:backend_error, status, body} で返す", async () => {
+      const { env } = veinEnv(() => new Response('{"error":"developer_only"}', { status: 403 }));
+      const r1 = await callDeviceTool(env, {}, { tool: "vein_auth_shots" });
+      expect(parsed(r1)).toEqual({ error: "backend_error", status: 403, body: '{"error":"developer_only"}' });
+      const { env: env2 } = veinEnv(() => new Response("oops", { status: 200 }));
+      const r2 = await callDeviceTool(env2, {}, { tool: "vein_auth_rejudge" });
+      expect(parsed(r2)).toMatchObject({ error: "backend_error", status: 200, body: "oops" });
+    });
+
+    for (const tool of ["vein_auth_shots", "vein_auth_rejudge"]) {
+      it(`${tool}: allowlist 外の subject は issue_dev_token と同じエラーで拒否 (vein へ届かない)`, async () => {
+        const { env, seen } = veinEnv(okJson({}));
+        const jwt = await googleUserJwt({ email: "someone-else@example.com" });
+        const res = await handleMcpTools(
+          await authedReq(jwt, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: tool, arguments: {} },
+          }),
+          env,
+        );
+        const body = (await res.json()) as { result: { isError: boolean; content: Array<{ text: string }> } };
+        expect(body.result.isError).toBe(true);
+        expect(body.result.content[0]!.text).toContain("not_in_allowlist");
+        expect(seen).toHaveLength(0);
+      });
+    }
+
+    it("mcp.read だけのセッションは tools/call も拒否する", async () => {
+      const { env, seen } = veinEnv(okJson({}));
+      const jwt = await googleUserJwt({ scope: "mcp.read" });
+      const res = await handleMcpTools(
+        await authedReq(jwt, {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "vein_auth_rejudge", arguments: {} },
+        }),
+        env,
+      );
+      const body = (await res.json()) as { error: { message: string } };
+      expect(body.error.message).toContain("mcp.write required");
+      expect(seen).toHaveLength(0);
+    });
+  });
+
   describe("run_cam_clips_auto", () => {
     const CAMERA_ID = "0f4be522-ae22-4903-859d-e16a48b645a1";
     const RC = { tool: "run_cam_clips_auto" };
