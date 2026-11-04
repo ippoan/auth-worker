@@ -30,6 +30,7 @@ import type { Env } from "../index";
 import { extractToken } from "../lib/errors";
 import { verifyJwt } from "../lib/jwt";
 import { resolveSecret } from "../lib/secret";
+import { resolveKvTenantList } from "../lib/alc-tenant-forward";
 import {
   forwardViaAlcBinding,
   isUnsafeBackendPath,
@@ -167,6 +168,15 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * `GET /api/vein/module-templates` で既に読める範囲。新しい種類の到達面ではない。
  * 測定台と運行管理者席の鍵にも同じ 1 本を開ける。
  *
+ * 指静脈の認証ログ (`POST /api/vein/auth-shots` と `GET /api/vein/auth-log/enabled`、Refs ippoan/alc-app-s3#352):
+ * 照合の後に裏で、その場の撮影と認証の状態を alc-vein-worker へ預ける口。撮影は生体データなので、
+ * **検証用テナントだけ** (AUTH_CONFIG KV `vein_auth_log_tenants` の一覧に鍵のテナントが載っているときだけ)
+ * 転送し、載っていなければ転送せず 204 で捨てる。保存は alc-vein-worker が暗号化して行う。
+ * `GET /api/vein/auth-log/enabled` は転送せず auth-worker が同じ KV だけを見て `{"enabled": bool}` を返す
+ * (載っていない・KV が空・壊れている = false)。どちらも端末が自分のテナントについて書く・訊くだけで、
+ * 読み出しの口は無く、他テナントや他人の記録へは届かない。新しい種類の到達面ではない。
+ * 測定台と運行管理者席の鍵にも同じ 2 本を開ける。
+ *
  * カードの持ち主の照会 (`POST /api/timecard/cards/lookup`、body に `card_id`、
  * Refs ippoan/alc-app#387)。運転者の端末 (ブラウザ) に USB で繋いだ機体が社員証を読んだとき、
  * 画面が「このカードは誰のものか」をサーバーに引くのに使う。**読み取りだけの照会**で、
@@ -188,6 +198,8 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices\/rotate$/ },
+  { method: "POST", pattern: /^\/api\/vein\/auth-shots$/ },
+  { method: "GET", pattern: /^\/api\/vein\/auth-log\/enabled$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates\/pending$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/approve-by-employee$/ },
@@ -262,8 +274,9 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * Vein Base を運行管理者席の鍵にした PC にはキオスクの鍵が無く、これが無いと照合データを取れない。
  * どちらも `KIOSK_ROUTES` に同じ正規表現で在る口 (tenant の承認済みの生体記録を端末へ) で、新しい種類の
  * 到達面ではない。開くのは読み取りの GET 2 本と、席の機体で撮った記録の追加
- * (`PUT /api/vein/templates/{employee_id}/module/devices`) と照合が通った後の入れ替え
- * (`POST …/module/devices/rotate`。理由はどちらも `KIOSK_ROUTES` の doc) だけ (両端固定)。
+ * (`PUT /api/vein/templates/{employee_id}/module/devices`)・照合が通った後の入れ替え
+ * (`POST …/module/devices/rotate`)・認証ログ (`POST /api/vein/auth-shots` / `GET /api/vein/auth-log/enabled`。
+ * 理由はどれも `KIOSK_ROUTES` の doc) だけ (両端固定)。
  * 登録し直し (`PUT …/{employee_id}` / `PUT …/module`)・照合 (`POST /api/vein/identify`)・承認の口は開けない。
  *
  * **運行管理者のダッシュボードの読み取り専用の画面を席で開く (オーナー決定 2026-10-31)**: 席は指静脈で
@@ -334,6 +347,8 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/vein\/templates$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices\/rotate$/ },
+  { method: "POST", pattern: /^\/api\/vein\/auth-shots$/ },
+  { method: "GET", pattern: /^\/api\/vein\/auth-log\/enabled$/ },
   // 運行管理者のダッシュボードの読み取り専用の画面 (オーナー決定 2026-10-31。上の doc)
   { method: "GET", pattern: /^\/api\/tenko\/dashboard$/ },
   { method: "GET", pattern: new RegExp(`^/api/measurements/${UUID_SEGMENT}$`) },
@@ -449,6 +464,8 @@ const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices\/rotate$/ },
+  { method: "POST", pattern: /^\/api\/vein\/auth-shots$/ },
+  { method: "GET", pattern: /^\/api\/vein\/auth-log\/enabled$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates\/pending$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/approve-by-employee$/ },
@@ -484,6 +501,16 @@ const METHOD_ROUTE_TABLES: ReadonlyMap<string, ReadonlyArray<{ method: string; p
     [DEVICE_ROLE_BP_STATION, BP_STATION_ROUTES],
     [DEVICE_ROLE_CAM_HOST, CAM_HOST_ROUTES],
   ]);
+
+/** 認証ログを預けてよいテナントの一覧 (UUID 文字列の JSON 配列) を置く AUTH_CONFIG KV の key。値は repo に書かない。 */
+const VEIN_AUTH_LOG_TENANTS_KEY = "vein_auth_log_tenants";
+
+/** 鍵のテナントが一覧に載っているか。無い・空・壊れている = false (fail-closed)。 */
+async function isVeinAuthLogTenant(env: Env, tenantId: string): Promise<boolean> {
+  const list = await resolveKvTenantList(env, VEIN_AUTH_LOG_TENANTS_KEY);
+  const t = tenantId.trim().toLowerCase();
+  return list !== null && list.some((id) => id.toLowerCase() === t);
+}
 
 function jsonError(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
@@ -528,6 +555,21 @@ export async function handleDeviceDataProxy(request: Request, env: Env): Promise
     // doc コメントが説明する意図を変えない)。
     const allowed = ROLE_PATH_ALLOWLIST[role];
     if (!allowed || !allowed.has(backendPath)) return jsonError(403, "forbidden");
+  }
+
+  // ── ②' 認証ログ (Refs ippoan/alc-app-s3#352): KV の一覧に載ったテナントだけ。上の許可表を通った後でだけ来る。
+  if (request.method === "GET" && backendPath === "/api/vein/auth-log/enabled") {
+    return new Response(JSON.stringify({ enabled: await isVeinAuthLogTenant(env, tenantId) }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+  if (
+    request.method === "POST" &&
+    backendPath === "/api/vein/auth-shots" &&
+    !(await isVeinAuthLogTenant(env, tenantId))
+  ) {
+    return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
   }
 
   // ── ③ forward 用ヘッダ (X-Tenant-ID は device record 由来、client からは詐称不能) ──
