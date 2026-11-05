@@ -3109,10 +3109,13 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
     [`/api/tenko/schedules/pending/${ID}`, "GET", ["device"]],
     ["/api/tenko/health-baselines", "GET", ["browser", "device"]],
     [`/api/tenko/health-baselines/${ID}`, "DELETE", ["browser"]],
-    ["/api/tenko/equipment-failures", "POST", ["browser"]],
+    ["/api/tenko/equipment-failures", "POST", ["browser", "device"]],
+    ["/api/tenko/equipment-failures", "PUT", ["browser"]],
     ["/api/tenko/equipment-failures", "GET", ["browser", "device"]],
     ["/api/tenko/equipment-failures/csv", "GET", ["browser", "device"]],
     [`/api/tenko/equipment-failures/${ID}`, "PUT", ["browser"]],
+    [`/api/tenko/equipment-failures/${ID}/history`, "GET", ["browser", "device"]],
+    [`/api/tenko/equipment-failures/${ID}/history`, "POST", []],
     ["/api/tenko/webhooks", "GET", ["browser"]],
     [`/api/tenko/webhooks/${ID}`, "DELETE", ["browser"]],
     [`/api/tenko/webhooks/${ID}/deliveries`, "GET", ["browser"]],
@@ -3121,6 +3124,9 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
     ["/api/tenko/filing-settings", "GET", ["browser"]],
     ["/api/tenko/filing-settings", "PUT", ["browser"]],
     ["/api/tenko/filing-settings", "POST", []],
+    ["/api/tenko/settings", "GET", ["browser", "device"]],
+    ["/api/tenko/settings", "PUT", ["browser", "device"]],
+    ["/api/tenko/settings", "POST", []],
     [`/api/tenko/driver-info/${ID}`, "GET", ["browser", "device"]],
     ["/api/tenko-call/numbers", "POST", ["browser"]],
     ["/api/tenko-call/numbers/12", "DELETE", ["browser"]],
@@ -3148,7 +3154,6 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
       "/api/tenko/dashboard",
       "/api/tenko-call/drivers",
       "/api/tenko/health-baselines",
-      "/api/tenko/equipment-failures",
       "/api/tenko/equipment-failures/csv",
     ]) {
       expect(resolveAlcBinding(path, env, "device", "POST"), path).toBeNull();
@@ -3168,6 +3173,9 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
       `/api/tenko/schedules/${ID}/x`,
       "/api/tenko/driver-info/emp-1",
       "/api/tenko/webhooks/not-a-uuid",
+      "/api/tenko/equipment-failures/not-a-uuid/history",
+      `/api/tenko/equipment-failures/${ID}/historyx`,
+      "/api/tenko/settingsx",
       "/api/tenko-call/numbers/abc",
       "/api/tenko-callx",
       "/api/tenko/",
@@ -3234,7 +3242,7 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
   type Proxy = "browser" | "internal" | "device" | "admin" | "rpc";
   const PROXIES: ReadonlyArray<Proxy> = ["browser", "internal", "device", "admin", "rpc"];
   // アルコールの段は測定の保存 (`PUT /api/measurements/{id}` の tenko_session_id) で進む。本文で結果を受ける `…/alcohol` は無い
-  const PUT_STEPS = ["medical", "self-declaration", "daily-inspection", "instruction-confirm", "report", "carrying-items"];
+  const PUT_STEPS = ["medical", "self-declaration", "daily-inspection", "instruction-confirm", "report", "carrying-items", "vehicle"];
   const POST_STEPS = ["cancel", "interrupt", "self-resume", "judgment"];
 
   function setupTenko() {
@@ -3253,10 +3261,10 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
     [`/api/tenko/sessions/${ID}/resume`, "POST", ["browser", "device"]],
   ];
 
-  it("口ごとに、今通っている proxy だけが binding を引く (15 口)", () => {
+  it("口ごとに、今通っている proxy だけが binding を引く (16 口)", () => {
     const { tenko, env } = setupTenko();
     const target = { fetcher: tenko, host: "alc-measurements" };
-    expect(ROWS).toHaveLength(15);
+    expect(ROWS).toHaveLength(16);
     for (const [path, method, allowed] of ROWS) {
       for (const proxy of PROXIES) {
         const want = allowed.includes(proxy) ? target : null;

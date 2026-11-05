@@ -501,7 +501,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-tenko",
     proxies: ["browser"],
   },
-  { match: "exact", path: "/api/tenko/equipment-failures", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
+  // 端末からの POST はキオスクの故障の自動記録 (自動点呼の認定要件 業務前 二十一 / 業務後 十二)。role の表がキオスクだけに開ける
+  { match: "exact", path: "/api/tenko/equipment-failures", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET", "POST"] } },
   { match: "exact", path: "/api/tenko/equipment-failures/csv", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
   {
     match: "pattern",
@@ -509,6 +510,15 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     binding: "ALC_TENKO",
     host: "alc-tenko",
     proxies: ["browser"],
+  },
+  // 機器故障の変更前の行 (解決の記録のたびに DB の trigger が残す。読み取りだけ)
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/equipment-failures\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/history$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser", "device"],
+    methods: { browser: ["GET"], device: ["GET"] },
   },
   { match: "exact", path: "/api/tenko/webhooks", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
   {
@@ -527,6 +537,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   },
   { match: "exact", path: "/api/tenko/dashboard", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { device: ["GET"] } },
   { match: "exact", path: "/api/tenko/daily-health-status", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"] },
+  // 点呼の設定 (予定超過とする分数。管理画面の「予定管理」。権限は予定の口と同じ)
+  { match: "exact", path: "/api/tenko/settings", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { browser: ["GET", "PUT"], device: ["GET", "PUT"] } },
   // 点呼の届出・認定申請に差し込む値 (管理画面の「点呼の届出」。worker が admin に絞る)
   { match: "exact", path: "/api/tenko/filing-settings", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"], methods: { browser: ["GET", "PUT"] } },
   {
@@ -573,7 +585,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   {
     match: "pattern",
     pattern:
-      /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items)$/i,
+      /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items|vehicle)$/i,
     binding: "ALC_MEASUREMENTS",
     host: "alc-measurements",
     proxies: ["browser", "device"],
