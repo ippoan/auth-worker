@@ -186,6 +186,11 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * `crates/alc-misc/src/timecard.rs` の doc「この口に書き込みを足すな」)。書き込みを足す
  * 変更が入るなら、この行も見直すこと。`TENKO_MANAGER_ROUTES` の同じ行と pattern を揃えてある。
  * 測定台の鍵 (`bp-station`) には開けない。
+ *
+ * 機器故障の記録 (`POST /api/tenko/equipment-failures`) は、キオスクが機器の接続・読取、記録・写真の保存、
+ * 通信の失敗を自動で残すための口 (自動点呼の認定要件 業務前 二十一 / 業務後 十二)。書けるのは新しい行だけで、
+ * 解決の記録 (`PUT …/{id}`) は開けない。車両 (`PUT …/sessions/{id}/vehicle`) は点呼の段と同じ扱い
+ * (車検証の読取か入力で、そのセッションの自動車登録番号を決める)。
  */
 const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees$/ },
@@ -226,9 +231,11 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   {
     method: "PUT",
     pattern:
-      /^\/api\/tenko\/sessions\/[^/]+\/(medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items)$/,
+      /^\/api\/tenko\/sessions\/[^/]+\/(medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items|vehicle)$/,
   },
   { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/cancel$/ },
+  // 故障の自動記録 (上の doc)
+  { method: "POST", pattern: /^\/api\/tenko\/equipment-failures$/ },
   { method: "GET", pattern: /^\/api\/carrying-items$/ },
   { method: "GET", pattern: /^\/api\/devices\/settings\/[^/]+$/ },
   { method: "PUT", pattern: /^\/api\/devices\/update-last-login$/ },
@@ -358,6 +365,10 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/tenko\/health-baselines$/ },
   { method: "GET", pattern: /^\/api\/tenko\/equipment-failures$/ },
   { method: "GET", pattern: /^\/api\/tenko\/equipment-failures\/csv$/ },
+  { method: "GET", pattern: new RegExp(`^/api/tenko/equipment-failures/${UUID_SEGMENT}/history$`) },
+  // 予定超過とする分数 (「予定管理」の画面。予定の CRUD と同じく席の鍵から読み書きする)
+  { method: "GET", pattern: /^\/api\/tenko\/settings$/ },
+  { method: "PUT", pattern: /^\/api\/tenko\/settings$/ },
   { method: "GET", pattern: /^\/api\/carrying-items$/ },
   { method: "GET", pattern: /^\/api\/car-inspections\/vehicle-categories$/ },
   { method: "GET", pattern: /^\/api\/drivers$/ },
