@@ -987,6 +987,8 @@ describe("Router (index.ts)", () => {
       const res = await worker.fetch(new Request(`https://auth.test.example${path}`), env);
       expect(res.status).toBe(401);
     }
+    const attachment = await worker.fetch(new Request("https://auth.test.example/maker/certification/attachment"), env);
+    expect(attachment.status).toBe(302);
     for (const path of ["/maker/certification/applicant", "/maker/certification/overview"]) {
       const save = await worker.fetch(new Request(`https://auth.test.example${path}`, { method: "POST", body: "{}" }), env);
       expect(save.status).toBe(401);

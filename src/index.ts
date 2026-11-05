@@ -113,6 +113,7 @@ import {
   handleDeviceSetupLatest,
 } from "./handlers/device-setup";
 import {
+  handleMakerCertificationAttachment,
   handleMakerCertificationData,
   handleMakerCertificationForm,
   handleMakerCertificationPage,
@@ -894,6 +895,8 @@ export default {
             return await handleMakerCertificationData(request, env);
           case "/maker/certification/form":
             return await handleMakerCertificationForm(request, env);
+          case "/maker/certification/attachment":
+            return await handleMakerCertificationAttachment(request, env);
           // 公開中の最新 firmware バージョン (Pages manifest.json)。
           case "/device/setup/latest":
             return await handleDeviceSetupLatest(request, env);
