@@ -501,7 +501,8 @@ describe("様式2 の文面の保存", () => {
     expect(DEFAULT_OVERVIEW.overview.split("\n").length).toBeLessThanOrEqual(30);
     expect(DEFAULT_OVERVIEW.overview).toContain("{機器の名称} は、営業所に設置する点呼端末");
     expect(DEFAULT_OVERVIEW.overview).toContain("・制御装置 (Vein Base): 指静脈認証装置と NFC リーダーを内蔵");
-    expect(DEFAULT_OVERVIEW.overview).toContain("・監視カメラ (点呼端末一式に含まない。");
+    expect(DEFAULT_OVERVIEW.overview).toContain("・監視カメラ (ネットワークカメラ): 点呼場所で運転者の全身を撮影・録画");
+    expect(DEFAULT_OVERVIEW.cost_accessories).toContain("・監視カメラ (ネットワークカメラ) 32,000 円");
     expect(DEFAULT_OVERVIEW.overview).not.toContain("CoreS3");
     expect(DEFAULT_OVERVIEW.cost_device).toContain("20,000 円/台");
     expect(DEFAULT_OVERVIEW.cost_accessories).toContain("HCR-1902T2 29,819 円");
