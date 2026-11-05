@@ -3124,6 +3124,13 @@ describe("点呼の読み取りと管理 → ALC_TENKO binding (W7a、Refs ippoa
     ["/api/tenko/filing-settings", "GET", ["browser"]],
     ["/api/tenko/filing-settings", "PUT", ["browser"]],
     ["/api/tenko/filing-settings", "POST", []],
+    ["/api/tenko/offices", "GET", ["browser"]],
+    ["/api/tenko/offices", "POST", ["browser"]],
+    ["/api/tenko/offices", "PUT", []],
+    [`/api/tenko/offices/${ID}`, "PUT", ["browser"]],
+    [`/api/tenko/offices/${ID}`, "DELETE", ["browser"]],
+    [`/api/tenko/offices/${ID}`, "GET", []],
+    ["/api/tenko/offices/not-a-uuid", "PUT", []],
     ["/api/tenko/settings", "GET", ["browser", "device"]],
     ["/api/tenko/settings", "PUT", ["browser", "device"]],
     ["/api/tenko/settings", "POST", []],
@@ -3259,12 +3266,13 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
     ...POST_STEPS.map((s): [string, string, ReadonlyArray<Proxy>] => [`/api/tenko/sessions/${ID}/${s}`, "POST", ["browser", "device"]]),
     [`/api/tenko/sessions/${ID}/escalate-remote`, "PUT", ["browser"]],
     [`/api/tenko/sessions/${ID}/resume`, "POST", ["browser", "device"]],
+    [`/api/tenko/sessions/${ID}/in-person-scope`, "GET", ["browser", "device"]],
   ];
 
-  it("口ごとに、今通っている proxy だけが binding を引く (16 口)", () => {
+  it("口ごとに、今通っている proxy だけが binding を引く (17 口)", () => {
     const { tenko, env } = setupTenko();
     const target = { fetcher: tenko, host: "alc-measurements" };
-    expect(ROWS).toHaveLength(16);
+    expect(ROWS).toHaveLength(17);
     for (const [path, method, allowed] of ROWS) {
       for (const proxy of PROXIES) {
         const want = allowed.includes(proxy) ? target : null;
