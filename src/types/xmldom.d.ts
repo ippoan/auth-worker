@@ -14,6 +14,7 @@ declare module "@xmldom/xmldom/lib/index.js" {
     readonly parentNode: XmlNode | null;
     textContent: string | null;
     appendChild(node: XmlNode): XmlNode;
+    removeChild(node: XmlNode): XmlNode;
     cloneNode(deep: boolean): XmlNode;
   }
   export interface XmlElement extends XmlNode {
