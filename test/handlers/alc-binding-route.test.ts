@@ -3267,12 +3267,13 @@ describe("点呼のセッション → ALC_MEASUREMENTS binding (点呼の記録
     [`/api/tenko/sessions/${ID}/escalate-remote`, "PUT", ["browser"]],
     [`/api/tenko/sessions/${ID}/resume`, "POST", ["browser", "device"]],
     [`/api/tenko/sessions/${ID}/in-person-scope`, "GET", ["browser", "device"]],
+    [`/api/tenko/sessions/${ID}/vehicle-candidates`, "GET", ["browser", "device"]],
   ];
 
-  it("口ごとに、今通っている proxy だけが binding を引く (17 口)", () => {
+  it("口ごとに、今通っている proxy だけが binding を引く (18 口)", () => {
     const { tenko, env } = setupTenko();
     const target = { fetcher: tenko, host: "alc-measurements" };
-    expect(ROWS).toHaveLength(17);
+    expect(ROWS).toHaveLength(18);
     for (const [path, method, allowed] of ROWS) {
       for (const proxy of PROXIES) {
         const want = allowed.includes(proxy) ? target : null;

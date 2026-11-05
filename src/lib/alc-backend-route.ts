@@ -609,6 +609,15 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     proxies: ["browser", "device"],
     methods: { browser: ["POST"], device: ["POST"] },
   },
+  // キオスクの車両番号の候補 (テンキーで打った数字から。車両番号の段 `…/vehicle` と同じく画面用・端末用)
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/vehicle-candidates$/i,
+    binding: "ALC_MEASUREMENTS",
+    host: "alc-measurements",
+    proxies: ["browser", "device"],
+    methods: { browser: ["GET"], device: ["GET"] },
+  },
   // 対面点呼に切り替えた点呼で、判定の前に所属の照合の結果を見る (判定と同じく管理画面と運行管理者席)
   {
     match: "pattern",
