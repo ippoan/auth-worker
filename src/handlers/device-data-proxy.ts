@@ -190,7 +190,8 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * 機器故障の記録 (`POST /api/tenko/equipment-failures`) は、キオスクが機器の接続・読取、記録・写真の保存、
  * 通信の失敗を自動で残すための口 (自動点呼の認定要件 業務前 二十一 / 業務後 十二)。書けるのは新しい行だけで、
  * 解決の記録 (`PUT …/{id}`) は開けない。車両 (`PUT …/sessions/{id}/vehicle`) は点呼の段と同じ扱い
- * (車検証の読取か入力で、そのセッションの自動車登録番号を決める)。
+ * (車検証の読取か入力で、そのセッションの自動車登録番号を決める)。車両番号の候補 (`GET …/sessions/{id}/vehicle-candidates`)
+ * はその段でテンキーの数字から候補を引く読み取りの口 (この端末の営業所の車両を先に並べる。`X-Device-Id` を使う)。
  */
 const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^\/api\/employees$/ },
@@ -233,6 +234,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
     pattern:
       /^\/api\/tenko\/sessions\/[^/]+\/(medical|self-declaration|daily-inspection|instruction-confirm|report|carrying-items|vehicle)$/,
   },
+  { method: "GET", pattern: /^\/api\/tenko\/sessions\/[^/]+\/vehicle-candidates$/ },
   { method: "POST", pattern: /^\/api\/tenko\/sessions\/[^/]+\/cancel$/ },
   // 故障の自動記録 (上の doc)
   { method: "POST", pattern: /^\/api\/tenko\/equipment-failures$/ },
@@ -346,6 +348,8 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}$`) },
   { method: "GET", pattern: new RegExp(`^/api/tenko/driver-info/${UUID_SEGMENT}$`) },
   { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/judgment$`) },
+  // 対面点呼に切り替えた点呼の判定の前に、車両と運行管理者の所属営業所の照合を見る (判定の画面が表示する)
+  { method: "GET", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/in-person-scope$`) },
   // 運行管理者の点呼の一覧 (alc-app の `TenkoSessionMonitor.vue`) の取り消し・中断・再開 (上の doc)
   { method: "POST", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}/(cancel|interrupt|resume)$`) },
   { method: "POST", pattern: /^\/api\/timecard\/cards\/lookup$/ },

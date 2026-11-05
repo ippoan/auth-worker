@@ -414,6 +414,7 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "PUT", path: "/api/tenko/sessions/s-1/report" },
     { method: "PUT", path: "/api/tenko/sessions/s-1/carrying-items" },
     { method: "PUT", path: "/api/tenko/sessions/s-1/vehicle" },
+    { method: "GET", path: "/api/tenko/sessions/s-1/vehicle-candidates" },
     { method: "POST", path: "/api/tenko/sessions/s-1/cancel" },
     { method: "POST", path: "/api/tenko/equipment-failures" },
     { method: "GET", path: "/api/carrying-items" },
@@ -967,6 +968,8 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     { method: "GET", path: `/api/tenko/sessions/${MID}` },
     { method: "GET", path: `/api/tenko/driver-info/${MID}` },
     { method: "POST", path: `/api/tenko/sessions/${MID}/judgment` },
+    // 対面点呼に切り替えた点呼の判定の前の所属の照合
+    { method: "GET", path: `/api/tenko/sessions/${MID}/in-person-scope` },
     // 運行管理者の点呼の一覧の取り消し・中断・再開
     { method: "POST", path: `/api/tenko/sessions/${MID}/cancel` },
     { method: "POST", path: `/api/tenko/sessions/${MID}/interrupt` },
