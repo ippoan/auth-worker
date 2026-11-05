@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { DocxBody, fillDocx } from "../../src/lib/docx-fill";
 import {
+  DEFAULT_OVERVIEW,
   MAKER_FORMS,
   applicantStreet,
   TENKO_FORMS_RAW,
@@ -18,9 +19,12 @@ import {
   fillYoshiki5,
   fillYoshiki7,
   loadApplicant,
+  loadOverview,
   parseApplicant,
+  parseOverview,
   reiwaDate,
   saveApplicant,
+  saveOverview,
   selfCheckKey,
   type Applicant,
   type ProductConfig,
@@ -221,6 +225,70 @@ describe("様式1・様式2", () => {
     const empty = run(Y2, (d) => fillYoshiki2(d, emptyApplicant(), { product: "x", version: "v1" }));
     expect([cell(empty, 0, 3, 1), cell(empty, 0, 4, 1)]).toEqual(["", ""]);
   });
+
+  // 様式2 の 2・3 枚目の表 (本物は 1. の欄が空の段落 30・2.(1) が 12・2.(2) が 11)
+  const Y2_FULL: Child[] = [[
+    [["名称"], [""]],
+    [["対象者"], ["①運転者のみ"]],
+    [["場所"], ["①営業所又は車庫に限る"]],
+    [["製作事業者名"], [""]],
+    [["URL"], [""]],
+  ], [
+    [["１．機器の概要（機器の構成、使用方法等）"]],
+    [["", "", ""]],
+  ], [
+    [["２．導入費用 "]],
+    [["（１）機器本体の価格"], ["", ""]],
+    [["（２）付属品の価格"], ["", ""]],
+    [["３．運用にかかる費用の見込み"]],
+    [["（例：システム利用料等）"]],
+  ]];
+  const paraLines = (b: DocxBody, t: number, r: number, c: number) =>
+    b.cellParas(b.table(t), r, c).map((p) => {
+      const out = [""];
+      const walk = (n: { childNodes?: ArrayLike<{ localName?: string | null; textContent?: string | null }> }) => {
+        for (const x of Array.from(n.childNodes ?? [])) {
+          if (x.localName === "br") out.push("");
+          else if (x.localName === "t") out[out.length - 1] += x.textContent ?? "";
+          else walk(x as never);
+        }
+      };
+      walk(p as never);
+      return out;
+    });
+
+  it("様式2: 文面を 1 行ずつ欄の段落に書き、多い行は最後の段落に改行で足す。{機器の名称} は版の付いた名称", () => {
+    const overview = { overview: "{機器の名称} は\n行2", cost_device: "本体 1 円", cost_accessories: "・a\n・b\n・c\n・d", cost_running: "・月 1 円\n・年 2 円" };
+    const b = run(Y2_FULL, (d) => fillYoshiki2(d, A, { ...CFG, overview }));
+    expect(paraLines(b, 1, 1, 0)).toEqual([["一歩庵点呼 v2 は"], ["行2"], [""]]);
+    expect(paraLines(b, 2, 1, 1)).toEqual([["本体 1 円"], [""]]);
+    expect(paraLines(b, 2, 2, 1)).toEqual([["・a"], ["・b", "・c", "・d"]]);
+    expect([cell(b, 2, 0, 0), cell(b, 2, 3, 0)]).toEqual(["２．導入費用（すべて税抜）", "３．運用にかかる費用の見込み（すべて税抜）"]);
+    expect(paraLines(b, 2, 4, 0)).toEqual([["・月 1 円", "・年 2 円"]]);
+    // 空の欄は書かない (3. の例もそのまま)
+    const blank = run(Y2_FULL, (d) => fillYoshiki2(d, A, { ...CFG, overview: { overview: "", cost_device: "", cost_accessories: "", cost_running: "" } }));
+    expect([cell(blank, 1, 1, 0), cell(blank, 2, 4, 0)]).toEqual(["", "（例：システム利用料等）"]);
+    // 既定の文面も書ける
+    expect(() => run(Y2_FULL, (d) => fillYoshiki2(d, A, { ...CFG, overview: DEFAULT_OVERVIEW }))).not.toThrow();
+  });
+
+  it("様式2: 折り返す行の分だけ、使わなかった段落を末尾から消す (枠の高さを保つ)", () => {
+    const Y: Child[] = structuredClone(Y2_FULL);
+    (Y[1] as string[][][])[1]![0] = Array(6).fill("");
+    // 合成の段落は 10.5pt (全角 210 twips)、欄の幅は本文の幅 9638 - 216 → 全角 44 字で 1 行
+    const long = "あ".repeat(100); // 3 行に折り返す = 2 行ぶん増える
+    const b = run(Y, (d) => fillYoshiki2(d, A, { ...CFG, overview: { ...DEFAULT_OVERVIEW, overview: `${long}\n短い` } }));
+    expect(paraLines(b, 1, 1, 0)).toEqual([[long], ["短い"], [""], [""]]);
+  });
+
+  it("様式2: 欄が空でない・見出しが違うときは書かずに例外 (様式の版のずれ)", () => {
+    const filled = structuredClone(Y2_FULL);
+    (filled[1] as string[][][])[1]![0]![0] = "何か";
+    expect(() => run(filled, (d) => fillYoshiki2(d, A, { ...CFG, overview: DEFAULT_OVERVIEW }))).toThrow("記入欄が空ではありません");
+    const renamed = structuredClone(Y2_FULL);
+    (renamed[2] as string[][][])[1]![0]![0] = "（１）別の見出し";
+    expect(() => run(renamed, (d) => fillYoshiki2(d, A, { ...CFG, overview: DEFAULT_OVERVIEW }))).toThrow("「機器本体の価格」の位置が合いません");
+  });
 });
 
 describe("様式3 自己チェック表", () => {
@@ -402,5 +470,38 @@ describe("製品の設定と様式の取得", () => {
     expect(() => fillDocx(docx(Y2), (b) => byId["nintei-yoshiki2-gaiyo"]!.fill(b, A, CFG, ""))).not.toThrow();
     expect(() => fillDocx(docx(Y3), (b) => byId["nintei-yoshiki3-1-gyomumae-check"]!.fill(b, A, CFG, ""))).not.toThrow();
     expect(() => fillDocx(docx(Y3), (b) => byId["nintei-yoshiki3-2-gyomugo-check"]!.fill(b, A, CFG, ""))).not.toThrow();
+  });
+});
+
+describe("様式2 の文面の保存", () => {
+  const env = () => ({ AUTH_CONFIG: createMockKV(), WORKER_ENV: "staging" }) as unknown as Env;
+
+  it("本文を読む: 4 欄とも文字列、改行は \\n にそろえ前後の空白を落とす。欠け・型違い・長すぎは null", () => {
+    const ok = { overview: " a\r\nb ", cost_device: "c", cost_accessories: "d\re", cost_running: "", extra: 1 };
+    expect(parseOverview(ok)).toEqual({ overview: "a\nb", cost_device: "c", cost_accessories: "d\ne", cost_running: "" });
+    expect(parseOverview({ ...ok, cost_running: undefined })).toBeNull();
+    expect(parseOverview({ ...ok, overview: 1 })).toBeNull();
+    expect(parseOverview({ ...ok, overview: "x".repeat(5001) })).toBeNull();
+    expect(parseOverview(null)).toBeNull();
+  });
+
+  it("保存が無い・壊れているときは既定の文面、保存すればそれ", async () => {
+    const e = env();
+    expect(await loadOverview(e)).toEqual(DEFAULT_OVERVIEW);
+    await e.AUTH_CONFIG.put("maker-certification:overview:staging", "{");
+    expect(await loadOverview(e)).toEqual(DEFAULT_OVERVIEW);
+    await e.AUTH_CONFIG.put("maker-certification:overview:staging", '{"overview":1}');
+    expect(await loadOverview(e)).toEqual(DEFAULT_OVERVIEW);
+    const o = { overview: "x", cost_device: "y", cost_accessories: "z", cost_running: "w" };
+    await saveOverview(e, o);
+    expect(await loadOverview(e)).toEqual(o);
+  });
+
+  it("既定の文面は 1 枠目の段落の数 (30) に収まり、金額はユーザーが決めた税抜の値", () => {
+    expect(DEFAULT_OVERVIEW.overview.split("\n").length).toBeLessThanOrEqual(30);
+    expect(DEFAULT_OVERVIEW.overview).toContain("{機器の名称} は、営業所に設置する点呼端末");
+    expect(DEFAULT_OVERVIEW.cost_device).toContain("20,000 円/台");
+    expect(DEFAULT_OVERVIEW.cost_accessories).toContain("HCR-1902T2 29,819 円");
+    expect(DEFAULT_OVERVIEW.cost_running).toContain("14,000 円/回 (年 1 回)");
   });
 });

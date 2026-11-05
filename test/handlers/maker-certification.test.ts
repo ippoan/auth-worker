@@ -5,6 +5,7 @@ import {
   handleMakerCertificationData,
   handleMakerCertificationForm,
   handleMakerCertificationPage,
+  handleMakerCertificationOverviewSave,
   handleMakerCertificationSave,
 } from "../../src/handlers/maker-certification";
 import { DEVELOPER_EMAILS } from "../../src/lib/developer";
@@ -36,6 +37,13 @@ const Y2 = zipSync({
     '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/><w:p/><w:p/><w:tbl>' +
       ["", "①運転者のみ", "①営業所又は車庫に限る", "", ""]
         .map((t) => `<w:tr><w:tc><w:p/></w:tc><w:tc><w:p>${t ? `<w:r><w:t>${t}</w:t></w:r>` : ""}</w:p></w:tc></w:tr>`)
+        .join("") +
+      "</w:tbl>" +
+      // 1. 機器の概要・2. 導入費用・3. 運用費用の欄 (空の段落を並べた枠)
+      `<w:tbl><w:tr><w:tc><w:p><w:r><w:t>１．機器の概要</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc>${"<w:p/>".repeat(30)}</w:tc></w:tr></w:tbl>` +
+      "<w:tbl>" +
+      [["２．導入費用"], ["（１）機器本体の価格", 12], ["（２）付属品の価格", 11], ["３．運用にかかる費用の見込み"], ["（例：システム利用料等）"]]
+        .map(([t, n]) => `<w:tr><w:tc><w:p><w:r><w:t>${t}</w:t></w:r></w:p></w:tc>${n ? `<w:tc>${"<w:p/>".repeat(n as number)}</w:tc>` : ""}</w:tr>`)
         .join("") +
       "</w:tbl></w:body></w:document>",
   ),
@@ -92,6 +100,9 @@ describe("GET /maker/certification/data", () => {
     expect(d.device_name).toBe("一歩庵点呼 v1");
     expect((d.forms as unknown[]).length).toBe(6);
     expect((d.applicant as Record<string, unknown>).name).toBeNull();
+    // 様式2 の文面は保存が無ければ既定
+    expect((d.overview as Record<string, string>).cost_device).toContain("20,000 円/台");
+    expect(d.overview_default).toEqual(d.overview);
   });
 
   it("製品の設定が読めなければ理由を添えて返す", async () => {
@@ -114,6 +125,22 @@ describe("POST /maker/certification/applicant", () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { applicant: { name: string } }).applicant.name).toBe("架空製作所");
     expect(JSON.parse((await env.AUTH_CONFIG.get("maker-certification:applicant:staging"))!).name).toBe("架空製作所");
+  });
+});
+
+describe("POST /maker/certification/overview", () => {
+  it("開発者・同じ Origin・4 欄そろった本文だけ保存し、様式2 に書く", async () => {
+    const env = makeEnv();
+    const origin = { Origin: ISSUER };
+    const body = JSON.stringify({ overview: "{機器の名称} の概要", cost_device: "1 円", cost_accessories: "2 円", cost_running: "3 円" });
+    expect((await handleMakerCertificationOverviewSave(post("/x", body), env)).status).toBe(401);
+    expect((await handleMakerCertificationOverviewSave(post("/x", body, { ...(await cookie({ idp: "line" })), ...origin }), env)).status).toBe(403);
+    expect((await handleMakerCertificationOverviewSave(post("/x", body, { ...(await cookie()), Origin: "https://evil.example" }), env)).status).toBe(403);
+    expect((await handleMakerCertificationOverviewSave(post("/x", "{", { ...(await cookie()), ...origin }), env)).status).toBe(400);
+    expect((await handleMakerCertificationOverviewSave(post("/x", '{"overview":"x"}', { ...(await cookie()), ...origin }), env)).status).toBe(400);
+    const res = await handleMakerCertificationOverviewSave(post("/x", body, { ...(await cookie()), ...origin }), env);
+    expect(res.status).toBe(200);
+    expect(JSON.parse((await env.AUTH_CONFIG.get("maker-certification:overview:staging"))!).cost_device).toBe("1 円");
   });
 });
 

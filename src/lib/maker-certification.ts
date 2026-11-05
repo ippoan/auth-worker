@@ -67,6 +67,58 @@ export interface SelfCheckAnswer {
   evidence?: string | null;
 }
 
+/**
+ * 様式2 の「1. 機器の概要」「2. 導入費用 (1)(2)」「3. 運用にかかる費用の見込み」の文面 (改行で行を分ける)。
+ * 画面で直して `AUTH_CONFIG` KV に保存し、保存が無ければ {@link DEFAULT_OVERVIEW}。`{機器の名称}` は
+ * 版の付いた名称 (例 `一歩庵点呼 v1`) に置き換える (版を上げると切り替わる)
+ */
+export interface Overview {
+  overview: string;
+  cost_device: string;
+  cost_accessories: string;
+  cost_running: string;
+}
+
+/** 文面の欄 (key・見出し) */
+export const OVERVIEW_FIELDS: ReadonlyArray<[keyof Overview, string]> = [
+  ["overview", "1. 機器の概要 (機器の構成、使用方法等)"],
+  ["cost_device", "2. 導入費用 (1) 機器本体の価格"],
+  ["cost_accessories", "2. 導入費用 (2) 付属品の価格"],
+  ["cost_running", "3. 運用にかかる費用の見込み"],
+];
+
+/** 様式2 の既定の文面 (金額は税抜。様式の 2・3 の見出しに「（すべて税抜）」を添える) */
+export const DEFAULT_OVERVIEW: Overview = {
+  overview: [
+    "(1) 機器の構成",
+    "{機器の名称} は、営業所に設置する点呼端末と、クラウド上の点呼システムで構成する。",
+    "・点呼端末 PC (ブラウザで点呼画面を表示、カメラ・マイク付き): 点呼手順の案内、運転者の映像・音声の記録、各機器の測定値の集約",
+    "・指静脈認証装置: 運転者の本人確認 (なりすまし防止)",
+    "・NFC リーダー: 運転免許証を読み取り、有効性と乗務員マスタとの一致を確認",
+    "・アルコール検知器 (FC-1200): 呼気中アルコール濃度を測定。結果は自動で記録し、手入力・修正はできない",
+    "・体温計・血圧計 (Bluetooth 接続): 疾病・疲労等の確認に用いる測定値を自動で取得",
+    "・制御装置 (CoreS3): 機器の接続管理と、端末の認証 (署名付き通信)",
+    "・点呼システム (一歩庵点呼サーバ): 点呼記録の改ざんできない形での保存 (1 年以上)、運行管理者への通知、記録の閲覧・出力",
+    "(2) 使用方法",
+    "1. 運転者は点呼端末で指静脈認証を行い、運転免許証を NFC リーダーにかざして本人確認をする。",
+    "2. 端末の案内に従い、体温・血圧の測定、疾病・疲労・睡眠不足等の自己申告、日常点検結果の入力、アルコール検知器による測定を行う。",
+    "3. システムは測定値と申告内容をあらかじめ定めた基準と照合し、乗務の可否を判定する。基準を外れた場合や異常がある場合は乗務させず、運行管理者に直ちに通知する。",
+    "4. 指示事項は画面に表示し、運転者の確認を記録する。",
+    "5. 点呼の日時、運転者、各測定値と判定結果、アルコール検知器使用時の静止画又は動画、指示事項と確認の記録は自動で保存され、運行管理者が管理画面で確認できる。",
+    "6. 業務後も同様に本人確認・アルコール測定・申告 (運行の状況、車両の状況等) を行い、記録する。",
+    "※ 外観図・構造図・システム図は別添資料として添付する。",
+  ].join("\n"),
+  cost_device: "点呼端末一式 (制御装置・指静脈認証装置・NFC リーダー) 20,000 円/台",
+  cost_accessories: [
+    "・アルコール検知器 FC-1200 50,000 円",
+    "・体温計 ニプロ 非接触体温計 NT-100B 11,273 円",
+    "・血圧計 オムロン 全自動血圧計 HCR-1902T2 29,819 円",
+    "・端末 PC 利用者が用意",
+    "・初期設定費 10,000 円",
+  ].join("\n"),
+  cost_running: ["・システム利用料 30,000 円/月", "・アルコール検知器の定期点検・センサー交換 14,000 円/回 (年 1 回)"].join("\n"),
+};
+
 export interface ProductConfig {
   product: string;
   version: string;
@@ -76,6 +128,8 @@ export interface ProductConfig {
   history?: Array<{ version: string; date?: string | null; summary?: string | null; impact?: string | null }>;
   self_check?: { pre?: Record<string, SelfCheckAnswer>; post?: Record<string, SelfCheckAnswer> };
   discontinue?: { date?: string | null; reason?: string | null };
+  /** 様式2 の文面 (tenko-forms ではなく KV。ページが {@link loadOverview} の値を足す) */
+  overview?: Overview;
 }
 
 export function emptyApplicant(): Applicant {
@@ -127,6 +181,38 @@ export async function loadApplicant(env: Env): Promise<Applicant> {
 
 export async function saveApplicant(env: Env, a: Applicant): Promise<void> {
   await env.AUTH_CONFIG.put(applicantKey(env), JSON.stringify(a));
+}
+
+function overviewKey(env: Env): string {
+  return `maker-certification:overview:${env.WORKER_ENV || "unknown"}`;
+}
+
+/** 本文の値から様式2 の文面を作る (知らない欄は捨て、改行は \n にそろえ、1 欄 5000 文字まで)。形が違えば null */
+export function parseOverview(body: unknown): Overview | null {
+  if (!body || typeof body !== "object") return null;
+  const src = body as Record<string, unknown>;
+  const out = { ...DEFAULT_OVERVIEW };
+  for (const [key] of OVERVIEW_FIELDS) {
+    const v = src[key];
+    if (typeof v !== "string" || v.length > 5000) return null;
+    out[key] = v.replace(/\r\n?/g, "\n").trim();
+  }
+  return out;
+}
+
+/** 保存した様式2 の文面。無ければ (読めなければ) 既定の文面 */
+export async function loadOverview(env: Env): Promise<Overview> {
+  const raw = await env.AUTH_CONFIG.get(overviewKey(env));
+  if (!raw) return { ...DEFAULT_OVERVIEW };
+  try {
+    return parseOverview(JSON.parse(raw)) ?? { ...DEFAULT_OVERVIEW };
+  } catch {
+    return { ...DEFAULT_OVERVIEW };
+  }
+}
+
+export async function saveOverview(env: Env, o: Overview): Promise<void> {
+  await env.AUTH_CONFIG.put(overviewKey(env), JSON.stringify(o));
 }
 
 /** 製品の設定を読む。形が合わなければ例外 */
@@ -241,6 +327,39 @@ export function fillYoshiki2(b: DocxBody, a: Applicant, cfg: ProductConfig): voi
   b.setText(b.cellPara(t, 2, 1), circle("①営業所又は車庫に限る"), "①営業所又は車庫に限る");
   b.setText(b.cellPara(t, 3, 1), () => a.name ?? "");
   b.setText(b.cellPara(t, 4, 1), () => cfg.product_url ?? "");
+  const o = cfg.overview;
+  if (!o) return;
+  const name = deviceName(cfg);
+  const box = b.table(1);
+  b.setText(b.cellPara(box, 0, 0), (now) => now, "機器の概要");
+  fillBox(b, b.cellParas(box, 1, 0), o.overview.replaceAll("{機器の名称}", name));
+  const cost = b.table(2);
+  b.setText(b.cellPara(cost, 0, 0), (now) => `${now.trim()}（すべて税抜）`, "導入費用");
+  b.setText(b.cellPara(cost, 1, 0), (now) => now, "機器本体の価格");
+  fillBox(b, b.cellParas(cost, 1, 1), o.cost_device.replaceAll("{機器の名称}", name));
+  b.setText(b.cellPara(cost, 2, 0), (now) => now, "付属品の価格");
+  fillBox(b, b.cellParas(cost, 2, 1), o.cost_accessories.replaceAll("{機器の名称}", name));
+  b.setText(b.cellPara(cost, 3, 0), (now) => `${now.trim()}（すべて税抜）`, "運用にかかる費用の見込み");
+  // 3. は欄が「（例：システム利用料等）」の 1 段落だけなので、例を消して書く
+  const running = o.cost_running.replaceAll("{機器の名称}", name);
+  if (running) b.setLines(b.cellPara(cost, 4, 0), running.split("\n"), "例");
+}
+
+/**
+ * 空の段落を並べた欄に、1 行ずつ段落へ書く。行が段落より多ければ、残りは最後の段落に改行で足す。
+ * 折り返しで増える行の分だけ使わなかった段落を消し、枠の高さをおおよそ保つ。空でない段落があれば
+ * 様式の版のずれとして例外
+ */
+function fillBox(b: DocxBody, paras: XmlElement[], text: string): void {
+  if (!paras.length || paras.some((p) => DocxBody.text(p) !== "")) {
+    throw new Error("様式の版が想定と違います (様式2 の記入欄が空ではありません)");
+  }
+  if (!text) return;
+  const lines = text.split("\n");
+  const last = paras.length - 1;
+  lines.slice(0, last).forEach((line, i) => b.setText(paras[i]!, () => line));
+  if (lines.length > last) b.setLines(paras[last]!, lines.slice(last));
+  b.dropWrapped(paras, lines);
 }
 
 /** 自己チェック表の行の項目 (`一`〜`二十三`、`（ア）…` は `ア`) */

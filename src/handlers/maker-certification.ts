@@ -4,6 +4,7 @@
  * - `GET /maker/certification` — ページ (申請者の入力と、様式ごとの「記入済みをダウンロード」)
  * - `GET /maker/certification/data` — `{applicant, product, forms}` (product は tenko-forms の設定。読めなければ `product_error`)
  * - `POST /maker/certification/applicant` — 申請者を保存 (Origin を検証)
+ * - `POST /maker/certification/overview` — 様式2 の文面 (機器の概要・導入費用・運用費用) を保存 (Origin を検証)
  * - `GET /maker/certification/form?id=<様式>&date=YYYY-MM-DD` — 記入済みの docx
  *
  * どれも **開発者アカウントが Google でログインした cookie session** だけ (`isDeveloperGoogleSession`。
@@ -15,13 +16,18 @@ import { isDeveloperGoogleSession } from "../lib/developer";
 import { escapeHtml } from "../lib/html";
 import {
   APPLICANT_FIELDS,
+  DEFAULT_OVERVIEW,
   MAKER_FORMS,
+  OVERVIEW_FIELDS,
   buildMakerForm,
   deviceName,
   fetchProduct,
   loadApplicant,
+  loadOverview,
   parseApplicant,
+  parseOverview,
   saveApplicant,
+  saveOverview,
 } from "../lib/maker-certification";
 
 const PAGE_PATH = "/maker/certification";
@@ -67,30 +73,45 @@ export async function handleMakerCertificationPage(request: Request, env: Env): 
 export async function handleMakerCertificationData(request: Request, env: Env): Promise<Response> {
   const denied = await denyUnlessDeveloper(request, env);
   if (denied) return denied;
-  const applicant = await loadApplicant(env);
+  const [applicant, overview] = await Promise.all([loadApplicant(env), loadOverview(env)]);
   const forms = MAKER_FORMS.map((f) => ({ id: f.id, label: f.label }));
+  const base = { applicant, overview, overview_default: DEFAULT_OVERVIEW, forms };
   try {
     const product = await fetchProduct();
-    return json({ applicant, product, device_name: deviceName(product), forms });
+    return json({ ...base, product, device_name: deviceName(product) });
   } catch (e) {
-    return json({ applicant, product: null, product_error: e instanceof Error ? e.message : "製品の設定を読めません", forms });
+    return json({ ...base, product: null, product_error: e instanceof Error ? e.message : "製品の設定を読めません" });
+  }
+}
+
+/** 開発者・同じ Origin の JSON 本文。だめなら応答 */
+async function developerBody(request: Request, env: Env): Promise<{ body: unknown } | Response> {
+  const denied = await denyUnlessDeveloper(request, env);
+  if (denied) return denied;
+  if (request.headers.get("Origin") !== issuerOf(env)) return json({ error: "bad_origin" }, 403);
+  try {
+    return { body: await request.json() };
+  } catch {
+    return json({ error: "invalid_body" }, 400);
   }
 }
 
 export async function handleMakerCertificationSave(request: Request, env: Env): Promise<Response> {
-  const denied = await denyUnlessDeveloper(request, env);
-  if (denied) return denied;
-  if (request.headers.get("Origin") !== issuerOf(env)) return json({ error: "bad_origin" }, 403);
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: "invalid_body" }, 400);
-  }
-  const applicant = parseApplicant(body);
+  const got = await developerBody(request, env);
+  if (got instanceof Response) return got;
+  const applicant = parseApplicant(got.body);
   if (!applicant) return json({ error: "invalid_body" }, 400);
   await saveApplicant(env, applicant);
   return json({ applicant });
+}
+
+export async function handleMakerCertificationOverviewSave(request: Request, env: Env): Promise<Response> {
+  const got = await developerBody(request, env);
+  if (got instanceof Response) return got;
+  const overview = parseOverview(got.body);
+  if (!overview) return json({ error: "invalid_body" }, 400);
+  await saveOverview(env, overview);
+  return json({ overview });
 }
 
 export async function handleMakerCertificationForm(request: Request, env: Env): Promise<Response> {
@@ -102,8 +123,8 @@ export async function handleMakerCertificationForm(request: Request, env: Env): 
   const date = url.searchParams.get("date") ?? "";
   if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "invalid_date" }, 400);
   try {
-    const [applicant, product] = await Promise.all([loadApplicant(env), fetchProduct()]);
-    const { bytes, filename } = await buildMakerForm(form, applicant, product, date || todayJst());
+    const [applicant, product, overview] = await Promise.all([loadApplicant(env), fetchProduct(), loadOverview(env)]);
+    const { bytes, filename } = await buildMakerForm(form, applicant, { ...product, overview }, date || todayJst());
     return new Response(bytes as unknown as BodyInit, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -128,6 +149,10 @@ function page(today: string): string {
     ([key, label, autocomplete]) =>
       `<label>${escapeHtml(label)}<input name="${key}" data-field="${key}" autocomplete="${autocomplete}" maxlength="500"></label>`,
   ).join("");
+  const overviewFields = OVERVIEW_FIELDS.map(
+    ([key, label]) =>
+      `<label>${escapeHtml(label)}<textarea name="${key}" data-overview="${key}" rows="${key === "overview" ? 18 : 5}" maxlength="5000"></textarea></label>`,
+  ).join("");
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自動点呼機器の認定申請</title>
@@ -137,6 +162,7 @@ section{background:#fff;border-radius:.75rem;padding:1rem 1.2rem;margin:1rem 0;b
 h1{font-size:1.3rem}h2{font-size:1.05rem;margin:.2rem 0 .8rem}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:.6rem 1rem}
 label{display:flex;flex-direction:column;font-size:.85rem;color:#555;gap:.2rem}
+textarea{font-size:.9rem;padding:.4rem .5rem;border:1px solid #cbd5e1;border-radius:.4rem;font-family:inherit;margin-bottom:.6rem}
 input{font-size:.95rem;padding:.4rem .5rem;border:1px solid #cbd5e1;border-radius:.4rem}
 button{background:#2563eb;color:#fff;border:0;border-radius:.4rem;padding:.45rem .9rem;font-size:.9rem;cursor:pointer}
 button:disabled{opacity:.5}
@@ -153,6 +179,11 @@ table{border-collapse:collapse;font-size:.85rem}td,th{border-top:1px solid #eee;
 <form id="applicant" autocomplete="on"><div class="grid">${fields}</div>
 <p><button type="submit" id="save">保存</button> <span id="save-msg"></span></p></form></section>
 
+<section><h2>様式2 の文面</h2>
+<p class="muted">1 行ずつ様式の欄に書きます。{機器の名称} は版の付いた名称 (例 一歩庵点呼 v1) に置き換わります。金額は税抜で、様式の 2・3 の見出しに「（すべて税抜）」を添えます。</p>
+<form id="overview">${overviewFields}
+<p><button type="submit" id="ov-save">保存</button> <button type="button" id="ov-default">既定の文面に戻す</button> <span id="ov-msg"></span></p></form></section>
+
 <section><h2>記入済みの様式をダウンロード</h2>
 <label style="max-width:12rem">申請日<input type="date" id="date" value="${today}"></label>
 <ul id="forms"></ul>
@@ -166,6 +197,8 @@ async function load() {
   const res = await fetch("${PAGE_PATH}/data", { credentials: "same-origin" });
   const d = await res.json();
   for (const [k, v] of Object.entries(d.applicant || {})) { const el = document.querySelector('[data-field="' + k + '"]'); if (el) el.value = v ?? ""; }
+  overviewDefault = d.overview_default || {};
+  setOverview(d.overview || {});
   if (d.product) {
     const p = d.product, c = p.certification || {};
     const hist = (p.history || []).map((h) => "<tr><td>" + esc(h.version) + "</td><td>" + esc(h.date) + "</td><td>" + esc(h.summary) + "</td></tr>").join("");
@@ -175,6 +208,20 @@ async function load() {
   }
   $("#forms").innerHTML = d.forms.map((f) => '<li><span>' + esc(f.label) + '</span><button type="button" data-form="' + esc(f.id) + '">記入済みをダウンロード</button></li>').join("");
 }
+let overviewDefault = {};
+function setOverview(o) { document.querySelectorAll("[data-overview]").forEach((el) => { el.value = o[el.dataset.overview] ?? ""; }); }
+$("#ov-default").addEventListener("click", () => { setOverview(overviewDefault); $("#ov-msg").className = "muted"; $("#ov-msg").textContent = "既定の文面にしました (保存はまだ)"; });
+$("#overview").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {};
+  document.querySelectorAll("[data-overview]").forEach((el) => { body[el.dataset.overview] = el.value; });
+  $("#ov-save").disabled = true; $("#ov-msg").textContent = "";
+  try {
+    const res = await fetch("${PAGE_PATH}/overview", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("#ov-msg").className = res.ok ? "ok" : "err";
+    $("#ov-msg").textContent = res.ok ? "保存しました" : "保存できませんでした (" + res.status + ")";
+  } finally { $("#ov-save").disabled = false; }
+});
 $("#applicant").addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = {};

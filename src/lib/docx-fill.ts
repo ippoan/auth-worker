@@ -24,6 +24,15 @@ function descendants(el: XmlElement | XmlDocument, local: string): XmlElement[] 
   return Array.from(el.getElementsByTagName("*")).filter((e) => e.localName === local);
 }
 
+/** 段落の既定の文字の大きさ (無ければ 10.5pt) で、文の幅 (twips) を数える関数。全角を 1・半角を 0.5 */
+function lineWidth(p: XmlElement): (s: string) => number {
+  const pPr = elementChildren(p).find((e) => e.localName === "pPr");
+  const rPr = pPr && elementChildren(pPr).find((e) => e.localName === "rPr");
+  const sz = Number(rPr && descendants(rPr, "sz")[0]?.getAttribute("w:val")) || 21;
+  const full = sz * 10;
+  return (s) => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) < 0x100 ? full / 2 : full), 0);
+}
+
 export class DocxBody {
   readonly doc: XmlDocument;
   readonly body: XmlElement;
@@ -53,11 +62,16 @@ export class DocxBody {
     return elementChildren(tbl).filter((e) => e.localName === "tr");
   }
 
-  /** 表の r 行 c 列の p 番目の段落 */
-  cellPara(tbl: XmlElement, r: number, c: number, p = 0): XmlElement {
+  /** 表の r 行 c 列の段落 (無ければ空) */
+  cellParas(tbl: XmlElement, r: number, c: number): XmlElement[] {
     const row = this.rows(tbl)[r];
     const cell = row && elementChildren(row).filter((e) => e.localName === "tc")[c];
-    const para = cell && elementChildren(cell).filter((e) => e.localName === "p")[p];
+    return cell ? elementChildren(cell).filter((e) => e.localName === "p") : [];
+  }
+
+  /** 表の r 行 c 列の p 番目の段落 */
+  cellPara(tbl: XmlElement, r: number, c: number, p = 0): XmlElement {
+    const para = this.cellParas(tbl, r, c)[p];
     if (!para) throw new Error(`様式の表の ${r + 1} 行 ${c + 1} 列が見つかりません`);
     return para;
   }
@@ -136,16 +150,32 @@ export class DocxBody {
     }
     const num = (name: string) => Number(ind!.getAttribute(name) ?? 0) || 0;
     const start = num("w:left") + num("w:firstLine");
-    const rPr = elementChildren(pPr).find((e) => e.localName === "rPr");
-    const sz = Number(rPr && descendants(rPr, "sz")[0]?.getAttribute("w:val")) || 21;
-    const full = sz * 10;
-    const width = (s: string) => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) < 0x100 ? full / 2 : full), 0);
+    const width = lineWidth(p);
     const need = Math.max(0, ...lines.map(width));
     const left = Math.max(0, Math.min(start, this.textWidth() - need));
     for (const a of ["w:firstLine", "w:firstLineChars", "w:hanging", "w:hangingChars", "w:leftChars", "w:start", "w:startChars"]) {
       ind.removeAttribute(a);
     }
     ind.setAttribute("w:left", String(Math.floor(left)));
+  }
+
+  /**
+   * 空の段落を並べた枠に `lines` を書いた後、折り返しで増える行の分だけ、使わなかった段落を末尾から消す
+   * (枠の高さを保ち、後ろを次のページへ押し出さない)。欄の幅は `w:tcW` (無ければ本文の幅) から
+   * 左右の余白 (既定 108 twips ずつ) を引いたもの、文字の幅は {@link fitIndent} と同じ数え方
+   */
+  dropWrapped(paras: XmlElement[], lines: string[]): void {
+    const first = paras[0];
+    if (!first) return;
+    const tc = first.parentNode as XmlElement | null;
+    const tcPr = tc && elementChildren(tc).find((e) => e.localName === "tcPr");
+    const tcW = tcPr && elementChildren(tcPr).find((e) => e.localName === "tcW");
+    const w = tcW?.getAttribute("w:type") === "dxa" ? Number(tcW.getAttribute("w:w")) : NaN;
+    const room = (Number.isFinite(w) && w > 0 ? w : this.textWidth()) - 216;
+    const width = lineWidth(first);
+    const extra = lines.reduce((n, line) => n + Math.max(0, Math.ceil(width(line) / room) - 1), 0);
+    const unused = paras.slice(lines.length).reverse();
+    for (const p of unused.slice(0, extra)) p.parentNode?.removeChild(p);
   }
 
   xml(): string {

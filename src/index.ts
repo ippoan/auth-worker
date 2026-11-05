@@ -116,6 +116,7 @@ import {
   handleMakerCertificationData,
   handleMakerCertificationForm,
   handleMakerCertificationPage,
+  handleMakerCertificationOverviewSave,
   handleMakerCertificationSave,
 } from "./handlers/maker-certification";
 import {
@@ -1068,6 +1069,9 @@ export default {
           // 一歩庵点呼の認定申請の申請者を保存 (開発者専用)。POST。
           case "/maker/certification/applicant":
             return await handleMakerCertificationSave(request, env);
+          // 様式2 の文面 (機器の概要・導入費用・運用費用) を保存 (開発者専用)。POST。
+          case "/maker/certification/overview":
+            return await handleMakerCertificationOverviewSave(request, env);
           // OTA トリガ (cookie session → recorder の下り command)。POST。
           case "/device/setup/ota":
             return await handleDeviceSetupOta(request, env);
