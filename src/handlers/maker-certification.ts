@@ -6,6 +6,7 @@
  * - `POST /maker/certification/applicant` — 申請者を保存 (Origin を検証)
  * - `POST /maker/certification/overview` — 様式2 の文面 (機器の概要・導入費用・運用費用) を保存 (Origin を検証)
  * - `GET /maker/certification/form?id=<様式>&date=YYYY-MM-DD` — 記入済みの docx
+ * - `GET /maker/certification/attachment` — 様式2 の添付資料 (外観図・構造図・システム図) の印刷用ページ
  *
  * どれも **開発者アカウントが Google でログインした cookie session** だけ (`isDeveloperGoogleSession`。
  * dev ログイン・device-key の token、LINE のログインは通さない)。ページは未ログインなら /login へ。
@@ -14,6 +15,7 @@ import type { Env } from "../index";
 import { cookieSession, issuerOf } from "./device-setup";
 import { isDeveloperGoogleSession } from "../lib/developer";
 import { escapeHtml } from "../lib/html";
+import { attachmentCsp, buildAttachment } from "../lib/maker-attachment";
 import {
   APPLICANT_FIELDS,
   DEFAULT_OVERVIEW,
@@ -52,22 +54,42 @@ function todayJst(now = Date.now()): string {
   return new Date(now + 9 * 3600_000).toISOString().slice(0, 10);
 }
 
-export async function handleMakerCertificationPage(request: Request, env: Env): Promise<Response> {
+const HTML_HEADERS = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" };
+
+/** ページ (HTML) の口の認可。未ログインは /login へ (戻り先 `path`)、開発者でなければ 403、開発者なら null */
+async function denyPageUnlessDeveloper(request: Request, env: Env, path: string): Promise<Response | null> {
   const issuer = issuerOf(env);
   const session = await cookieSession(request, env);
   if (!session) {
-    const back = `${issuer}${PAGE_PATH}`;
-    return Response.redirect(`${issuer}/login?redirect_uri=${encodeURIComponent(back)}`, 302);
+    return Response.redirect(`${issuer}/login?redirect_uri=${encodeURIComponent(`${issuer}${path}`)}`, 302);
   }
-  if (!isDeveloperGoogleSession(session)) {
-    return new Response(deniedPage(), {
-      status: 403,
-      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  if (!isDeveloperGoogleSession(session)) return new Response(deniedPage(), { status: 403, headers: HTML_HEADERS });
+  return null;
+}
+
+export async function handleMakerCertificationPage(request: Request, env: Env): Promise<Response> {
+  const denied = await denyPageUnlessDeveloper(request, env, PAGE_PATH);
+  if (denied) return denied;
+  return new Response(page(todayJst()), { headers: HTML_HEADERS });
+}
+
+export async function handleMakerCertificationAttachment(request: Request, env: Env): Promise<Response> {
+  const denied = await denyPageUnlessDeveloper(request, env, `${PAGE_PATH}/attachment`);
+  if (denied) return denied;
+  try {
+    const [applicant, product] = await Promise.all([loadApplicant(env), fetchProduct()]);
+    const nonce = crypto.randomUUID().replaceAll("-", "");
+    return new Response(await buildAttachment(product, applicant.name, nonce), {
+      headers: { ...HTML_HEADERS, "Content-Security-Policy": attachmentCsp(nonce) },
+    });
+  } catch (e) {
+    // 理由の文は取得の失敗・一覧の形など固定の語 (値は含まない)
+    const msg = e instanceof Error ? e.message : "添付資料を作れませんでした";
+    return new Response(`<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>添付資料を作れません</title></head><body><p>${escapeHtml(msg)}</p></body></html>`, {
+      status: 422,
+      headers: HTML_HEADERS,
     });
   }
-  return new Response(page(todayJst()), {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-  });
 }
 
 export async function handleMakerCertificationData(request: Request, env: Env): Promise<Response> {
@@ -187,6 +209,7 @@ table{border-collapse:collapse;font-size:.85rem}td,th{border-top:1px solid #eee;
 <section><h2>記入済みの様式をダウンロード</h2>
 <label style="max-width:12rem">申請日<input type="date" id="date" value="${today}"></label>
 <ul id="forms"></ul>
+<p><a href="${PAGE_PATH}/attachment" target="_blank" rel="noopener">添付資料 (外観図・構造図・システム図) を開く</a> <span class="muted">— 様式2 の注 2。開いたページの「印刷 / PDF に保存」で PDF にします。外観図の写真と図は ippoan/tenko-forms の product/photos/・product/figures/ から読みます。</span></p>
 <p class="muted">様式3-1・3-2 は、製品の設定の self_check に書いた項目だけ適否・詳細・根拠資料を入れます。様式5 は history に 2 件以上 (変更後と認定済みの版) あるときに作れます。</p>
 <p id="dl-msg" class="err"></p></section>
 

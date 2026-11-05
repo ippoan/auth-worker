@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { strToU8, zipSync } from "fflate";
 import {
+  handleMakerCertificationAttachment,
   handleMakerCertificationData,
   handleMakerCertificationForm,
   handleMakerCertificationPage,
@@ -84,9 +85,44 @@ describe("GET /maker/certification", () => {
     expect(html).toContain('data-field="postal_code" autocomplete="postal-code"');
     expect(html).toContain('data-field="prefecture" autocomplete="address-level1"');
     expect(html).toMatch(/id="date" value="\d{4}-\d{2}-\d{2}"/);
+    expect(html).toContain('href="/maker/certification/attachment"');
     // ページの script が構文として読める (テンプレートの中の引用符が外れて画面が動かなくなったことがある)
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
     expect(() => new Function(script)).not.toThrow();
+  });
+});
+
+describe("GET /maker/certification/attachment", () => {
+  it("未ログインは /login へ (戻り先は添付資料)、開発者でなければ 403", async () => {
+    const env = makeEnv();
+    const anon = await handleMakerCertificationAttachment(get("/maker/certification/attachment"), env);
+    expect(anon.status).toBe(302);
+    expect(anon.headers.get("Location")).toBe(`${ISSUER}/login?redirect_uri=${encodeURIComponent(`${ISSUER}/maker/certification/attachment`)}`);
+    expect((await handleMakerCertificationAttachment(get("/x", await cookie({ token_kind: "dev" })), env)).status).toBe(403);
+  });
+
+  it("開発者には添付資料を CSP 付きで返し、申請者の名称を図に入れる。作れなければ 422", async () => {
+    const env = makeEnv();
+    await env.AUTH_CONFIG.put("maker-certification:applicant:staging", JSON.stringify({ name: "架空製作所" }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("product/ippoan-tenko.json")) return new Response(JSON.stringify(PRODUCT));
+        if (url.endsWith("product/photos/index.json")) return new Response('{"photos":[]}');
+        return new Response("<h1>{機器の名称}</h1><p>{製作事業者名}</p>");
+      }),
+    );
+    const res = await handleMakerCertificationAttachment(get("/x", await cookie()), env);
+    expect(res.status).toBe(200);
+    const csp = res.headers.get("Content-Security-Policy")!;
+    const html = await res.text();
+    const nonce = /script-src 'nonce-([0-9a-f]+)'/.exec(csp)![1]!;
+    expect(html).toContain(`<script nonce="${nonce}">`);
+    expect(html).toContain("<p>架空製作所</p>");
+    expect(html).toContain("写真未登録");
+    stubFetch(new Response("", { status: 500 }));
+    const bad = await handleMakerCertificationAttachment(get("/x", await cookie()), env);
+    expect([bad.status, await bad.text()]).toEqual([422, expect.stringContaining("製品の設定を取得できませんでした (500)")]);
   });
 });
 
