@@ -286,7 +286,13 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * (`PUT /api/vein/templates/{employee_id}/module/devices`)・照合が通った後の入れ替え
  * (`POST …/module/devices/rotate`)・認証ログ (`POST /api/vein/auth-shots` / `GET /api/vein/auth-log/enabled`。
  * 理由はどれも `KIOSK_ROUTES` の doc) だけ (両端固定)。
- * 登録し直し (`PUT …/{employee_id}` / `PUT …/module`)・照合 (`POST /api/vein/identify`)・承認の口は開けない。
+ * 照合 (`POST /api/vein/identify`)・承認の口は開けない。
+ *
+ * **席の画面の「指静脈の登録」(オーナー決定 2026-11-06)**: 運行管理者の画面のハンバーガーから、運行者の
+ * 画面と同じ登録画面を席の機体 (Vein Base) で使う。そのために登録の預け入れ 2 本
+ * (`PUT /api/vein/templates/{employee_id}`・`PUT …/module`) と、NFC の id から乗務員を返す
+ * `POST /api/employees/lookup` を開ける。どれも `KIOSK_ROUTES` に同じ正規表現で在る口で、新しい種類の
+ * 到達面ではない。預けた記録は承認待ちで、管理者が承認するまで照合に使われない (承認の口は開けない)。
  *
  * **運行管理者のダッシュボードの読み取り専用の画面を席で開く (オーナー決定 2026-10-31)**: 席は指静脈で
  * ログインし、管理者の Google ログインは無い。その席でダッシュボード・測定の 1 件 (顔写真・動画を含む)・
@@ -301,7 +307,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * - `GET /api/employees/face-data` — tenant 全員の生体情報。モニターからの呼び出しが 0 件。
  * - `GET /api/devices/settings/{id}` — 運行管理者席は devices に行を持たない。
  * - `/api/timecard/cards` の書き込み (登録 POST・`{id}` の DELETE・bulk)、`{id}` の GET、
- *   `/api/timecard/punch`、`POST /api/employees/lookup` — 席はカードの管理も打刻もしない
+ *   `/api/timecard/punch` — 席はカードの管理も打刻もしない
  *   (カード台帳と打刻の一覧・CSV の GET は上のオーナー決定で開けた)。
  *
  * **判定の POST は運行管理者の鍵すべてに通す。** 「dev の鍵だけ」に絞るのは backend
@@ -344,6 +350,8 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/employees$/ },
   { method: "GET", pattern: new RegExp(`^/api/employees/${UUID_SEGMENT}$`) },
   { method: "GET", pattern: /^\/api\/employees\/by-code\/[^/]+$/ },
+  // 席の画面の「指静脈の登録」が NFC で乗務員を決める (下の doc)
+  { method: "POST", pattern: /^\/api\/employees\/lookup$/ },
   { method: "GET", pattern: /^\/api\/tenko\/sessions$/ },
   { method: "GET", pattern: new RegExp(`^/api/tenko/sessions/${UUID_SEGMENT}$`) },
   { method: "GET", pattern: new RegExp(`^/api/tenko/driver-info/${UUID_SEGMENT}$`) },
@@ -356,6 +364,9 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/cam-clips\/cameras$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/templates$/ },
+  // 席の画面の「指静脈の登録」(承認待ちとして預ける。下の doc)
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },
+  { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices\/rotate$/ },
   { method: "POST", pattern: /^\/api\/vein\/auth-shots$/ },
