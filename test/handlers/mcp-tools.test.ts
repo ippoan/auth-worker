@@ -1533,6 +1533,17 @@ describe("POST /mcp/tools — get_device_log", () => {
       expect(JSON.parse(calls[0]!.body)).toEqual({ device_id: KIOSK, op: "firmware_update", args: {} });
     });
 
+    it("log_upload を送れる (溜めた行を今すぐ R2 へ上げさせる)", async () => {
+      const { fetcher, calls } = mockRecorder(() => new Response(JSON.stringify({ id: "k-log", sent: 1 }), { status: 202 }));
+      expect(parsed(await kiosk(logEnv(fetcher), { device_id: KIOSK, op: "log_upload", wait_ms: 0 }))).toEqual({
+        id: "k-log",
+        device_id: KIOSK,
+        timed_out: true,
+        last: null,
+      });
+      expect(JSON.parse(calls[0]!.body)).toEqual({ device_id: KIOSK, op: "log_upload", args: {} });
+    });
+
     it("キオスクが居ない・recorder が無い・recorder のエラーはそのまま返す", async () => {
       const none = mockRecorder(() => new Response("{}", { status: 404 }));
       expect(parsed(await kiosk(logEnv(none.fetcher), { device_id: KIOSK, op: "hello" }))).toEqual({
