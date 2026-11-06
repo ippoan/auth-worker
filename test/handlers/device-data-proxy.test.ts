@@ -708,6 +708,10 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
     // 照合が通った後の 1 本で一番古い 1 本を入れ替える。
     { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+    // 席の画面の「指静脈の登録」(承認待ちとして預ける) と、NFC で乗務員を決める口 (オーナー決定 2026-11-06)
+    { method: "PUT", path: "/api/vein/templates/emp-1" },
+    { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+    { method: "POST", path: "/api/employees/lookup" },
     // 運行管理者のダッシュボードの読み取り専用の画面 (オーナー決定 2026-10-31)
     { method: "GET", path: "/api/tenko/dashboard" },
     { method: "GET", path: `/api/measurements/${MID}` },
@@ -758,7 +762,6 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     const fetchMock = okFetch();
     // kiosk が通せる口を中心に、運行管理者タブの他タブが叩く経路まで並べる。
     const cases: ReadonlyArray<{ method: string; path: string }> = [
-      { method: "POST", path: "/api/employees/lookup" },
       { method: "GET", path: "/api/employees/face-data" },
       { method: "PUT", path: "/api/employees/emp-1/face" },
       { method: "POST", path: "/api/tenko/sessions/start" },
@@ -772,9 +775,7 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       { method: "POST", path: "/api/upload" },
       // 予定でも kiosk 側の口 (乗務員ごとの未実施一覧) は運行管理者の表に無い。
       { method: "GET", path: "/api/tenko/schedules/pending/emp-1" },
-      // 指静脈は照合データの読み取り 2 本と記録の追加だけ。登録し直し・照合・承認・1 件の読み取りは開けない
-      { method: "PUT", path: "/api/vein/templates/emp-1" },
-      { method: "PUT", path: "/api/vein/templates/emp-1/module" },
+      // 指静脈は照合データの読み取り 2 本・登録の預け入れ・記録の追加だけ。照合・承認・1 件の読み取りは開けない
       { method: "POST", path: "/api/vein/templates/emp-1/module/devices" },
       { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/dev-1" },
       // 入れ替えは POST だけ。別 method・語尾の余りは 403。
@@ -1596,7 +1597,7 @@ describe("運行管理者の鍵のカード照会 POST /api/timecard/cards/looku
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("★ カードの書き込み・打刻の書き込み・employees/lookup・lookup の GET/PUT/DELETE・末尾スラッシュは 403 のまま (台帳と打刻の GET は読み取り専用の画面の口)", async () => {
+  it("★ カードの書き込み・打刻の書き込み・lookup の GET/PUT/DELETE・末尾スラッシュは 403 のまま (台帳と打刻の GET は読み取り専用の画面の口)", async () => {
     const fetchMock = okFetch();
     const cases: ReadonlyArray<{ method: string; path: string }> = [
       { method: "POST", path: "/api/timecard/cards" },
@@ -1605,7 +1606,6 @@ describe("運行管理者の鍵のカード照会 POST /api/timecard/cards/looku
       { method: "DELETE", path: `/api/timecard/cards/${CID}` },
       { method: "POST", path: "/api/timecard/punch" },
       { method: "POST", path: "/api/timecard/punches" },
-      { method: "POST", path: "/api/employees/lookup" },
       { method: "GET", path: LOOKUP },
       { method: "PUT", path: LOOKUP },
       { method: "DELETE", path: LOOKUP },
