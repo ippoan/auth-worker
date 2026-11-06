@@ -97,6 +97,7 @@ const KIOSK_CMD_OPS = [
   "lines",
   "firmware_update",
   "log_upload",
+  "vein_add_finger",
 ] as const;
 const GET_LOG_TIMEOUT_MS = 8000;
 /** `ota_device` の進捗ポーリング間隔と全体の待ち時間 (書き込みは数十秒かかる)。 */
@@ -811,7 +812,7 @@ const TOOLS: ToolDef[] = [
       "latest official firmware to the connected finger-vein device over WebSerial, exactly like the screen's " +
       "update button; takes minutes, so it usually times out with `{stage:'updating'}` — read the final " +
       "`{outcome}` (updated / up_to_date / busy / skipped / unsupported / failed) with kiosk_command_result; " +
-      "the page reloads after an update), log_upload (upload the kiosk's buffered Vein Station lines to the " +
+      "the page reloads after an update), vein_add_finger {employee_id} (re-enroll that person's finger on this kiosk exactly like the screen's 'add this device's finger' button: 6 captures, saved as this device's record and written to the module; progress `{stage:'place_again', n, total}`; returns `{added}`), log_upload (upload the kiosk's buffered Vein Station lines to the " +
       "R2 device-log now with reason `on_demand`, instead of waiting for the 10-minute or no-match upload; " +
       "returns `{uploaded}`). Errors: `kiosk_not_connected` " +
       "(no kiosk subscription in your tenant). A kiosk that is off, not addressed or without Vein Station " +
