@@ -645,6 +645,17 @@ MCP_RESOURCE_GOOGLE_GCP_ORIGINS = "https://security-inventory.ippoan.org"
 # hcreader-worker は single-env (staging = prod = hcreader.ippoan.org)。
 # Refs ippoan/HealthConnectReaderWorker#60, #61
 HCREADER_WORKER_ORIGIN = "https://hcreader.ippoan.org"
+# CI 用の dev token の発行口 `POST /api/ci/staging-token` (src/handlers/ci-staging-token.ts。Refs ippoan/ci-dashboard#520)。
+# staging 専用: トップレベル [vars] には入れない (欠けると口ごと 404)。GitHub Actions の OIDC ID token
+# (aud = CI_TOKEN_AUDIENCE、repository が CI_TOKEN_ALLOWED_REPOS に完全一致) と引き換えに、読み取り専用の
+# dev token (token_kind=dev、15 分) を下の固定のテスト用の会社・ユーザーで出す。
+# 会社・ユーザーは alc-app の e2e の fixture (web/tests/e2e/fixtures/test-data.json の「Staging テスト会社」) と同じ。
+CI_TOKEN_ALLOWED_REPOS = "ippoan/alc-app"
+CI_TOKEN_AUDIENCE = "auth-worker-staging-ci"
+CI_TOKEN_TENANT_ID = "11111111-1111-1111-1111-111111111111"
+CI_TOKEN_SUBJECT = "22222222-2222-2222-2222-222222222222"
+CI_TOKEN_EMAIL = "admin@example.com"
+CI_TOKEN_ROLE = "admin"
 
 # ippoan/cf-flickr-cam-worker#17 デバッグ用に一時追加 (CAM_HOST secret 化後の
 # 動作確認を CF Access 認証なしで通す、auth-staging.ippoan.org 経由)。
