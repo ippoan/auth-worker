@@ -23,7 +23,7 @@ beforeAll(async () => {
     true,
     ["sign", "verify"],
   )) as CryptoKeyPair;
-  jwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+  jwk = (await crypto.subtle.exportKey("jwk", keyPair.publicKey)) as JsonWebKey;
 });
 afterAll(() => {
   globalThis.fetch = originalFetch;

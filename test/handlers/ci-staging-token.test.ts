@@ -50,7 +50,7 @@ beforeAll(async () => {
     ) as Promise<CryptoKeyPair>;
   keyPair = await gen();
   otherKeyPair = await gen();
-  publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+  publicJwk = (await crypto.subtle.exportKey("jwk", keyPair.publicKey)) as JsonWebKey;
 });
 
 afterAll(() => {
