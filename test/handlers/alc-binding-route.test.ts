@@ -120,6 +120,10 @@ describe("resolveAlcBinding", () => {
       expect(resolveAlcBinding(path, env, "device", "POST")).toEqual(target);
       expect(resolveAlcBinding(path, env, "internal", "POST")).toBeNull();
     }
+    // 自動承認の点検は rpc に GET だけ
+    expect(resolveAlcBinding("/api/vein/devices/approval-check", env, "rpc", "GET")).toEqual(target);
+    expect(resolveAlcBinding("/api/vein/devices/approval-check", env, "rpc", "POST")).toBeNull();
+    expect(resolveAlcBinding("/api/vein/devices/approval-check", env, "internal", "GET")).toBeNull();
     // 他の vein の口は rpc に開けない
     expect(resolveAlcBinding("/api/vein/identify", env, "rpc", "POST")).toBeNull();
   });

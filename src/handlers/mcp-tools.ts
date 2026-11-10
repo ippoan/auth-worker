@@ -1162,6 +1162,45 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "vein_approval_check",
+    description:
+      "Re-check the per-device finger-vein records of your tenant that were AUTO-APPROVED, against the " +
+      "current strict pass line. Read-only; nothing is written and no record (biometric data) is " +
+      "returned, only counts, IDs and timestamps. Optional `since` (ISO 8601, default: the last 24 " +
+      "hours) limits it to records auto-approved at or after that time. Returns the vein worker's JSON " +
+      "as is: `{since, min_matches, logic_version, records: [{employee_id, device_id, approved_at, " +
+      "compared, verified: {matched, entries}, passes: {matched, entries}, auto_approve_now, others: " +
+      "[{employee_id, matched}], error?}], more?, next_since?}`. `verified` is the count by the line " +
+      "auto-approval uses today, `passes` by the strict line, `auto_approve_now` whether the strict " +
+      "count still reaches `min_matches`, `others` the other people whose approved records the same " +
+      "record passes against. When `more` is true call again with `since = next_since`. Errors are " +
+      "returned as `{error, status, body}`. Same allowlist gate as issue_dev_token; only the caller's " +
+      "own tenant is reachable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: {
+          type: "string",
+          description: "ISO 8601 timestamp; only records auto-approved at or after it (default: 24 hours ago)",
+        },
+      },
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const since = args["since"];
+      if (since !== undefined && (typeof since !== "string" || !since || Number.isNaN(Date.parse(since)))) {
+        throw new DevLoginError(400, "since must be an ISO 8601 timestamp");
+      }
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      // vein は RFC 3339 だけを読むので、Date が読めた表記を揃えてから渡す
+      const search = since === undefined ? "" : `?since=${encodeURIComponent(new Date(since).toISOString())}`;
+      return forwardVeinAuthLog(ctx.env, resolved.user.tenant_id, "GET", search, undefined, VEIN_APPROVAL_CHECK_PATH);
+    },
+  },
+  {
     name: "run_cam_clips_auto",
     description:
       "Run the automatic clipping of one site camera of your tenant now (the same job as the hourly " +
@@ -1394,8 +1433,12 @@ async function findTestRecord(
   return row ? { ...row, is_dev: true } : null;
 }
 
+/** `vein_approval_check` が呼ぶ alc-vein-worker の口 (`ALC_BINDING_ROUTES` の rpc の行と揃える)。 */
+const VEIN_APPROVAL_CHECK_PATH = "/api/vein/devices/approval-check";
+
 /**
- * `vein_auth_shots` / `vein_auth_rejudge` — alc-vein-worker の開発者だけの口 (`X-User-Developer: 1`)。
+ * `vein_auth_shots` / `vein_auth_rejudge` / `vein_approval_check` — alc-vein-worker の開発者だけの口 (`X-User-Developer: 1`)。
+ * `path` を省くと認証ログの口 (GET = 一覧、POST = 判定し直し)。
  * 呼び手 (tool) が許可リストを通したテナントで転送し、vein の JSON をそのまま返す。
  */
 async function forwardVeinAuthLog(
@@ -1404,10 +1447,11 @@ async function forwardVeinAuthLog(
   method: "GET" | "POST",
   search: string,
   body?: string,
+  path: string = method === "GET" ? "/api/vein/auth-shots" : "/api/vein/auth-shots/rejudge",
 ): Promise<unknown> {
   const res = await forwardAlcTenantRequest(env, {
     tenantId,
-    path: method === "GET" ? "/api/vein/auth-shots" : "/api/vein/auth-shots/rejudge",
+    path,
     method,
     search,
     body,

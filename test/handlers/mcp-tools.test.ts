@@ -2066,6 +2066,63 @@ describe("POST /mcp/tools — get_device_log", () => {
       const names = body.result.tools.map((t) => t.name);
       expect(names).toContain("vein_auth_shots");
       expect(names).toContain("vein_auth_rejudge");
+      expect(names).toContain("vein_approval_check");
+    });
+
+    it("vein_approval_check: GET /api/vein/devices/approval-check を呼び手のテナントと X-User-Developer 付きで転送し、JSON をそのまま返す", async () => {
+      const payload = {
+        since: "2026-11-09T15:00:00Z",
+        min_matches: 4,
+        logic_version: "v-test",
+        records: [
+          {
+            employee_id: "e-1",
+            device_id: "d-1",
+            approved_at: "2026-11-10T01:02:03Z",
+            compared: 2,
+            verified: { matched: 5, entries: 6 },
+            passes: { matched: 2, entries: 6 },
+            auto_approve_now: false,
+            others: [{ employee_id: "e-2", matched: 3 }],
+          },
+        ],
+      };
+      const { env, seen } = veinEnv(okJson(payload));
+      const result = await callDeviceTool(
+        env,
+        { since: "2026-11-10T00:00:00+09:00" },
+        { tool: "vein_approval_check" },
+      );
+      expect(result.isError).toBe(false);
+      expect(parsed(result)).toEqual(payload);
+      expect(seen).toHaveLength(1);
+      const u = new URL(seen[0]!.url);
+      expect(u.pathname).toBe("/api/vein/devices/approval-check");
+      // 時差つきの表記は UTC の RFC 3339 に揃えて渡す (+ が空白に化けない)
+      expect(u.searchParams.get("since")).toBe("2026-11-09T15:00:00.000Z");
+      expect(seen[0]!.method).toBe("GET");
+      expect(seen[0]!.body).toBe("");
+      expect(seen[0]!.headers.get("X-User-Developer")).toBe("1");
+      expect(seen[0]!.headers.get("X-Tenant-ID")).toBe(TENANT_ID);
+      expect(seen[0]!.headers.get("Authorization")).toBeNull();
+    });
+
+    it("vein_approval_check: since 省略は query なし (vein の既定 = 直近 24 時間)、不正な since は拒否", async () => {
+      const { env, seen } = veinEnv(okJson({ records: [] }));
+      await callDeviceTool(env, {}, { tool: "vein_approval_check" });
+      expect(new URL(seen[0]!.url).search).toBe("");
+      for (const since of ["yesterday", "", 5]) {
+        const bad = await callDeviceTool(env, { since }, { tool: "vein_approval_check" });
+        expect(bad.isError).toBe(true);
+        expect(bad.content[0]!.text).toContain("since");
+      }
+      expect(seen).toHaveLength(1);
+    });
+
+    it("vein_approval_check: vein の 403 developer_only は {error:backend_error, status, body} で返す", async () => {
+      const { env } = veinEnv(() => new Response('{"error":"developer_only"}', { status: 403 }));
+      const r = await callDeviceTool(env, {}, { tool: "vein_approval_check" });
+      expect(parsed(r)).toEqual({ error: "backend_error", status: 403, body: '{"error":"developer_only"}' });
     });
 
     it("vein_auth_shots: GET /api/vein/auth-shots?limit= を呼び手のテナントと X-User-Developer 付きで転送し、JSON をそのまま返す", async () => {
@@ -2135,7 +2192,7 @@ describe("POST /mcp/tools — get_device_log", () => {
       expect(parsed(r2)).toMatchObject({ error: "backend_error", status: 200, body: "oops" });
     });
 
-    for (const tool of ["vein_auth_shots", "vein_auth_rejudge"]) {
+    for (const tool of ["vein_auth_shots", "vein_auth_rejudge", "vein_approval_check"]) {
       it(`${tool}: allowlist 外の subject は issue_dev_token と同じエラーで拒否 (vein へ届かない)`, async () => {
         const { env, seen } = veinEnv(okJson({}));
         const jwt = await googleUserJwt({ email: "someone-else@example.com" });
