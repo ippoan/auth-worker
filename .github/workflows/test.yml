@@ -23,6 +23,9 @@ jobs:
   ci:
     uses: ippoan/ci-workflows/.github/workflows/frontend-ci.yml@main
     with:
+      # staging deploy 後に、この frontend が実際に呼ぶ staging の CF Worker の SHA を tested として
+      # ci-dashboard に報告する (Refs ippoan/ci-dashboard#520)。呼ぶ証拠のある worker だけを並べる。
+      compat_staging_backends: 'ippoan/alc-auth-worker,ippoan/alc-dtako-worker,ippoan/alc-lineworks-worker,ippoan/alc-notify-worker'
       install_command: 'npm install'
       typecheck_command: 'npx tsc --noEmit && npx tsc -p test/tsconfig.json --noEmit'
       # rust-alc-api の ts-rs の型 (scripts/export-ts-bindings.sh) は取らない。rust の撤収で artifact が無くなり、
