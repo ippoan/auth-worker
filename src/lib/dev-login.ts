@@ -160,6 +160,27 @@ export async function mintDevToken(
   if (resolved.kind === "error") return resolved;
   const user = resolved.user;
 
+  const { token } = await signDevToken(jwtSecret, user, DEV_TOKEN_TTL_SEC, opts);
+  return { kind: "ok", token, expires_in: DEV_TOKEN_TTL_SEC };
+}
+
+/** dev token に載せる利用者の項目 (`InternalUserWithSlug` の部分集合)。 */
+export type DevTokenUser = Pick<InternalUserWithSlug, "id" | "email" | "name" | "tenant_id" | "role"> & {
+  slug?: string | null;
+};
+
+/**
+ * dev token (`token_kind: "dev"`、読み取り専用) の claim を組んで署名する。発行経路が違っても
+ * (MCP の dev-login / staging の CI 用の口 `handlers/ci-staging-token.ts`) token の形はここ 1 か所で決める
+ * (`/alc-proxy` の read-only enforcement は `token_kind` で効く)。`ttlSec` は呼び出し側が決める。
+ * 戻り値の `exp` は token の `exp` claim と同じ値 (UNIX 秒)。
+ */
+export async function signDevToken(
+  jwtSecret: string,
+  user: DevTokenUser,
+  ttlSec: number,
+  opts: { devAxis?: boolean } = {},
+): Promise<{ token: string; exp: number }> {
   const now = Math.floor(Date.now() / 1000);
   const claims: Record<string, unknown> = {
     sub: user.id,
@@ -169,14 +190,13 @@ export async function mintDevToken(
     role: user.role,
     token_kind: "dev",
     iat: now,
-    exp: now + DEV_TOKEN_TTL_SEC,
+    exp: now + ttlSec,
   };
   if (user.slug) claims.org_slug = user.slug;
   // 開発の軸 (dev端末の行) を見る印。`/alc-proxy` が `token_kind: "dev"` のときだけ `X-Device-Dev: 1` に写す
   // (`verify_eval` / `verify_screenshot` の `dev_axis`。書き込み禁止はそのまま効く)。false では claim 自体を付けない
   if (opts.devAxis) claims.dev_axis = true;
-  const token = await signJwt(claims, jwtSecret);
-  return { kind: "ok", token, expires_in: DEV_TOKEN_TTL_SEC };
+  return { token: await signJwt(claims, jwtSecret), exp: now + ttlSec };
 }
 
 /** 256bit ランダム hex (64文字)。`mcp-codes.ts::generateDeviceCode` と同方式。 */

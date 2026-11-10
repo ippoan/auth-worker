@@ -139,6 +139,7 @@ import { handleMcpPairRegisterViaGithubComment } from "./handlers/mcp-pair-regis
 import { handleMcpTools } from "./handlers/mcp-tools";
 import { handleMcpShot } from "./handlers/mcp-shot";
 import { handleDevLoginToken } from "./handlers/dev-login-token";
+import { CI_STAGING_TOKEN_PATH, handleCiStagingToken } from "./handlers/ci-staging-token";
 import { handleMcpRevoke } from "./handlers/mcp-revoke";
 import { handleGithubWebhook } from "./handlers/github-webhook";
 import { handleMcpElevateStart, handleMcpElevateCallback } from "./handlers/mcp-elevate";
@@ -208,6 +209,16 @@ export interface Env {
    *  未設定なら資格情報の発行・照合・チケットは全部失敗側に倒れ、管理 API は 503
    *  (Cloud Run 退避は W9 で撤去。Refs ohishi-exp/rust-leave-worker#1)。 */
   MACHINE_CRED_ENV?: string;
+  /** staging の CI 用 dev token の発行口 (`handlers/ci-staging-token.ts`、Refs ippoan/ci-dashboard#520) の設定。
+   *  `[env.staging.vars]` にだけ置く。どれか欠けたら (= 本番) 口は 404。
+   *  `CI_TOKEN_ALLOWED_REPOS` は GitHub の `owner/name` のカンマ区切り (owner は `ippoan` に限る)、
+   *  `CI_TOKEN_AUDIENCE` は OIDC ID token の `aud`、残りは発行する dev token の tenant / sub / email / role。 */
+  CI_TOKEN_ALLOWED_REPOS?: string;
+  CI_TOKEN_AUDIENCE?: string;
+  CI_TOKEN_TENANT_ID?: string;
+  CI_TOKEN_SUBJECT?: string;
+  CI_TOKEN_EMAIL?: string;
+  CI_TOKEN_ROLE?: string;
   AUTH_CONFIG: KVNamespace;
   /** HS256 JWT secret, shared with rust-alc-api. Used by /top to verify the
    *  `logi_auth_token` cookie before serving the page. Missing → /top
@@ -695,6 +706,12 @@ export default {
         url.pathname.startsWith(`${MACHINE_CRED_API_PATH}/`)
       ) {
         return handleMachineCredentials(request, env);
+      }
+
+      // Refs ippoan/ci-dashboard#520: staging の CI 用 dev token の発行口 (GitHub Actions の OIDC で認証)。
+      // `CI_TOKEN_*` が揃う staging でだけ動き、それ以外は handler が 404 を返す (method も handler 内で見る)。
+      if (url.pathname === CI_STAGING_TOKEN_PATH) {
+        return await handleCiStagingToken(request, env);
       }
 
       if (request.method === "GET") {
