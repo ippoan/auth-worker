@@ -291,12 +291,12 @@ export interface Env {
    *  `/api/timecard/` を alc-proxy (画面用)・device-data-proxy (端末用)・InternalEntrypoint (RPC) が Cloud Run でなく
    *  ここへ流す (`lib/alc-backend-route.ts`)。未定義なら 404。 */
   ALC_PEOPLE?: Fetcher;
-  /** 端末の登録・管理の worker (`alc-devices`、ippoan/alc-devices-worker) への service binding (本番だけ)。定義されている時だけ、
+  /** 端末の登録・管理の worker (`alc-devices`、ippoan/alc-devices-worker) への service binding。定義されている時だけ、
    *  端末の管理・登録・報告の口 (W6b-a) を alc-proxy・device-data-proxy・alc-internal-proxy (登録の受け取り) が、
    *  `pairing-tenant` の問い合わせ (`lib/alc-internal.ts`) が Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。
    *  未定義なら 404。 */
   ALC_DEVICES?: Fetcher;
-  /** 点呼の worker (`alc-tenko`、ippoan/alc-tenko-worker) への service binding (本番だけ)。定義されている時だけ、
+  /** 点呼の worker (`alc-tenko`、ippoan/alc-tenko-worker) への service binding。定義されている時だけ、
    *  点呼の読み取りと管理の口 (W7a) を alc-proxy・device-data-proxy・alc-internal-proxy (点呼の電話の登録・点呼) が
    *  Cloud Run でなくここへ流す (`lib/alc-backend-route.ts`)。点呼のセッション (W7b) は回さない。未定義なら 404。 */
   ALC_TENKO?: Fetcher;
