@@ -177,6 +177,13 @@ const ROLE_PATH_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
  * 読み出しの口は無く、他テナントや他人の記録へは届かない。新しい種類の到達面ではない。
  * 測定台と運行管理者席の鍵にも同じ 2 本を開ける。
  *
+ * 本人が決まった照合のあとの 1:1 の確かめ (`POST /api/vein/verify-shot`、body `{employee_id, shot}`、Refs ippoan/alc-app-s3#352):
+ * 免許証などで本人が決まった照合でモジュールが外れたときに、その場の撮影を **その人の承認済みの記録とだけ**
+ * 比べて `{matched, rule, scores}` を返す。返すのは合否と点数だけで生体記録は返さず、保存もしない。
+ * `POST /api/vein/identify` (1:N、tenant 全員の記録に当てて人を探す) と違い相手は 1 人に限るので、
+ * 新しい種類の到達面ではない (alc-vein-worker 側は tenant ヘッダーを信じ、認可はこの表だけ)。
+ * 測定台と運行管理者席の鍵にも同じ 1 本を開ける。
+ *
  * カードの持ち主の照会 (`POST /api/timecard/cards/lookup`、body に `card_id`、
  * Refs ippoan/alc-app#387)。運転者の端末 (ブラウザ) に USB で繋いだ機体が社員証を読んだとき、
  * 画面が「このカードは誰のものか」をサーバーに引くのに使う。**読み取りだけの照会**で、
@@ -205,6 +212,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices\/rotate$/ },
   { method: "POST", pattern: /^\/api\/vein\/auth-shots$/ },
+  { method: "POST", pattern: /^\/api\/vein\/verify-shot$/ },
   { method: "GET", pattern: /^\/api\/vein\/auth-log\/enabled$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates\/pending$/ },
@@ -285,7 +293,7 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * 到達面ではない。開くのは読み取りの GET 2 本と、席の機体で撮った記録の追加
  * (`PUT /api/vein/templates/{employee_id}/module/devices`)・照合が通った後の入れ替え
  * (`POST …/module/devices/rotate`)・認証ログ (`POST /api/vein/auth-shots` / `GET /api/vein/auth-log/enabled`。
- * 理由はどれも `KIOSK_ROUTES` の doc) だけ (両端固定)。
+ * 理由はどれも `KIOSK_ROUTES` の doc)・本人が決まった照合の 1:1 の確かめ (`POST /api/vein/verify-shot`) だけ (両端固定)。
  * 照合 (`POST /api/vein/identify`)・承認の口は開けない。
  *
  * **席の画面の「指静脈の登録」(オーナー決定 2026-11-06)**: 運行管理者の画面のハンバーガーから、運行者の
@@ -370,6 +378,7 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices\/rotate$/ },
   { method: "POST", pattern: /^\/api\/vein\/auth-shots$/ },
+  { method: "POST", pattern: /^\/api\/vein\/verify-shot$/ },
   { method: "GET", pattern: /^\/api\/vein\/auth-log\/enabled$/ },
   // 運行管理者のダッシュボードの読み取り専用の画面 (オーナー決定 2026-10-31。上の doc)
   { method: "GET", pattern: /^\/api\/tenko\/dashboard$/ },
@@ -491,6 +500,7 @@ const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices$/ },
   { method: "POST", pattern: /^\/api\/vein\/templates\/[^/]+\/module\/devices\/rotate$/ },
   { method: "POST", pattern: /^\/api\/vein\/auth-shots$/ },
+  { method: "POST", pattern: /^\/api\/vein\/verify-shot$/ },
   { method: "GET", pattern: /^\/api\/vein\/auth-log\/enabled$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates$/ },
   { method: "GET", pattern: /^\/api\/vein\/module-templates\/pending$/ },
