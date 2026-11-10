@@ -383,6 +383,8 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
     { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
     // 照合が通った後の 1 本で一番古い 1 本を入れ替える。
     { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+    // 本人が決まった照合のあとの 1:1 の確かめ (Refs ippoan/alc-app-s3#352)。
+    { method: "POST", path: "/api/vein/verify-shot" },
     { method: "GET", path: "/api/vein/module-templates" },
     // 運行管理者の照合による承認 (Refs ippoan/alc-app#436)。
     { method: "GET", path: "/api/vein/module-templates/pending" },
@@ -534,6 +536,9 @@ describe("device-kiosk role (method + path 許可表、Refs ippoan/alc-app#227)"
       { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/rotate" },
       { method: "GET", path: "/api/vein/templates/emp-1/module/devices/rotate" },
       { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate/extra" },
+      { method: "GET", path: "/api/vein/verify-shot" },
+      { method: "PUT", path: "/api/vein/verify-shot" },
+      { method: "POST", path: "/api/vein/verify-shot/extra" },
       { method: "PUT", path: "/api/vein/module-templates" },
       { method: "POST", path: "/api/vein/module-templates" },
       { method: "GET", path: "/api/vein/module-templates/emp-1" },
@@ -708,6 +713,8 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
     // 照合が通った後の 1 本で一番古い 1 本を入れ替える。
     { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+    // 本人が決まった照合のあとの 1:1 の確かめ (Refs ippoan/alc-app-s3#352)。
+    { method: "POST", path: "/api/vein/verify-shot" },
     // 席の画面の「指静脈の登録」(承認待ちとして預ける) と、NFC で乗務員を決める口 (オーナー決定 2026-11-06)
     { method: "PUT", path: "/api/vein/templates/emp-1" },
     { method: "PUT", path: "/api/vein/templates/emp-1/module" },
@@ -782,6 +789,9 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
       { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/rotate" },
       { method: "GET", path: "/api/vein/templates/emp-1/module/devices/rotate" },
       { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate/extra" },
+      { method: "GET", path: "/api/vein/verify-shot" },
+      { method: "PUT", path: "/api/vein/verify-shot" },
+      { method: "POST", path: "/api/vein/verify-shot/extra" },
       { method: "POST", path: "/api/vein/identify" },
       { method: "GET", path: "/api/vein/module-templates/pending" },
       { method: "POST", path: "/api/vein/templates/emp-1/approve-by-employee" },
@@ -1670,6 +1680,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     { method: "PUT", path: "/api/vein/templates/emp-1/module/devices" },
     // 照合が通った後の 1 本で一番古い 1 本を入れ替える。
     { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate" },
+    // 本人が決まった照合のあとの 1:1 の確かめ (Refs ippoan/alc-app-s3#352)。
+    { method: "POST", path: "/api/vein/verify-shot" },
     { method: "GET", path: "/api/vein/module-templates" },
     // 運行管理者の照合による承認 (Refs ippoan/alc-app#436)。
     { method: "GET", path: "/api/vein/module-templates/pending" },
@@ -1748,6 +1760,9 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "PUT", path: "/api/vein/templates/emp-1/module/devices/rotate" },
       { method: "GET", path: "/api/vein/templates/emp-1/module/devices/rotate" },
       { method: "POST", path: "/api/vein/templates/emp-1/module/devices/rotate/extra" },
+      { method: "GET", path: "/api/vein/verify-shot" },
+      { method: "PUT", path: "/api/vein/verify-shot" },
+      { method: "POST", path: "/api/vein/verify-shot/extra" },
       { method: "POST", path: "/api/vein/module-templates" },
       { method: "GET", path: "/api/vein/module-templates/emp-1" },
       // 承認: 管理者のログインの口 (pending / approve) は端末に開けない。照合による承認は別 method・余りの path を 403。
@@ -2340,5 +2355,69 @@ describe("指静脈の認証ログ POST /api/vein/auth-shots・GET /api/vein/aut
   it("鍵が無ければ 401 (KV を見る前)", async () => {
     const res = await handleDeviceDataProxy(req(ENABLED, { method: "GET" }), envWithList(JSON.stringify([TENANT])));
     expect(res.status).toBe(401);
+  });
+});
+
+describe("指静脈の 1:1 確かめ POST /api/vein/verify-shot (Refs ippoan/alc-app-s3#352)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  const PATH = "/device-data-proxy/api/vein/verify-shot";
+  const tokenFor = (role: string) =>
+    signTestJwt({ sub: "device-x", tenant_id: TENANT, role }, TEST_JWT_SECRET);
+  function okFetch() {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response(JSON.stringify({ matched: true, rule: "A", scores: [1, 2, 3] }), { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+  const call = async (role: string, method = "POST") =>
+    handleDeviceDataProxy(
+      req(PATH, {
+        method,
+        token: await tokenFor(role),
+        headers: { "content-type": "application/json" },
+        body: method === "GET" ? undefined : JSON.stringify({ employee_id: "emp-1", shot: "x" }),
+      }),
+      env(),
+    );
+
+  for (const role of [DEVICE_ROLE_KIOSK, DEVICE_ROLE_TENKO_MANAGER, DEVICE_ROLE_BP_STATION]) {
+    it(`${role}: POST は alc-vein-worker 側の口へ forward する`, async () => {
+      const fetchMock = okFetch();
+      const res = await call(role);
+      expect(res.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toBe("https://alc-api.test.example/api/vein/verify-shot");
+      expect(init?.method).toBe("POST");
+    });
+    it(`${role}: GET・PUT は通さない`, async () => {
+      const fetchMock = okFetch();
+      expect((await call(role, "GET")).status).toBe(403);
+      expect((await call(role, "PUT")).status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it("開けていない鍵 (dtako-ingest・cam-host) は 403", async () => {
+    const fetchMock = okFetch();
+    for (const role of [DEVICE_ROLE_DTAKO_INGEST, DEVICE_ROLE_CAM_HOST]) {
+      expect((await call(role)).status, role).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("端末でない token (role なし) は通さず、鍵が無ければ 401", async () => {
+    const fetchMock = okFetch();
+    const noRole = await signTestJwt({ sub: "u-1", tenant_id: TENANT }, TEST_JWT_SECRET);
+    const res = await handleDeviceDataProxy(
+      req(PATH, { method: "POST", token: noRole, headers: { "content-type": "application/json" }, body: "{}" }),
+      env(),
+    );
+    expect(res.status).toBeGreaterThanOrEqual(401);
+    expect(res.status).toBeLessThan(500);
+    expect((await handleDeviceDataProxy(req(PATH, { method: "POST" }), env())).status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
