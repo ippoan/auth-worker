@@ -195,14 +195,14 @@ service = "alc-people"
 
 # alc-devices (ippoan/alc-devices-worker、ippoan/rust-alc-api#680)。端末の登録・管理・報告の口 (W6b-a。画面用・端末用・
 # 登録の受け取り) と pairing-tenant の問い合わせを回す (src/lib/alc-backend-route.ts・src/lib/alc-internal.ts)。
-# alc-devices は workers_dev = false・route なしで、届く経路はこの binding だけ。本番だけ (staging は Cloud Run の staging のまま)。
+# alc-devices は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-devices-staging。
 [[services]]
 binding = "ALC_DEVICES"
 service = "alc-devices"
 
 # alc-tenko (ippoan/alc-tenko-worker、ippoan/rust-alc-api#680)。点呼の読み取りと管理の口 (W7a。画面用・端末用・
 # 点呼の電話の登録と点呼) を回す (src/lib/alc-backend-route.ts)。点呼のセッション (W7b) は回さない。
-# alc-tenko は workers_dev = false・route なしで、届く経路はこの binding だけ。本番だけ (staging は Cloud Run の staging のまま)。
+# alc-tenko は workers_dev = false・route なしで、届く経路はこの binding だけ。staging は alc-tenko-staging。
 [[services]]
 binding = "ALC_TENKO"
 service = "alc-tenko"
@@ -708,6 +708,17 @@ service = "alc-records-staging"
 [[env.staging.services]]
 binding = "ALC_PEOPLE"
 service = "alc-people-staging"
+
+# alc-devices staging (ippoan/alc-devices-worker、ippoan/rust-alc-api#680)。staging の frontend が staging の worker を
+# 相手にテストし、Release Wave の compat を worker の SHA で記録できるよう bind する (ippoan/ci-dashboard#520)。
+[[env.staging.services]]
+binding = "ALC_DEVICES"
+service = "alc-devices-staging"
+
+# alc-tenko staging (ippoan/alc-tenko-worker、ippoan/rust-alc-api#680)。理由は ALC_DEVICES と同じ (ippoan/ci-dashboard#520)。
+[[env.staging.services]]
+binding = "ALC_TENKO"
+service = "alc-tenko-staging"
 
 # alc-measurements staging (ippoan/alc-measurements-worker、ippoan/alc-app#436)。
 [[env.staging.services]]
