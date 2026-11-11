@@ -2036,6 +2036,9 @@ describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras 
   beforeEach(() => vi.restoreAllMocks());
 
   const CAMERAS = "/api/cam-clips/cameras";
+  const CAMERA = "00000000-0000-4000-8000-0000000000aa";
+  const CLIP_FILE = "20261023T125800_20261023T125930.mp4";
+  const CLIP = `/api/cam-clips/clips/${TENANT}/${CAMERA}/${CLIP_FILE}`;
 
   function setupClips() {
     const clips = { fetch: vi.fn(async (): Promise<Response> => new Response("from-clips")) };
@@ -2074,6 +2077,21 @@ describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras 
     });
   });
 
+  it("席の鍵の録画の一覧 (GET /events、query ごと) と再生 (GET /clips/...) は binding へ", async () => {
+    const { clips, fetchMock, env: e } = setupClips();
+    const events = `/api/cam-clips/events?camera_id=${CAMERA}&date=2026-10-23`;
+    for (const path of [events, CLIP]) {
+      const res = await handleDeviceDataProxy(
+        req(`/device-data-proxy${path}`, { method: "GET", token: await managerToken() }),
+        e,
+      );
+      expect(res.status, path).toBe(200);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    const urls = clips.fetch.mock.calls.map((c) => (c as unknown as [string])[0]);
+    expect(urls).toEqual([`https://alc-cam-sd-ingest${events}`, `https://alc-cam-sd-ingest${CLIP}`]);
+  });
+
   it("開発用の席の鍵なら X-Device-Dev: 1 も付く", async () => {
     const { clips, env: e } = setupClips();
     await handleDeviceDataProxy(
@@ -2084,7 +2102,7 @@ describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras 
     expect((init.headers as Record<string, string>)["X-Device-Dev"]).toBe("1");
   });
 
-  it("★ 席の鍵でも GET /cameras 以外の cam-clips の口と、GET 以外の method は 403 (binding にも Cloud Run にも届かない)", async () => {
+  it("★ 席の鍵でも読み取りの 3 口 (cameras・events・clips の 1 本) 以外の cam-clips の口と、GET 以外の method は 403 (binding にも Cloud Run にも届かない)", async () => {
     const { clips, fetchMock, env: e } = setupClips();
     const cases: ReadonlyArray<{ method: string; path: string }> = [
       { method: "POST", path: CAMERAS },
@@ -2097,7 +2115,15 @@ describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras 
       { method: "GET", path: "/api/cam-clips/clips" },
       { method: "POST", path: "/api/cam-clips/clips" },
       { method: "GET", path: "/api/cam-clips/clips/TS-NS320W-55/x.mp4" },
+      { method: "GET", path: `/api/cam-clips/clips/${TENANT}/${CAMERA}/x.mp4` },
+      { method: "GET", path: `/api/cam-clips/clips/${TENANT}/${CAMERA}/${CLIP_FILE}/` },
+      { method: "GET", path: `/api/cam-clips/clips/${TENANT}/${CLIP_FILE}` },
+      { method: "DELETE", path: CLIP },
+      { method: "POST", path: "/api/cam-clips/events" },
+      { method: "GET", path: "/api/cam-clips/events/x" },
+      { method: "POST", path: "/api/cam-clips/auto-run" },
       { method: "GET", path: "/api/cam-clips/device-candidates" },
+      { method: "GET", path: "/api/cam-clips/device-key-status" },
       { method: "GET", path: "/api/cam-clips/camerasx" },
     ];
     for (const { method, path } of cases) {
