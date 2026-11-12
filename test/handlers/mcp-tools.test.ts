@@ -2325,6 +2325,70 @@ describe("POST /mcp/tools — get_device_log", () => {
       expect(calls).toHaveLength(0);
     });
   });
+
+  describe("filing_archive_upload_url", () => {
+    const FU = { tool: "filing_archive_upload_url" };
+    const ARRIVE = "20991231235959001e";
+
+    it("tools/list に出る (mcp.write)", async () => {
+      const { env } = envWithKv();
+      const jwt = await googleUserJwt();
+      const res = await handleMcpTools(await authedReq(jwt, { jsonrpc: "2.0", id: 1, method: "tools/list" }), env);
+      const body = (await res.json()) as { result: { tools: Array<{ name: string }> } };
+      expect(body.result.tools.map((t) => t.name)).toContain("filing_archive_upload_url");
+    });
+
+    it("★ 自テナントの管理者に 1 回きりの PUT 先を発行し、KV に発行した人と到達番号を置く", async () => {
+      const env = logEnv(undefined);
+      const result = await callDeviceTool(env, { arrive_id: ARRIVE }, FU);
+      expect(result.isError).toBe(false);
+      const out = parsed(result);
+      expect([out.arrive_id, out.method, out.expires_in]).toEqual([ARRIVE, "PUT", 600]);
+      const id = String(out.upload_url).split("/mcp/filing-upload/")[1]!;
+      expect(id).toMatch(/^[0-9a-f]{64}$/);
+      const stored = (env.MCP_OAUTH_KV as unknown as { _data: Record<string, string> })._data[`filing_upload:${id}`]!;
+      expect(JSON.parse(stored)).toEqual({
+        tenant_id: TENANT_ID,
+        user_id: "user-uuid-1",
+        email: "dev@example.com",
+        arrive_id: ARRIVE,
+        name: `${ARRIVE}.zip`,
+      });
+      // tenant の解決の応答は 1 回読むと空になるので、2 回目の呼び出しの前に作り直す
+      globalThis.fetch = vi.fn().mockResolvedValue(internalUserResponse());
+      const named = parsed(await callDeviceTool(env, { arrive_id: ARRIVE, name: "控え.zip" }, FU));
+      const id2 = String(named.upload_url).split("/mcp/filing-upload/")[1]!;
+      expect(JSON.parse((env.MCP_OAUTH_KV as unknown as { _data: Record<string, string> })._data[`filing_upload:${id2}`]!).name).toBe("控え.zip");
+    });
+
+    it("管理者でなければ forbidden (発行しない)", async () => {
+      const env = logEnv(undefined);
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ id: "u", tenant_id: TENANT_ID, email: "dev@example.com", name: "x", role: "viewer" }), { status: 200 }),
+      );
+      expect(parsed(await callDeviceTool(env, { arrive_id: ARRIVE }, FU))).toEqual({ arrive_id: ARRIVE, error: "forbidden" });
+      const keys = Object.keys((env.MCP_OAUTH_KV as unknown as { _data: Record<string, string> })._data);
+      expect(keys.some((k) => k.startsWith("filing_upload:"))).toBe(false);
+
+    });
+
+    it("到達番号・名前の誤りは入力の誤り。allowlist に無ければ拒否", async () => {
+      const env = logEnv(undefined);
+      for (const args of [{}, { arrive_id: "x" }, { arrive_id: "209912312359590" }, { arrive_id: "2099123123595900E" }]) {
+        const bad = await callDeviceTool(env, args, FU);
+        expect(bad.isError).toBe(true);
+        expect(bad.content[0]!.text).toContain("arrive_id must be an e-Gov arrive number");
+      }
+      for (const name of [" ", "a".repeat(201)]) {
+        const bad = await callDeviceTool(env, { arrive_id: ARRIVE, name }, FU);
+        expect(bad.isError).toBe(true);
+        expect(bad.content[0]!.text).toContain("name must be 1-200 characters");
+      }
+      (env.MCP_OAUTH_KV as unknown as { _data: Record<string, string> })._data[DEV_LOGIN_ALLOWED_SUBJECTS_KV_KEY] =
+        JSON.stringify(["google:someone-else@example.com"]);
+      expect((await callDeviceTool(env, { arrive_id: ARRIVE }, FU)).isError).toBe(true);
+    });
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────
