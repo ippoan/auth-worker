@@ -543,16 +543,6 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/tenko/settings", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser", "device"], methods: { browser: ["GET", "PUT"], device: ["GET", "PUT"] } },
   // 点呼の届出・認定申請に差し込む値 (管理画面の「点呼の届出」。worker が admin に絞る)
   { match: "exact", path: "/api/tenko/filing-settings", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"], methods: { browser: ["GET", "PUT"] } },
-  // 点呼の届出の e-Gov の申請データ (zip) の控え (R2)。保存・一覧と 1 件の取得 (worker が admin に絞る。名前とメタはクエリで渡す)
-  { match: "exact", path: "/api/tenko/filing-archives", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"], methods: { browser: ["GET", "POST"] } },
-  {
-    match: "pattern",
-    pattern: /^\/api\/tenko\/filing-archives\/\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-    binding: "ALC_TENKO",
-    host: "alc-tenko",
-    proxies: ["browser"],
-    methods: { browser: ["GET"] },
-  },
   // 点呼の営業所と、車両・運行管理者の所属 (管理画面の「点呼の営業所」。判定の点呼の方法を所属で決める)
   { match: "exact", path: "/api/tenko/offices", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"], methods: { browser: ["GET", "POST"] } },
   {
