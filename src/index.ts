@@ -138,6 +138,7 @@ import { handleMcpPairGrantViaOat } from "./handlers/mcp-pair-grant-via-oat";
 import { handleMcpPairRegisterViaGithubComment } from "./handlers/mcp-pair-register-via-github-comment";
 import { handleMcpTools } from "./handlers/mcp-tools";
 import { handleMcpShot } from "./handlers/mcp-shot";
+import { handleFilingUpload } from "./lib/filing-upload";
 import { handleDevLoginToken } from "./handlers/dev-login-token";
 import { CI_STAGING_TOKEN_PATH, handleCiStagingToken } from "./handlers/ci-staging-token";
 import { handleMcpRevoke } from "./handlers/mcp-revoke";
@@ -712,6 +713,15 @@ export default {
       // `CI_TOKEN_*` が揃う staging でだけ動き、それ以外は handler が 404 を返す (method も handler 内で見る)。
       if (url.pathname === CI_STAGING_TOKEN_PATH) {
         return await handleCiStagingToken(request, env);
+      }
+
+      // filing_archive_upload_url が発行する 1 回きりの控えの PUT 先 (lib/filing-upload.ts。method は handler が見る)
+      if (url.pathname.startsWith("/mcp/filing-upload/")) {
+        const uploadId = url.pathname.slice("/mcp/filing-upload/".length);
+        if (uploadId && !uploadId.includes("/")) {
+          return await handleFilingUpload(request, env, uploadId);
+        }
+        return errorResponse(404, "Not found");
       }
 
       if (request.method === "GET") {

@@ -34,6 +34,8 @@
  *     書き込みを止められるので、試験記録の切り出しを確かめる口として MCP に置く) も `mcp.write` + dev-login allowlist
  *   - `dtako_restore` (R2 に退避した車両の現在地のログの 1 日ぶんを DB に書き戻す。rust-alc-api の archive Job の
  *     `dtako-restore` を移した、W9 / Refs ippoan/rust-alc-api#680) も `mcp.write` + dev-login allowlist
+ *   - `filing_archive_upload_url` (点呼の届出の申請済みの控えの zip を到達番号で保存する 1 回きりの PUT 先を発行。
+ *     zip は 2 MB を超えるので引数に載せない。Refs ippoan/alc-app#676) も `mcp.write` + dev-login allowlist + admin
  */
 
 import type { Env } from "../index";
@@ -57,6 +59,7 @@ import {
   mcpRelayOrigin,
   wwwAuthenticateValue,
 } from "../lib/mcp-origins";
+import { ARRIVE_ID_RE, FILING_UPLOAD_TTL_SEC, issueFilingUpload } from "../lib/filing-upload";
 import { resolveSecret } from "../lib/secret";
 import {
   isAllowedVerifyTarget,
@@ -1259,6 +1262,49 @@ const TOOLS: ToolDef[] = [
         return { camera_id: cameraId, error: "backend_error", status: res.status, body: text.slice(0, 500) };
       }
       return { camera_id: cameraId, status: res.status, result: body };
+    },
+  },
+  {
+    name: "filing_archive_upload_url",
+    description:
+      "Issue a one-time upload URL to save a submitted e-Gov tenko filing copy (the zip e-Gov names " +
+      "`{arrive_id}.zip`) for your tenant, keyed by its arrive number (the same as the 控えとして保存 " +
+      "button of the 点呼の届出 tab; the same arrive number is overwritten). The zip is too large for a " +
+      "tool argument, so send it with `curl -T <zip> <upload_url>` (PUT) within 10 minutes; the URL works " +
+      "once and returns the backend answer `{id, name, size, saved_at, saved_by, meta}`. Errors are " +
+      "returned as `{arrive_id, error: \"forbidden\"}` when your user is not a tenant admin. " +
+      "Same allowlist gate as issue_dev_token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        arrive_id: { type: "string", description: "e-Gov arrive number (16-18 chars, e.g. 20261112132630208e)" },
+        name: { type: "string", description: "File name to keep (default `{arrive_id}.zip`)" },
+      },
+      required: ["arrive_id"],
+      additionalProperties: false,
+    },
+    requiredScope: "mcp.write",
+    requiresGithubToken: false,
+    call: async (args, ctx) => {
+      const arriveId = asString(args["arrive_id"]);
+      if (!arriveId || !ARRIVE_ID_RE.test(arriveId)) {
+        throw new DevLoginError(400, "arrive_id must be an e-Gov arrive number");
+      }
+      const name = asString(args["name"]) ?? `${arriveId}.zip`;
+      if (!name.trim() || name.length > 200) throw new DevLoginError(400, "name must be 1-200 characters");
+      // 許可リストの判定が MCP_OAUTH_KV を読むので、ここを通れば KV は在る
+      const resolved = await resolveTenantId(ctx.env, ctx.payload);
+      if (resolved.kind === "error") throw new DevLoginError(resolved.status, resolved.error);
+      // 控えの口は admin だけ。画面用の proxy と同じく、本人が admin のときだけ名乗る
+      if (resolved.user.role !== "admin") return { arrive_id: arriveId, error: "forbidden" };
+      const uploadUrl = await issueFilingUpload(ctx.env, {
+        tenant_id: resolved.user.tenant_id,
+        user_id: resolved.user.id,
+        email: resolved.user.email,
+        arrive_id: arriveId,
+        name,
+      });
+      return { arrive_id: arriveId, upload_url: uploadUrl, method: "PUT", expires_in: FILING_UPLOAD_TTL_SEC };
     },
   },
   {
