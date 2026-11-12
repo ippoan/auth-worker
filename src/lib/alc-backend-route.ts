@@ -563,6 +563,34 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     proxies: ["browser"],
     methods: { browser: ["PUT", "DELETE"] },
   },
+  // 点呼の事業者 (1 テナントに複数の会社) と営業所の振り分け、事業者間遠隔点呼の受委託 (管理画面の「点呼の届出」。worker が admin に絞る)
+  { match: "exact", path: "/api/tenko/companies", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"], methods: { browser: ["GET", "POST"] } },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/companies\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+    methods: { browser: ["PUT", "DELETE"] },
+  },
+  { match: "exact", path: "/api/tenko/consignments", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"], methods: { browser: ["GET", "POST"] } },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/consignments\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+    methods: { browser: ["PUT", "DELETE"] },
+  },
+  // 申請済みの控えをどの事業者に見せるか (振り分けの置き換え)
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/filing-archives\/\d{15,17}[0-9a-z]\/companies$/,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+    methods: { browser: ["PUT"] },
+  },
   {
     match: "pattern",
     pattern: /^\/api\/tenko\/driver-info\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
