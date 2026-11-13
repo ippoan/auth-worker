@@ -272,6 +272,29 @@ describe("CORS", () => {
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe(origin);
   });
 
+  it.each(["https://dtako.ippoan.org", "https://dtako-staging.ippoan.org"])(
+    "dtako の画面 %s から fuel-utran を発行できる (preflight と POST に Allow-Origin)",
+    async (origin) => {
+      const pre = await handleMachineCredentials(req("", { method: "OPTIONS", origin }), env());
+      expect(pre.status).toBe(204);
+      expect(pre.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+      expect(pre.headers.get("Access-Control-Allow-Methods")).toBe("GET, POST, OPTIONS");
+      const { status, body, res } = await call(
+        env(),
+        req("", { method: "POST", origin, token: await jwt(), body: { purpose: "fuel-utran", label: "給油 USB" } }),
+      );
+      expect(status).toBe(201);
+      expect(body.purpose).toBe("fuel-utran");
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe(origin);
+    },
+  );
+
+  it("dtako の preview の host は許可しない", async () => {
+    const origin = "https://dtako-preview.ippoan.org";
+    const pre = await handleMachineCredentials(req("", { method: "OPTIONS", origin }), env());
+    expect(pre.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+
   it("許可外の Origin・Origin なしには CORS ヘッダを付けない", async () => {
     for (const origin of ["https://evil.example", undefined]) {
       const pre = await handleMachineCredentials(req("", { method: "OPTIONS", origin }), env());

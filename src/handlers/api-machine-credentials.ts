@@ -40,6 +40,9 @@ export const MACHINE_CRED_API_PATH = "/api/machine-credentials";
 export const MACHINE_CRED_CORS_ORIGINS: readonly string[] = [
   "https://leave.ippoan.org",
   "https://leave-staging.ippoan.org",
+  // dtako: purpose fuel-utran の発行画面 (Refs yhonda-ohishi/nginx#814)
+  "https://dtako.ippoan.org",
+  "https://dtako-staging.ippoan.org",
 ];
 
 const REVOKE_RE = /^\/api\/machine-credentials\/([^/]+)\/revoke$/;
