@@ -96,11 +96,35 @@ describe("POST /api/machine-credentials (作成)", () => {
     ["purpose が allowlist 外", { body: { purpose: "other", label: "x" } }, "invalid_purpose"],
     ["label が文字列でない", { body: { purpose: PURPOSE, label: 1 } }, "invalid_label"],
     ["label が空", { body: { purpose: PURPOSE, label: "  " } }, "invalid_label"],
+    ["label が 65 文字", { body: { purpose: PURPOSE, label: "あ".repeat(65) } }, "invalid_label"],
     ["body が null", { rawBody: "null" }, "invalid_purpose"],
   ])("%s → 400", async (_n, b, error) => {
-    const { status, body } = await call(env(), req("", { method: "POST", token: await jwt(), ...b }));
+    const fake = createFakeAlcAuth();
+    const { status, body } = await call(
+      env("prod", { ALC_AUTH: fake.fetcher }),
+      req("", { method: "POST", token: await jwt(), ...b }),
+    );
     expect(status).toBe(400);
     expect(body.error).toBe(error);
+    // 形の誤りは保存先へ渡す前に返す
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("label がちょうど 64 文字なら 201", async () => {
+    const { status, body } = await createVia(env(), await jwt(), "あ".repeat(64));
+    expect(status).toBe(201);
+    expect(body.label).toBe("あ".repeat(64));
+  });
+
+  it.each<[string, () => Response]>([
+    ["400 (purpose を許していない等)", () => new Response(JSON.stringify({ error: "bad" }), { status: 400 })],
+    ["500", () => new Response(null, { status: 500 })],
+    ["通信失敗", () => { throw new Error("network"); }],
+  ])("★ 正しい label で保存先が %s → 502 store_failed (invalid_label にしない)", async (_n, respond) => {
+    const fake = createFakeAlcAuth({ override: (r) => (r.method === "POST" ? respond() : undefined) });
+    const { status, body } = await createVia(env("prod", { ALC_AUTH: fake.fetcher }), await jwt(), "1F 複合機");
+    expect(status).toBe(502);
+    expect(body).toEqual({ error: "store_failed" });
   });
 });
 
