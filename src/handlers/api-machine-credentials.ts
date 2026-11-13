@@ -28,6 +28,7 @@ import {
   createMachineCredential,
   isMachineCredPurpose,
   listMachineCredentials,
+  MACHINE_CRED_LABEL_MAX,
   machineCredEnvName,
   revokeMachineCredential,
   rotateMachineCredential,
@@ -152,12 +153,21 @@ export async function handleMachineCredentials(request: Request, env: Env): Prom
   const purpose = body?.purpose;
   const label = body?.label;
   if (!isMachineCredPurpose(purpose)) return json(request, { error: "invalid_purpose" }, 400);
-  if (typeof label !== "string") return json(request, { error: "invalid_label" }, 400);
-  const created = await createMachineCredential(env, caller.tenantId, purpose, label);
-  if (!created) return json(request, { error: "invalid_label" }, 400);
+  // label の形はここで決める。createMachineCredential も同じ検査を持つが (fail-closed)、その null は
+  // 保存先の拒否・不達とも区別できないため、label の誤りはここで先に 400 にする (Refs yhonda-ohishi/nginx#814)。
+  const trimmedLabel = typeof label === "string" ? label.trim() : "";
+  if (!trimmedLabel || trimmedLabel.length > MACHINE_CRED_LABEL_MAX) {
+    return json(request, { error: "invalid_label" }, 400);
+  }
+  const created = await createMachineCredential(env, caller.tenantId, purpose, trimmedLabel);
+  if (!created) {
+    // 保存先 (alc-auth-worker) が受け付けなかった・届かなかった。password・hash は出さない。
+    console.warn(`[machine-cred] create store_failed purpose=${purpose}`);
+    return json(request, { error: "store_failed" }, 502);
+  }
   return json(
     request,
-    { username: created.username, password: created.password, purpose, label: label.trim() },
+    { username: created.username, password: created.password, purpose, label: trimmedLabel },
     201,
   );
 }
