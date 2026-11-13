@@ -582,6 +582,16 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     proxies: ["browser"],
     methods: { browser: ["PUT", "DELETE"] },
   },
+  // 点呼の届出の申請の下書き (様式を作った時点で保存し、提出後に到達番号を付ける。worker が admin に絞る)
+  { match: "exact", path: "/api/tenko/filings", binding: "ALC_TENKO", host: "alc-tenko", proxies: ["browser"], methods: { browser: ["GET", "POST"] } },
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/filings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    binding: "ALC_TENKO",
+    host: "alc-tenko",
+    proxies: ["browser"],
+    methods: { browser: ["PATCH", "DELETE"] },
+  },
   // 申請済みの控えをどの事業者に見せるか (振り分けの置き換え)
   {
     match: "pattern",
