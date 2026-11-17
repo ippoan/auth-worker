@@ -347,16 +347,39 @@ export async function handleAlarmKeyRename(request: Request, env: Env): Promise<
   const label = body.label;
   if (!isValidLabel(label)) return jsonNoStore({ error: "label は 1〜64 文字で必要です" }, 400);
 
-  const tenantId = pre.session.tenantId;
+  const result = await renameAlarmKeyLabel(env, pre.session.tenantId, fingerprint, label);
+  if (!result.ok) return jsonNoStore({ error: result.reason }, result.reason === "not_found" ? 404 : 409);
+  return jsonNoStore({ ok: true, fingerprint, label });
+}
+
+export type RenameAlarmKeyResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" | "revoked" | "duplicate_label" };
+
+/**
+ * 鍵 `fingerprint` の label を `label` に書き換える本体。cookie 版 (`handleAlarmKeyRename`) と
+ * server-to-server 版 (`POST /internal/alarm-keys/rename`) が共用する。label の検査は呼び出し側。
+ *
+ * - record が無い / `tenantId` と違う → `not_found` (存在を漏らさない)
+ * - 失効済み → `revoked`
+ * - 同じ tenant の失効していない**別の**鍵が同じ label → `duplicate_label`
+ * - 自分と同じ label なら何も書かずに ok
+ */
+export async function renameAlarmKeyLabel(
+  env: Env,
+  tenantId: string,
+  fingerprint: string,
+  label: string,
+): Promise<RenameAlarmKeyResult> {
   const record = await getAlarmKeyRecord(env, fingerprint);
-  if (!record || record.tenant_id !== tenantId) return jsonNoStore({ error: "not_found" }, 404);
-  if (record.revoked_at !== undefined) return jsonNoStore({ error: "revoked" }, 409);
+  if (!record || record.tenant_id !== tenantId) return { ok: false, reason: "not_found" };
+  if (record.revoked_at !== undefined) return { ok: false, reason: "revoked" };
 
   for (const other of await readTenantIndex(env, tenantId)) {
     if (other === fingerprint) continue;
     const o = await getAlarmKeyRecord(env, other);
     if (o && o.tenant_id === tenantId && o.revoked_at === undefined && o.label === label) {
-      return jsonNoStore({ error: "duplicate_label" }, 409);
+      return { ok: false, reason: "duplicate_label" };
     }
   }
 
@@ -364,5 +387,5 @@ export async function handleAlarmKeyRename(request: Request, env: Env): Promise<
     record.label = label;
     await env.AUTH_CONFIG.put(recordKey(fingerprint), JSON.stringify(record));
   }
-  return jsonNoStore({ ok: true, fingerprint, label });
+  return { ok: true };
 }
