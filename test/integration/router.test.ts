@@ -1018,11 +1018,12 @@ describe("Router (index.ts)", () => {
     },
   );
 
-  // 端末名の改名 2 本 (Refs ippoan/alc-app-s3#352)。handler は mock していないので実物まで届く:
+  // 端末名の改名 3 本 (Refs ippoan/alc-app-s3#352)。handler は mock していないので実物まで届く:
   // 認証の無い POST は拒否、GET は route に当たらず 404。
   it.each([
     ["/device/setup/alarm-key/rename", { Origin: "https://auth.test.example" }],
     ["/internal/device-labels/rename", {}],
+    ["/internal/alarm-keys/rename", {}],
   ] as Array<[string, Record<string, string>]>)("POST %s は handler に届き認証無しで拒否、GET は 404", async (path, headers) => {
     const url = `https://auth.test.example${path}`;
     const post = await worker.fetch(new Request(url, { method: "POST", headers, body: "{}" }), env);

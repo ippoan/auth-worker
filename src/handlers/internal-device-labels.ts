@@ -16,7 +16,7 @@
  */
 import type { Env } from "../index";
 import { listDeviceRecordsByTenant, renameDeviceLabel } from "../lib/device";
-import { isValidLabel } from "./alarm-key";
+import { isValidLabel, renameAlarmKeyLabel } from "./alarm-key";
 import { jsonNoStore, rejectUnlessSharedSecret } from "./internal-hub-devices";
 
 export async function handleInternalDeviceLabels(request: Request, env: Env): Promise<Response> {
@@ -56,17 +56,21 @@ export async function handleInternalDeviceLabels(request: Request, env: Env): Pr
  * 応答: 200 `{ ok, device_id, label }` / 400 (入力不正) / 404 `not_found` (無い・tenant 違い) /
  * 409 `revoked` / 409 `duplicate_label` (同じ tenant の有効な別の device がその label)。
  */
+async function readBody(request: Request): Promise<Record<string, unknown>> {
+  try {
+    const v = await request.json();
+    if (v && typeof v === "object") return v as Record<string, unknown>;
+  } catch {
+    // 空 body は呼び出し側の検査で弾く
+  }
+  return {};
+}
+
 export async function handleInternalDeviceLabelRename(request: Request, env: Env): Promise<Response> {
   const rejected = await rejectUnlessSharedSecret(request, env);
   if (rejected) return rejected;
 
-  let body: Record<string, unknown> = {};
-  try {
-    const v = await request.json();
-    if (v && typeof v === "object") body = v as Record<string, unknown>;
-  } catch {
-    // 空 body は下の検査で弾く
-  }
+  const body = await readBody(request);
   const tenantId = typeof body.tenant_id === "string" ? body.tenant_id : "";
   const deviceId = typeof body.device_id === "string" ? body.device_id : "";
   if (!tenantId) return jsonNoStore({ error: "tenant_id_required" }, 400);
@@ -77,4 +81,32 @@ export async function handleInternalDeviceLabelRename(request: Request, env: Env
   const result = await renameDeviceLabel(env, tenantId, deviceId, label);
   if (!result.ok) return jsonNoStore({ error: result.reason }, result.reason === "not_found" ? 404 : 409);
   return jsonNoStore({ ok: true, device_id: deviceId, label });
+}
+
+/**
+ * `POST /internal/alarm-keys/rename` — body `{ tenant_id, fingerprint, label }`
+ *
+ * 警告デバイス (指静脈など) の鍵の label を書き換える server-to-server 専用 API (管理画面
+ * 「端末のファーム」の改名、Refs ippoan/alc-app-s3#352)。cookie 版
+ * `/device/setup/alarm-key/rename` は Origin 検査があり、サーバーからの転送では通らないため。
+ * 認証は上と同じ shared secret。書き換えの本体は cookie 版と同じ `renameAlarmKeyLabel`。
+ *
+ * 応答: 200 `{ ok, fingerprint, label }` / 400 (入力不正) / 404 `not_found` (無い・tenant 違い) /
+ * 409 `revoked` / 409 `duplicate_label` (同じ tenant の有効な別の鍵がその label)。
+ */
+export async function handleInternalAlarmKeyRename(request: Request, env: Env): Promise<Response> {
+  const rejected = await rejectUnlessSharedSecret(request, env);
+  if (rejected) return rejected;
+
+  const body = await readBody(request);
+  const tenantId = typeof body.tenant_id === "string" ? body.tenant_id : "";
+  const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint : "";
+  if (!tenantId) return jsonNoStore({ error: "tenant_id_required" }, 400);
+  if (!fingerprint) return jsonNoStore({ error: "fingerprint_required" }, 400);
+  const label = body.label;
+  if (!isValidLabel(label)) return jsonNoStore({ error: "invalid_label" }, 400);
+
+  const result = await renameAlarmKeyLabel(env, tenantId, fingerprint, label);
+  if (!result.ok) return jsonNoStore({ error: result.reason }, result.reason === "not_found" ? 404 : 409);
+  return jsonNoStore({ ok: true, fingerprint, label });
 }

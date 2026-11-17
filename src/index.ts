@@ -70,7 +70,11 @@ import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
 import { handleAuthIntrospect } from "./handlers/auth-introspect";
 import { handleInternalHubDevices } from "./handlers/internal-hub-devices";
-import { handleInternalDeviceLabelRename, handleInternalDeviceLabels } from "./handlers/internal-device-labels";
+import {
+  handleInternalAlarmKeyRename,
+  handleInternalDeviceLabelRename,
+  handleInternalDeviceLabels,
+} from "./handlers/internal-device-labels";
 import { handleMcpJwtPickup } from "./handlers/mcp-jwt-pickup";
 import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
@@ -1092,6 +1096,10 @@ export default {
           // 管理画面「端末のファーム」の改名、Refs ippoan/alc-app-s3#352)。
           case "/internal/device-labels/rename":
             return await handleInternalDeviceLabelRename(request, env);
+          // 警告デバイスの鍵の label を書き換える (shared-secret 認証、server-to-server 専用。
+          // 管理画面「端末のファーム」の改名、Refs ippoan/alc-app-s3#352)。
+          case "/internal/alarm-keys/rename":
+            return await handleInternalAlarmKeyRename(request, env);
           // CoreS3 の USB provisioning: browser (cookie session) からの credential mint。
           case "/device/setup/pair":
             return await handleDeviceSetupPair(request, env);

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { handleInternalDeviceLabelRename, handleInternalDeviceLabels } from "../../src/handlers/internal-device-labels";
+import {
+  handleInternalAlarmKeyRename,
+  handleInternalDeviceLabelRename,
+  handleInternalDeviceLabels,
+} from "../../src/handlers/internal-device-labels";
 import { handleInternalHubDevices } from "../../src/handlers/internal-hub-devices";
 import {
   createDeviceCredential,
@@ -280,5 +284,143 @@ describe("POST /internal/device-labels/rename (Refs ippoan/alc-app-s3#352)", () 
     );
     expect(res.status).toBe(401);
     expect((await getDeviceRecord(env, cred.device_id))?.label).toBe("a");
+  });
+});
+
+describe("POST /internal/alarm-keys/rename (Refs ippoan/alc-app-s3#352)", () => {
+  function post(body: unknown, auth: string | null = SECRET): Request {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (auth !== null) headers.Authorization = auth;
+    return new Request(`${ORIGIN}/internal/alarm-keys/rename`, {
+      method: "POST",
+      headers,
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+  const kvData = (env: Env) => (env.AUTH_CONFIG as unknown as { _data: Record<string, string> })._data;
+
+  /** 鍵の record と tenant 索引を KV に直接置く (値はダミー)。 */
+  function putKey(env: Env, fp: string, tenant: string, label: string, revoked = false): void {
+    const data = kvData(env);
+    data[`alarmkey:${fp}`] = JSON.stringify({
+      pubkey: `pk-${fp}`,
+      tenant_id: tenant,
+      label,
+      usage: "kiosk",
+      created_at: NOW,
+      ...(revoked ? { revoked_at: NOW } : {}),
+    });
+    const idxKey = `alarmkeys:${tenant}`;
+    const idx = data[idxKey] ? (JSON.parse(data[idxKey]!) as string[]) : [];
+    data[idxKey] = JSON.stringify([...idx, fp]);
+  }
+  const labelOf = (env: Env, fp: string) => JSON.parse(kvData(env)[`alarmkey:${fp}`]!).label as string;
+
+  it("label だけを書き換え、他の欄は変えない", async () => {
+    const env = makeEnv();
+    putKey(env, "aaaa000000000001", "tenant-a", "seat-1");
+    const before = JSON.parse(kvData(env)["alarmkey:aaaa000000000001"]!);
+    const res = await handleInternalAlarmKeyRename(
+      post({ tenant_id: "tenant-a", fingerprint: "aaaa000000000001", label: "管理者席" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(await res.json()).toEqual({ ok: true, fingerprint: "aaaa000000000001", label: "管理者席" });
+    expect(JSON.parse(kvData(env)["alarmkey:aaaa000000000001"]!)).toEqual({ ...before, label: "管理者席" });
+  });
+
+  it("自分と同じ label への改名は 200 で何も書かない", async () => {
+    const env = makeEnv();
+    putKey(env, "aaaa000000000001", "tenant-a", "seat-1");
+    const snapshot = { ...kvData(env) };
+    const res = await handleInternalAlarmKeyRename(
+      post({ tenant_id: "tenant-a", fingerprint: "aaaa000000000001", label: "seat-1" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, fingerprint: "aaaa000000000001", label: "seat-1" });
+    expect(kvData(env)).toEqual(snapshot);
+  });
+
+  it("同じ tenant の有効な別の鍵と同じ label → 409 duplicate_label。失効済み・他 tenant の同名は妨げない", async () => {
+    const env = makeEnv();
+    putKey(env, "aaaa000000000001", "tenant-a", "seat-1");
+    putKey(env, "aaaa000000000002", "tenant-a", "taken");
+    putKey(env, "aaaa000000000003", "tenant-a", "free", true);
+    putKey(env, "bbbb000000000001", "tenant-b", "elsewhere");
+
+    const dup = await handleInternalAlarmKeyRename(
+      post({ tenant_id: "tenant-a", fingerprint: "aaaa000000000001", label: "taken" }),
+      env,
+    );
+    expect(dup.status).toBe(409);
+    expect(await dup.json()).toEqual({ error: "duplicate_label" });
+    expect(labelOf(env, "aaaa000000000001")).toBe("seat-1");
+    for (const label of ["free", "elsewhere"]) {
+      const ok = await handleInternalAlarmKeyRename(
+        post({ tenant_id: "tenant-a", fingerprint: "aaaa000000000001", label }),
+        env,
+      );
+      expect(ok.status).toBe(200);
+      expect(labelOf(env, "aaaa000000000001")).toBe(label);
+    }
+  });
+
+  it("無い鍵と他 tenant の鍵は同じ 404 で書き換えない", async () => {
+    const env = makeEnv();
+    putKey(env, "bbbb000000000001", "tenant-b", "b");
+    const other = await handleInternalAlarmKeyRename(
+      post({ tenant_id: "tenant-a", fingerprint: "bbbb000000000001", label: "x" }),
+      env,
+    );
+    const missing = await handleInternalAlarmKeyRename(
+      post({ tenant_id: "tenant-a", fingerprint: "0000000000000000", label: "x" }),
+      env,
+    );
+    expect(other.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(await other.text()).toBe(await missing.text());
+    expect(labelOf(env, "bbbb000000000001")).toBe("b");
+  });
+
+  it("失効済み → 409 revoked", async () => {
+    const env = makeEnv();
+    putKey(env, "aaaa000000000001", "tenant-a", "seat-1", true);
+    const res = await handleInternalAlarmKeyRename(
+      post({ tenant_id: "tenant-a", fingerprint: "aaaa000000000001", label: "x" }),
+      env,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "revoked" });
+  });
+
+  it.each([
+    ["tenant_id 無し", { fingerprint: "f", label: "x" }, "tenant_id_required"],
+    ["fingerprint 無し", { tenant_id: "tenant-a", label: "x" }, "fingerprint_required"],
+    ["label 無し", { tenant_id: "tenant-a", fingerprint: "f" }, "invalid_label"],
+    ["label 空", { tenant_id: "tenant-a", fingerprint: "f", label: "" }, "invalid_label"],
+    ["label 65 文字", { tenant_id: "tenant-a", fingerprint: "f", label: "x".repeat(65) }, "invalid_label"],
+    ["壊れた body", "{not json", "tenant_id_required"],
+    ["body が null", "null", "tenant_id_required"],
+  ])("%s → 400", async (_n, body, error) => {
+    const env = makeEnv();
+    const res = await handleInternalAlarmKeyRename(post(body), env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error });
+  });
+
+  it.each([
+    ["secret 無し", null],
+    ["secret 違い", "wrong-secret"],
+  ])("%s → 401 で書き換えない", async (_n, auth) => {
+    const env = makeEnv();
+    putKey(env, "aaaa000000000001", "tenant-a", "seat-1");
+    const res = await handleInternalAlarmKeyRename(
+      post({ tenant_id: "tenant-a", fingerprint: "aaaa000000000001", label: "x" }, auth),
+      env,
+    );
+    expect(res.status).toBe(401);
+    expect(labelOf(env, "aaaa000000000001")).toBe("seat-1");
   });
 });
