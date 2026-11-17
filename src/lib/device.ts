@@ -459,6 +459,49 @@ export async function getDeviceRecord(
   }
 }
 
+/** `renameDeviceLabel` の結果。 */
+export type RenameDeviceLabelResult =
+  | { ok: true; record: DeviceRecord }
+  | { ok: false; reason: "not_found" | "revoked" | "duplicate_label" };
+
+/**
+ * device の label を書き換え、label 二次索引を張り替える (Refs ippoan/alc-app-s3#352)。
+ *
+ * - record が無い・tenant 違い → `not_found` / 失効済み → `revoked`
+ * - 新しい label の索引が**別の有効な** device (同じ tenant・未失効) を指していれば
+ *   `duplicate_label`。失効済み・不在の device を指す索引は空きとして上書きする
+ *   (索引は失効しても残るため。再発行でも同じ索引を上書きしている)
+ * - 同じ label への改名は何も書かずに ok
+ *
+ * 書く順は「新索引 put → record put → 旧索引 delete」。途中で落ちても旧名・新名の
+ * どちらかで必ず引ける (旧名で引けなくなる窓を作らない)。旧索引は自分を指すときだけ消す。
+ */
+export async function renameDeviceLabel(
+  env: DeviceKvEnv,
+  tenantId: string,
+  deviceId: string,
+  label: string,
+): Promise<RenameDeviceLabelResult> {
+  const record = await getDeviceRecord(env, deviceId);
+  if (!record || record.tenant_id !== tenantId) return { ok: false, reason: "not_found" };
+  if (record.revoked) return { ok: false, reason: "revoked" };
+  if (record.label === label) return { ok: true, record };
+
+  const newKey = labelIndexKey(tenantId, label);
+  const holder = await env.AUTH_CONFIG.get(newKey);
+  if (holder && holder !== deviceId) {
+    const other = await getDeviceRecord(env, holder);
+    if (other && other.tenant_id === tenantId && !other.revoked) return { ok: false, reason: "duplicate_label" };
+  }
+
+  const oldKey = labelIndexKey(tenantId, record.label);
+  await env.AUTH_CONFIG.put(newKey, deviceId);
+  record.label = label;
+  await env.AUTH_CONFIG.put(KV_PREFIX + deviceId, JSON.stringify(record));
+  if ((await env.AUTH_CONFIG.get(oldKey)) === deviceId) await env.AUTH_CONFIG.delete(oldKey);
+  return { ok: true, record };
+}
+
 /** device を revoke する。存在して revoke できたら true、不在なら false。 */
 export async function revokeDeviceCredential(
   env: DeviceKvEnv,

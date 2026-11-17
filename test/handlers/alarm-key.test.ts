@@ -3,6 +3,7 @@ import {
   handleAlarmKeyRegister,
   handleAlarmKeyList,
   handleAlarmKeyRevoke,
+  handleAlarmKeyRename,
 } from "../../src/handlers/alarm-key";
 import { DEVELOPER_EMAILS } from "../../src/lib/developer";
 import { createMockKV, type MockKV } from "../helpers/mock-env";
@@ -918,5 +919,140 @@ describe("handleAlarmKeyRegister の dev_device と replaces_pubkey (Refs ippoan
     const byFp = Object.fromEntries(data.keys.map((k) => [k.fingerprint, k.dev_device]));
     expect(byFp[devFp]).toBe(true);
     expect(byFp[plainFp]).toBe(false);
+  });
+});
+
+describe("handleAlarmKeyRename (Refs ippoan/alc-app-s3#352)", () => {
+  async function register(env: Env, seed: number, label: string, headers: Record<string, string>) {
+    const res = await handleAlarmKeyRegister(
+      postJson("/device/setup/alarm-key", { pubkey: fakePubkey(seed), label, usage: "tenko-manager" }, headers),
+      env,
+    );
+    return ((await res.json()) as { fingerprint: string }).fingerprint;
+  }
+  const rename = (body: unknown, headers: Record<string, string>) =>
+    postJson("/device/setup/alarm-key/rename", body, headers);
+
+  it("label だけを書き換え、他の欄は変えない", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const headers = await withOpCookieAndOrigin();
+    const fingerprint = await register(env, 40, "seat-1", headers);
+    const before = JSON.parse(kv._data[`alarmkey:${fingerprint}`]!);
+
+    const res = await handleAlarmKeyRename(rename({ fingerprint, label: "運行管理者席" }, headers), env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(await res.json()).toEqual({ ok: true, fingerprint, label: "運行管理者席" });
+    expect(JSON.parse(kv._data[`alarmkey:${fingerprint}`]!)).toEqual({ ...before, label: "運行管理者席" });
+
+    const list = await handleAlarmKeyList(getReq("/device/setup/alarm-keys", headers), env);
+    const keys = ((await list.json()) as { keys: Array<{ fingerprint: string; label: string }> }).keys;
+    expect(keys.find((k) => k.fingerprint === fingerprint)?.label).toBe("運行管理者席");
+  });
+
+  it("自分と同じ label への改名は 200 (何も書かない)", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const headers = await withOpCookieAndOrigin();
+    const fingerprint = await register(env, 41, "seat-1", headers);
+    const put = vi.spyOn(kv, "put");
+    const res = await handleAlarmKeyRename(rename({ fingerprint, label: "seat-1" }, headers), env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, fingerprint, label: "seat-1" });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["label 無し", {}],
+    ["label 空", { label: "" }],
+    ["label 65 文字", { label: "x".repeat(65) }],
+    ["label が文字列でない", { label: 12 }],
+  ])("%s → 400", async (_n, extra) => {
+    const env = makeEnv();
+    const headers = await withOpCookieAndOrigin();
+    const fingerprint = await register(env, 42, "seat-1", headers);
+    const res = await handleAlarmKeyRename(rename({ fingerprint, ...extra }, headers), env);
+    expect(res.status).toBe(400);
+  });
+
+  it("fingerprint 無し → 400 / 壊れた body も 400", async () => {
+    const env = makeEnv();
+    const headers = await withOpCookieAndOrigin();
+    expect((await handleAlarmKeyRename(rename({ label: "a" }, headers), env)).status).toBe(400);
+    const broken = new Request(`${ISSUER}/device/setup/alarm-key/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: "{not json",
+    });
+    expect((await handleAlarmKeyRename(broken, env)).status).toBe(400);
+  });
+
+  it("64 文字ちょうどは通る", async () => {
+    const env = makeEnv();
+    const headers = await withOpCookieAndOrigin();
+    const fingerprint = await register(env, 43, "seat-1", headers);
+    const res = await handleAlarmKeyRename(rename({ fingerprint, label: "y".repeat(64) }, headers), env);
+    expect(res.status).toBe(200);
+  });
+
+  it("無い鍵と他 tenant の鍵は同じ 404", async () => {
+    const env = makeEnv();
+    const fingerprint = await register(env, 44, "seat-1", await withOpCookieAndOrigin({ tenant_id: "tenant-2" }));
+    const headers = await withOpCookieAndOrigin();
+    const other = await handleAlarmKeyRename(rename({ fingerprint, label: "x" }, headers), env);
+    const missing = await handleAlarmKeyRename(rename({ fingerprint: "0000000000000000", label: "x" }, headers), env);
+    expect(other.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(await other.text()).toBe(await missing.text());
+  });
+
+  it("失効済みの鍵 → 409 revoked", async () => {
+    const env = makeEnv();
+    const headers = await withOpCookieAndOrigin();
+    const fingerprint = await register(env, 45, "seat-1", headers);
+    await handleAlarmKeyRevoke(postJson("/device/setup/alarm-key/revoke", { fingerprint }, headers), env);
+    const res = await handleAlarmKeyRename(rename({ fingerprint, label: "x" }, headers), env);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "revoked" });
+  });
+
+  it("同じ tenant の有効な別の鍵と同じ label → 409 duplicate_label。失効済み・他 tenant の同名は妨げない", async () => {
+    const { env, kv } = makeEnvWithKv();
+    const headers = await withOpCookieAndOrigin();
+    const target = await register(env, 46, "seat-1", headers);
+    await register(env, 47, "taken", headers);
+    const gone = await register(env, 48, "free", headers);
+    await handleAlarmKeyRevoke(postJson("/device/setup/alarm-key/revoke", { fingerprint: gone }, headers), env);
+    await register(env, 49, "elsewhere", await withOpCookieAndOrigin({ tenant_id: "tenant-2" }));
+    // 索引に他 tenant の鍵や消えた鍵が紛れていても無視する
+    const idx = JSON.parse(kv._data["alarmkeys:tenant-1"]!) as string[];
+    const foreign = JSON.parse(kv._data["alarmkeys:tenant-2"]!) as string[];
+    kv._data["alarmkeys:tenant-1"] = JSON.stringify([...idx, ...foreign, "ffffffffffffffff"]);
+
+    const dup = await handleAlarmKeyRename(rename({ fingerprint: target, label: "taken" }, headers), env);
+    expect(dup.status).toBe(409);
+    expect(await dup.json()).toEqual({ error: "duplicate_label" });
+    for (const label of ["free", "elsewhere"]) {
+      const ok = await handleAlarmKeyRename(rename({ fingerprint: target, label }, headers), env);
+      expect(ok.status).toBe(200);
+    }
+  });
+
+  it("401 (cookie 無し) / 403 bad_origin", async () => {
+    const env = makeEnv();
+    const body = { fingerprint: "0000000000000000", label: "x" };
+    expect((await handleAlarmKeyRename(rename(body, originHeaders), env)).status).toBe(401);
+    const bad = await handleAlarmKeyRename(rename(body, await opCookie()), env);
+    expect(bad.status).toBe(403);
+    expect(await bad.json()).toEqual({ error: "bad_origin" });
+  });
+
+  it.each(["dev", "device-key"])("token_kind=%s → 403 で書き換えない", async (tokenKind) => {
+    const { env, kv } = makeEnvWithKv();
+    const fingerprint = await register(env, 50, "seat-1", await withOpCookieAndOrigin());
+    const headers = { ...(await opCookie({ token_kind: tokenKind })), ...originHeaders };
+    const res = await handleAlarmKeyRename(rename({ fingerprint, label: "x" }, headers), env);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "dev_token_write_forbidden" });
+    expect(JSON.parse(kv._data[`alarmkey:${fingerprint}`]!).label).toBe("seat-1");
   });
 });
