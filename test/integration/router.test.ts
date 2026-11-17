@@ -165,6 +165,8 @@ vi.mock("../../src/handlers/mcp-token", () => ({
 }));
 vi.mock("../../src/handlers/mcp-introspect", () => ({
   handleMcpIntrospect: vi.fn(() => new Response("mcp-introspect")),
+  // `/internal/*` の shared secret 検査が使う。未 bind (null) → 503 で handler まで届いたことが分かる。
+  resolveAllSharedSecrets: vi.fn(async () => null),
 }));
 vi.mock("../../src/handlers/mcp-jwt-pickup", () => ({
   handleMcpJwtPickup: vi.fn(() => new Response("mcp-jwt-pickup")),
@@ -1015,6 +1017,19 @@ describe("Router (index.ts)", () => {
       expect(get.status).toBe(404);
     },
   );
+
+  // 端末名の改名 2 本 (Refs ippoan/alc-app-s3#352)。handler は mock していないので実物まで届く:
+  // 認証の無い POST は拒否、GET は route に当たらず 404。
+  it.each([
+    ["/device/setup/alarm-key/rename", { Origin: "https://auth.test.example" }],
+    ["/internal/device-labels/rename", {}],
+  ] as Array<[string, Record<string, string>]>)("POST %s は handler に届き認証無しで拒否、GET は 404", async (path, headers) => {
+    const url = `https://auth.test.example${path}`;
+    const post = await worker.fetch(new Request(url, { method: "POST", headers, body: "{}" }), env);
+    expect([401, 503]).toContain(post.status);
+    const get = await worker.fetch(new Request(url), env);
+    expect(get.status).toBe(404);
+  });
 
   // --- Error handling ---
   it("catches handler errors and returns 500", async () => {

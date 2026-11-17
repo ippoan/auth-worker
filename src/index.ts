@@ -70,7 +70,7 @@ import { handleMcpToken } from "./handlers/mcp-token";
 import { handleMcpIntrospect } from "./handlers/mcp-introspect";
 import { handleAuthIntrospect } from "./handlers/auth-introspect";
 import { handleInternalHubDevices } from "./handlers/internal-hub-devices";
-import { handleInternalDeviceLabels } from "./handlers/internal-device-labels";
+import { handleInternalDeviceLabelRename, handleInternalDeviceLabels } from "./handlers/internal-device-labels";
 import { handleMcpJwtPickup } from "./handlers/mcp-jwt-pickup";
 import { handleMcpRelayConnect } from "./handlers/mcp-relay-connect";
 import { handleMcpRelayBridge, handleMcpRelaySse } from "./handlers/mcp-relay-bridge";
@@ -124,6 +124,7 @@ import {
   handleAlarmKeyRegister,
   handleAlarmKeyList,
   handleAlarmKeyRevoke,
+  handleAlarmKeyRename,
 } from "./handlers/alarm-key";
 import { handleDeviceAlarmNonce, handleDeviceAlarmToken } from "./handlers/device-alarm-token";
 import { handlePrintTestPdf } from "./handlers/print-test";
@@ -1087,6 +1088,10 @@ export default {
           // (shared-secret 認証、server-to-server 専用)。
           case "/device/site/backfill":
             return await handleDeviceSiteBackfill(request, env);
+          // 登録簿の device の label を書き換える (shared-secret 認証、server-to-server 専用。
+          // 管理画面「端末のファーム」の改名、Refs ippoan/alc-app-s3#352)。
+          case "/internal/device-labels/rename":
+            return await handleInternalDeviceLabelRename(request, env);
           // CoreS3 の USB provisioning: browser (cookie session) からの credential mint。
           case "/device/setup/pair":
             return await handleDeviceSetupPair(request, env);
@@ -1096,6 +1101,9 @@ export default {
             return await handleAlarmKeyRegister(request, env);
           case "/device/setup/alarm-key/revoke":
             return await handleAlarmKeyRevoke(request, env);
+          // 鍵の label だけを書き換える (管理画面「端末のファーム」の改名、Refs ippoan/alc-app-s3#352)。
+          case "/device/setup/alarm-key/rename":
+            return await handleAlarmKeyRename(request, env);
           // 一歩庵点呼の認定申請の申請者を保存 (開発者専用)。POST。
           case "/maker/certification/applicant":
             return await handleMakerCertificationSave(request, env);

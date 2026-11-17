@@ -13,6 +13,8 @@
  *                                          開発者の Google session だけ。Refs ippoan/alc-app#387)
  *   GET  /device/setup/alarm-keys        — operator の tenant の一覧
  *   POST /device/setup/alarm-key/revoke  — {fingerprint} → 失効 (削除しない)
+ *   POST /device/setup/alarm-key/rename  — {fingerprint, label} → label だけを書き換える
+ *                                          (Refs ippoan/alc-app-s3#352)
  *
  * 鍵は登録時に用途 (`usage`) を 1 つだけ持つ。`kiosk` は `/device/alarm-token`
  * (CoreS3 の運行者端末)、`tenko-manager` は同じく `/device/alarm-token`
@@ -29,7 +31,7 @@
  *
  * fingerprint = 公開鍵 (raw 32 B) の SHA-256 の先頭 16 hex (小文字)。
  *
- * **object 認可**: 3 本すべてで「record の tenant_id = session の tenant」を
+ * **object 認可**: 4 本すべてで「record の tenant_id = session の tenant」を
  * 検査する (`deviceCommandRequest` の `managedDeviceKind` のような共通 3 段目
  * helper が無いため、ここでは handler 内に明示する)。
  */
@@ -128,7 +130,8 @@ async function validatePubkeyAndFingerprint(pubkey: unknown): Promise<string | n
   return fingerprintFromRawPubkey(raw);
 }
 
-function isValidLabel(label: unknown): label is string {
+/** 鍵ラベルの規則 (登録・差し替え・改名で共通。1〜64 文字)。 */
+export function isValidLabel(label: unknown): label is string {
   return typeof label === "string" && label.length >= 1 && label.length <= 64;
 }
 
@@ -321,4 +324,45 @@ export async function handleAlarmKeyRevoke(request: Request, env: Env): Promise<
   }
 
   return jsonNoStore({ fingerprint, revoked_at: record.revoked_at });
+}
+
+/**
+ * POST /device/setup/alarm-key/rename — {fingerprint, label} で鍵の label だけを書き換える
+ * (Refs ippoan/alc-app-s3#352)。usage / dev_device / created_at などは触らない。
+ *
+ * - record が無い場合と他 tenant の record の場合は同じ 404 (存在を漏らさない)
+ * - 失効済みの鍵は 409 `revoked`
+ * - 同じ tenant の失効していない**別の**鍵が同じ label を持っていれば 409 `duplicate_label`
+ *   (自分自身と同じ label への改名は 200 で何も変わらない)
+ */
+export async function handleAlarmKeyRename(request: Request, env: Env): Promise<Response> {
+  const pre = await adminRequest(request, env);
+  if (pre instanceof Response) return pre;
+  // 書き換え系なので dev/device-key token は弾く。
+  if (isReadOnlyToken(pre.session)) return jsonNoStore({ error: "dev_token_write_forbidden" }, 403);
+
+  const body = await readJsonBody(request);
+  const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint : "";
+  if (!fingerprint) return jsonNoStore({ error: "fingerprint が必要です" }, 400);
+  const label = body.label;
+  if (!isValidLabel(label)) return jsonNoStore({ error: "label は 1〜64 文字で必要です" }, 400);
+
+  const tenantId = pre.session.tenantId;
+  const record = await getAlarmKeyRecord(env, fingerprint);
+  if (!record || record.tenant_id !== tenantId) return jsonNoStore({ error: "not_found" }, 404);
+  if (record.revoked_at !== undefined) return jsonNoStore({ error: "revoked" }, 409);
+
+  for (const other of await readTenantIndex(env, tenantId)) {
+    if (other === fingerprint) continue;
+    const o = await getAlarmKeyRecord(env, other);
+    if (o && o.tenant_id === tenantId && o.revoked_at === undefined && o.label === label) {
+      return jsonNoStore({ error: "duplicate_label" }, 409);
+    }
+  }
+
+  if (record.label !== label) {
+    record.label = label;
+    await env.AUTH_CONFIG.put(recordKey(fingerprint), JSON.stringify(record));
+  }
+  return jsonNoStore({ ok: true, fingerprint, label });
 }
