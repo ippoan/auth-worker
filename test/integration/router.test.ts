@@ -1032,6 +1032,12 @@ describe("Router (index.ts)", () => {
     expect(get.status).toBe(404);
   });
 
+  // 鍵 1 本の名前を読む内部の口 (Refs ippoan/alc-app-s3#352)。GET は handler に届き、認証無しで拒否。
+  it("GET /internal/alarm-keys/label は handler に届き認証無しで拒否", async () => {
+    const res = await worker.fetch(new Request("https://auth.test.example/internal/alarm-keys/label?tenant_id=t&fingerprint=f"), env);
+    expect([401, 503]).toContain(res.status);
+  });
+
   // --- Error handling ---
   it("catches handler errors and returns 500", async () => {
     const { handleHealthProxy } = await import("../../src/handlers/health");

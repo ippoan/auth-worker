@@ -16,7 +16,7 @@
  */
 import type { Env } from "../index";
 import { listDeviceRecordsByTenant, renameDeviceLabel } from "../lib/device";
-import { isValidLabel, renameAlarmKeyLabel } from "./alarm-key";
+import { getAlarmKeyRecord, isValidLabel, renameAlarmKeyLabel } from "./alarm-key";
 import { jsonNoStore, rejectUnlessSharedSecret } from "./internal-hub-devices";
 
 export async function handleInternalDeviceLabels(request: Request, env: Env): Promise<Response> {
@@ -109,4 +109,31 @@ export async function handleInternalAlarmKeyRename(request: Request, env: Env): 
   const result = await renameAlarmKeyLabel(env, tenantId, fingerprint, label);
   if (!result.ok) return jsonNoStore({ error: result.reason }, result.reason === "not_found" ? 404 : 409);
   return jsonNoStore({ ok: true, fingerprint, label });
+}
+
+/**
+ * `GET /internal/alarm-keys/label?tenant_id=<id>&fingerprint=<hex>`
+ *
+ * 警告デバイスの鍵 1 本の label を返す server-to-server 専用 API (Refs ippoan/alc-app-s3#352)。
+ * alc-app の版表示が、管理者でない token の画面 (運行管理者席・キオスク) でも自分の端末の名前を
+ * 出すために使う。名前の表 (`/device/setup/alarm-keys`) は管理者の cookie でしか読めないため。
+ * 認証は上と同じ shared secret。
+ *
+ * 応答: 200 `{ fingerprint, label, revoked }` (label が無い record は null) / 400 (入力不足) /
+ * 404 `not_found` (無い・tenant 違いは同じ応答で、存在を漏らさない)。
+ * 公開鍵・usage・dev_device・時刻・tenant_id は返さない。
+ */
+export async function handleInternalAlarmKeyLabel(request: Request, env: Env): Promise<Response> {
+  const rejected = await rejectUnlessSharedSecret(request, env);
+  if (rejected) return rejected;
+
+  const params = new URL(request.url).searchParams;
+  const tenantId = params.get("tenant_id");
+  const fingerprint = params.get("fingerprint");
+  if (!tenantId) return jsonNoStore({ error: "tenant_id_required" }, 400);
+  if (!fingerprint) return jsonNoStore({ error: "fingerprint_required" }, 400);
+
+  const record = await getAlarmKeyRecord(env, fingerprint);
+  if (!record || record.tenant_id !== tenantId) return jsonNoStore({ error: "not_found" }, 404);
+  return jsonNoStore({ fingerprint, label: record.label || null, revoked: record.revoked_at !== undefined });
 }
