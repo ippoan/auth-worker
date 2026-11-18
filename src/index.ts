@@ -71,6 +71,7 @@ import { handleMcpIntrospect } from "./handlers/mcp-introspect";
 import { handleAuthIntrospect } from "./handlers/auth-introspect";
 import { handleInternalHubDevices } from "./handlers/internal-hub-devices";
 import {
+  handleInternalAlarmKeyLabel,
   handleInternalAlarmKeyRename,
   handleInternalDeviceLabelRename,
   handleInternalDeviceLabels,
@@ -940,6 +941,10 @@ export default {
           // (alc-app の端末一覧と報告の照合用、Refs ippoan/alc-app#403)。
           case "/internal/device-labels":
             return await handleInternalDeviceLabels(request, env);
+          // 警告デバイスの鍵 1 本の label だけを返す internal API
+          // (管理者でない画面の版表示用、Refs ippoan/alc-app-s3#352)。
+          case "/internal/alarm-keys/label":
+            return await handleInternalAlarmKeyLabel(request, env);
           // 注: /device/setup/ota と /device/setup/version は **POST** なので
           // 下の POST 用 switch 側に置く (GET switch に入れると 404 になる)。
           // テスト用 PDF (公開 — デバイスは認証ヘッダを付けずに GET する)。
