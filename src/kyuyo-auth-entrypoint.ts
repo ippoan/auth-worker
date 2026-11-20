@@ -31,10 +31,38 @@ import type { Env } from "./index";
 import { introspectToken } from "./handlers/auth-introspect";
 import { alcRpcError, type AlcRpcResult } from "./lib/alc-tenant-forward";
 import { getKyuyoAllowedEmails } from "./lib/config";
+import { resolveMcpJwtSecret, verifyMcpJwt } from "./lib/mcp-jwt";
 import { resolveSecret } from "./lib/secret";
 
 /** 給与画面の origin。`APP_TENANT_ACL` / `app-orgs` の判定はこの origin で引く。 */
 const KYUYO_APP_ORIGIN = "https://dtako.ippoan.org";
+
+/**
+ * `authorizeMcp` が受け付ける binding_jwt の `iss`。kyuyo-mcp の AS は auth-worker-staging
+ * (kyuyo-mcp の `AUTH_WORKER_ORIGIN`) で、mint 時の `iss` は発行元の `AUTH_WORKER_ORIGIN`。
+ * kyuyo-mcp の resource origin を許可しているのは staging の vars だけ (本番の
+ * `MCP_RESOURCE_ORIGINS_ALLOWLIST` に無い) なので、本番発行の kyuyo-mcp 向け token は無い。
+ * `iss` の無い旧 token も受けない。
+ * `MCP_JWT_SECRET` は本番と staging で同じ Secrets Store entry なので、本番の auth-worker でも
+ * staging 発行の token の署名を検証できる — だからこそ `iss` と `aud` を明示列挙で縛る。
+ */
+const KYUYO_MCP_ISSUERS: readonly string[] = ["https://auth-staging.ippoan.org"];
+
+/**
+ * `authorizeMcp` が受け付ける binding_jwt の `aud` の origin。`aud` は MCP client が
+ * `/authorize` に送った resource URI そのもの (path は client 次第) なので、origin で比べる。
+ * 他の MCP (gmail-mcp 等) 向けの token は同じ鍵で署名されていても通さない
+ * (`audPredicate` = 全 resource 許可は使わない)。
+ */
+const KYUYO_MCP_AUD_ORIGIN = "https://kyuyo-mcp.ippoan.org";
+
+function isKyuyoMcpAud(aud: string): boolean {
+  try {
+    return new URL(aud).origin === KYUYO_MCP_AUD_ORIGIN;
+  } catch {
+    return false;
+  }
+}
 
 export class KyuyoAuthEntrypoint extends WorkerEntrypoint<Env> {
   /**
@@ -60,6 +88,58 @@ export class KyuyoAuthEntrypoint extends WorkerEntrypoint<Env> {
     if (!result.active) return alcRpcError(401, "unauthorized");
 
     const email = result.email.trim().toLowerCase();
+    if (!allowed.includes(email)) return alcRpcError(403, "forbidden");
+
+    return {
+      status: 200,
+      body: JSON.stringify({ allowed: true, email }),
+      contentType: "application/json",
+    };
+  }
+
+  /**
+   * kyuyo-mcp (MCP client) から受け取った **binding_jwt** の持ち主が給与を見てよいかを返す
+   * (Refs #p414)。呼び手は給与大臣 Worker で、`X-Kyuyo-Auth: mcp` のときだけここを呼ぶ。
+   * 応答の形は `authorize` と同じ:
+   *   200 `{allowed:true, email}` / 401 unauthorized / 403 forbidden /
+   *   503 kyuyo_allowlist_unset・server_error
+   *
+   * ★ **`authorize` とは検証器を混ぜない** — こちらは `MCP_JWT_SECRET` の HS256 (署名・期限・
+   *   `aud`・`iss`) だけで、ブラウザ JWT (`JWT_SECRET`) は 401。逆に `authorize` は binding_jwt を
+   *   401 にする。どちらの token も相手のメソッドでは通らない。
+   * ★ **allowlist は `authorize` と同じ** — AUTH_CONFIG KV の `kyuyo-allowed-emails`
+   *   (`getKyuyoAllowedEmails`)。MCP でも一覧外の人は 403。
+   * ★ **テナントの origin ACL (`APP_TENANT_ACL` / `app-orgs` + `TENANT_ACL`) は当てない** —
+   *   binding_jwt には `tenant_id` claim が無く、照合する対象が無い。代わりに「Google ログイン
+   *   した本人の email が一覧にある」ことだけを条件にする (一覧が給与を見てよい人の正本)。
+   * ★ **Google flow の token に限る** — `sub` が `google:` で `email` claim があるもの。
+   *   GitHub flow の token は email を持たないので 401。
+   */
+  async authorizeMcp(token: string): Promise<AlcRpcResult> {
+    // ── 設定の確定 (どちらか欠けたら判定しない = fail-closed) ─────────────────
+    const jwtSecret = await resolveMcpJwtSecret(this.env.MCP_JWT_SECRET);
+    if (!jwtSecret) return alcRpcError(503, "server_error");
+    const allowed = await getKyuyoAllowedEmails(this.env);
+    if (!allowed) return alcRpcError(503, "kyuyo_allowlist_unset");
+
+    // ── binding_jwt の検証 (署名・exp・aud → iss → Google flow) ─────────────
+    const payload = await verifyMcpJwt(
+      typeof token === "string" ? token : "",
+      jwtSecret,
+      isKyuyoMcpAud,
+    );
+    if (
+      !payload ||
+      typeof payload.iss !== "string" ||
+      !KYUYO_MCP_ISSUERS.includes(payload.iss) ||
+      typeof payload.sub !== "string" ||
+      !payload.sub.startsWith("google:") ||
+      typeof payload.email !== "string"
+    ) {
+      return alcRpcError(401, "unauthorized");
+    }
+
+    const email = payload.email.trim().toLowerCase();
     if (!allowed.includes(email)) return alcRpcError(403, "forbidden");
 
     return {
