@@ -1767,6 +1767,25 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     expect(resolveAlcBinding("/api/bp-notifyx", env, "browser")).toBeNull();
   });
 
+  it("血圧を外す口 (POST /exclude-bp) は画面用の POST だけが ALC_MEASUREMENTS へ。端末用・内部用・管理画面用・他の method は null", () => {
+    const { measurements, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    for (const path of [`/api/measurements/${ID}/exclude-bp`, `/api/measurements/${ID.toUpperCase()}/exclude-bp`]) {
+      expect(resolveAlcBinding(path, env, "browser", "POST"), path).toEqual(target);
+      expect(resolveAlcBinding(path, env, "browser", "post"), path).toEqual(target);
+      for (const method of ["GET", "PUT", "DELETE"]) {
+        expect(resolveAlcBinding(path, env, "browser", method), `${method} ${path}`).toBeNull();
+      }
+      expect(resolveAlcBinding(path, env, "browser"), path).toBeNull();
+      for (const proxy of ["device", "internal", "admin"] as const) {
+        expect(resolveAlcBinding(path, env, proxy, "POST"), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    for (const near of [`/api/measurements/${ID}/exclude-bp/x`, `/api/measurements/${ID}/exclude-bpx`, "/api/measurements/m-1/exclude-bp"]) {
+      expect(resolveAlcBinding(near, env, "browser", "POST"), near).toBeNull();
+    }
+  });
+
   it("大文字の UUID でも ALC_MEASUREMENTS へ行く", () => {
     const { measurements, env } = setupMeasurements();
     const target = { fetcher: measurements, host: "alc-measurements" };
