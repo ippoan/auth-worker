@@ -357,6 +357,40 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect(h["X-Tenant-ID"]).toBe(TENANT);
   });
 
+  it("正常 (GET /api/dvr/file): shared-secret クラスとして X-Tenant-ID と query 付きで forward、応答はそのまま返す", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response(new Uint8Array([0x4e, 0x45, 0x54]), { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/dvr/file?serial_no=SN-1&file_name=a.vdf", { method: "GET" }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([0x4e, 0x45, 0x54]));
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/dvr/file?serial_no=SN-1&file_name=a.vdf");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("GET");
+    expect((init as RequestInit).body).toBeUndefined();
+  });
+
+  // GET 以外を通さないのは振り分け表の methods (この file は表を fake にしているので alc-binding-route.test.ts が確かめる)
+  it("GET /api/dvr/file は X-Tenant-ID 欠落で 400 (何も転送しない)", async () => {
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/dvr/file?serial_no=SN-1&file_name=a.vdf", { method: "GET", tenant: null }),
+      env(),
+    );
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("POST /api/dvr/notifications は X-Tenant-ID 欠落で 400 (shared-secret クラスの必須ヘッダー)", async () => {
     const res = await handleAlcInternalProxy(
       req("/alc-internal-proxy/api/dvr/notifications", { method: "POST", tenant: null }),
@@ -372,6 +406,8 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
       "/alc-internal-proxy/api/dvr/files/not-a-uuid",
       "/alc-internal-proxy/api/dvr/files/9f4c1e0a-2b3d-4e5f-8a9b-0c1d2e3f4a5b/extra", // 余分な segment
       "/alc-internal-proxy/api/dvr/notifications/1", // 前方一致では通さない
+      "/alc-internal-proxy/api/dvr/file/x", // 読み返しも前方一致では通さない
+      "/alc-internal-proxy/api/dvr/filex",
     ]) {
       const res = await handleAlcInternalProxy(req(p, { method: "POST" }), env());
       expect(res.status, p).toBe(403);

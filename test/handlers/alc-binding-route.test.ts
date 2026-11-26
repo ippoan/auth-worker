@@ -2395,10 +2395,21 @@ describe("機械の取り込み → ALC_DTAKO binding (W5a、Refs ippoan/rust-al
       "/api/dvr/files/not-a-uuid",
       `/api/dvr/files/${ID}/x`,
       "/api/dvr/notificationsx",
+      "/api/dvr/file/x",
+      "/api/dvr/filex",
     ]) {
       for (const proxy of ["browser", "internal", "device", "admin", "rpc"] as const) {
         expect(resolveAlcBinding(path, env, proxy), `${proxy} ${path}`).toBeNull();
       }
+    }
+  });
+
+  it("dvr の読み返し /api/dvr/file は内部用の GET だけ回る", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    expect(resolveAlcBinding("/api/dvr/file", env, "internal", "GET")).toEqual(target);
+    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+      expect(resolveAlcBinding("/api/dvr/file", env, "internal", method), method).toBeNull();
     }
   });
 
