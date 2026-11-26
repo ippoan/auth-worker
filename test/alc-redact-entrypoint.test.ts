@@ -51,12 +51,12 @@ describe("AlcRedactEntrypoint (ippoan/rust-alc-api#680 W8c-2)", () => {
     vi.clearAllMocks();
   });
 
-  it("RPC で呼べるメソッドは redact / extract の 2 つだけ", () => {
+  it("RPC で呼べるメソッドは redact / extract / extractEtcCard の 3 つだけ", () => {
     const own = Object.getOwnPropertyNames(AlcRedactEntrypoint.prototype).filter(
       (n) => n !== "constructor",
     );
-    // `post` は TS の private (実行時は在る) — 公開の口として数えるのは 2 つ。
-    expect(own.sort()).toEqual(["extract", "post", "redact"]);
+    // `post` は TS の private (実行時は在る) — 公開の口として数えるのは 3 つ。
+    expect(own.sort()).toEqual(["extract", "extractEtcCard", "post", "redact"]);
   });
 
   it("redact: aud = ALC_REDACT_ORIGIN で mint し、/redact に PDF を POST、JPEG と計測のヘッダーを返す", async () => {
@@ -124,6 +124,40 @@ describe("AlcRedactEntrypoint (ippoan/rust-alc-api#680 W8c-2)", () => {
     await rpc().extract(PDF, selfCompany);
     const h = fetchMock.mock.calls[0]![1]?.headers as Record<string, string>;
     expect(h["X-Self-Company"]).toBeUndefined();
+  });
+
+  it("extractEtcCard: aud = ALC_REDACT_ORIGIN で mint し、/extract/etc-card に PDF を POST、JSON をそのまま返す (ohishi-exp/nuxt-dtako-admin#1287)", async () => {
+    const json = JSON.stringify({ cards: [] });
+    const fetchMock = mockFetch(
+      new Response(json, { status: 200, headers: { "Content-Type": "application/json", "X-Redact-Llm-Ms": "12" } }),
+    );
+    const r = await rpc(env({ ALC_REDACT_ORIGIN: `${ORIGIN}/` })).extractEtcCard(PDF);
+
+    expect(mintGoogleIdToken).toHaveBeenCalledWith("{}", `${ORIGIN}/`);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${ORIGIN}/extract/etc-card`);
+    expect(init?.method).toBe("POST");
+    const h = init?.headers as Record<string, string>;
+    expect(h.Authorization).toBe("Bearer fake-oidc-token");
+    expect(h["Content-Type"]).toBe("application/pdf");
+    expect(h["X-Self-Company"]).toBeUndefined();
+    expect(init?.body).toBe(PDF);
+    expect(r.status).toBe(200);
+    expect(r.contentType).toBe("application/json");
+    expect(text(r.body)).toBe(json);
+    expect(r.headers).toEqual({ "x-redact-llm-ms": "12" });
+  });
+
+  it.each([
+    ["SA key が無い", { ALC_API_PROXY_SA_KEY: undefined }],
+    ["ALC_REDACT_ORIGIN が無い", { ALC_REDACT_ORIGIN: undefined }],
+  ])("extractEtcCard: %s → 503 redact_unconfigured (fail-closed)", async (_label, overrides) => {
+    const fetchMock = mockFetch();
+    const r = await rpc(env(overrides)).extractEtcCard(PDF);
+    expect(r.status).toBe(503);
+    expect(JSON.parse(text(r.body))).toEqual({ error: "redact_unconfigured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mintGoogleIdToken).not.toHaveBeenCalled();
   });
 
   it("Uint8Array も受け、view の範囲だけ送る", async () => {

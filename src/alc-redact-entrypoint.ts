@@ -4,11 +4,13 @@
  *
  *   - `redact(pdf)` → alc-redact の `POST /redact` (1 ページ目を黒塗りした JPEG)
  *   - `extract(pdf, selfCompany)` → alc-redact の `POST /extract` (配車の 14 項目の JSON)
+ *   - `extractEtcCard(pdf)` → alc-redact の `POST /extract/etc-card` (ETC コーポレートカード発行明細書の JSON。
+ *     呼び手 = nuxt-dtako-admin、ohishi-exp/nuxt-dtako-admin#1287)
  *
  * ★ **ID token を作る SA の鍵は auth-worker の 1 か所のまま** (notify-worker に配らない)。
  *   既存の `ALC_API_PROXY_SA_KEY` で aud = `ALC_REDACT_ORIGIN` の ID token を mint して呼ぶ。
  * ★ **他の entrypoint と別 class** — 呼べるメソッドが binding ごとに閉じる (blast radius)。
- *   呼び手 = notify-worker だけ。path と method は固定で、呼び手に選ばせない。
+ *   呼び手 = notify-worker と nuxt-dtako-admin。path と method は固定で、呼び手に選ばせない。
  * ★ **`AlcRpcResult` は使わない** — body が string だと JPEG を運べない。戻り値の body は
  *   `ArrayBuffer`、headers は alc-redact の計測のヘッダー (`X-Redactions-Applied`・`X-Redact-*-Ms`) だけ。
  *   RPC の上限 (32 MiB) は、上り (PDF は呼び手が 25 MiB で切る) と下り (JPEG) のどちらも収まる。
@@ -73,8 +75,13 @@ export class AlcRedactEntrypoint extends WorkerEntrypoint<Env> {
     return this.post("/extract", pdf, headers);
   }
 
+  /** `POST /extract/etc-card` — 200 は ETC コーポレートカード発行明細書の JSON (ohishi-exp/nuxt-dtako-admin#1287)。 */
+  async extractEtcCard(pdf: ArrayBuffer): Promise<AlcRedactResult> {
+    return this.post("/extract/etc-card", pdf, {});
+  }
+
   private async post(
-    path: "/redact" | "/extract",
+    path: "/redact" | "/extract" | "/extract/etc-card",
     pdf: unknown,
     extra: Record<string, string>,
   ): Promise<AlcRedactResult> {
