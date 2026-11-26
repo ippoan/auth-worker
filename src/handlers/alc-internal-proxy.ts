@@ -93,6 +93,9 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   ) {
     return "shared-secret"; // POST .vdf 本体のストリーム保存
   }
+  // 保存済み .vdf の読み返し (DVR 動画ビューアが theearth より先に見る)。query (serial_no / file_name) は
+  // alc-dtako 側が key の部品として検査し、key はヘッダーのテナントで作る。method は振り分け表が GET に絞る。
+  if (path === "/api/dvr/file") return "shared-secret";
 
   // ── public-ingest: rust の public_router (caller #5 Android、tenant は body/lookup 解決) ──
   if (path === "/api/tenko-call/register") return "public-ingest"; // TenkoCall 端末登録

@@ -88,7 +88,8 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 機械の取り込み (W5a、Refs ippoan/rust-alc-api#680) も `alc-dtako` へ回す。車両の現在地のログ `/api/dtako-logs/bulk` (完全一致。
  * 同じ prefix の読み取り `current`・`by-date` などは Cloud Run に残る) は端末用 (dtako 取り込みの端末 role) と RPC
  * (InternalEntrypoint の `FORWARDABLE_PATHS`、dtako-scraper-relay)。DVR の動画通知 `/api/dvr/notifications` (完全一致) と実体
- * `/api/dvr/files/{uuid}` (UUID に固定。alc-internal-proxy の分類と同じ形) は内部用の proxy (shared-secret のクラス) だけ。
+ * `/api/dvr/files/{uuid}` (UUID に固定。alc-internal-proxy の分類と同じ形) と、保存済みの実体の読み返し `/api/dvr/file`
+ * (完全一致・GET だけ) は内部用の proxy (shared-secret のクラス) だけ。
  * 勤怠向けの読み取り (W5b、Refs ippoan/rust-alc-api#680) も `alc-dtako` へ回す (どちらも完全一致)。`/api/dtako/events` は RPC だけ
  * (rust-ichibanboshi の勤怠 Worker = `KintaiAlcEntrypoint`)。`/api/dtako/events/etags` は RPC (`KintaiAlcEntrypoint` と
  * `InternalEntrypoint` の `FORWARDABLE_PATHS` = dtako-scraper-relay)・画面用 (nuxt-dtako-admin の取り込み後の答え合わせ)・
@@ -170,6 +171,7 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-dtako",
     proxies: ["internal"],
   },
+  { match: "exact", path: "/api/dvr/file", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["internal"], methods: { internal: ["GET"] } },
   { match: "exact", path: "/api/dtako/events", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["rpc"] },
   { match: "exact", path: "/api/dtako/events/etags", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["rpc", "browser", "device"] },
   // 画面向けの読み取りと分類の更新 (W5c-1)。画面用だけ (内部用の operations と、relay も呼ぶ scraper/history を除く)
