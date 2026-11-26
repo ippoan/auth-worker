@@ -101,6 +101,8 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * 車両の現在地のログの読み取り 4 口 (`/api/dtako-logs/current`・`current/select`・`by-date`・`by-date-range`、完全一致。
  * `bulk` は上の行のまま)。nuxt-dtako-admin・nuxt_dtako_logs・alc-app の管理画面が /alc-proxy 経由で呼ぶ。
  * `/api/internal/operations` (完全一致) は内部用の proxy (shared-secret のクラス。nuxt-dtako-admin の server route) だけ。
+ * 1 運行の KUDGSIR.csv `/api/internal/operations/{運行 NO}/csv/kudgsir` (運行 NO は数字に固定、種類は kudgsir だけ。GET だけ) も
+ * 内部用の proxy だけ (dtako-scraper-relay が ETC カードの走行日を探し直す。Refs ohishi-exp/nuxt-dtako-admin#1287)。
  * `/api/scraper/history` (完全一致、GET と POST) は画面用・RPC (`InternalEntrypoint` の `FORWARDABLE_PATHS` = dtako-scraper-relay)・
  * 端末用 (dtako relay の端末 role) の 3 つ。どの prefix も rust-alc-api の他の口と重ならない (worker が下位の口を全部持つ)。
  * Y時間 export (W5c-2、Refs ippoan/rust-alc-api#680) の 2 口 (`GET /api/dtako/y-time-export`・`POST /api/dtako/y-time-rows`、
@@ -189,6 +191,14 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   { match: "exact", path: "/api/dtako-logs/by-date", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/dtako-logs/by-date-range", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
   { match: "exact", path: "/api/internal/operations", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["internal"] },
+  {
+    match: "pattern",
+    pattern: /^\/api\/internal\/operations\/[0-9]{1,32}\/csv\/kudgsir$/,
+    binding: "ALC_DTAKO",
+    host: "alc-dtako",
+    proxies: ["internal"],
+    methods: { internal: ["GET"] },
+  },
   { match: "exact", path: "/api/scraper/history", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser", "rpc", "device"] },
   // Y時間 export (W5c-2)。画面用だけ
   { match: "exact", path: "/api/dtako/y-time-export", binding: "ALC_DTAKO", host: "alc-dtako", proxies: ["browser"] },
