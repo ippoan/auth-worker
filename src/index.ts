@@ -176,7 +176,8 @@ export { KyuyoAuthEntrypoint } from "./kyuyo-auth-entrypoint";
 // (`dtakoEtags` / `dtakoEvents`)。InternalEntrypoint の FORWARDABLE_PATHS を広げないため別 class。
 export { KintaiAlcEntrypoint } from "./kintai-alc-entrypoint";
 // ohishi-exp/rust-leave-worker#1: 機械用資格情報 (複合機の Basic) のチケットの口
-// (`issueTicket` / `verifyTicket`)。nuxt-leave と rust-leave-worker の binding だけが呼ぶので別 class。
+// (`issueTicket` / `verifyTicket`)。nuxt-leave・rust-leave-worker・rust-fuel-worker と、nuxt-dtako-admin の `/dav/**`
+// (etc-scan、ohishi-exp/nuxt-dtako-admin#1287) の binding だけが呼ぶので別 class。
 export { MachineCredentialEntrypoint } from "./machine-credential-entrypoint";
 // issue #691: /mcp/google-gcp でログインした人の GCP アクセストークンを consumer
 // (secrets-inventory) に渡す口 (`accessToken`)。binding_jwt だけで取れる公開口にしないため RPC。
@@ -185,6 +186,7 @@ export { GoogleGcpTokenEntrypoint } from "./google-gcp-token-entrypoint";
 // 共有の秘密を持たない binding だけが呼べるよう別 class。
 export { DevicePairEntrypoint } from "./device-pair-entrypoint";
 // ippoan/rust-alc-api#680 (W8c-2): alc-notify-worker が alc-redact (Cloud Run) の黒塗りと抽出を呼ぶ口 (`redact` / `extract`)。
+// nuxt-dtako-admin も ETC カード発行明細書の OCR (`extractEtcCard`) で呼ぶ (ohishi-exp/nuxt-dtako-admin#1287)。
 // ID token を作る SA の鍵を notify-worker に配らないため。body が ArrayBuffer なので既存の class と分ける。
 export { AlcRedactEntrypoint } from "./alc-redact-entrypoint";
 
@@ -275,6 +277,10 @@ export interface Env {
    *  (`handlers/machine-relay.ts`) が、機械用資格情報の Basic を照合したあと `/dav/*` へ中継する。
    *  未定義なら `/m/leave-scan/*` は Basic が通っても 503 (Refs ohishi-exp/rust-leave-worker#1)。 */
   LEAVE_APP?: Fetcher;
+  /** dtako 管理画面 (`dtako-admin` = ohishi-exp/nuxt-dtako-admin) への service binding。機械の入口 `/m/etc-scan/*`
+   *  (`handlers/machine-relay.ts`) が、機械用資格情報の Basic を照合したあと `/dav/*` へ中継する。
+   *  未定義なら `/m/etc-scan/*` は Basic が通っても 503 (Refs ohishi-exp/nuxt-dtako-admin#1287)。 */
+  DTAKO_APP?: Fetcher;
   /** LINE WORKS の worker (`alc-lineworks`) への service binding。Client Secret と Private Key を扱うのは
    *  この worker だけ。`/api/internal/lineworks/send` (alc-internal-proxy と端末通知) を Cloud Run でなく
    *  ここへ流し (`lib/alc-backend-route.ts`)、Rich Menu と MCP の `lineworks_get` は access token を

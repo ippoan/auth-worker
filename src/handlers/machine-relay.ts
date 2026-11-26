@@ -9,6 +9,8 @@
  *   - `leave-scan` → nuxt-leave (`LEAVE_APP`) の `/dav/*` (複合機のスキャン)
  *   - `fuel-utran` → rust-fuel-worker (`FUEL_WORKER`) の `/machine/fuel-utran/*` (Windows の USB 常駐アプリの
  *     取り込み。Refs yhonda-ohishi/nginx#814)
+ *   - `etc-scan` → nuxt-dtako-admin (`DTAKO_APP`) の `/dav/*` (複合機でスキャンした ETC コーポレートカード
+ *     発行明細書。Refs ohishi-exp/nuxt-dtako-admin#1287)
  * - Basic が無い・通らない → 401 + `WWW-Authenticate: Basic` (理由は区別しない。複合機は 401 を見てから
  *   Basic を付け直す)
  * - 通れば、method・ヘッダ・本文を**そのまま中継**し、応答もそのまま返す (本文はストリームのまま渡し、
@@ -24,7 +26,7 @@ import { resolveSecret } from "../lib/secret";
 
 interface MachineRelayRoute {
   /** 転送先の Service Binding の名前 (`Env` の key)。 */
-  binding: "LEAVE_APP" | "FUEL_WORKER";
+  binding: "LEAVE_APP" | "FUEL_WORKER" | "DTAKO_APP";
   /** 転送先の path の接頭辞。`/m/<purpose>` をこれに置き換える。 */
   pathPrefix: string;
 }
@@ -33,6 +35,7 @@ interface MachineRelayRoute {
 export const MACHINE_RELAY_ROUTES: Readonly<Record<string, MachineRelayRoute>> = {
   "leave-scan": { binding: "LEAVE_APP", pathPrefix: "/dav" },
   "fuel-utran": { binding: "FUEL_WORKER", pathPrefix: "/machine/fuel-utran" },
+  "etc-scan": { binding: "DTAKO_APP", pathPrefix: "/dav" },
 };
 
 /** Service Binding 越しの fetch なので host は使われない (path と query だけが意味を持つ)。 */

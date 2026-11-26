@@ -52,11 +52,46 @@ function put(path: string, headers: Record<string, string> = {}, body: string | 
 }
 
 describe("handleMachineRelay (/m/<purpose>/*、Refs ohishi-exp/rust-leave-worker#1)", () => {
-  it("用途の表は leave-scan → LEAVE_APP の /dav と fuel-utran → FUEL_WORKER の /machine/fuel-utran だけ", () => {
+  it("用途の表は leave-scan → LEAVE_APP の /dav、fuel-utran → FUEL_WORKER の /machine/fuel-utran、etc-scan → DTAKO_APP の /dav だけ", () => {
     expect(MACHINE_RELAY_ROUTES).toEqual({
       "leave-scan": { binding: "LEAVE_APP", pathPrefix: "/dav" },
       "fuel-utran": { binding: "FUEL_WORKER", pathPrefix: "/machine/fuel-utran" },
+      "etc-scan": { binding: "DTAKO_APP", pathPrefix: "/dav" },
     });
+  });
+
+  it("★ etc-scan は DTAKO_APP の /dav/* へ中継する (Authorization を残し、X-Tenant-ID は付けない。Refs ohishi-exp/nuxt-dtako-admin#1287)", async () => {
+    const dtako = fakeBinding();
+    const { e, auth: leaveAuth, calls: leaveCalls } = await setup({ DTAKO_APP: dtako.fetcher });
+    const c = (await createMachineCredential(e, TENANT, "etc-scan", "複合機"))!;
+    const auth = `Basic ${btoa(`${c.username}:${c.password}`)}`;
+    const res = await handleMachineRelay(
+      put("/m/etc-scan/scan/meisai.pdf", { Authorization: auth, "Content-Type": "application/pdf", "X-Tenant-ID": "forged-tenant", Cookie: "a=b" }),
+      e,
+    );
+    expect(res.status).toBe(201);
+    expect(dtako.calls).toHaveLength(1);
+    const d = dtako.calls[0]!;
+    expect(new URL(d.url).pathname).toBe("/dav/scan/meisai.pdf");
+    expect(d.method).toBe("PUT");
+    expect(d.body).toBe("PDFDATA");
+    expect(d.headers.get("Authorization")).toBe(auth);
+    expect(d.headers.get("X-Internal-Shared-Secret")).toBe(SHARED);
+    expect(d.headers.get("X-Tenant-ID")).toBeNull();
+    expect(d.headers.get("Cookie")).toBeNull();
+    expect(leaveCalls).toHaveLength(0);
+    // leave-scan の資格情報では etc-scan に入れない (用途違い)
+    const cross = await handleMachineRelay(put("/m/etc-scan/a.pdf", { Authorization: leaveAuth }), e);
+    expect(cross.status).toBe(401);
+    expect(cross.headers.get("WWW-Authenticate")).toBe('Basic realm="etc-scan", charset="UTF-8"');
+    expect(dtako.calls).toHaveLength(1);
+  });
+
+  it("DTAKO_APP binding 未定義 → /m/etc-scan/* は Basic が通っても 503", async () => {
+    const { e } = await setup({ DTAKO_APP: undefined });
+    const c = (await createMachineCredential(e, TENANT, "etc-scan", "複合機"))!;
+    const auth = `Basic ${btoa(`${c.username}:${c.password}`)}`;
+    expect((await handleMachineRelay(put("/m/etc-scan/a.pdf", { Authorization: auth }), e)).status).toBe(503);
   });
 
   it("★ fuel-utran は FUEL_WORKER の /machine/fuel-utran/* へ中継する (Authorization を残し、X-Tenant-ID は付けない。Refs yhonda-ohishi/nginx#814)", async () => {
