@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
+  MACHINE_CRED_APP_ORIGINS,
   MACHINE_CRED_LABEL_MAX,
   MACHINE_CRED_PURPOSES,
   createMachineCredential,
   getActiveMachineCredential,
   isMachineCredPurpose,
   listMachineCredentials,
+  machineCredAppOrigin,
   machineCredEnvName,
   revokeMachineCredential,
   rotateMachineCredential,
@@ -434,5 +436,19 @@ describe("★ fail-closed (5 関数とも失敗側の値を返し、throw しな
     const e = env();
     const throwing = { fetch: () => Promise.reject(new TypeError("network")) } as unknown as Fetcher;
     expect(await all({ ...e, ALC_AUTH: throwing })).toEqual(FAILED);
+  });
+});
+
+describe("machineCredAppOrigin (APP_TENANT_ACL の照合先、Refs ohishi-exp/nuxt-dtako-admin#1287)", () => {
+  it("etc-scan だけが dtako の origin を持つ", () => {
+    expect(MACHINE_CRED_APP_ORIGINS).toEqual({ "etc-scan": "https://dtako.ippoan.org" });
+    expect(machineCredAppOrigin("etc-scan")).toBe("https://dtako.ippoan.org");
+  });
+
+  it("表に無い用途 (leave-scan・fuel-utran) と allowlist 外は null", () => {
+    expect(machineCredAppOrigin("leave-scan")).toBeNull();
+    expect(machineCredAppOrigin("fuel-utran")).toBeNull();
+    expect(machineCredAppOrigin("other")).toBeNull();
+    expect(machineCredAppOrigin("constructor")).toBeNull();
   });
 });
