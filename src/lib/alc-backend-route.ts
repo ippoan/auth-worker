@@ -360,6 +360,16 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-measurements",
     proxies: ["browser", "device"],
   },
+  // 測定台の血圧を「本人の測定ではない」として外す (テレコ)。運行管理者のログインの画面からだけ (端末の鍵には開けない)。
+  // 外した測定は回数にも点呼にも入らない。AuthUser 無しは worker が 401 (Refs ippoan/alc-app#676)
+  {
+    match: "pattern",
+    pattern: /^\/api\/measurements\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/exclude-bp$/i,
+    binding: "ALC_MEASUREMENTS",
+    host: "alc-measurements",
+    proxies: ["browser"],
+    methods: { browser: ["POST"] },
+  },
   { match: "exact", path: "/api/upload/face-photo", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/upload/blow-video", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/upload/report-audio", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
