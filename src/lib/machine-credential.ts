@@ -35,6 +35,22 @@ import { parseBasicAuth } from "./errors";
 export const MACHINE_CRED_PURPOSES = ["leave-scan", "fuel-utran", "etc-scan"] as const;
 export type MachineCredPurpose = (typeof MACHINE_CRED_PURPOSES)[number];
 
+/**
+ * 用途ごとに、チケットの tenant を `APP_TENANT_ACL` (`lib/acl.ts` の `checkAppTenant`) で照合する
+ * アプリの origin (ここ 1 か所に定義する)。資格情報は各 tenant の admin が発行できるので、
+ * 受け取ったファイルを渡す先のアプリに許可された tenant だけに限る。
+ *   - `etc-scan` → dtako (Refs ohishi-exp/nuxt-dtako-admin#1287)
+ * 表に無い用途 (`leave-scan`・`fuel-utran`) は照合しない。
+ */
+export const MACHINE_CRED_APP_ORIGINS: Readonly<Partial<Record<MachineCredPurpose, string>>> = {
+  "etc-scan": "https://dtako.ippoan.org",
+};
+
+/** 用途の照合先 origin。表に無い用途 (allowlist 外を含む) は null。 */
+export function machineCredAppOrigin(purpose: string): string | null {
+  return isMachineCredPurpose(purpose) ? (MACHINE_CRED_APP_ORIGINS[purpose] ?? null) : null;
+}
+
 /** label の最大長 (管理画面の表示用の名前)。 */
 export const MACHINE_CRED_LABEL_MAX = 64;
 

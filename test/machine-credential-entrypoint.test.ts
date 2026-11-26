@@ -142,3 +142,67 @@ describe("MachineCredentialEntrypoint (ohishi-exp/rust-leave-worker#1)", () => {
     expect(await rpc(unset).verifyTicket(issued!.ticket, PURPOSE)).toBeNull();
   });
 });
+
+describe("etc-scan は APP_TENANT_ACL の dtako origin で tenant を照合する (Refs ohishi-exp/nuxt-dtako-admin#1287)", () => {
+  const DTAKO = "https://dtako.ippoan.org";
+  const OTHER_TENANT = "88888888-8888-8888-8888-888888888888";
+  const acl = (apps: Record<string, string[]>) => JSON.stringify({ apps });
+
+  async function setupFor(purpose: string, appTenantAcl?: string) {
+    const e = env({ APP_TENANT_ACL: appTenantAcl });
+    const c = await createMachineCredential(e, TENANT, purpose, "複合機");
+    return { e, c: c!, auth: `Basic ${btoa(`${c!.username}:${c!.password}`)}` };
+  }
+
+  it("dtako に許可された tenant ならチケットを発行し、検証も通る", async () => {
+    const { e, c, auth } = await setupFor("etc-scan", acl({ [DTAKO]: [TENANT] }));
+    const issued = await rpc(e).issueTicket(auth, "etc-scan", SHA);
+    expect(issued).toEqual({ ticket: expect.any(String), tenantId: TENANT, username: c.username });
+    expect(await rpc(e).verifyTicket(issued!.ticket, "etc-scan")).toEqual({
+      tenantId: TENANT,
+      username: c.username,
+      sha256: SHA,
+    });
+  });
+
+  it("★ dtako に許可されていない tenant は発行が null", async () => {
+    const { e, auth } = await setupFor("etc-scan", acl({ [DTAKO]: [OTHER_TENANT] }));
+    expect(await rpc(e).issueTicket(auth, "etc-scan", SHA)).toBeNull();
+  });
+
+  it("★ 発行後に ACL から外された tenant のチケットは検証が null", async () => {
+    const { e, auth } = await setupFor("etc-scan", acl({ [DTAKO]: [TENANT] }));
+    const issued = await rpc(e).issueTicket(auth, "etc-scan", SHA);
+    const removed = { ...e, APP_TENANT_ACL: acl({ [DTAKO]: [OTHER_TENANT] }) } as Env;
+    expect(await rpc(removed).verifyTicket(issued!.ticket, "etc-scan")).toBeNull();
+  });
+
+  it("apps に dtako origin が未登録なら通る (checkAppTenant の既存仕様: 未登録 origin は制限しない)", async () => {
+    const { e, auth } = await setupFor("etc-scan", acl({ "https://other.example": [OTHER_TENANT] }));
+    const issued = await rpc(e).issueTicket(auth, "etc-scan", SHA);
+    expect(issued?.tenantId).toBe(TENANT);
+    expect(await rpc(e).verifyTicket(issued!.ticket, "etc-scan")).toMatchObject({ tenantId: TENANT });
+  });
+
+  it("一時的な失敗 ({ error: \"unavailable\" }) は照合せずそのまま返す", async () => {
+    const { e, auth } = await setupFor("etc-scan", acl({ [DTAKO]: [TENANT] }));
+    const issued = await rpc(e).issueTicket(auth, "etc-scan", SHA);
+    const down = { ...e, ALC_AUTH: undefined } as Env;
+    expect(await rpc(down).verifyTicket(issued!.ticket, "etc-scan")).toEqual({ error: "unavailable" });
+  });
+
+  it.each(["leave-scan", "fuel-utran"])(
+    "%s は ACL (dtako に別 tenant だけ) に関係なく従来どおり発行・検証できる",
+    async (purpose) => {
+      const deny = acl({ [DTAKO]: [OTHER_TENANT], "https://leave.ippoan.org": [OTHER_TENANT] });
+      const { e, c, auth } = await setupFor(purpose, deny);
+      const issued = await rpc(e).issueTicket(auth, purpose, SHA);
+      expect(issued).toEqual({ ticket: expect.any(String), tenantId: TENANT, username: c.username });
+      expect(await rpc(e).verifyTicket(issued!.ticket, purpose)).toEqual({
+        tenantId: TENANT,
+        username: c.username,
+        sha256: SHA,
+      });
+    },
+  );
+});
