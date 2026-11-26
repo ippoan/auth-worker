@@ -2601,10 +2601,41 @@ describe("画面向けの読み取りと分類の更新 → ALC_DTAKO binding (W
     }
   });
 
+  it("1 運行の KUDGSIR.csv は内部用の GET だけ回る (運行 NO は数字、種類は kudgsir だけ。Refs ohishi-exp/nuxt-dtako-admin#1287)", () => {
+    const { dtako, env } = setup();
+    const target = { fetcher: dtako, host: "alc-dtako" };
+    const path = "/api/internal/operations/2610010800000000001/csv/kudgsir";
+    expect(resolveAlcBinding(path, env, "internal", "GET")).toEqual(target);
+    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+      expect(resolveAlcBinding(path, env, "internal", method), method).toBeNull();
+    }
+    for (const proxy of ["browser", "device", "admin", "rpc"] as const) {
+      expect(resolveAlcBinding(path, env, proxy, "GET"), proxy).toBeNull();
+    }
+    for (const p of [
+      "/api/internal/operations/2610010800000000001/csv/kudgivt",
+      "/api/internal/operations/2610010800000000001/csv/tolls",
+      "/api/internal/operations/2610010800000000001/csv/speed",
+      "/api/internal/operations/2610010800000000001/csv/KUDGSIR",
+      "/api/internal/operations/2610010800000000001/csv/kudgsirx",
+      "/api/internal/operations/2610010800000000001/csv/kudgsir/x",
+      "/api/internal/operations/2610010800000000001/csv",
+      "/api/internal/operations//csv/kudgsir",
+      "/api/internal/operations/abc/csv/kudgsir",
+      "/api/internal/operations/26a1/csv/kudgsir",
+      "/api/internal/operations/..%2F..%2Fupload/csv/kudgsir",
+      "/api/internal/operations/1/2/csv/kudgsir",
+      `/api/internal/operations/${"1".repeat(33)}/csv/kudgsir`,
+    ]) {
+      expect(resolveAlcBinding(p, env, "internal", "GET"), p).toBeNull();
+    }
+  });
+
   it("binding が未定義なら null (= Cloud Run)", () => {
     const { env } = setup({ ALC_DTAKO: undefined });
     expect(resolveAlcBinding("/api/operations", env, "browser")).toBeNull();
     expect(resolveAlcBinding("/api/internal/operations", env, "internal")).toBeNull();
+    expect(resolveAlcBinding("/api/internal/operations/1/csv/kudgsir", env, "internal", "GET")).toBeNull();
     expect(resolveAlcBinding("/api/scraper/history", env, "rpc")).toBeNull();
   });
 
@@ -2641,6 +2672,32 @@ describe("画面向けの読み取りと分類の更新 → ALC_DTAKO binding (W
     expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
     expect(mintGoogleIdToken).not.toHaveBeenCalled();
     expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-internal-proxy の KUDGSIR.csv は binding に path そのままの GET で届く (worker 側で /internal/operations/{運行 NO}/csv/kudgsir)", async () => {
+    const { dtako, cloudRun, env } = setup();
+    const req = new Request(
+      "https://auth.test.example/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/kudgsir",
+      { method: "GET", headers: { "X-Alc-Proxy-Secret": PROXY_SECRET, "X-Tenant-ID": TENANT } },
+    );
+    const res = await handleAlcInternalProxy(req, env);
+    expect(await res.text()).toBe("from-binding");
+    const [url, init] = dtako.fetch.mock.calls[0]!;
+    expect(url).toBe("https://alc-dtako/api/internal/operations/2610010800000000001/csv/kudgsir");
+    expect(init!.method).toBe("GET");
+    expect((init!.headers as Record<string, string>)["X-Tenant-ID"]).toBe(TENANT);
+    expect(cloudRun).not.toHaveBeenCalled();
+  });
+
+  it("alc-internal-proxy の KUDGSIR.csv も POST は binding に届かない (404)", async () => {
+    const { dtako, env } = setup();
+    const req = new Request(
+      "https://auth.test.example/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/kudgsir",
+      { method: "POST", headers: { "X-Alc-Proxy-Secret": PROXY_SECRET, "X-Tenant-ID": TENANT } },
+    );
+    const res = await handleAlcInternalProxy(req, env);
+    expect(res.status).toBe(404);
+    expect(dtako.fetch).not.toHaveBeenCalled();
   });
 
   it("端末用 (dtako relay の端末 role) の scraper/history は binding に届く", async () => {

@@ -81,6 +81,9 @@ function classifyInternalPath(path: string): InternalPathClass | null {
   if (path === "/api/upload") return "shared-secret"; // POST dtako csvdata.zip 取り込み (ohishi-exp/dtako-scraper#22)
   if (path === "/api/recalculate-pending") return "shared-secret"; // POST 「要再計算」の印が付いた 乗務員 × 月 の一括再計算 (取り込みの一区切りで relay が呼ぶ、ippoan/alc-dtako-worker#23)。既存の再計算の 3 口は開けない
   if (path === "/api/internal/operations") return "shared-secret"; // GET dtako 実運行一覧 (nuxt-ichibanboshi の一番星突合、ohishi-exp/nuxt-dtako-admin#198 Phase 8)
+  // 1 運行の KUDGSIR.csv (料金所の通過記録)。relay が走行待ちの ETC カードの走行日を探し直す (Refs ohishi-exp/nuxt-dtako-admin#1287)。
+  // csv の種類は kudgsir だけ、運行 NO は数字だけ (path injection 防止)。method は振り分け表が GET に絞る。
+  if (/^\/api\/internal\/operations\/[0-9]{1,32}\/csv\/kudgsir$/.test(path)) return "shared-secret";
   if (path === "/api/hub/measurements") return "shared-secret"; // POST CoreS3 測定データ ingest (cf-alc-recorder 経由、#363 / ippoan/alc-app#106 / ippoan/rust-alc-api#564)
   // DVR 動画通知の ingest (Refs ohishi-exp/nuxt-dtako-admin#1094)。rust-alc-api 側の新 route は
   // internal_shared_secret_router (= require_internal_shared_secret + X-Tenant-ID) に載るため

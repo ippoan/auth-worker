@@ -200,6 +200,64 @@ describe("handleAlcInternalProxy (rust-alc-api#434 step 3d, caller #4)", () => {
     expect((init as RequestInit).method).toBe("GET");
   });
 
+  it("正常 (GET 1 運行の KUDGSIR.csv): shared-secret クラスとして X-Tenant-ID 付きで forward (Refs ohishi-exp/nuxt-dtako-admin#1287)", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+        new Response("csv-bytes", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/kudgsir", { method: "GET" }),
+      env(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("csv-bytes");
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://alc-api.test.example/api/internal/operations/2610010800000000001/csv/kudgsir");
+    const h = (init as RequestInit).headers as Record<string, string>;
+    expect(h["X-Internal-Shared-Secret"]).toBeUndefined();
+    expect(h["X-Tenant-ID"]).toBe(TENANT);
+    expect((init as RequestInit).method).toBe("GET");
+  });
+
+  it("GET 1 運行の KUDGSIR.csv は X-Tenant-ID 欠落で 400 (何も転送しない)", async () => {
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await handleAlcInternalProxy(
+      req("/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/kudgsir", { method: "GET", tenant: null }),
+      env(),
+    );
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("運行の CSV: kudgsir 以外の種類・数字でない運行 NO・余分な segment は 403 (何も転送しない)", async () => {
+    const fetchMock = vi.fn(async (): Promise<Response> => new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    for (const p of [
+      "/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/kudgivt",
+      "/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/tolls",
+      "/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/speed",
+      "/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/KUDGSIR",
+      "/alc-internal-proxy/api/internal/operations/2610010800000000001/csv/kudgsir/x",
+      "/alc-internal-proxy/api/internal/operations/2610010800000000001/csv",
+      "/alc-internal-proxy/api/internal/operations/2610010800000000001",
+      "/alc-internal-proxy/api/internal/operations/abc/csv/kudgsir",
+      "/alc-internal-proxy/api/internal/operations/26a1/csv/kudgsir",
+      "/alc-internal-proxy/api/internal/operations/1%2F2/csv/kudgsir",
+      "/alc-internal-proxy/api/internal/operations/1/2/csv/kudgsir",
+      "/alc-internal-proxy/api/internal/operations//csv/kudgsir",
+      `/alc-internal-proxy/api/internal/operations/${"1".repeat(33)}/csv/kudgsir`,
+      // `..` は URL のパースで畳まれ、/api/internal/csv/kudgsir になる (allowlist 外)
+      "/alc-internal-proxy/api/internal/operations/../csv/kudgsir",
+    ]) {
+      const res = await handleAlcInternalProxy(req(p, { method: "GET" }), env());
+      expect(res.status, p).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("正常 (PATCH scraped): allowlist を通り query も維持して forward", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
