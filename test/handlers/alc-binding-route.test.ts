@@ -1786,6 +1786,25 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     }
   });
 
+  it("点呼の本人確認の顔写真 (GET /api/tenko/identity-events/{uuid}/face-photo) は画面用と端末用の GET だけが ALC_MEASUREMENTS へ (Refs ippoan/alc-app#720)", () => {
+    const { measurements, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    for (const path of [`/api/tenko/identity-events/${ID}/face-photo`, `/api/tenko/identity-events/${ID.toUpperCase()}/face-photo`]) {
+      for (const proxy of ["browser", "device"] as const) {
+        expect(resolveAlcBinding(path, env, proxy, "GET"), `${proxy} ${path}`).toEqual(target);
+        for (const method of ["POST", "PUT", "DELETE"]) {
+          expect(resolveAlcBinding(path, env, proxy, method), `${proxy} ${method} ${path}`).toBeNull();
+        }
+      }
+      for (const proxy of ["internal", "admin"] as const) {
+        expect(resolveAlcBinding(path, env, proxy, "GET"), `${proxy} ${path}`).toBeNull();
+      }
+    }
+    for (const near of [`/api/tenko/identity-events/${ID}/face-photo/x`, `/api/tenko/identity-events/${ID}`, "/api/tenko/identity-events/x/face-photo"]) {
+      expect(resolveAlcBinding(near, env, "browser", "GET"), near).toBeNull();
+    }
+  });
+
   it("大文字の UUID でも ALC_MEASUREMENTS へ行く", () => {
     const { measurements, env } = setupMeasurements();
     const target = { fetcher: measurements, host: "alc-measurements" };
