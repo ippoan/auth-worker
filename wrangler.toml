@@ -474,6 +474,7 @@ class_name = "McpSession"
 
 # /device/alarm-nonce・/device/alarm-token の nonce と回数制限 (全体で 1 instance、apac-ne に置く)。
 # KV は置き場所をアジアに指定できず、SIN に着いた要求で書き込みが 10 秒を超えていた。
+# OIDC の authorization code も別インスタンス (`oidc-code`) で同じ class を使う (lib/oidc-authcode.ts)。
 [[durable_objects.bindings]]
 name = "ALARM_NONCE_DO"
 class_name = "AlarmNonceDO"

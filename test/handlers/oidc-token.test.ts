@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { handleOidcToken } from "../../src/handlers/oidc-token";
-import { createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
-import { putOidcCode, type OidcCodeRecord } from "../../src/lib/oidc-authcode";
+import { createMockAlarmNonceDO, createMockEnv, createMockKV, type MockKV } from "../helpers/mock-env";
+import { OIDC_CODE_TTL_SEC, putOidcCode, type OidcCodeRecord } from "../../src/lib/oidc-authcode";
 import { toPublicJwk, type OidcJwk } from "../../src/lib/oidc-signing-key";
 import type { Env } from "../../src/index";
 
@@ -43,13 +43,13 @@ async function setup(
 ): Promise<{ env: Env; kv: KVNamespace; jwk: OidcJwk }> {
   const kv = createMockKV();
   const jwk = await generateJwk();
-  await putOidcCode(kv, "code-1", { ...BASE_RECORD, ...record });
   const env = createMockEnv({
     MCP_OAUTH_KV: kv,
     ACCESS_OIDC_CLIENTS: CLIENTS,
     ACCESS_OIDC_SIGNING_KEY: JSON.stringify([jwk]),
     ...envOverrides,
   });
+  await putOidcCode(env, "code-1", { ...BASE_RECORD, ...record });
   return { env, kv, jwk };
 }
 
@@ -163,13 +163,12 @@ describe("POST /oidc/token — happy path", () => {
   it("signs with the first key in the rotation list", async () => {
     const active = await generateJwk();
     const retired = await generateJwk();
-    const kv = createMockKV();
-    await putOidcCode(kv, "code-1", BASE_RECORD);
     const env = createMockEnv({
-      MCP_OAUTH_KV: kv,
+      MCP_OAUTH_KV: createMockKV(),
       ACCESS_OIDC_CLIENTS: CLIENTS,
       ACCESS_OIDC_SIGNING_KEY: JSON.stringify([active, retired]),
     });
+    await putOidcCode(env, "code-1", BASE_RECORD);
     const res = await handleOidcToken(tokenRequest(VALID_FORM), env);
     const { id_token } = (await res.json()) as { id_token: string };
     expect(decodeSegment(id_token.split(".")[0]!).kid).toBe((await toPublicJwk(active)).kid);
@@ -204,16 +203,15 @@ describe("POST /oidc/token — happy path", () => {
   });
 
   it("form-decodes Basic credentials (RFC 6749 §2.3.1)", async () => {
-    const kv = createMockKV();
     const jwk = await generateJwk();
-    await putOidcCode(kv, "code-1", { ...BASE_RECORD, client_id: "sp ace" });
     const env = createMockEnv({
-      MCP_OAUTH_KV: kv,
+      MCP_OAUTH_KV: createMockKV(),
       ACCESS_OIDC_CLIENTS: JSON.stringify([
         { client_id: "sp ace", client_secret: "p@ss", redirect_uris: [REDIRECT_URI] },
       ]),
       ACCESS_OIDC_SIGNING_KEY: JSON.stringify([jwk]),
     });
+    await putOidcCode(env, "code-1", { ...BASE_RECORD, client_id: "sp ace" });
     const res = await handleOidcToken(
       tokenRequest(
         { grant_type: "authorization_code", code: "code-1", redirect_uri: REDIRECT_URI },
@@ -413,5 +411,55 @@ describe("POST /oidc/token — rejections", () => {
   it("returns 503 when the signing key is not configured", async () => {
     const { env } = await setup({}, { ACCESS_OIDC_SIGNING_KEY: undefined });
     expect((await handleOidcToken(tokenRequest(VALID_FORM), env)).status).toBe(503);
+  });
+});
+
+/**
+ * 2026-11-27 の障害の再現: authorize はブラウザが着いた拠点 (SIN) の worker が code を書き、
+ * token 交換は Access のサーバが別の拠点 (FUK) の worker から読む。2 つの worker は KV の
+ * 見え方を共有しない (KV は結果整合で、別拠点からの直後の get は null) が、DO の namespace は
+ * 共有する。ここでは「KV が別物・DO の namespace だけ共有」の 2 つの env で拠点違いを模す。
+ */
+describe("POST /oidc/token — code issued at one colo, exchanged at another", () => {
+  async function twoColos(): Promise<{ issuer: Env; exchanger: Env }> {
+    const jwk = await generateJwk();
+    const shared = {
+      ACCESS_OIDC_CLIENTS: CLIENTS,
+      ACCESS_OIDC_SIGNING_KEY: JSON.stringify([jwk]),
+      ALARM_NONCE_DO: createMockAlarmNonceDO(),
+    };
+    const issuer = createMockEnv({ ...shared, MCP_OAUTH_KV: createMockKV() });
+    const exchanger = createMockEnv({ ...shared, MCP_OAUTH_KV: createMockKV() });
+    await putOidcCode(issuer, "code-1", BASE_RECORD);
+    return { issuer, exchanger };
+  }
+
+  it("exchanges immediately at a different worker instance (code lives in the DO, not KV)", async () => {
+    const { issuer, exchanger } = await twoColos();
+    // 書いた側の KV にも code は無い (= KV の伝播に一切頼っていない)
+    expect(Object.keys((issuer.MCP_OAUTH_KV as unknown as MockKV)._data)).toEqual([]);
+    const res = await handleOidcToken(tokenRequest(VALID_FORM), exchanger);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { id_token: string }).id_token).toBeTruthy();
+  });
+
+  it("the second exchange fails with invalid_grant — even from yet another instance", async () => {
+    const { issuer, exchanger } = await twoColos();
+    expect((await handleOidcToken(tokenRequest(VALID_FORM), exchanger)).status).toBe(200);
+    const replay = await handleOidcToken(tokenRequest(VALID_FORM), issuer);
+    expect(replay.status).toBe(400);
+    expect(((await replay.json()) as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("rejects a code past its TTL with invalid_grant", async () => {
+    const { exchanger } = await twoColos();
+    vi.useFakeTimers({ now: Date.now() + (OIDC_CODE_TTL_SEC + 1) * 1000 });
+    try {
+      const res = await handleOidcToken(tokenRequest(VALID_FORM), exchanger);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("invalid_grant");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

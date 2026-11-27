@@ -1,11 +1,20 @@
 /**
  * Cloudflare Access 向け OIDC surface (`/oidc/*`) の authorization code / access token
- * 保管。既存 MCP OAuth の KV (`MCP_OAUTH_KV`) を **別 prefix** で間借りする。
+ * 保管。
  *
- * prefix を分けるのは、MCP 側の `auth:request:*` / `authcode:*` と名前空間が交差せず、
- * 片方の失効・掃除がもう片方に波及しないようにするため (KV namespace 自体を増やすと
- * binding の追加 = deploy リスクが増えるので、prefix 分離で足りる範囲はそうする)。
+ * - **authorization code は Durable Object** (`ALARM_NONCE_DO` の single-use ストアを
+ *   インスタンス名 `oidc-code` で間借り)。authorize はブラウザが着いた拠点で code を書き、
+ *   token 交換は Access のサーバが**別の拠点**から読みに来る。KV は結果整合なので、書いた
+ *   拠点と違う拠点では直後の get が null になり、交換が `invalid_grant` で落ちていた
+ *   (2026-11-27、authorize は SIN・token は FUK で 400 が続いた)。DO は全体で 1 つの
+ *   インスタンスが直列に読み書きするので、どの拠点から呼んでも書いた直後に読め、
+ *   get → delete も他の要求に割り込まれない (single-use が atomic)。
+ * - access token (userinfo 用) は KV (`MCP_OAUTH_KV`) の `oidc:at:` のまま。Access は
+ *   id_token の claim で identity を取り userinfo を呼んでいない (呼び出し 0 件) ため。
+ *   userinfo を使う client を足すなら、こちらも同じ理由で DO へ移すこと。
  */
+import type { Env } from "../index";
+import type { AlarmNonceDO } from "../durable_objects/alarm-nonce-do";
 
 /** authorization code に紐付く発行時コンテキスト。 */
 export interface OidcCodeRecord {
@@ -55,31 +64,42 @@ export function generateOidcOpaqueToken(): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/**
+ * code の置き場。`AlarmNonceDO` (put / take の single-use ストア。期限は値の JSON の `exp` で
+ * 見て alarm が掃除する) の、デバイス nonce とは別のインスタンス。日本寄り (`apac-ne`) に置く
+ * (利用者も Access の交換も日本から。location hint は最初の `get` でだけ効く)。
+ */
+export function oidcCodeStore(env: Env): DurableObjectStub<AlarmNonceDO> {
+  const ns = env.ALARM_NONCE_DO;
+  // apac-ne (2026-06 追加) は手元の型定義にまだ無い
+  return ns.get(ns.idFromName("oidc-code"), { locationHint: "apac-ne" as DurableObjectLocationHint });
+}
+
+/** 置き場に積む形。`exp` (unix 秒) は TTL の検査と alarm の掃除に使う。 */
+type StoredOidcCode = OidcCodeRecord & { exp: number };
+
 export async function putOidcCode(
-  kv: KVNamespace,
+  env: Env,
   code: string,
   record: OidcCodeRecord,
 ): Promise<void> {
-  await kv.put(CODE_PREFIX + code, JSON.stringify(record), {
-    expirationTtl: OIDC_CODE_TTL_SEC,
-  });
+  const nowMs = Date.now();
+  const stored: StoredOidcCode = { ...record, exp: Math.floor(nowMs / 1000) + OIDC_CODE_TTL_SEC };
+  await oidcCodeStore(env).put(CODE_PREFIX + code, JSON.stringify(stored), nowMs);
 }
 
 /**
- * code を読み出して**必ず消す** (single-use、RFC 6749 §4.1.2)。
- * 読めた場合でも消してから返すので、同じ code での 2 回目の交換は必ず失敗する。
- * 壊れた JSON は `null` (消す動作は同じ)。
+ * code を読み出して**必ず消す** (single-use、RFC 6749 §4.1.2)。DO の中で get → delete を
+ * 直列に行うので、同じ code での 2 回目の交換は (同時に来ても) 必ず null になる。
+ * 期限切れ・壊れた JSON も `null` (消す動作は同じ)。
  */
-export async function takeOidcCode(
-  kv: KVNamespace,
-  code: string,
-): Promise<OidcCodeRecord | null> {
-  const key = CODE_PREFIX + code;
-  const raw = await kv.get(key);
+export async function takeOidcCode(env: Env, code: string): Promise<OidcCodeRecord | null> {
+  const raw = await oidcCodeStore(env).take(CODE_PREFIX + code);
   if (raw === null) return null;
-  await kv.delete(key);
   try {
-    return JSON.parse(raw) as OidcCodeRecord;
+    const { exp, ...record } = JSON.parse(raw) as StoredOidcCode;
+    if (typeof exp !== "number" || exp <= Math.floor(Date.now() / 1000)) return null;
+    return record;
   } catch {
     return null;
   }

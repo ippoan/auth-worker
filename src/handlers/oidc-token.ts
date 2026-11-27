@@ -100,7 +100,7 @@ export async function handleOidcToken(request: Request, env: Env): Promise<Respo
 
   const code = form.get("code") || "";
   // takeOidcCode は読めた時点で必ず消す (single-use)。
-  const record = code ? await takeOidcCode(env.MCP_OAUTH_KV, code) : null;
+  const record = code ? await takeOidcCode(env, code) : null;
   if (!record) {
     return tokenError("invalid_grant", "code is invalid, expired, or already used");
   }

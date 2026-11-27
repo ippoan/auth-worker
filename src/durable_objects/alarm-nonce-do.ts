@@ -8,6 +8,9 @@
  * DO なら書いた直後に読めるので、発行した拠点と消費する拠点が違っても nonce が見える。
  *
  * 期限の切れた nonce と過ぎた分の回数は alarm でまとめて消す。
+ *
+ * OIDC の authorization code (`lib/oidc-authcode.ts`) も、別インスタンス (`oidc-code`) で
+ * put / take を使う (発行する拠点と Access が交換する拠点が違うため。値は `exp` を持つ JSON)。
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -47,7 +50,12 @@ export class AlarmNonceDO extends DurableObject {
     await this.ensureSweep(nowMs);
   }
 
-  /** `key` の値を取り出して消す (1 回きり)。無ければ null。 */
+  /**
+   * `key` の値を取り出して消す (1 回きり)。無ければ null。
+   * get と delete はこの 1 回の RPC の中で続けて行う。間に storage 以外の I/O を挟まないので、
+   * DO の input gate により他の要求はこの間に割り込めない (同じ key の take が同時に 2 本来ても、
+   * 値を受け取るのは片方だけ)。呼び出し側で get と delete を別の RPC に分けないこと。
+   */
   async take(key: string): Promise<string | null> {
     const value = await this.storage.get<string>(key);
     if (value === undefined) return null;
