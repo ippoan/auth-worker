@@ -288,7 +288,9 @@ const KIOSK_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
  * イベント (`GET /api/cam-clips/events`、query は照合に入らずそのまま転送) と切り出しの再生
  * (`GET /api/cam-clips/clips/{tenant}/{camera_id}/{開始}_{終了}.mp4`) を読めるようにした。見るだけで、
  * 切り出し (`POST /api/cam-clips/clips`)・自動切り出しの実行・カメラの登録/更新・端末の候補・鍵の状態は開けない
- * (管理者だけ)。ingest 側も席の鍵にはこの GET 3 本だけを許し、切り出しはキーの頭が鍵のテナントのものだけ返す。
+ * (管理者だけ)。点呼の詳細の本人確認の録画 (`GET /api/cam-clips/tenko-identity?session_id=`、自己点検表 ト①。
+ * Refs ippoan/alc-app#720) も同じく読み取りだけで開く。ingest 側も席の鍵にはこの GET 4 本だけを許し、切り出しは
+ * キーの頭が鍵のテナントのものだけ返す。
  *
  * 指静脈の照合データの読み取り 2 本 (`GET /api/vein/module-templates`・`GET /api/vein/templates`) は、
  * 運行管理者の入口の指静脈ログインが、席の機体 (Vein Base) のモジュールと手元の写しを揃えるのに使う。
@@ -376,6 +378,8 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: /^\/api\/cam-clips\/cameras$/ },
   // 運行管理者の画面の「拠点カメラの録画」(一覧と再生だけ。下の doc)
   { method: "GET", pattern: /^\/api\/cam-clips\/events$/ },
+  // 点呼の詳細の「本人確認のときの録画」(点呼 1 件の本人確認と切り出し。Refs ippoan/alc-app#720)
+  { method: "GET", pattern: /^\/api\/cam-clips\/tenko-identity$/ },
   {
     method: "GET",
     pattern: new RegExp(`^/api/cam-clips/clips/${UUID_SEGMENT}/${UUID_SEGMENT}/[0-9]{8}T[0-9]{6}_[0-9]{8}T[0-9]{6}\\.mp4$`),

@@ -2080,7 +2080,9 @@ describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras 
   it("席の鍵の録画の一覧 (GET /events、query ごと) と再生 (GET /clips/...) は binding へ", async () => {
     const { clips, fetchMock, env: e } = setupClips();
     const events = `/api/cam-clips/events?camera_id=${CAMERA}&date=2026-10-23`;
-    for (const path of [events, CLIP]) {
+    // 点呼の詳細の本人確認の録画 (Refs ippoan/alc-app#720)
+    const identity = `/api/cam-clips/tenko-identity?session_id=${CAMERA}`;
+    for (const path of [events, identity, CLIP]) {
       const res = await handleDeviceDataProxy(
         req(`/device-data-proxy${path}`, { method: "GET", token: await managerToken() }),
         e,
@@ -2089,7 +2091,11 @@ describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras 
     }
     expect(fetchMock).not.toHaveBeenCalled();
     const urls = clips.fetch.mock.calls.map((c) => (c as unknown as [string])[0]);
-    expect(urls).toEqual([`https://alc-cam-sd-ingest${events}`, `https://alc-cam-sd-ingest${CLIP}`]);
+    expect(urls).toEqual([
+      `https://alc-cam-sd-ingest${events}`,
+      `https://alc-cam-sd-ingest${identity}`,
+      `https://alc-cam-sd-ingest${CLIP}`,
+    ]);
   });
 
   it("開発用の席の鍵なら X-Device-Dev: 1 も付く", async () => {
@@ -2121,6 +2127,8 @@ describe("運行管理者席の鍵のカメラ一覧 GET /api/cam-clips/cameras 
       { method: "DELETE", path: CLIP },
       { method: "POST", path: "/api/cam-clips/events" },
       { method: "GET", path: "/api/cam-clips/events/x" },
+      { method: "POST", path: "/api/cam-clips/tenko-identity" },
+      { method: "GET", path: "/api/cam-clips/tenko-identity/x" },
       { method: "POST", path: "/api/cam-clips/auto-run" },
       { method: "GET", path: "/api/cam-clips/device-candidates" },
       { method: "GET", path: "/api/cam-clips/device-key-status" },
