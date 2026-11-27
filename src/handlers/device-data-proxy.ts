@@ -399,6 +399,8 @@ const TENKO_MANAGER_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> =
   { method: "GET", pattern: new RegExp(`^/api/measurements/${UUID_SEGMENT}$`) },
   { method: "GET", pattern: new RegExp(`^/api/measurements/${UUID_SEGMENT}/face-photo$`) },
   { method: "GET", pattern: new RegExp(`^/api/measurements/${UUID_SEGMENT}/video$`) },
+  // 点呼の詳細の本人確認のときの顔写真 (自己点検表 ト①。Refs ippoan/alc-app#720)
+  { method: "GET", pattern: new RegExp(`^/api/tenko/identity-events/${UUID_SEGMENT}/face-photo$`) },
   { method: "GET", pattern: /^\/api\/tenko\/records\/csv$/ },
   { method: "GET", pattern: /^\/api\/tenko\/health-baselines$/ },
   { method: "GET", pattern: /^\/api\/tenko\/equipment-failures$/ },

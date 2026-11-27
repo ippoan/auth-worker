@@ -724,6 +724,7 @@ describe("device-tenko-manager role (運行管理者席、Refs ippoan/alc-app#33
     { method: "GET", path: `/api/measurements/${MID}` },
     { method: "GET", path: `/api/measurements/${MID}/face-photo` },
     { method: "GET", path: `/api/measurements/${MID}/video` },
+    { method: "GET", path: `/api/tenko/identity-events/${MID}/face-photo` },
     { method: "GET", path: "/api/tenko/records/csv" },
     { method: "GET", path: "/api/tenko/health-baselines" },
     { method: "GET", path: "/api/tenko/equipment-failures" },

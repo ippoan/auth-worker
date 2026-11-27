@@ -360,6 +360,16 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
     host: "alc-measurements",
     proxies: ["browser", "device"],
   },
+  // 点呼の本人確認 (指静脈の照合) のとき端末のカメラで撮った顔写真 (自己点検表 ト①。Refs ippoan/alc-app#720)。
+  // 点呼の詳細から読むだけ (GET)。端末用は device-data-proxy の運行管理者席の表にだけ在る
+  {
+    match: "pattern",
+    pattern: /^\/api\/tenko\/identity-events\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/face-photo$/i,
+    binding: "ALC_MEASUREMENTS",
+    host: "alc-measurements",
+    proxies: ["browser", "device"],
+    methods: { browser: ["GET"], device: ["GET"] },
+  },
   // 測定台の血圧を「本人の測定ではない」として外す (テレコ)。運行管理者のログインの画面からだけ (端末の鍵には開けない)。
   // 外した測定は回数にも点呼にも入らない。AuthUser 無しは worker が 401 (Refs ippoan/alc-app#676)
   {
