@@ -67,6 +67,8 @@ describe("putOidcCode / takeOidcCode (Durable Object)", () => {
     const idFromName = vi.spyOn(ns, "idFromName");
     oidcCodeStore(env);
     expect(idFromName).toHaveBeenCalledWith("oidc-code");
+    // デバイス nonce・回数制限の `global` インスタンスとは別 (key も `oidc:code:` で `devnonce:`・`rate:` と重ならない)
+    expect(idFromName).not.toHaveBeenCalledWith("global");
     expect(ns._hints).toEqual(["apac-ne"]);
   });
 
