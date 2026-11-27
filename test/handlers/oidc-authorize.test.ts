@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { handleOidcAuthorize } from "../../src/handlers/oidc-authorize";
-import { createMockEnv, createMockKV, TEST_JWT_SECRET, type MockKV } from "../helpers/mock-env";
+import { createMockEnv, TEST_JWT_SECRET, type MockAlarmNonceNamespace } from "../helpers/mock-env";
 // cookie を実際に発行しているのは本番の signJwt (UTF-8 safe)。テスト用 helper
 // (test-jwt.ts) は btoa 直呼びで多バイト claim を扱えないため、こちらを使う。
 import { signJwt } from "../../src/lib/jwt";
@@ -14,7 +14,6 @@ const CLIENTS = JSON.stringify([
 
 function envWith(overrides: Partial<Env> = {}): Env {
   return createMockEnv({
-    MCP_OAUTH_KV: createMockKV(),
     ACCESS_OIDC_CLIENTS: CLIENTS,
     ...overrides,
   });
@@ -57,11 +56,12 @@ async function requestWithSession(
   return new Request(url, { headers: { Cookie: `logi_auth_token=${jwt}` } });
 }
 
-/** 発行された code の KV レコードを取り出す。 */
+/** 発行された code の DO (`ALARM_NONCE_DO` の mock) のレコードを取り出す。 */
 function storedCode(env: Env): { code: string; record: OidcCodeRecord } {
-  const data = (env.MCP_OAUTH_KV as unknown as MockKV)._data;
+  const data = (env.ALARM_NONCE_DO as unknown as MockAlarmNonceNamespace)._data as Record<string, string>;
   const key = Object.keys(data).find((k) => k.startsWith("oidc:code:"))!;
-  return { code: key.slice("oidc:code:".length), record: JSON.parse(data[key]!) as OidcCodeRecord };
+  const { exp: _exp, ...record } = JSON.parse(data[key]!) as OidcCodeRecord & { exp: number };
+  return { code: key.slice("oidc:code:".length), record };
 }
 
 describe("GET /oidc/authorize — silent SSO (the whole point of this surface)", () => {
@@ -353,14 +353,6 @@ describe("GET /oidc/authorize — rejections", () => {
       envWith(),
     );
     expect(new URL(res.headers.get("Location")!).searchParams.has("state")).toBe(false);
-  });
-
-  it("returns 503 when the KV namespace is not bound", async () => {
-    const res = await handleOidcAuthorize(
-      await requestWithSession(authorizeUrl()),
-      envWith({ MCP_OAUTH_KV: undefined }),
-    );
-    expect(res.status).toBe(503);
   });
 
   it("returns 503 when the client registry is not configured", async () => {

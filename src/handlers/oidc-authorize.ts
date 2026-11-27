@@ -94,9 +94,6 @@ export async function handleOidcAuthorize(request: Request, env: Env): Promise<R
   const q = url.searchParams;
   const iss = oidcIssuer(env);
 
-  if (!env.MCP_OAUTH_KV) {
-    return errorResponse(503, "oidc surface not configured");
-  }
   const clients = await resolveOidcClients(env.ACCESS_OIDC_CLIENTS);
   if (!clients) {
     return errorResponse(503, "oidc clients not configured");
@@ -151,7 +148,7 @@ export async function handleOidcAuthorize(request: Request, env: Env): Promise<R
 
   const code = generateOidcOpaqueToken();
   const scope = q.get("scope") || "openid";
-  await putOidcCode(env.MCP_OAUTH_KV, code, {
+  await putOidcCode(env, code, {
     client_id: client.client_id,
     redirect_uri: redirectUri,
     ...(q.get("nonce") ? { nonce: q.get("nonce")! } : {}),

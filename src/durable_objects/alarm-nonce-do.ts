@@ -8,6 +8,9 @@
  * DO なら書いた直後に読めるので、発行した拠点と消費する拠点が違っても nonce が見える。
  *
  * 期限の切れた nonce と過ぎた分の回数は alarm でまとめて消す。
+ *
+ * OIDC の authorization code (`lib/oidc-authcode.ts`) も、別インスタンス (`oidc-code`) で
+ * put / take を使う (発行する拠点と Access が交換する拠点が違うため。値は `exp` を持つ JSON)。
  */
 import { DurableObject } from "cloudflare:workers";
 

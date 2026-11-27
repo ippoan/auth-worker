@@ -1,9 +1,17 @@
-import { describe, it, expect } from "vitest";
-import { createMockKV, type MockKV } from "../helpers/mock-env";
+import { describe, it, expect, vi } from "vitest";
+import {
+  createMockAlarmNonceDO,
+  createMockEnv,
+  createMockKV,
+  type MockAlarmNonceNamespace,
+  type MockKV,
+} from "../helpers/mock-env";
+import type { Env } from "../../src/index";
 import {
   OIDC_ACCESS_TOKEN_TTL_SEC,
   OIDC_CODE_TTL_SEC,
   generateOidcOpaqueToken,
+  oidcCodeStore,
   getOidcAccessTokenClaims,
   putOidcAccessToken,
   putOidcCode,
@@ -31,41 +39,77 @@ describe("generateOidcOpaqueToken", () => {
   });
 });
 
-describe("putOidcCode / takeOidcCode", () => {
+describe("putOidcCode / takeOidcCode (Durable Object)", () => {
+  function envWithDO(): { env: Env; ns: MockAlarmNonceNamespace } {
+    const ns = createMockAlarmNonceDO();
+    return { env: createMockEnv({ ALARM_NONCE_DO: ns }), ns };
+  }
+
   it("round-trips the record", async () => {
-    const kv = createMockKV();
-    await putOidcCode(kv, "c1", RECORD);
-    expect(await takeOidcCode(kv, "c1")).toEqual(RECORD);
+    const { env } = envWithDO();
+    await putOidcCode(env, "c1", RECORD);
+    expect(await takeOidcCode(env, "c1")).toEqual(RECORD);
   });
 
-  it("stores under an `oidc:` prefix so it cannot collide with MCP keys", async () => {
-    const kv = createMockKV();
-    await putOidcCode(kv, "c1", RECORD);
-    expect(Object.keys((kv as unknown as MockKV)._data)).toEqual(["oidc:code:c1"]);
-  });
-
-  it("applies the short authorization-code TTL", async () => {
-    const kv = createMockKV();
-    await putOidcCode(kv, "c1", RECORD);
-    expect((kv as unknown as MockKV)._ttls["oidc:code:c1"]).toBe(OIDC_CODE_TTL_SEC);
+  it("stores under an `oidc:code:` prefix with an exp the DO alarm can sweep", async () => {
+    const { env, ns } = envWithDO();
+    const before = Math.floor(Date.now() / 1000);
+    await putOidcCode(env, "c1", RECORD);
+    expect(Object.keys(ns._data)).toEqual(["oidc:code:c1"]);
+    const { exp } = JSON.parse(ns._data["oidc:code:c1"] as string) as { exp: number };
+    expect(exp - before).toBeGreaterThanOrEqual(OIDC_CODE_TTL_SEC);
+    expect(exp - before).toBeLessThanOrEqual(OIDC_CODE_TTL_SEC + 1);
     expect(OIDC_CODE_TTL_SEC).toBeLessThanOrEqual(600); // RFC 6749 §4.1.2 の上限
   });
 
+  it("uses its own DO instance placed in apac-ne (not the device-nonce one)", async () => {
+    const { env, ns } = envWithDO();
+    const idFromName = vi.spyOn(ns, "idFromName");
+    oidcCodeStore(env);
+    expect(idFromName).toHaveBeenCalledWith("oidc-code");
+    expect(ns._hints).toEqual(["apac-ne"]);
+  });
+
+  it("is readable right after the write from a different worker instance", async () => {
+    const ns = createMockAlarmNonceDO();
+    await putOidcCode(createMockEnv({ ALARM_NONCE_DO: ns }), "c1", RECORD);
+    expect(await takeOidcCode(createMockEnv({ ALARM_NONCE_DO: ns }), "c1")).toEqual(RECORD);
+  });
+
   it("is single-use — the second take returns null", async () => {
-    const kv = createMockKV();
-    await putOidcCode(kv, "c1", RECORD);
-    expect(await takeOidcCode(kv, "c1")).not.toBeNull();
-    expect(await takeOidcCode(kv, "c1")).toBeNull();
+    const { env } = envWithDO();
+    await putOidcCode(env, "c1", RECORD);
+    expect(await takeOidcCode(env, "c1")).not.toBeNull();
+    expect(await takeOidcCode(env, "c1")).toBeNull();
   });
 
   it("returns null for an unknown code", async () => {
-    expect(await takeOidcCode(createMockKV(), "missing")).toBeNull();
+    expect(await takeOidcCode(envWithDO().env, "missing")).toBeNull();
+  });
+
+  it("returns null once the TTL has passed — and still deletes it", async () => {
+    const { env, ns } = envWithDO();
+    await putOidcCode(env, "c1", RECORD);
+    vi.useFakeTimers({ now: Date.now() + OIDC_CODE_TTL_SEC * 1000 });
+    try {
+      expect(await takeOidcCode(env, "c1")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(ns._data["oidc:code:c1"]).toBeUndefined();
+  });
+
+  it("returns null for a record without exp", async () => {
+    const { env, ns } = envWithDO();
+    ns._data["oidc:code:c1"] = JSON.stringify(RECORD);
+    expect(await takeOidcCode(env, "c1")).toBeNull();
   });
 
   it("returns null for a corrupted record — and still deletes it", async () => {
-    const kv = createMockKV({ "oidc:code:c1": "{broken" });
-    expect(await takeOidcCode(kv, "c1")).toBeNull();
-    expect((kv as unknown as MockKV)._data["oidc:code:c1"]).toBeUndefined();
+    const { env, ns } = envWithDO();
+    ns._data["oidc:code:c1"] = "{broken";
+    expect(await takeOidcCode(env, "c1")).toBeNull();
+    expect(ns._data["oidc:code:c1"]).toBeUndefined();
   });
 });
 
