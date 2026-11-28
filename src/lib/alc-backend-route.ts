@@ -64,8 +64,8 @@ export type AlcBindingRoute = AlcRouteMatch & {
  * `/api/trouble/` は trouble の全部の口 (prefix)。worker が rust の口を全部持つので丸ごと `alc-trouble` へ回す。画面用の proxy だけ
  * (nuxt-trouble は /alc-proxy 経由)。予約の発火 (`/api/internal/trouble/schedules/{id}/fire`) は id を UUID に固定した pattern で、
  * 内部用の proxy (internal-jwt クラス。大小文字は alc-internal-proxy の分類と揃える) だけ。
- * `/api/measurements` は測定 (アルコール検査の記録) の 7 口で、`alc-measurements` へ回す。画面用と端末用の proxy だけ
- * (内部用の proxy は /api/measurements を 403 で通さないので入れない)。一覧・登録 (`/api/measurements`)・開始 (`/api/measurements/start`) は完全一致、
+ * `/api/measurements` は測定 (アルコール検査の記録) の 8 口で、`alc-measurements` へ回す。画面用と端末用の proxy だけ
+ * (内部用の proxy は /api/measurements を 403 で通さないので入れない)。一覧・登録 (`/api/measurements`)・開始 (`/api/measurements/start`)・血圧の回数 (`/api/measurements/bp-count`) は完全一致、
  * 1 件の取得・更新 (`/{id}`) と顔写真・動画 (`/{id}/face-photo`・`/{id}/video`) は id を UUID に固定した pattern。prefix は足さない
  * (UUID に固定するので `GET /api/measurements/start` や他の下位 path は Cloud Run に残る)。
  * `/api/upload/face-photo`・`/api/upload/blow-video`・`/api/upload/report-audio` は顔写真・吹きかけ動画・運行報告の音声を R2 に
@@ -334,6 +334,8 @@ export const ALC_BINDING_ROUTES: ReadonlyArray<AlcBindingRoute> = [
   },
   { match: "exact", path: "/api/measurements", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/measurements/start", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
+  // 測定台の血圧の回数の問い合わせ (静脈認証が通った直後に画面が問う。数え方は保存の 422 と同じ。Refs ippoan/alc-app#676)
+  { match: "exact", path: "/api/measurements/bp-count", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "device"] },
   { match: "exact", path: "/api/measurements/alert-test", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "admin"] },
   // 血圧の日報のテスト送信 (admin だけ。判定は alc-measurements-worker が X-User-Role で行う。alert-test と同じ経路。Refs ippoan/alc-app#436)
   { match: "exact", path: "/api/measurements/bp-report-test", binding: "ALC_MEASUREMENTS", host: "alc-measurements", proxies: ["browser", "admin"] },
