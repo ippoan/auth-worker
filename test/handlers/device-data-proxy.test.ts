@@ -1670,6 +1670,8 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
     { method: "GET", path: "/api/employees/by-code/1234" },
     { method: "GET", path: "/api/employees/face-data" },
     { method: "POST", path: "/api/measurements/start" },
+    // 静脈認証が通った直後の血圧の回数の問い合わせ (Refs ippoan/alc-app#676)。
+    { method: "GET", path: "/api/measurements/bp-count" },
     { method: "PUT", path: "/api/measurements/m-1" },
     // 点呼の確定 (結果カードの IT点呼 / 終了)。測定台として登録した端末でも同じ画面になる (Refs ippoan/alc-app#436)。
     { method: "POST", path: "/api/measurements/m-1/tenko" },
@@ -1721,6 +1723,9 @@ describe("device-bp-station role (血圧測定台、Refs ippoan/alc-app#353)", (
       { method: "DELETE", path: "/api/employees/lookup" },
       { method: "PUT", path: "/api/employees/face-data" },
       { method: "GET", path: "/api/measurements/start" },
+      // 血圧の回数の問い合わせは GET だけ。下位 path の余りも 403。
+      { method: "POST", path: "/api/measurements/bp-count" },
+      { method: "GET", path: "/api/measurements/bp-count/x" },
       // 社員番号の照会は GET だけ。別 method・下位 path の余りは 403。
       { method: "POST", path: "/api/employees/by-code/1234" },
       { method: "PUT", path: "/api/employees/by-code/1234" },

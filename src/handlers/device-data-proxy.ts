@@ -503,12 +503,18 @@ const DEV_EXTRA_GET_ROUTES: ReadonlyMap<string, ReadonlyArray<RegExp>> = new Map
  * 乗務員を選ぶため。`KIOSK_ROUTES` / `TENKO_MANAGER_ROUTES` の同じ行と method・pattern を
  * 揃えてある。社員番号の総当たりで名前が引ける点はキオスクと同じで、rate limit は
  * 足さない (指の登録は管理者の承認で止まる)。
+ *
+ * **`GET /api/measurements/bp-count` (乗務員の有効時間内の血圧の数) も入れる** (Refs ippoan/alc-app#676)。
+ * 静脈認証が通った直後に問い、2 回に達していれば測定に進ませない (保存の 422 は残る)。返すのは数と有効時間だけ。
+ * キオスクは既存の `GET /api/measurements/{id}` の行 (`[^/]+`) が同じ path に当たる。
  */
 const BP_STATION_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/api\/employees\/lookup$/ },
   { method: "GET", pattern: /^\/api\/employees\/by-code\/[^/]+$/ },
   { method: "GET", pattern: /^\/api\/employees\/face-data$/ },
   { method: "POST", pattern: /^\/api\/measurements\/start$/ },
+  // 静脈認証が通った直後の血圧の回数の問い合わせ (Refs ippoan/alc-app#676)
+  { method: "GET", pattern: /^\/api\/measurements\/bp-count$/ },
   { method: "PUT", pattern: /^\/api\/measurements\/[^/]+$/ },
   { method: "POST", pattern: /^\/api\/measurements\/[^/]+\/tenko$/ },
   { method: "PUT", pattern: /^\/api\/vein\/templates\/[^/]+$/ },

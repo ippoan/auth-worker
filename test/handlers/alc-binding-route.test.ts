@@ -1736,6 +1736,20 @@ describe("測定の口 → ALC_MEASUREMENTS binding (Refs ippoan/alc-app#436)", 
     }
   });
 
+  it("bp-count (血圧の回数の問い合わせ) は画面用と端末用が ALC_MEASUREMENTS へ。内部用・管理画面用は null (Refs ippoan/alc-app#676)", () => {
+    const { measurements, env } = setupMeasurements();
+    const target = { fetcher: measurements, host: "alc-measurements" };
+    const path = "/api/measurements/bp-count";
+    expect(resolveAlcBinding(path, env, "browser")).toEqual(target);
+    expect(resolveAlcBinding(path, env, "device")).toEqual(target);
+    expect(resolveAlcBinding(path, env, "internal")).toBeNull();
+    expect(resolveAlcBinding(path, env, "admin")).toBeNull();
+    for (const near of ["/api/measurements/bp-count/x", "/api/measurements/bp-countx"]) {
+      expect(resolveAlcBinding(near, env, "browser"), near).toBeNull();
+      expect(resolveAlcBinding(near, env, "device"), near).toBeNull();
+    }
+  });
+
   it("bp-report-test (血圧の日報のテスト送信) は画面用と管理画面用が ALC_MEASUREMENTS へ。端末用・内部用は null", () => {
     const { measurements, env } = setupMeasurements();
     const target = { fetcher: measurements, host: "alc-measurements" };
